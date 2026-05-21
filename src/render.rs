@@ -86,14 +86,17 @@ impl Style {
 /// Print the answer body to stdout, optionally with markdown
 /// rendering applied. The cargo-style 3-space body indent is
 /// imposed by this function; plain mode prints with no indent so
-/// pipe consumers get raw text.
+/// pipe consumers get raw text. Termimad is asked to wrap to
+/// `terminal_width - 3` so soft-wrapping doesn't push lines past
+/// the right edge.
 pub fn print_body(text: &str, style: &Style) {
     if !style.render_markdown {
         println!("{text}");
         return;
     }
     let skin = build_skin(style.color);
-    let rendered = skin.text(text, None);
+    let width = terminal_width().saturating_sub(3).max(20);
+    let rendered = skin.text(text, Some(width));
     let rendered_string = format!("{rendered}");
     let trimmed = rendered_string.trim_end_matches('\n');
     for line in trimmed.split('\n') {
@@ -103,6 +106,12 @@ pub fn print_body(text: &str, style: &Style) {
             println!("   {line}");
         }
     }
+}
+
+fn terminal_width() -> usize {
+    termimad::crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or(80)
 }
 
 fn build_skin(color: bool) -> termimad::MadSkin {
