@@ -180,6 +180,14 @@ struct AskArgs {
     /// as --prepend but joined after the main prompt.
     #[arg(long, value_name = "PATH")]
     append: Vec<PathBuf>,
+
+    /// Attach files matching a glob pattern into the prompt. Each
+    /// file is included with a `File: PATH` header and a fenced
+    /// code block. Pass multiple times for several patterns. Useful
+    /// for "look at these files and answer X" prompts without
+    /// having to paste contents by hand.
+    #[arg(long, value_name = "GLOB")]
+    attach: Vec<String>,
 }
 
 #[tokio::main]
@@ -223,7 +231,8 @@ async fn run_ask(mut args: AskArgs) -> Result<()> {
     }
     let main =
         resolve_main_prompt(args.prompt.as_deref(), args.file.as_deref(), args.editor)?;
-    let prompt = compose_prompt(main, &args.prepend, &args.append)?;
+    let attachments = collect_attachments(&args.attach)?;
+    let prompt = compose_prompt(main, &args.prepend, attachments, &args.append)?;
     if args.echo && !args.quiet {
         eprintln!("{prompt}");
         eprintln!();
@@ -950,6 +959,7 @@ fn resolve_main_prompt(
 fn compose_prompt(
     main: Option<String>,
     prepend: &[PathBuf],
+    attachments: Option<String>,
     append: &[PathBuf],
 ) -> Result<String> {
     let mut parts: Vec<String> = Vec::new();
@@ -957,6 +967,9 @@ fn compose_prompt(
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("reading --prepend {}", path.display()))?;
         parts.push(content.trim_end().to_string());
+    }
+    if let Some(attach_block) = attachments {
+        parts.push(attach_block);
     }
     if let Some(m) = main {
         parts.push(m);
@@ -969,10 +982,43 @@ fn compose_prompt(
     parts.retain(|p| !p.is_empty());
     if parts.is_empty() {
         bail!(
-            "no prompt: pass one as an argument, use -f / -e, --prepend / --append, pipe via stdin, or use `-` for stdin"
+            "no prompt: pass one as an argument, use -f / -e, --prepend / --append / --attach, pipe via stdin, or use `-` for stdin"
         );
     }
     Ok(parts.join("\n\n"))
+}
+
+fn collect_attachments(patterns: &[String]) -> Result<Option<String>> {
+    if patterns.is_empty() {
+        return Ok(None);
+    }
+    let mut blocks: Vec<String> = Vec::new();
+    for pat in patterns {
+        let matches = glob::glob(pat).with_context(|| format!("invalid glob: {pat}"))?;
+        let mut had_any = false;
+        for entry in matches {
+            let path = entry.with_context(|| format!("walking --attach {pat}"))?;
+            if !path.is_file() {
+                continue;
+            }
+            had_any = true;
+            let content = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading --attach {}", path.display()))?;
+            blocks.push(format!(
+                "File: {}\n```\n{}\n```",
+                path.display(),
+                content.trim_end()
+            ));
+        }
+        if !had_any {
+            eprintln!("warning: --attach {pat} matched no files");
+        }
+    }
+    if blocks.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(blocks.join("\n\n")))
+    }
 }
 
 fn read_stdin() -> Result<String> {
