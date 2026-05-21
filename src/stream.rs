@@ -14,6 +14,7 @@ use std::io::Write;
 
 use crate::cli::AskArgs;
 use crate::output::{format_footer, looks_like_refusal, should_show_footer, truncate_arg};
+use crate::render::Style;
 use crate::session::apply_session;
 
 /// Run a prompt through the streaming pipeline. Text flushes to
@@ -42,14 +43,18 @@ pub async fn run_streaming(claude: &Claude, prompt: String, args: &AskArgs) -> R
     if show_meta
         && let Some(qr) = &final_result
     {
-        eprintln!();
+        let style = Style::detect(args);
+        crate::render::print_meta_blank();
         if looks_like_refusal(&qr.result) {
-            eprintln!("warning: response looks like a refusal");
+            crate::render::print_meta("warning: response looks like a refusal", &style);
         }
         if !tool_counts.is_empty() {
-            eprintln!("used: {}", format_tool_summary(&tool_counts));
+            crate::render::print_meta(
+                &format!("used: {}", format_tool_summary(&tool_counts)),
+                &style,
+            );
         }
-        eprintln!("{}", format_footer(qr));
+        crate::render::print_meta(&format_footer(qr), &style);
     }
     Ok(())
 }

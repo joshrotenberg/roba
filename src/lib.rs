@@ -101,11 +101,11 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
             .with_context(|| format!("writing result to {}", path.display()))?;
     }
     if should_show_footer(&args) {
-        eprintln!();
+        render::print_meta_blank();
         if looks_like_refusal(&result.result) {
-            eprintln!("warning: response looks like a refusal");
+            render::print_meta("warning: response looks like a refusal", &style);
         }
-        eprintln!("{}", format_footer(&result));
+        render::print_meta(&format_footer(&result), &style);
     }
     Ok(())
 }

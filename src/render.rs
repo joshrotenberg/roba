@@ -89,3 +89,19 @@ fn build_skin(color: bool) -> termimad::MadSkin {
         termimad::MadSkin::no_style()
     }
 }
+
+/// Print a metadata line on stderr (cost footer, tool rollup, etc.).
+/// Dim gray when color is on; otherwise just the raw text.
+pub fn print_meta(line: &str, style: &Style) {
+    if style.color {
+        eprintln!("\x1b[2m{line}\x1b[0m");
+    } else {
+        eprintln!("{line}");
+    }
+}
+
+/// Print a blank line on stderr -- used as a separator before the
+/// footer block.
+pub fn print_meta_blank() {
+    eprintln!();
+}
