@@ -1,0 +1,20 @@
+[package]
+name = "cwr"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90.0"
+authors = ["Josh Rotenberg <joshrotenberg@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/joshrotenberg/claude-wrapper"
+description = "Single-prompt CLI runner built on claude-wrapper"
+publish = false
+
+[[bin]]
+name = "cwr"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+claude-wrapper = { path = "../claude-wrapper" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
