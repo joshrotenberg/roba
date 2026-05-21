@@ -68,6 +68,16 @@ struct Args {
         conflicts_with = "json",
     )]
     code: Option<String>,
+
+    /// Truncate output to the first N lines. Applied after --code.
+    /// Mutually exclusive with --tail and --json.
+    #[arg(long, value_name = "N", conflicts_with_all = ["tail", "json"])]
+    head: Option<usize>,
+
+    /// Truncate output to the last N lines. Applied after --code.
+    /// Mutually exclusive with --head and --json.
+    #[arg(long, value_name = "N", conflicts_with_all = ["head", "json"])]
+    tail: Option<usize>,
 }
 
 #[tokio::main]
@@ -93,6 +103,7 @@ async fn main() -> Result<()> {
     } else {
         result.result.clone()
     };
+    let body = truncate_lines(&body, args.head, args.tail);
 
     let write_stdout = args.save.is_none();
     if write_stdout {
@@ -111,6 +122,18 @@ async fn main() -> Result<()> {
 
 fn path_is_json(path: &Path) -> bool {
     path.extension().and_then(|s| s.to_str()) == Some("json")
+}
+
+fn truncate_lines(text: &str, head: Option<usize>, tail: Option<usize>) -> String {
+    match (head, tail) {
+        (Some(n), _) => text.lines().take(n).collect::<Vec<_>>().join("\n"),
+        (_, Some(n)) => {
+            let all: Vec<&str> = text.lines().collect();
+            let start = all.len().saturating_sub(n);
+            all[start..].join("\n")
+        }
+        _ => text.to_string(),
+    }
 }
 
 fn extract_code_blocks(text: &str, lang_filter: Option<&str>) -> String {
@@ -224,6 +247,43 @@ mod tests {
         let mut extra = std::collections::HashMap::new();
         extra.insert("usage".to_string(), serde_json::json!("string instead"));
         assert_eq!(extract_tokens(&extra), None);
+    }
+
+    #[test]
+    fn truncate_lines_head_keeps_first_n() {
+        let body = "a\nb\nc\nd\ne";
+        assert_eq!(truncate_lines(body, Some(3), None), "a\nb\nc");
+    }
+
+    #[test]
+    fn truncate_lines_tail_keeps_last_n() {
+        let body = "a\nb\nc\nd\ne";
+        assert_eq!(truncate_lines(body, None, Some(2)), "d\ne");
+    }
+
+    #[test]
+    fn truncate_lines_head_larger_than_input_keeps_all() {
+        let body = "a\nb";
+        assert_eq!(truncate_lines(body, Some(99), None), "a\nb");
+    }
+
+    #[test]
+    fn truncate_lines_tail_larger_than_input_keeps_all() {
+        let body = "a\nb";
+        assert_eq!(truncate_lines(body, None, Some(99)), "a\nb");
+    }
+
+    #[test]
+    fn truncate_lines_no_op_when_both_none() {
+        let body = "a\nb\nc";
+        assert_eq!(truncate_lines(body, None, None), "a\nb\nc");
+    }
+
+    #[test]
+    fn truncate_lines_zero_returns_empty() {
+        let body = "a\nb\nc";
+        assert_eq!(truncate_lines(body, Some(0), None), "");
+        assert_eq!(truncate_lines(body, None, Some(0)), "");
     }
 }
 
