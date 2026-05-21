@@ -150,6 +150,12 @@ struct AskArgs {
     /// instead" experiments without polluting the original transcript.
     #[arg(long, requires = "resume")]
     fork: bool,
+
+    /// Open an interactive fuzzy-filter picker over recent sessions
+    /// and resume the one you select. Requires a TTY. Mutually
+    /// exclusive with -c / --resume.
+    #[arg(long, conflicts_with_all = ["continue_session", "resume"])]
+    pick: bool,
 }
 
 #[tokio::main]
@@ -162,7 +168,12 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn run_ask(args: AskArgs) -> Result<()> {
+async fn run_ask(mut args: AskArgs) -> Result<()> {
+    if args.pick {
+        let id = pick_session_interactive()?;
+        eprintln!("resuming session {}", id.get(..8).unwrap_or(&id));
+        args.resume = Some(id);
+    }
     let prompt = resolve_prompt(args.prompt.as_deref(), args.file.as_deref(), args.editor)?;
     if args.echo && !args.quiet {
         eprintln!("{prompt}");
@@ -631,6 +642,52 @@ fn extract_message_text(message: &serde_json::Value) -> Option<String> {
         }
     }
     if out.is_empty() { None } else { Some(out) }
+}
+
+fn pick_session_interactive() -> Result<String> {
+    use claude_wrapper::history::{HistoryRoot, ListOptions, ListSort};
+    use dialoguer::{FuzzySelect, theme::ColorfulTheme};
+
+    if !std::io::stdout().is_terminal() {
+        bail!("--pick requires a TTY");
+    }
+    let root = HistoryRoot::home().context("locating ~/.claude/projects")?;
+    let opts = ListOptions {
+        limit: Some(50),
+        offset: 0,
+        include_empty: false,
+        sort: ListSort::RecencyDesc,
+    };
+    let sessions = root
+        .list_sessions_with(None, &opts)
+        .context("reading session history")?;
+    if sessions.is_empty() {
+        bail!("no sessions to pick from");
+    }
+    let items: Vec<String> = sessions
+        .iter()
+        .map(|s| {
+            let id = s.session_id.get(..8).unwrap_or(&s.session_id);
+            let when = s
+                .last_timestamp
+                .as_deref()
+                .and_then(format_timestamp)
+                .unwrap_or_else(|| "?".to_string());
+            let title = s
+                .title
+                .as_deref()
+                .or(s.first_user_preview.as_deref())
+                .unwrap_or("(no title)");
+            format!("{id}  {when}  {}", truncate_arg(title, 60))
+        })
+        .collect();
+    let selection = FuzzySelect::with_theme(&ColorfulTheme::default())
+        .with_prompt("Pick a session to resume")
+        .items(&items)
+        .default(0)
+        .interact()
+        .context("session picker cancelled")?;
+    Ok(sessions[selection].session_id.clone())
 }
 
 fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
