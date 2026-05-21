@@ -172,12 +172,35 @@ struct AskArgs {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
     let cli = Cli::parse();
-    match cli.command {
+    let outcome = match cli.command {
         Some(SubCommand::History(args)) => run_history(args),
         Some(SubCommand::Last(args)) => run_last(args),
         None => run_ask(cli.ask).await,
+    };
+    if let Err(err) = outcome {
+        eprintln!("error: {err:#}");
+        std::process::exit(classify_exit_code(&err));
+    }
+}
+
+/// Map an anyhow error chain to a stable exit code:
+/// 0  ok (handled by main's happy path)
+/// 1  generic failure
+/// 2  authentication required / token invalid
+/// 3  budget ceiling exceeded
+/// 4  request timed out
+fn classify_exit_code(err: &anyhow::Error) -> i32 {
+    if let Some(wrapper_err) = err.downcast_ref::<claude_wrapper::Error>() {
+        match wrapper_err {
+            claude_wrapper::Error::Auth { .. } => 2,
+            claude_wrapper::Error::BudgetExceeded { .. } => 3,
+            claude_wrapper::Error::Timeout { .. } => 4,
+            _ => 1,
+        }
+    } else {
+        1
     }
 }
 
