@@ -36,6 +36,12 @@ struct Args {
     /// Use when you want the cleanest possible output even on a TTY.
     #[arg(short = 'q', long)]
     quiet: bool,
+
+    /// Emit the full structured result as JSON on stdout instead of
+    /// the plain answer. Includes session_id, cost_usd, duration_ms,
+    /// num_turns, is_error, and the answer text. Pretty-printed.
+    #[arg(long)]
+    json: bool,
 }
 
 #[tokio::main]
@@ -49,8 +55,14 @@ async fn main() -> Result<()> {
         eprintln!();
     }
     let claude = Claude::builder().build()?;
-    let output = QueryCommand::new(prompt).execute(&claude).await?;
-    print!("{}", output.stdout);
+    let cmd = QueryCommand::new(prompt);
+    if args.json {
+        let result = cmd.execute_json(&claude).await?;
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        let output = cmd.execute(&claude).await?;
+        print!("{}", output.stdout);
+    }
     Ok(())
 }
 

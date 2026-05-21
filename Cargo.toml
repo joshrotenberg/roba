@@ -17,5 +17,6 @@ path = "src/main.rs"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 claude-wrapper = { path = "../claude-wrapper" }
+serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
