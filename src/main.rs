@@ -144,6 +144,12 @@ struct AskArgs {
     /// Resume a specific session by id.
     #[arg(long, value_name = "ID")]
     resume: Option<String>,
+
+    /// Branch the resumed session into a new one instead of appending
+    /// to it. Requires --resume. Useful for "what if I asked it this
+    /// instead" experiments without polluting the original transcript.
+    #[arg(long, requires = "resume")]
+    fork: bool,
 }
 
 #[tokio::main]
@@ -633,6 +639,9 @@ fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     }
     if let Some(id) = &args.resume {
         cmd = cmd.resume(id.clone());
+    }
+    if args.fork {
+        cmd = cmd.fork_session();
     }
     cmd
 }
