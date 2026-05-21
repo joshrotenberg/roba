@@ -156,6 +156,19 @@ struct AskArgs {
     /// exclusive with -c / --resume.
     #[arg(long, conflicts_with_all = ["continue_session", "resume"])]
     pick: bool,
+
+    /// Restrict claude to read-only tools (Read, Glob, Grep). Good
+    /// default for "summarize / explain this code" prompts where you
+    /// don't want any edits or shell access. Mutually exclusive with
+    /// --full-auto.
+    #[arg(long, conflicts_with = "full_auto")]
+    readonly: bool,
+
+    /// Bypass all tool permission checks. Equivalent to claude's
+    /// --dangerously-skip-permissions. Only use in a sandbox you
+    /// trust. Mutually exclusive with --readonly.
+    #[arg(long)]
+    full_auto: bool,
 }
 
 #[tokio::main]
@@ -699,6 +712,16 @@ fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     }
     if args.fork {
         cmd = cmd.fork_session();
+    }
+    apply_permissions(cmd, args)
+}
+
+fn apply_permissions(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
+    if args.readonly {
+        cmd = cmd.allowed_tools(["Read", "Glob", "Grep"]);
+    }
+    if args.full_auto {
+        cmd = cmd.dangerously_skip_permissions();
     }
     cmd
 }
