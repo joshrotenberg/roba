@@ -169,6 +169,17 @@ struct AskArgs {
     /// trust. Mutually exclusive with --readonly.
     #[arg(long)]
     full_auto: bool,
+
+    /// Prepend the contents of a file to the prompt. Can be passed
+    /// multiple times; files are joined in order with blank lines
+    /// between them. Composes with positional / -f / -e / stdin.
+    #[arg(long, value_name = "PATH")]
+    prepend: Vec<PathBuf>,
+
+    /// Append the contents of a file to the prompt. Same semantics
+    /// as --prepend but joined after the main prompt.
+    #[arg(long, value_name = "PATH")]
+    append: Vec<PathBuf>,
 }
 
 #[tokio::main]
@@ -210,7 +221,9 @@ async fn run_ask(mut args: AskArgs) -> Result<()> {
         eprintln!("resuming session {}", id.get(..8).unwrap_or(&id));
         args.resume = Some(id);
     }
-    let prompt = resolve_prompt(args.prompt.as_deref(), args.file.as_deref(), args.editor)?;
+    let main =
+        resolve_main_prompt(args.prompt.as_deref(), args.file.as_deref(), args.editor)?;
+    let prompt = compose_prompt(main, &args.prepend, &args.append)?;
     if args.echo && !args.quiet {
         eprintln!("{prompt}");
         eprintln!();
@@ -901,12 +914,16 @@ fn format_duration(ms: u64) -> String {
     }
 }
 
-fn resolve_prompt(positional: Option<&str>, file: Option<&Path>, editor: bool) -> Result<String> {
+fn resolve_main_prompt(
+    positional: Option<&str>,
+    file: Option<&Path>,
+    editor: bool,
+) -> Result<Option<String>> {
     if editor {
         if !std::io::stdin().is_terminal() {
             bail!("--editor requires a TTY; pipe-mode input is incompatible");
         }
-        return compose_in_editor();
+        return Ok(Some(compose_in_editor()?));
     }
     if let Some(path) = file {
         let content = std::fs::read_to_string(path)
@@ -915,20 +932,47 @@ fn resolve_prompt(positional: Option<&str>, file: Option<&Path>, editor: bool) -
         if trimmed.is_empty() {
             bail!("file {} is empty", path.display());
         }
-        return Ok(trimmed);
+        return Ok(Some(trimmed));
     }
     match positional {
-        Some("-") => read_stdin(),
-        Some(p) => Ok(p.to_string()),
+        Some("-") => Ok(Some(read_stdin()?)),
+        Some(p) => Ok(Some(p.to_string())),
         None => {
             if std::io::stdin().is_terminal() {
-                bail!(
-                    "no prompt: pass one as an argument, use -f <path>, use -e for an editor, pipe via stdin, or use `-` to read stdin explicitly"
-                );
+                Ok(None)
+            } else {
+                Ok(Some(read_stdin()?))
             }
-            read_stdin()
         }
     }
+}
+
+fn compose_prompt(
+    main: Option<String>,
+    prepend: &[PathBuf],
+    append: &[PathBuf],
+) -> Result<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for path in prepend {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("reading --prepend {}", path.display()))?;
+        parts.push(content.trim_end().to_string());
+    }
+    if let Some(m) = main {
+        parts.push(m);
+    }
+    for path in append {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("reading --append {}", path.display()))?;
+        parts.push(content.trim_end().to_string());
+    }
+    parts.retain(|p| !p.is_empty());
+    if parts.is_empty() {
+        bail!(
+            "no prompt: pass one as an argument, use -f / -e, --prepend / --append, pipe via stdin, or use `-` for stdin"
+        );
+    }
+    Ok(parts.join("\n\n"))
 }
 
 fn read_stdin() -> Result<String> {
