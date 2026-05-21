@@ -23,6 +23,16 @@ struct Cli {
 enum SubCommand {
     /// List recent sessions across all projects.
     History(HistoryArgs),
+    /// Reprint the most recent session's last answer.
+    Last(LastArgs),
+}
+
+#[derive(ClapArgs, Debug)]
+struct LastArgs {
+    /// Filter to one project by slug. Project slugs start with `-`
+    /// so this accepts hyphen-prefixed values without quoting.
+    #[arg(long, value_name = "SLUG", allow_hyphen_values = true)]
+    project: Option<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -35,8 +45,9 @@ struct HistoryArgs {
     #[arg(long, conflicts_with = "limit")]
     all: bool,
 
-    /// Filter to one project by slug.
-    #[arg(long, value_name = "SLUG")]
+    /// Filter to one project by slug. Project slugs start with `-`
+    /// so this accepts hyphen-prefixed values without quoting.
+    #[arg(long, value_name = "SLUG", allow_hyphen_values = true)]
     project: Option<String>,
 
     /// Emit JSON instead of a human table.
@@ -140,6 +151,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Some(SubCommand::History(args)) => run_history(args),
+        Some(SubCommand::Last(args)) => run_last(args),
         None => run_ask(cli.ask).await,
     }
 }
@@ -548,6 +560,71 @@ fn run_history(args: HistoryArgs) -> Result<()> {
 fn format_timestamp(raw: &str) -> Option<String> {
     let truncated = raw.get(..16)?;
     Some(truncated.replace('T', " "))
+}
+
+fn run_last(args: LastArgs) -> Result<()> {
+    use claude_wrapper::history::{HistoryEntry, HistoryRoot, ListOptions, ListSort};
+
+    let root = HistoryRoot::home().context("locating ~/.claude/projects")?;
+    let opts = ListOptions {
+        limit: Some(1),
+        offset: 0,
+        include_empty: false,
+        sort: ListSort::RecencyDesc,
+    };
+    let sessions = root
+        .list_sessions_with(args.project.as_deref(), &opts)
+        .context("reading session history")?;
+    let summary = sessions.first().ok_or_else(|| {
+        anyhow::anyhow!("no sessions found")
+    })?;
+    let log = root
+        .read_session(&summary.session_id)
+        .context("reading most recent session")?;
+
+    let last_assistant = log
+        .entries
+        .iter()
+        .rev()
+        .find_map(|entry| match entry {
+            HistoryEntry::Assistant { message, .. } => Some(message),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("session has no assistant entries"))?;
+
+    if let Some(text) = extract_message_text(last_assistant) {
+        println!("{text}");
+    } else {
+        eprintln!("(last assistant entry had no text content)");
+    }
+
+    if std::io::stderr().is_terminal() {
+        let short = summary.session_id.get(..8).unwrap_or(&summary.session_id);
+        let when = summary
+            .last_timestamp
+            .as_deref()
+            .and_then(format_timestamp)
+            .unwrap_or_else(|| "?".to_string());
+        eprintln!();
+        eprintln!(
+            "session {short} . {} messages . {when}",
+            summary.message_count
+        );
+    }
+    Ok(())
+}
+
+fn extract_message_text(message: &serde_json::Value) -> Option<String> {
+    let blocks = message.get("content")?.as_array()?;
+    let mut out = String::new();
+    for block in blocks {
+        if block.get("type").and_then(|t| t.as_str()) == Some("text")
+            && let Some(text) = block.get("text").and_then(|v| v.as_str())
+        {
+            out.push_str(text);
+        }
+    }
+    if out.is_empty() { None } else { Some(out) }
 }
 
 fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
