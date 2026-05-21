@@ -177,3 +177,52 @@ pub fn pick_session_interactive() -> Result<String> {
         .context("session picker cancelled")?;
     Ok(sessions[selection].session_id.clone())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_message_text_concatenates_text_blocks() {
+        let msg = serde_json::json!({
+            "content": [
+                {"type": "text", "text": "Hello "},
+                {"type": "text", "text": "world."},
+            ]
+        });
+        assert_eq!(extract_message_text(&msg), Some("Hello world.".to_string()));
+    }
+
+    #[test]
+    fn extract_message_text_ignores_tool_use_blocks() {
+        let msg = serde_json::json!({
+            "content": [
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "x"}},
+                {"type": "text", "text": "After tool"},
+            ]
+        });
+        assert_eq!(extract_message_text(&msg), Some("After tool".to_string()));
+    }
+
+    #[test]
+    fn extract_message_text_returns_none_when_only_tools() {
+        let msg = serde_json::json!({
+            "content": [
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "x"}}
+            ]
+        });
+        assert_eq!(extract_message_text(&msg), None);
+    }
+
+    #[test]
+    fn extract_message_text_returns_none_for_missing_content() {
+        let msg = serde_json::json!({});
+        assert_eq!(extract_message_text(&msg), None);
+    }
+
+    #[test]
+    fn extract_message_text_returns_none_for_content_not_array() {
+        let msg = serde_json::json!({"content": "should be an array"});
+        assert_eq!(extract_message_text(&msg), None);
+    }
+}

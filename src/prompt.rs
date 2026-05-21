@@ -261,4 +261,99 @@ mod tests {
         let vars = vec![("X".to_string(), "go".to_string())];
         assert_eq!(apply_vars(prompt, &vars), "go and go again");
     }
+
+    #[test]
+    fn merge_optional_combines_with_blank_line() {
+        assert_eq!(
+            merge_optional(Some("a".to_string()), Some("b".to_string())),
+            Some("a\n\nb".to_string())
+        );
+    }
+
+    #[test]
+    fn merge_optional_returns_either_when_other_is_none() {
+        assert_eq!(
+            merge_optional(Some("a".to_string()), None),
+            Some("a".to_string())
+        );
+        assert_eq!(
+            merge_optional(None, Some("b".to_string())),
+            Some("b".to_string())
+        );
+    }
+
+    #[test]
+    fn merge_optional_returns_none_when_both_none() {
+        assert_eq!(merge_optional(None, None), None);
+    }
+
+    fn write_temp(content: &str) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, "{content}").unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    #[test]
+    fn compose_prompt_just_main() {
+        let out = compose_prompt(Some("hi".to_string()), &[], None, &[]).unwrap();
+        assert_eq!(out, "hi");
+    }
+
+    #[test]
+    fn compose_prompt_prepend_then_main_then_append() {
+        let pre = write_temp("SYSTEM");
+        let post = write_temp("CONTEXT");
+        let out = compose_prompt(
+            Some("question".to_string()),
+            std::slice::from_ref(&pre.path().to_path_buf()),
+            None,
+            std::slice::from_ref(&post.path().to_path_buf()),
+        )
+        .unwrap();
+        assert_eq!(out, "SYSTEM\n\nquestion\n\nCONTEXT");
+    }
+
+    #[test]
+    fn compose_prompt_inserts_attachments_between_prepend_and_main() {
+        let pre = write_temp("PREP");
+        let attach = "File: foo.rs\n```\nfn x() {}\n```".to_string();
+        let out = compose_prompt(
+            Some("question".to_string()),
+            std::slice::from_ref(&pre.path().to_path_buf()),
+            Some(attach.clone()),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(out, format!("PREP\n\n{attach}\n\nquestion"));
+    }
+
+    #[test]
+    fn compose_prompt_main_optional_when_prepend_present() {
+        let pre = write_temp("STANDALONE");
+        let out =
+            compose_prompt(None, std::slice::from_ref(&pre.path().to_path_buf()), None, &[])
+                .unwrap();
+        assert_eq!(out, "STANDALONE");
+    }
+
+    #[test]
+    fn compose_prompt_errors_when_everything_empty() {
+        let err = compose_prompt(None, &[], None, &[]).expect_err("must error");
+        assert!(format!("{err:#}").contains("no prompt"));
+    }
+
+    #[test]
+    fn compose_prompt_drops_empty_segments() {
+        let empty = write_temp("");
+        let out = compose_prompt(
+            Some("only".to_string()),
+            std::slice::from_ref(&empty.path().to_path_buf()),
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(out, "only");
+    }
 }

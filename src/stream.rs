@@ -169,4 +169,65 @@ mod tests {
         let counts: HashMap<String, usize> = HashMap::new();
         assert_eq!(format_tool_summary(&counts), "");
     }
+
+    #[test]
+    fn handle_assistant_blocks_counts_tool_uses() {
+        let event = serde_json::json!({
+            "message": {
+                "content": [
+                    {"type": "tool_use", "name": "Read", "input": {"file_path": "a"}},
+                    {"type": "tool_use", "name": "Read", "input": {"file_path": "b"}},
+                    {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+                ]
+            }
+        });
+        let mut counts = HashMap::new();
+        handle_assistant_blocks(&event, false, &mut counts);
+        assert_eq!(counts.get("Read"), Some(&2));
+        assert_eq!(counts.get("Bash"), Some(&1));
+    }
+
+    #[test]
+    fn handle_assistant_blocks_handles_missing_content() {
+        let event = serde_json::json!({"message": {}});
+        let mut counts = HashMap::new();
+        handle_assistant_blocks(&event, false, &mut counts);
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn handle_assistant_blocks_handles_missing_message() {
+        let event = serde_json::json!({});
+        let mut counts = HashMap::new();
+        handle_assistant_blocks(&event, false, &mut counts);
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn handle_assistant_blocks_ignores_unknown_block_types() {
+        let event = serde_json::json!({
+            "message": {
+                "content": [
+                    {"type": "future_kind", "data": "whatever"},
+                    {"type": "tool_use", "name": "Read", "input": {}},
+                ]
+            }
+        });
+        let mut counts = HashMap::new();
+        handle_assistant_blocks(&event, false, &mut counts);
+        assert_eq!(counts.get("Read"), Some(&1));
+        assert_eq!(counts.len(), 1);
+    }
+
+    #[test]
+    fn handle_assistant_blocks_uses_question_mark_for_missing_name() {
+        let event = serde_json::json!({
+            "message": {
+                "content": [{"type": "tool_use", "input": {}}]
+            }
+        });
+        let mut counts = HashMap::new();
+        handle_assistant_blocks(&event, false, &mut counts);
+        assert_eq!(counts.get("?"), Some(&1));
+    }
 }

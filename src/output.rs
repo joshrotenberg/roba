@@ -344,4 +344,72 @@ mod tests {
         assert_eq!(out.len(), 20);
         assert!(out.ends_with("..."));
     }
+
+    #[test]
+    fn format_duration_under_one_minute_uses_seconds() {
+        assert_eq!(format_duration(0), "0.0s");
+        assert_eq!(format_duration(500), "0.5s");
+        assert_eq!(format_duration(4_300), "4.3s");
+        assert_eq!(format_duration(59_900), "59.9s");
+    }
+
+    #[test]
+    fn format_duration_one_minute_and_over() {
+        assert_eq!(format_duration(60_000), "1m0s");
+        assert_eq!(format_duration(83_000), "1m23s");
+        assert_eq!(format_duration(125_500), "2m6s");
+    }
+
+    #[test]
+    fn format_timestamp_keeps_date_and_hhmm() {
+        assert_eq!(
+            format_timestamp("2026-05-21T16:01:00.123Z"),
+            Some("2026-05-21 16:01".to_string())
+        );
+    }
+
+    #[test]
+    fn format_timestamp_replaces_t_separator() {
+        let out = format_timestamp("2026-05-21T16:01:00Z").unwrap();
+        assert!(!out.contains('T'));
+        assert!(out.contains(' '));
+    }
+
+    #[test]
+    fn format_timestamp_returns_none_when_too_short() {
+        assert_eq!(format_timestamp("2026-05-21"), None);
+    }
+
+    #[test]
+    fn format_footer_full_record() {
+        let result: QueryResult = serde_json::from_value(serde_json::json!({
+            "result": "ok",
+            "session_id": "abc12345-rest-of-id",
+            "total_cost_usd": 0.0192,
+            "duration_ms": 1834,
+            "num_turns": 1,
+            "is_error": false,
+            "usage": {"input_tokens": 6, "output_tokens": 14},
+        }))
+        .expect("build QueryResult fixture");
+        let footer = format_footer(&result);
+        assert!(footer.contains("tokens 6/14"));
+        assert!(footer.contains("cost $0.0192"));
+        assert!(footer.contains("1.8s"));
+        assert!(footer.contains("session abc12345"));
+    }
+
+    #[test]
+    fn format_footer_drops_missing_segments() {
+        let result: QueryResult = serde_json::from_value(serde_json::json!({
+            "result": "ok",
+            "session_id": "deadbeef",
+            "is_error": false,
+        }))
+        .expect("build QueryResult fixture");
+        let footer = format_footer(&result);
+        assert!(!footer.contains("tokens"));
+        assert!(!footer.contains("cost"));
+        assert!(footer.contains("session deadbeef"));
+    }
 }

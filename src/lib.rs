@@ -118,3 +118,51 @@ pub fn classify_exit_code(err: &anyhow::Error) -> i32 {
         1
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use claude_wrapper::auth::AuthErrorKind;
+
+    #[test]
+    fn classify_auth_returns_2() {
+        let err = claude_wrapper::Error::Auth {
+            kind: AuthErrorKind::NotAuthenticated,
+            command: "claude -p hi".to_string(),
+            exit_code: 1,
+            message: "not logged in".to_string(),
+        };
+        assert_eq!(classify_exit_code(&anyhow::Error::new(err)), 2);
+    }
+
+    #[test]
+    fn classify_budget_returns_3() {
+        let err = claude_wrapper::Error::BudgetExceeded {
+            total_usd: 5.0,
+            max_usd: 4.0,
+        };
+        assert_eq!(classify_exit_code(&anyhow::Error::new(err)), 3);
+    }
+
+    #[test]
+    fn classify_timeout_returns_4() {
+        let err = claude_wrapper::Error::Timeout {
+            timeout_seconds: 30,
+        };
+        assert_eq!(classify_exit_code(&anyhow::Error::new(err)), 4);
+    }
+
+    #[test]
+    fn classify_other_wrapper_error_returns_1() {
+        let err = claude_wrapper::Error::History {
+            message: "no such project".to_string(),
+        };
+        assert_eq!(classify_exit_code(&anyhow::Error::new(err)), 1);
+    }
+
+    #[test]
+    fn classify_non_wrapper_error_returns_1() {
+        let err = anyhow::anyhow!("something else broke");
+        assert_eq!(classify_exit_code(&err), 1);
+    }
+}
