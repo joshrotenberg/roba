@@ -27,6 +27,28 @@ pub enum SubCommand {
         #[command(subcommand)]
         action: ProfileAction,
     },
+    /// Roll up token usage across session history.
+    Cost(CostArgs),
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct CostArgs {
+    /// Group totals by project slug.
+    #[arg(long)]
+    pub by_project: bool,
+
+    /// Filter to one project's sessions by slug.
+    #[arg(long, value_name = "SLUG", allow_hyphen_values = true)]
+    pub project: Option<String>,
+
+    /// Limit the projects table to the top N by token usage.
+    /// Only meaningful with --by-project. Default 10.
+    #[arg(short = 'n', long, value_name = "N")]
+    pub limit: Option<usize>,
+
+    /// Emit JSON instead of a human table.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Subcommand, Debug)]

@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use claude_wrapper::{Claude, QueryCommand};
 
 pub mod cli;
+pub mod cost;
 pub mod history;
 pub mod output;
 pub mod profile;
@@ -38,6 +39,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Some(SubCommand::History(args)) => run_history(args),
         Some(SubCommand::Last(args)) => run_last(args),
         Some(SubCommand::Profile { action }) => profile::run(action),
+        Some(SubCommand::Cost(args)) => cost::run(args),
         None => run_ask(cli.ask).await,
     }
 }
