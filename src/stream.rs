@@ -23,6 +23,7 @@ use crate::session::apply_session;
 pub async fn run_streaming(claude: &Claude, prompt: String, args: &AskArgs) -> Result<()> {
     let cmd = apply_session(QueryCommand::new(prompt), args).output_format(OutputFormat::StreamJson);
     let show_meta = should_show_footer(args);
+    let style = Style::detect(args);
     let mut final_result: Option<QueryResult> = None;
     let mut tool_counts: HashMap<String, usize> = HashMap::new();
 
@@ -34,7 +35,7 @@ pub async fn run_streaming(claude: &Claude, prompt: String, args: &AskArgs) -> R
             return;
         }
         if event.event_type() == Some("assistant") {
-            handle_assistant_blocks(&event.data, show_meta, &mut tool_counts);
+            handle_assistant_blocks(&event.data, show_meta, &style, &mut tool_counts);
         }
     })
     .await?;
@@ -43,7 +44,6 @@ pub async fn run_streaming(claude: &Claude, prompt: String, args: &AskArgs) -> R
     if show_meta
         && let Some(qr) = &final_result
     {
-        let style = Style::detect(args);
         crate::render::print_meta_blank();
         if looks_like_refusal(&qr.result) {
             crate::render::print_warning("response looks like a refusal", &style);
@@ -65,6 +65,7 @@ pub async fn run_streaming(claude: &Claude, prompt: String, args: &AskArgs) -> R
 pub fn handle_assistant_blocks(
     data: &serde_json::Value,
     show_meta: bool,
+    style: &Style,
     tool_counts: &mut HashMap<String, usize>,
 ) {
     let Some(blocks) = data
@@ -91,7 +92,7 @@ pub fn handle_assistant_blocks(
                 *tool_counts.entry(name.clone()).or_insert(0) += 1;
                 if show_meta {
                     let input = block.get("input").unwrap_or(&serde_json::Value::Null);
-                    eprintln!("> {}", summarize_tool(&name, input));
+                    crate::render::print_tool_call(&summarize_tool(&name, input), style);
                 }
             }
             _ => {}
@@ -187,7 +188,7 @@ mod tests {
             }
         });
         let mut counts = HashMap::new();
-        handle_assistant_blocks(&event, false, &mut counts);
+        handle_assistant_blocks(&event, false, &Style::plain(), &mut counts);
         assert_eq!(counts.get("Read"), Some(&2));
         assert_eq!(counts.get("Bash"), Some(&1));
     }
@@ -196,7 +197,7 @@ mod tests {
     fn handle_assistant_blocks_handles_missing_content() {
         let event = serde_json::json!({"message": {}});
         let mut counts = HashMap::new();
-        handle_assistant_blocks(&event, false, &mut counts);
+        handle_assistant_blocks(&event, false, &Style::plain(), &mut counts);
         assert!(counts.is_empty());
     }
 
@@ -204,7 +205,7 @@ mod tests {
     fn handle_assistant_blocks_handles_missing_message() {
         let event = serde_json::json!({});
         let mut counts = HashMap::new();
-        handle_assistant_blocks(&event, false, &mut counts);
+        handle_assistant_blocks(&event, false, &Style::plain(), &mut counts);
         assert!(counts.is_empty());
     }
 
@@ -219,7 +220,7 @@ mod tests {
             }
         });
         let mut counts = HashMap::new();
-        handle_assistant_blocks(&event, false, &mut counts);
+        handle_assistant_blocks(&event, false, &Style::plain(), &mut counts);
         assert_eq!(counts.get("Read"), Some(&1));
         assert_eq!(counts.len(), 1);
     }
@@ -232,7 +233,7 @@ mod tests {
             }
         });
         let mut counts = HashMap::new();
-        handle_assistant_blocks(&event, false, &mut counts);
+        handle_assistant_blocks(&event, false, &Style::plain(), &mut counts);
         assert_eq!(counts.get("?"), Some(&1));
     }
 }

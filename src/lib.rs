@@ -94,7 +94,9 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     } else {
         result.result.clone()
     };
+    let pre_truncate_lines = body.lines().count();
     let body = truncate_lines(&body, args.head, args.tail);
+    let dropped_lines = pre_truncate_lines.saturating_sub(body.lines().count());
 
     let style = render::Style::detect(&args);
     let write_stdout = args.save.is_none();
@@ -109,6 +111,19 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         render::print_meta_blank();
         if looks_like_refusal(&result.result) {
             render::print_warning("response looks like a refusal", &style);
+        }
+        if dropped_lines > 0 {
+            let (flag, n) = if let Some(n) = args.head {
+                ("--head", n)
+            } else if let Some(n) = args.tail {
+                ("--tail", n)
+            } else {
+                ("", 0)
+            };
+            render::print_meta(
+                &format!("… {dropped_lines} more lines truncated by {flag} {n}"),
+                &style,
+            );
         }
         render::print_meta(&format_footer(&result), &style);
     }

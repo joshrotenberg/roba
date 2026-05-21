@@ -151,6 +151,16 @@ pub fn print_error(message: &str, style: &Style) {
     }
 }
 
+/// Print a tool-call indicator on stderr during --stream. Dim with
+/// a `▸` glyph when color is on; plain `>` prefix otherwise.
+pub fn print_tool_call(line: &str, style: &Style) {
+    if style.color {
+        eprintln!("\x1b[2m▸ {line}\x1b[0m");
+    } else {
+        eprintln!("> {line}");
+    }
+}
+
 /// Build a minimal spinner that redraws on stderr while a future is
 /// awaited. Returns `None` when the style says no spinner -- the
 /// caller is responsible for handling the `Option`.
