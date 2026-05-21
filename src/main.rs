@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use claude_wrapper::{Claude, ClaudeCommand, QueryCommand};
+use claude_wrapper::types::QueryResult;
+use claude_wrapper::{Claude, QueryCommand};
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -47,7 +48,7 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let prompt = resolve_prompt(args.prompt, args.file, args.editor)?;
+    let prompt = resolve_prompt(args.prompt.as_deref(), args.file.as_deref(), args.editor)?;
     if args.echo && !args.quiet {
         eprintln!("{prompt}");
         eprintln!();
@@ -55,22 +56,48 @@ async fn main() -> Result<()> {
         eprintln!();
     }
     let claude = Claude::builder().build()?;
-    let cmd = QueryCommand::new(prompt);
+    let result = QueryCommand::new(prompt).execute_json(&claude).await?;
     if args.json {
-        let result = cmd.execute_json(&claude).await?;
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        let output = cmd.execute(&claude).await?;
-        print!("{}", output.stdout);
+        println!("{}", result.result);
+        if should_show_footer(&args) {
+            eprintln!();
+            eprintln!("{}", format_footer(&result));
+        }
     }
     Ok(())
 }
 
-fn resolve_prompt(
-    positional: Option<String>,
-    file: Option<PathBuf>,
-    editor: bool,
-) -> Result<String> {
+fn should_show_footer(args: &Args) -> bool {
+    !args.quiet && !args.json && std::io::stderr().is_terminal()
+}
+
+fn format_footer(r: &QueryResult) -> String {
+    let mut parts = Vec::new();
+    if let Some(cost) = r.cost_usd {
+        parts.push(format!("cost ${cost:.4}"));
+    }
+    if let Some(ms) = r.duration_ms {
+        parts.push(format_duration(ms));
+    }
+    let id = r.session_id.get(..8).unwrap_or(&r.session_id);
+    parts.push(format!("session {id}"));
+    parts.join(" . ")
+}
+
+fn format_duration(ms: u64) -> String {
+    let secs = ms as f64 / 1000.0;
+    if secs < 60.0 {
+        format!("{secs:.1}s")
+    } else {
+        let m = (secs / 60.0) as u64;
+        let s = secs - (m as f64) * 60.0;
+        format!("{m}m{s:.0}s")
+    }
+}
+
+fn resolve_prompt(positional: Option<&str>, file: Option<&Path>, editor: bool) -> Result<String> {
     if editor {
         if !std::io::stdin().is_terminal() {
             bail!("--editor requires a TTY; pipe-mode input is incompatible");
@@ -78,7 +105,7 @@ fn resolve_prompt(
         return compose_in_editor();
     }
     if let Some(path) = file {
-        let content = std::fs::read_to_string(&path)
+        let content = std::fs::read_to_string(path)
             .with_context(|| format!("reading prompt from {}", path.display()))?;
         let trimmed = content.trim_end().to_string();
         if trimmed.is_empty() {
@@ -86,7 +113,7 @@ fn resolve_prompt(
         }
         return Ok(trimmed);
     }
-    match positional.as_deref() {
+    match positional {
         Some("-") => read_stdin(),
         Some(p) => Ok(p.to_string()),
         None => {
