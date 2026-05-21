@@ -1,0 +1,172 @@
+//! Streaming-mode pipeline (--stream).
+//!
+//! Drives `stream_query` from claude-wrapper. As assistant events
+//! arrive, text content blocks flush to stdout and tool_use blocks
+//! emit a one-line indicator on stderr (when metadata is enabled).
+//! Tool calls are tallied for the rollup line at the end.
+
+use anyhow::Result;
+use claude_wrapper::streaming::stream_query;
+use claude_wrapper::types::{OutputFormat, QueryResult};
+use claude_wrapper::{Claude, QueryCommand};
+use std::collections::HashMap;
+use std::io::Write;
+
+use crate::cli::AskArgs;
+use crate::output::{format_footer, looks_like_refusal, should_show_footer, truncate_arg};
+use crate::session::apply_session;
+
+/// Run a prompt through the streaming pipeline. Text flushes to
+/// stdout as it arrives; tool calls + cost footer + refusal warning
+/// + tool rollup go to stderr at the appropriate moments.
+pub async fn run_streaming(claude: &Claude, prompt: String, args: &AskArgs) -> Result<()> {
+    let cmd = apply_session(QueryCommand::new(prompt), args).output_format(OutputFormat::StreamJson);
+    let show_meta = should_show_footer(args);
+    let mut final_result: Option<QueryResult> = None;
+    let mut tool_counts: HashMap<String, usize> = HashMap::new();
+
+    stream_query(claude, &cmd, |event| {
+        if event.is_result() {
+            if let Ok(qr) = serde_json::from_value::<QueryResult>(event.data.clone()) {
+                final_result = Some(qr);
+            }
+            return;
+        }
+        if event.event_type() == Some("assistant") {
+            handle_assistant_blocks(&event.data, show_meta, &mut tool_counts);
+        }
+    })
+    .await?;
+    println!();
+
+    if show_meta
+        && let Some(qr) = &final_result
+    {
+        eprintln!();
+        if looks_like_refusal(&qr.result) {
+            eprintln!("warning: response looks like a refusal");
+        }
+        if !tool_counts.is_empty() {
+            eprintln!("used: {}", format_tool_summary(&tool_counts));
+        }
+        eprintln!("{}", format_footer(qr));
+    }
+    Ok(())
+}
+
+/// Walk one assistant event's content blocks. Text blocks flush
+/// directly to stdout; tool_use blocks tally into `tool_counts` and
+/// optionally print an inline indicator on stderr.
+pub fn handle_assistant_blocks(
+    data: &serde_json::Value,
+    show_meta: bool,
+    tool_counts: &mut HashMap<String, usize>,
+) {
+    let Some(blocks) = data
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+    else {
+        return;
+    };
+    for block in blocks {
+        match block.get("type").and_then(|t| t.as_str()) {
+            Some("text") => {
+                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                    print!("{text}");
+                    let _ = std::io::stdout().flush();
+                }
+            }
+            Some("tool_use") => {
+                let name = block
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
+                    .to_string();
+                *tool_counts.entry(name.clone()).or_insert(0) += 1;
+                if show_meta {
+                    let input = block.get("input").unwrap_or(&serde_json::Value::Null);
+                    eprintln!("> {}", summarize_tool(&name, input));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Format the rollup line: `Read x3, Edit x2, Bash x1` sorted by
+/// count descending, then name ascending.
+pub fn format_tool_summary(counts: &HashMap<String, usize>) -> String {
+    let mut sorted: Vec<(&String, &usize)> = counts.iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    sorted
+        .iter()
+        .map(|(k, v)| format!("{k} x{v}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Pick a primary arg from a tool's input and format the inline
+/// indicator line: `Read(file.rs)`, `Bash(git status)`.
+pub fn summarize_tool(name: &str, input: &serde_json::Value) -> String {
+    let primary = ["file_path", "command", "pattern", "path", "url", "query"]
+        .iter()
+        .find_map(|k| input.get(k).and_then(|v| v.as_str()));
+    match primary {
+        Some(arg) => format!("{name}({})", truncate_arg(arg, 60)),
+        None => name.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn summarize_tool_uses_primary_arg() {
+        let input = serde_json::json!({"file_path": "/tmp/foo.rs"});
+        assert_eq!(summarize_tool("Read", &input), "Read(/tmp/foo.rs)");
+    }
+
+    #[test]
+    fn summarize_tool_falls_back_to_name_only() {
+        let input = serde_json::json!({"unknown_field": "value"});
+        assert_eq!(summarize_tool("WeirdTool", &input), "WeirdTool");
+    }
+
+    #[test]
+    fn summarize_tool_truncates_long_args() {
+        let long_cmd = "a".repeat(120);
+        let input = serde_json::json!({"command": long_cmd});
+        let out = summarize_tool("Bash", &input);
+        assert!(out.starts_with("Bash("));
+        assert!(out.ends_with("...)"));
+        assert!(out.len() < 80);
+    }
+
+    #[test]
+    fn tool_summary_sorts_by_count_desc_then_name_asc() {
+        let mut counts = HashMap::new();
+        counts.insert("Read".to_string(), 3);
+        counts.insert("Bash".to_string(), 1);
+        counts.insert("Grep".to_string(), 1);
+        counts.insert("Edit".to_string(), 2);
+        assert_eq!(
+            format_tool_summary(&counts),
+            "Read x3, Edit x2, Bash x1, Grep x1"
+        );
+    }
+
+    #[test]
+    fn tool_summary_single_entry() {
+        let mut counts = HashMap::new();
+        counts.insert("Read".to_string(), 1);
+        assert_eq!(format_tool_summary(&counts), "Read x1");
+    }
+
+    #[test]
+    fn tool_summary_empty_returns_empty_string() {
+        let counts: HashMap<String, usize> = HashMap::new();
+        assert_eq!(format_tool_summary(&counts), "");
+    }
+}
