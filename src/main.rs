@@ -3,6 +3,7 @@ use clap::Parser;
 use claude_wrapper::streaming::stream_query;
 use claude_wrapper::types::{OutputFormat, QueryResult};
 use claude_wrapper::{Claude, QueryCommand};
+use std::collections::HashMap;
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -406,6 +407,32 @@ mod tests {
         assert_eq!(out.len(), 20);
         assert!(out.ends_with("..."));
     }
+
+    #[test]
+    fn tool_summary_sorts_by_count_desc_then_name_asc() {
+        let mut counts = HashMap::new();
+        counts.insert("Read".to_string(), 3);
+        counts.insert("Bash".to_string(), 1);
+        counts.insert("Grep".to_string(), 1);
+        counts.insert("Edit".to_string(), 2);
+        assert_eq!(
+            format_tool_summary(&counts),
+            "Read x3, Edit x2, Bash x1, Grep x1"
+        );
+    }
+
+    #[test]
+    fn tool_summary_single_entry() {
+        let mut counts = HashMap::new();
+        counts.insert("Read".to_string(), 1);
+        assert_eq!(format_tool_summary(&counts), "Read x1");
+    }
+
+    #[test]
+    fn tool_summary_empty_returns_empty_string() {
+        let counts: HashMap<String, usize> = HashMap::new();
+        assert_eq!(format_tool_summary(&counts), "");
+    }
 }
 
 fn should_show_footer(args: &Args) -> bool {
@@ -416,6 +443,7 @@ async fn run_streaming(claude: &Claude, prompt: String, args: &Args) -> Result<(
     let cmd = QueryCommand::new(prompt).output_format(OutputFormat::StreamJson);
     let show_meta = should_show_footer(args);
     let mut final_result: Option<QueryResult> = None;
+    let mut tool_counts: HashMap<String, usize> = HashMap::new();
 
     stream_query(claude, &cmd, |event| {
         if event.is_result() {
@@ -425,7 +453,7 @@ async fn run_streaming(claude: &Claude, prompt: String, args: &Args) -> Result<(
             return;
         }
         if event.event_type() == Some("assistant") {
-            handle_assistant_blocks(&event.data, show_meta);
+            handle_assistant_blocks(&event.data, show_meta, &mut tool_counts);
         }
     })
     .await?;
@@ -438,12 +466,19 @@ async fn run_streaming(claude: &Claude, prompt: String, args: &Args) -> Result<(
         if looks_like_refusal(&qr.result) {
             eprintln!("warning: response looks like a refusal");
         }
+        if !tool_counts.is_empty() {
+            eprintln!("used: {}", format_tool_summary(&tool_counts));
+        }
         eprintln!("{}", format_footer(qr));
     }
     Ok(())
 }
 
-fn handle_assistant_blocks(data: &serde_json::Value, show_meta: bool) {
+fn handle_assistant_blocks(
+    data: &serde_json::Value,
+    show_meta: bool,
+    tool_counts: &mut HashMap<String, usize>,
+) {
     let Some(blocks) = data
         .get("message")
         .and_then(|m| m.get("content"))
@@ -459,14 +494,31 @@ fn handle_assistant_blocks(data: &serde_json::Value, show_meta: bool) {
                     let _ = std::io::stdout().flush();
                 }
             }
-            Some("tool_use") if show_meta => {
-                let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                let input = block.get("input").unwrap_or(&serde_json::Value::Null);
-                eprintln!("> {}", summarize_tool(name, input));
+            Some("tool_use") => {
+                let name = block
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
+                    .to_string();
+                *tool_counts.entry(name.clone()).or_insert(0) += 1;
+                if show_meta {
+                    let input = block.get("input").unwrap_or(&serde_json::Value::Null);
+                    eprintln!("> {}", summarize_tool(&name, input));
+                }
             }
             _ => {}
         }
     }
+}
+
+fn format_tool_summary(counts: &HashMap<String, usize>) -> String {
+    let mut sorted: Vec<(&String, &usize)> = counts.iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    sorted
+        .iter()
+        .map(|(k, v)| format!("{k} x{v}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn summarize_tool(name: &str, input: &serde_json::Value) -> String {
