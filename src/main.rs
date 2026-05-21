@@ -90,6 +90,15 @@ struct Args {
         conflicts_with_all = ["json", "code", "head", "tail", "save", "tee"],
     )]
     stream: bool,
+
+    /// Continue the most recent session in this working directory.
+    /// Mutually exclusive with --resume.
+    #[arg(short = 'c', long = "continue", conflicts_with = "resume")]
+    continue_session: bool,
+
+    /// Resume a specific session by id.
+    #[arg(long, value_name = "ID")]
+    resume: Option<String>,
 }
 
 #[tokio::main]
@@ -108,7 +117,9 @@ async fn main() -> Result<()> {
         return run_streaming(&claude, prompt, &args).await;
     }
 
-    let result = QueryCommand::new(prompt).execute_json(&claude).await?;
+    let result = apply_session(QueryCommand::new(prompt), &args)
+        .execute_json(&claude)
+        .await?;
 
     let file_path = args.tee.as_deref().or(args.save.as_deref());
     let want_json = args.json || file_path.is_some_and(path_is_json);
@@ -439,8 +450,18 @@ fn should_show_footer(args: &Args) -> bool {
     !args.quiet && std::io::stderr().is_terminal()
 }
 
+fn apply_session(mut cmd: QueryCommand, args: &Args) -> QueryCommand {
+    if args.continue_session {
+        cmd = cmd.continue_session();
+    }
+    if let Some(id) = &args.resume {
+        cmd = cmd.resume(id.clone());
+    }
+    cmd
+}
+
 async fn run_streaming(claude: &Claude, prompt: String, args: &Args) -> Result<()> {
-    let cmd = QueryCommand::new(prompt).output_format(OutputFormat::StreamJson);
+    let cmd = apply_session(QueryCommand::new(prompt), args).output_format(OutputFormat::StreamJson);
     let show_meta = should_show_footer(args);
     let mut final_result: Option<QueryResult> = None;
     let mut tool_counts: HashMap<String, usize> = HashMap::new();
