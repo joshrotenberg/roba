@@ -25,8 +25,9 @@ pub fn run_history(args: HistoryArgs) -> Result<()> {
         include_empty: false,
         sort: ListSort::RecencyDesc,
     };
+    let (scope, inferred_from_cwd) = resolve_project_scope(args.project.clone(), args.all_projects);
     let sessions = root
-        .list_sessions_with(args.project.as_deref(), &opts)
+        .list_sessions_with(scope.as_deref(), &opts)
         .context("reading session history")?;
 
     if args.json {
@@ -35,7 +36,11 @@ pub fn run_history(args: HistoryArgs) -> Result<()> {
     }
 
     if sessions.is_empty() {
-        eprintln!("no sessions found");
+        if inferred_from_cwd {
+            eprintln!("no sessions in this project (use --all-projects to widen)");
+        } else {
+            eprintln!("no sessions found");
+        }
         return Ok(());
     }
 
@@ -72,12 +77,17 @@ pub fn run_last(args: LastArgs) -> Result<()> {
         include_empty: false,
         sort: ListSort::RecencyDesc,
     };
+    let (scope, inferred_from_cwd) = resolve_project_scope(args.project.clone(), args.all_projects);
     let sessions = root
-        .list_sessions_with(args.project.as_deref(), &opts)
+        .list_sessions_with(scope.as_deref(), &opts)
         .context("reading session history")?;
-    let summary = sessions
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("no sessions found"))?;
+    let summary = sessions.first().ok_or_else(|| {
+        if inferred_from_cwd {
+            anyhow::anyhow!("no sessions in this project (use --all-projects to widen)")
+        } else {
+            anyhow::anyhow!("no sessions found")
+        }
+    })?;
     let log = root
         .read_session(&summary.session_id)
         .context("reading most recent session")?;
@@ -128,6 +138,39 @@ pub fn extract_message_text(message: &serde_json::Value) -> Option<String> {
         }
     }
     if out.is_empty() { None } else { Some(out) }
+}
+
+/// Resolve which project slug to scope the listing to.
+///
+/// Returns `(scope, inferred_from_cwd)`:
+/// - `(Some(slug), false)`: explicit `--project SLUG`
+/// - `(None, false)`: `--all-projects` (no filter)
+/// - `(Some(slug), true)`: cwd-inferred default
+/// - `(None, false)`: cwd inference failed; fall back to all
+pub fn resolve_project_scope(
+    explicit: Option<String>,
+    all_projects: bool,
+) -> (Option<String>, bool) {
+    if let Some(p) = explicit {
+        return (Some(p), false);
+    }
+    if all_projects {
+        return (None, false);
+    }
+    match current_project_slug() {
+        Some(slug) => (Some(slug), true),
+        None => (None, false),
+    }
+}
+
+/// Encode the current cwd as a Claude Code project slug. The
+/// convention is: canonicalize the cwd, then replace `/` with `-`.
+/// Returns `None` if cwd can't be read or isn't valid UTF-8.
+pub fn current_project_slug() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let canonical = cwd.canonicalize().unwrap_or(cwd);
+    let s = canonical.to_str()?;
+    Some(s.replace('/', "-"))
 }
 
 /// `--pick`: open a fuzzy-filter picker over the 50 most recent

@@ -74,10 +74,13 @@ pub enum ProfileAction {
 
 #[derive(ClapArgs, Debug)]
 pub struct LastArgs {
-    /// Filter to one project by slug. Project slugs start with `-`
-    /// so this accepts hyphen-prefixed values without quoting.
+    /// Filter to one project by slug. Overrides cwd inference.
     #[arg(long, value_name = "SLUG", allow_hyphen_values = true)]
     pub project: Option<String>,
+
+    /// Look across all projects instead of just the current cwd's.
+    #[arg(long, conflicts_with = "project")]
+    pub all_projects: bool,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -86,14 +89,17 @@ pub struct HistoryArgs {
     #[arg(short = 'n', long, value_name = "N")]
     pub limit: Option<usize>,
 
-    /// Show all sessions (no limit). Overrides --limit.
+    /// Show all sessions (no count limit). Overrides --limit.
     #[arg(long, conflicts_with = "limit")]
     pub all: bool,
 
-    /// Filter to one project by slug. Project slugs start with `-`
-    /// so this accepts hyphen-prefixed values without quoting.
+    /// Filter to one project by slug. Overrides cwd inference.
     #[arg(long, value_name = "SLUG", allow_hyphen_values = true)]
     pub project: Option<String>,
+
+    /// Look across all projects instead of just the current cwd's.
+    #[arg(long, conflicts_with = "project")]
+    pub all_projects: bool,
 
     /// Emit JSON instead of a human table.
     #[arg(long)]
