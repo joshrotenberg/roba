@@ -24,12 +24,24 @@ struct Args {
     /// editor exit or empty buffer.
     #[arg(short = 'e', long = "editor")]
     editor: bool,
+
+    /// Print the resolved prompt before the response, separated by
+    /// a divider. Useful with -e / -f / stdin where the sent prompt
+    /// isn't already on screen.
+    #[arg(long)]
+    echo: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
     let prompt = resolve_prompt(args.prompt, args.file, args.editor)?;
+    if args.echo {
+        println!("{prompt}");
+        println!();
+        println!("---");
+        println!();
+    }
     let claude = Claude::builder().build()?;
     let output = QueryCommand::new(prompt).execute(&claude).await?;
     print!("{}", output.stdout);
