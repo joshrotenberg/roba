@@ -30,13 +30,19 @@ struct Args {
     /// isn't already on screen.
     #[arg(long)]
     echo: bool,
+
+    /// Suppress everything except the answer on stdout. Overrides
+    /// --echo and (later) the cost footer / any other stderr noise.
+    /// Use when you want the cleanest possible output even on a TTY.
+    #[arg(short = 'q', long)]
+    quiet: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
     let prompt = resolve_prompt(args.prompt, args.file, args.editor)?;
-    if args.echo {
+    if args.echo && !args.quiet {
         eprintln!("{prompt}");
         eprintln!();
         eprintln!("---");
