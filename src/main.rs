@@ -188,6 +188,20 @@ struct AskArgs {
     /// having to paste contents by hand.
     #[arg(long, value_name = "GLOB")]
     attach: Vec<String>,
+
+    /// Embed `git diff` output (working-tree changes) as a context
+    /// block before the prompt.
+    #[arg(long)]
+    git_diff: bool,
+
+    /// Embed `git log --oneline -n N` as a context block. Bare
+    /// --git-log defaults to 5 commits.
+    #[arg(long, value_name = "N", num_args(0..=1), default_missing_value = "5")]
+    git_log: Option<usize>,
+
+    /// Embed `git status --short` as a context block.
+    #[arg(long)]
+    git_status: bool,
 }
 
 #[tokio::main]
@@ -232,7 +246,9 @@ async fn run_ask(mut args: AskArgs) -> Result<()> {
     let main =
         resolve_main_prompt(args.prompt.as_deref(), args.file.as_deref(), args.editor)?;
     let attachments = collect_attachments(&args.attach)?;
-    let prompt = compose_prompt(main, &args.prepend, attachments, &args.append)?;
+    let git_context = collect_git_context(&args)?;
+    let context = merge_optional(attachments, git_context);
+    let prompt = compose_prompt(main, &args.prepend, context, &args.append)?;
     if args.echo && !args.quiet {
         eprintln!("{prompt}");
         eprintln!();
@@ -986,6 +1002,59 @@ fn compose_prompt(
         );
     }
     Ok(parts.join("\n\n"))
+}
+
+fn merge_optional(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
+        (Some(s), None) | (None, Some(s)) => Some(s),
+        (None, None) => None,
+    }
+}
+
+fn collect_git_context(args: &AskArgs) -> Result<Option<String>> {
+    let mut blocks: Vec<String> = Vec::new();
+    if args.git_diff
+        && let Some(out) = run_git(&["diff"])?
+    {
+        blocks.push(format!("git diff:\n```diff\n{out}\n```"));
+    }
+    if let Some(n) = args.git_log
+        && let Some(out) = run_git(&["log", "-n", &n.to_string(), "--oneline"])?
+    {
+        blocks.push(format!("git log -n {n}:\n```\n{out}\n```"));
+    }
+    if args.git_status
+        && let Some(out) = run_git(&["status", "--short"])?
+    {
+        blocks.push(format!("git status:\n```\n{out}\n```"));
+    }
+    if blocks.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(blocks.join("\n\n")))
+    }
+}
+
+fn run_git(args: &[&str]) -> Result<Option<String>> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .output()
+        .with_context(|| format!("running git {}", args.join(" ")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            stderr.trim()
+        );
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(stdout))
+    }
 }
 
 fn collect_attachments(patterns: &[String]) -> Result<Option<String>> {
