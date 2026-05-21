@@ -115,9 +115,36 @@ async fn main() -> Result<()> {
     }
     if should_show_footer(&args) {
         eprintln!();
+        if looks_like_refusal(&result.result) {
+            eprintln!("warning: response looks like a refusal");
+        }
         eprintln!("{}", format_footer(&result));
     }
     Ok(())
+}
+
+fn looks_like_refusal(text: &str) -> bool {
+    let lower = text.trim_start().to_lowercase();
+    const MARKERS: &[&str] = &[
+        "i can't help",
+        "i cannot help",
+        "i can't assist",
+        "i'm not able to",
+        "i am not able to",
+        "that's outside",
+        "that is outside",
+        "i won't",
+        "i will not",
+        "sorry, i can't",
+        "sorry, i cannot",
+        "i don't think i can",
+        "i'm set up for",
+        "i am set up for",
+        "i'm designed to",
+        "unfortunately, i can't",
+        "i'm not going to",
+    ];
+    MARKERS.iter().any(|m| lower.starts_with(m))
 }
 
 fn path_is_json(path: &Path) -> bool {
@@ -284,6 +311,49 @@ mod tests {
         let body = "a\nb\nc";
         assert_eq!(truncate_lines(body, Some(0), None), "");
         assert_eq!(truncate_lines(body, None, Some(0)), "");
+    }
+
+    #[test]
+    fn refusal_detects_common_phrases() {
+        assert!(looks_like_refusal("I can't help with that."));
+        assert!(looks_like_refusal("I'm not able to do this."));
+        assert!(looks_like_refusal(
+            "That's outside what I can help with here."
+        ));
+        assert!(looks_like_refusal("Sorry, I can't assist with that."));
+        assert!(looks_like_refusal(
+            "I'm set up for software work in this repo."
+        ));
+    }
+
+    #[test]
+    fn refusal_is_case_insensitive() {
+        assert!(looks_like_refusal("i can't help"));
+        assert!(looks_like_refusal("I CAN'T HELP"));
+        assert!(looks_like_refusal("That's Outside what I do"));
+    }
+
+    #[test]
+    fn refusal_tolerates_leading_whitespace() {
+        assert!(looks_like_refusal("   I can't help with that"));
+        assert!(looks_like_refusal("\n\nThat's outside"));
+    }
+
+    #[test]
+    fn refusal_does_not_match_normal_answers() {
+        assert!(!looks_like_refusal("Hello!"));
+        assert!(!looks_like_refusal("Here is the answer to your question"));
+        assert!(!looks_like_refusal("The capital of France is Paris."));
+        assert!(!looks_like_refusal("I can help with that:"));
+    }
+
+    #[test]
+    fn refusal_only_matches_leading_phrase() {
+        // a refusal-y phrase deep in a long answer is probably the model
+        // talking about refusals, not actually refusing
+        assert!(!looks_like_refusal(
+            "Yes, here's how. Note that I can't help with the part about X."
+        ));
     }
 }
 
