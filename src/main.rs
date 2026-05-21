@@ -55,6 +55,19 @@ struct Args {
     /// Same extension-driven format rules as --save.
     #[arg(long, value_name = "PATH", conflicts_with = "save")]
     tee: Option<PathBuf>,
+
+    /// Print only fenced code blocks from the answer. Pass with no
+    /// value to take every block; pass --code rust to filter by
+    /// language. Multiple blocks are separated by a blank line.
+    /// Mutually exclusive with --json.
+    #[arg(
+        long,
+        value_name = "LANG",
+        num_args(0..=1),
+        default_missing_value = "",
+        conflicts_with = "json",
+    )]
+    code: Option<String>,
 }
 
 #[tokio::main]
@@ -74,6 +87,9 @@ async fn main() -> Result<()> {
     let want_json = args.json || file_path.is_some_and(path_is_json);
     let body = if want_json {
         serde_json::to_string_pretty(&result)?
+    } else if let Some(filter) = args.code.as_deref() {
+        let lang = if filter.is_empty() { None } else { Some(filter) };
+        extract_code_blocks(&result.result, lang)
     } else {
         result.result.clone()
     };
@@ -95,6 +111,77 @@ async fn main() -> Result<()> {
 
 fn path_is_json(path: &Path) -> bool {
     path.extension().and_then(|s| s.to_str()) == Some("json")
+}
+
+fn extract_code_blocks(text: &str, lang_filter: Option<&str>) -> String {
+    let mut blocks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_block = false;
+    let mut block_lang: String = String::new();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("```") {
+            if in_block {
+                let keep = match lang_filter {
+                    None => true,
+                    Some(want) => block_lang.eq_ignore_ascii_case(want),
+                };
+                if keep {
+                    blocks.push(std::mem::take(&mut current));
+                } else {
+                    current.clear();
+                }
+                in_block = false;
+                block_lang.clear();
+            } else {
+                in_block = true;
+                block_lang = rest.trim().to_string();
+            }
+        } else if in_block {
+            current.push_str(line);
+            current.push('\n');
+        }
+    }
+    blocks.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_all_blocks_when_no_filter() {
+        let md = "intro\n```\nplain\n```\nmiddle\n```rust\nfn x() {}\n```\nend";
+        assert_eq!(extract_code_blocks(md, None), "plain\n\nfn x() {}\n");
+    }
+
+    #[test]
+    fn extract_filters_by_language() {
+        let md = "```python\np = 1\n```\n```rust\nlet r = 2;\n```";
+        assert_eq!(extract_code_blocks(md, Some("rust")), "let r = 2;\n");
+    }
+
+    #[test]
+    fn extract_lang_filter_is_case_insensitive() {
+        let md = "```Rust\nfn x() {}\n```";
+        assert_eq!(extract_code_blocks(md, Some("rust")), "fn x() {}\n");
+    }
+
+    #[test]
+    fn extract_returns_empty_when_no_blocks_match() {
+        let md = "```python\npass\n```";
+        assert_eq!(extract_code_blocks(md, Some("rust")), "");
+    }
+
+    #[test]
+    fn extract_returns_empty_for_no_code_text() {
+        assert_eq!(extract_code_blocks("just prose, nothing fenced", None), "");
+    }
+
+    #[test]
+    fn extract_unclosed_block_is_dropped() {
+        let md = "```rust\nfn open() {\n";
+        assert_eq!(extract_code_blocks(md, None), "");
+    }
 }
 
 fn should_show_footer(args: &Args) -> bool {
