@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use clap::Parser;
+use clap::{Args as ClapArgs, Parser, Subcommand};
 use claude_wrapper::streaming::stream_query;
 use claude_wrapper::types::{OutputFormat, QueryResult};
 use claude_wrapper::{Claude, QueryCommand};
@@ -11,7 +11,21 @@ use std::process::Command;
 /// Single-prompt CLI runner built on claude-wrapper.
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-struct Args {
+struct Cli {
+    #[command(subcommand)]
+    command: Option<SubCommand>,
+
+    #[command(flatten)]
+    ask: AskArgs,
+}
+
+#[derive(Subcommand, Debug)]
+enum SubCommand {
+    // future: History(HistoryArgs), Last, Fork { id: String }, Cost { ... }
+}
+
+#[derive(ClapArgs, Debug)]
+struct AskArgs {
     /// The prompt to send to Claude. Pass `-` to read from stdin
     /// explicitly. If omitted and stdin is piped, stdin is used.
     #[arg(conflicts_with_all = ["file", "editor"])]
@@ -103,7 +117,14 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    let cli = Cli::parse();
+    match cli.command {
+        Some(_sub) => unreachable!("no subcommands defined yet"),
+        None => run_ask(cli.ask).await,
+    }
+}
+
+async fn run_ask(args: AskArgs) -> Result<()> {
     let prompt = resolve_prompt(args.prompt.as_deref(), args.file.as_deref(), args.editor)?;
     if args.echo && !args.quiet {
         eprintln!("{prompt}");
@@ -446,11 +467,11 @@ mod tests {
     }
 }
 
-fn should_show_footer(args: &Args) -> bool {
+fn should_show_footer(args: &AskArgs) -> bool {
     !args.quiet && std::io::stderr().is_terminal()
 }
 
-fn apply_session(mut cmd: QueryCommand, args: &Args) -> QueryCommand {
+fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     if args.continue_session {
         cmd = cmd.continue_session();
     }
@@ -460,7 +481,7 @@ fn apply_session(mut cmd: QueryCommand, args: &Args) -> QueryCommand {
     cmd
 }
 
-async fn run_streaming(claude: &Claude, prompt: String, args: &Args) -> Result<()> {
+async fn run_streaming(claude: &Claude, prompt: String, args: &AskArgs) -> Result<()> {
     let cmd = apply_session(QueryCommand::new(prompt), args).output_format(OutputFormat::StreamJson);
     let show_meta = should_show_footer(args);
     let mut final_result: Option<QueryResult> = None;
