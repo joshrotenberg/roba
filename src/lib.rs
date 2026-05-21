@@ -75,9 +75,14 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         return run_streaming(&claude, prompt, &args).await;
     }
 
+    let pre_style = render::Style::detect(&args);
+    let spinner = pre_style.spinner.then(render::spinner);
     let result = apply_session(QueryCommand::new(prompt), &args)
         .execute_json(&claude)
         .await?;
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
 
     let file_path = args.tee.as_deref().or(args.save.as_deref());
     let want_json = args.json || file_path.is_some_and(path_is_json);

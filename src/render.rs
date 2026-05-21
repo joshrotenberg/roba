@@ -18,12 +18,15 @@ pub struct Style {
     pub render_markdown: bool,
     /// Use ANSI color anywhere we emit decoration.
     pub color: bool,
+    /// Draw a spinner during the claude call (non-streaming path).
+    pub spinner: bool,
 }
 
 impl Style {
     /// Resolve from CLI args + environment + TTY detection.
     pub fn detect(args: &AskArgs) -> Self {
         let stdout_tty = std::io::stdout().is_terminal();
+        let stderr_tty = std::io::stderr().is_terminal();
         let no_color = std::env::var_os("NO_COLOR").is_some();
         let plain = args.plain;
 
@@ -43,9 +46,15 @@ impl Style {
         // NO_COLOR is set.
         let color = !plain && stdout_tty && !no_color;
 
+        // Spinner draws on stderr. Skip in --stream (tokens are
+        // already arriving), --plain, or when stderr isn't a TTY
+        // (e.g. captured for logging).
+        let spinner = !plain && stderr_tty && !args.stream;
+
         Self {
             render_markdown,
             color,
+            spinner,
         }
     }
 
@@ -56,6 +65,7 @@ impl Style {
         Self {
             render_markdown: false,
             color: false,
+            spinner: false,
         }
     }
 
@@ -68,6 +78,7 @@ impl Style {
         Self {
             render_markdown: false,
             color: stderr_tty && !no_color,
+            spinner: false,
         }
     }
 }
@@ -138,4 +149,21 @@ pub fn print_error(message: &str, style: &Style) {
     } else {
         eprintln!("error: {message}");
     }
+}
+
+/// Build a minimal spinner that redraws on stderr while a future is
+/// awaited. Returns `None` when the style says no spinner -- the
+/// caller is responsible for handling the `Option`.
+///
+/// Display: `⠋ 3.2s`, redrawn every 80ms via indicatif's steady
+/// tick. `finish_and_clear` removes the line before the next bit
+/// of output is written.
+pub fn spinner() -> indicatif::ProgressBar {
+    let pb = indicatif::ProgressBar::new_spinner();
+    pb.enable_steady_tick(std::time::Duration::from_millis(80));
+    pb.set_style(
+        indicatif::ProgressStyle::with_template("{spinner} {elapsed}")
+            .expect("static template"),
+    );
+    pb
 }
