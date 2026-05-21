@@ -371,6 +371,41 @@ mod tests {
             "Yes, here's how. Note that I can't help with the part about X."
         ));
     }
+
+    #[test]
+    fn summarize_tool_uses_primary_arg() {
+        let input = serde_json::json!({"file_path": "/tmp/foo.rs"});
+        assert_eq!(summarize_tool("Read", &input), "Read(/tmp/foo.rs)");
+    }
+
+    #[test]
+    fn summarize_tool_falls_back_to_name_only() {
+        let input = serde_json::json!({"unknown_field": "value"});
+        assert_eq!(summarize_tool("WeirdTool", &input), "WeirdTool");
+    }
+
+    #[test]
+    fn summarize_tool_truncates_long_args() {
+        let long_cmd = "a".repeat(120);
+        let input = serde_json::json!({"command": long_cmd});
+        let out = summarize_tool("Bash", &input);
+        assert!(out.starts_with("Bash("));
+        assert!(out.ends_with("...)"));
+        assert!(out.len() < 80);
+    }
+
+    #[test]
+    fn truncate_arg_preserves_short_strings() {
+        assert_eq!(truncate_arg("hello", 60), "hello");
+    }
+
+    #[test]
+    fn truncate_arg_cuts_long_strings() {
+        let s = "a".repeat(100);
+        let out = truncate_arg(&s, 20);
+        assert_eq!(out.len(), 20);
+        assert!(out.ends_with("..."));
+    }
 }
 
 fn should_show_footer(args: &Args) -> bool {
@@ -379,6 +414,7 @@ fn should_show_footer(args: &Args) -> bool {
 
 async fn run_streaming(claude: &Claude, prompt: String, args: &Args) -> Result<()> {
     let cmd = QueryCommand::new(prompt).output_format(OutputFormat::StreamJson);
+    let show_meta = should_show_footer(args);
     let mut final_result: Option<QueryResult> = None;
 
     stream_query(claude, &cmd, |event| {
@@ -388,17 +424,14 @@ async fn run_streaming(claude: &Claude, prompt: String, args: &Args) -> Result<(
             }
             return;
         }
-        if event.event_type() == Some("assistant")
-            && let Some(text) = extract_assistant_text(&event.data)
-        {
-            print!("{text}");
-            let _ = std::io::stdout().flush();
+        if event.event_type() == Some("assistant") {
+            handle_assistant_blocks(&event.data, show_meta);
         }
     })
     .await?;
     println!();
 
-    if should_show_footer(args)
+    if show_meta
         && let Some(qr) = &final_result
     {
         eprintln!();
@@ -410,17 +443,50 @@ async fn run_streaming(claude: &Claude, prompt: String, args: &Args) -> Result<(
     Ok(())
 }
 
-fn extract_assistant_text(data: &serde_json::Value) -> Option<String> {
-    let content = data.get("message")?.get("content")?.as_array()?;
-    let mut out = String::new();
-    for block in content {
-        if block.get("type").and_then(|t| t.as_str()) == Some("text")
-            && let Some(text) = block.get("text").and_then(|v| v.as_str())
-        {
-            out.push_str(text);
+fn handle_assistant_blocks(data: &serde_json::Value, show_meta: bool) {
+    let Some(blocks) = data
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+    else {
+        return;
+    };
+    for block in blocks {
+        match block.get("type").and_then(|t| t.as_str()) {
+            Some("text") => {
+                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                    print!("{text}");
+                    let _ = std::io::stdout().flush();
+                }
+            }
+            Some("tool_use") if show_meta => {
+                let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let input = block.get("input").unwrap_or(&serde_json::Value::Null);
+                eprintln!("> {}", summarize_tool(name, input));
+            }
+            _ => {}
         }
     }
-    if out.is_empty() { None } else { Some(out) }
+}
+
+fn summarize_tool(name: &str, input: &serde_json::Value) -> String {
+    let primary = ["file_path", "command", "pattern", "path", "url", "query"]
+        .iter()
+        .find_map(|k| input.get(k).and_then(|v| v.as_str()));
+    match primary {
+        Some(arg) => format!("{name}({})", truncate_arg(arg, 60)),
+        None => name.to_string(),
+    }
+}
+
+fn truncate_arg(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(3)).collect();
+        out.push_str("...");
+        out
+    }
 }
 
 fn format_footer(r: &QueryResult) -> String {
