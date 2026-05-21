@@ -21,7 +21,27 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum SubCommand {
-    // future: History(HistoryArgs), Last, Fork { id: String }, Cost { ... }
+    /// List recent sessions across all projects.
+    History(HistoryArgs),
+}
+
+#[derive(ClapArgs, Debug)]
+struct HistoryArgs {
+    /// Maximum number of sessions to show (default 10).
+    #[arg(short = 'n', long, value_name = "N")]
+    limit: Option<usize>,
+
+    /// Show all sessions (no limit). Overrides --limit.
+    #[arg(long, conflicts_with = "limit")]
+    all: bool,
+
+    /// Filter to one project by slug.
+    #[arg(long, value_name = "SLUG")]
+    project: Option<String>,
+
+    /// Emit JSON instead of a human table.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -119,7 +139,7 @@ struct AskArgs {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Some(_sub) => unreachable!("no subcommands defined yet"),
+        Some(SubCommand::History(args)) => run_history(args),
         None => run_ask(cli.ask).await,
     }
 }
@@ -469,6 +489,65 @@ mod tests {
 
 fn should_show_footer(args: &AskArgs) -> bool {
     !args.quiet && std::io::stderr().is_terminal()
+}
+
+fn run_history(args: HistoryArgs) -> Result<()> {
+    use claude_wrapper::history::{HistoryRoot, ListOptions, ListSort};
+
+    let root = HistoryRoot::home().context("locating ~/.claude/projects")?;
+    let limit = if args.all {
+        None
+    } else {
+        Some(args.limit.unwrap_or(10))
+    };
+    let opts = ListOptions {
+        limit,
+        offset: 0,
+        include_empty: false,
+        sort: ListSort::RecencyDesc,
+    };
+    let sessions = root
+        .list_sessions_with(args.project.as_deref(), &opts)
+        .context("reading session history")?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&sessions)?);
+        return Ok(());
+    }
+
+    if sessions.is_empty() {
+        eprintln!("no sessions found");
+        return Ok(());
+    }
+
+    println!(
+        "{:<10} {:<17} {:>5}  {}",
+        "SESSION", "LAST", "MSGS", "TITLE"
+    );
+    for s in &sessions {
+        let short_id = s.session_id.get(..8).unwrap_or(&s.session_id);
+        let last = s
+            .last_timestamp
+            .as_deref()
+            .and_then(format_timestamp)
+            .unwrap_or_else(|| "?".to_string());
+        let title = s
+            .title
+            .as_deref()
+            .or(s.first_user_preview.as_deref())
+            .unwrap_or("(no title)");
+        let title = truncate_arg(title, 60);
+        println!(
+            "{:<10} {:<17} {:>5}  {}",
+            short_id, last, s.message_count, title
+        );
+    }
+    Ok(())
+}
+
+fn format_timestamp(raw: &str) -> Option<String> {
+    let truncated = raw.get(..16)?;
+    Some(truncated.replace('T', " "))
 }
 
 fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
