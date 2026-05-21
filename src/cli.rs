@@ -100,170 +100,171 @@ pub struct HistoryArgs {
 
 #[derive(ClapArgs, Debug)]
 pub struct AskArgs {
-    /// The prompt to send to Claude. Pass `-` to read from stdin
-    /// explicitly. If omitted and stdin is piped, stdin is used.
+    // ----- Prompt sources ---------------------------------------------------
+    /// Prompt text. Use `-` for stdin, or omit when piping.
     #[arg(conflicts_with_all = ["file", "editor"])]
     pub prompt: Option<String>,
 
     /// Read the prompt from a file.
-    #[arg(short, long, value_name = "PATH", conflicts_with = "editor")]
+    #[arg(
+        short,
+        long,
+        value_name = "PATH",
+        conflicts_with = "editor",
+        help_heading = "Prompt sources"
+    )]
     pub file: Option<PathBuf>,
 
-    /// Open $VISUAL or $EDITOR (falling back to vi) to compose the
-    /// prompt. The editor opens an empty markdown buffer; on save +
-    /// exit the content becomes the prompt. Aborts on non-zero
-    /// editor exit or empty buffer.
-    #[arg(short = 'e', long = "editor")]
+    /// Compose in $VISUAL / $EDITOR (falls back to vi).
+    #[arg(short = 'e', long = "editor", help_heading = "Prompt sources")]
     pub editor: bool,
 
-    /// Print the resolved prompt before the response, separated by
-    /// a divider. Useful with -e / -f / stdin where the sent prompt
-    /// isn't already on screen.
-    #[arg(long)]
-    pub echo: bool,
+    // ----- Composition ------------------------------------------------------
+    /// Prepend a file to the prompt (repeatable).
+    #[arg(long, value_name = "PATH", help_heading = "Composition")]
+    pub prepend: Vec<PathBuf>,
 
-    /// Suppress everything except the answer on stdout. Overrides
-    /// --echo and (later) the cost footer / any other stderr noise.
-    /// Use when you want the cleanest possible output even on a TTY.
-    #[arg(short = 'q', long)]
+    /// Append a file to the prompt (repeatable).
+    #[arg(long, value_name = "PATH", help_heading = "Composition")]
+    pub append: Vec<PathBuf>,
+
+    /// Embed glob-matched files with `File: PATH` framing (repeatable).
+    #[arg(long, value_name = "GLOB", help_heading = "Composition")]
+    pub attach: Vec<String>,
+
+    /// Embed `git diff` (working tree) as a context block.
+    #[arg(long, help_heading = "Composition")]
+    pub git_diff: bool,
+
+    /// Embed `git log --oneline -n N` (default 5).
+    #[arg(
+        long,
+        value_name = "N",
+        num_args(0..=1),
+        default_missing_value = "5",
+        help_heading = "Composition"
+    )]
+    pub git_log: Option<usize>,
+
+    /// Embed `git status --short` as a context block.
+    #[arg(long, help_heading = "Composition")]
+    pub git_status: bool,
+
+    /// Substitute `{{KEY}}` placeholders (repeatable).
+    #[arg(
+        long,
+        value_name = "K=V",
+        value_parser = parse_kv,
+        help_heading = "Composition"
+    )]
+    pub var: Vec<(String, String)>,
+
+    // ----- Output -----------------------------------------------------------
+    /// Answer only -- no metadata, no decoration.
+    #[arg(short = 'q', long, help_heading = "Output")]
     pub quiet: bool,
 
-    /// Emit the full structured result as JSON on stdout instead of
-    /// the plain answer. Includes session_id, cost_usd, duration_ms,
-    /// num_turns, is_error, and the answer text. Pretty-printed.
-    #[arg(long)]
+    /// Full structured result as JSON on stdout.
+    #[arg(long, help_heading = "Output")]
     pub json: bool,
 
-    /// Write the result to PATH instead of stdout. If the path ends
-    /// in .json, the full structured record is written; otherwise
-    /// the plain answer. --json overrides the extension and forces
-    /// JSON regardless.
-    #[arg(long, value_name = "PATH")]
-    pub save: Option<PathBuf>,
-
-    /// Write the result to both stdout and PATH (like Unix tee).
-    /// Same extension-driven format rules as --save.
-    #[arg(long, value_name = "PATH", conflicts_with = "save")]
-    pub tee: Option<PathBuf>,
-
-    /// Print only fenced code blocks from the answer. Pass with no
-    /// value to take every block; pass --code rust to filter by
-    /// language. Multiple blocks are separated by a blank line.
-    /// Mutually exclusive with --json.
+    /// Print only fenced code blocks (optional language filter).
     #[arg(
         long,
         value_name = "LANG",
         num_args(0..=1),
         default_missing_value = "",
         conflicts_with = "json",
+        help_heading = "Output"
     )]
     pub code: Option<String>,
 
-    /// Truncate output to the first N lines. Applied after --code.
-    /// Mutually exclusive with --tail and --json.
-    #[arg(long, value_name = "N", conflicts_with_all = ["tail", "json"])]
+    /// First N lines only.
+    #[arg(
+        long,
+        value_name = "N",
+        conflicts_with_all = ["tail", "json"],
+        help_heading = "Output"
+    )]
     pub head: Option<usize>,
 
-    /// Truncate output to the last N lines. Applied after --code.
-    /// Mutually exclusive with --head and --json.
-    #[arg(long, value_name = "N", conflicts_with_all = ["head", "json"])]
+    /// Last N lines only.
+    #[arg(
+        long,
+        value_name = "N",
+        conflicts_with_all = ["head", "json"],
+        help_heading = "Output"
+    )]
     pub tail: Option<usize>,
 
-    /// Stream the response to stdout as it arrives instead of waiting
-    /// for the full result. Mutually exclusive with the output-shaping
-    /// flags (--json, --code, --head, --tail, --save, --tee) since
-    /// they all need the final body assembled before they can act.
+    /// Write the result to PATH instead of stdout.
+    #[arg(long, value_name = "PATH", help_heading = "Output")]
+    pub save: Option<PathBuf>,
+
+    /// Write the result to both stdout and PATH (like tee).
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with = "save",
+        help_heading = "Output"
+    )]
+    pub tee: Option<PathBuf>,
+
+    /// Stream tokens as they arrive.
     #[arg(
         long,
         conflicts_with_all = ["json", "code", "head", "tail", "save", "tee"],
+        help_heading = "Output"
     )]
     pub stream: bool,
 
-    /// Continue the most recent session in this working directory.
-    /// Mutually exclusive with --resume.
-    #[arg(short = 'c', long = "continue", conflicts_with = "resume")]
+    /// Print the resolved prompt before the response.
+    #[arg(long, help_heading = "Output")]
+    pub echo: bool,
+
+    /// No rendering, color, or spinner.
+    #[arg(long, help_heading = "Output")]
+    pub plain: bool,
+
+    // ----- Sessions ---------------------------------------------------------
+    /// Continue the most recent session in this directory.
+    #[arg(
+        short = 'c',
+        long = "continue",
+        conflicts_with = "resume",
+        help_heading = "Sessions"
+    )]
     pub continue_session: bool,
 
     /// Resume a specific session by id.
-    #[arg(long, value_name = "ID")]
+    #[arg(long, value_name = "ID", help_heading = "Sessions")]
     pub resume: Option<String>,
 
-    /// Branch the resumed session into a new one instead of appending
-    /// to it. Requires --resume. Useful for "what if I asked it this
-    /// instead" experiments without polluting the original transcript.
-    #[arg(long, requires = "resume")]
+    /// Branch the resumed session instead of appending (requires --resume).
+    #[arg(long, requires = "resume", help_heading = "Sessions")]
     pub fork: bool,
 
-    /// Open an interactive fuzzy-filter picker over recent sessions
-    /// and resume the one you select. Requires a TTY. Mutually
-    /// exclusive with -c / --resume.
-    #[arg(long, conflicts_with_all = ["continue_session", "resume"])]
+    /// Interactive fuzzy chooser over recent sessions.
+    #[arg(
+        long,
+        conflicts_with_all = ["continue_session", "resume"],
+        help_heading = "Sessions"
+    )]
     pub pick: bool,
 
-    /// Restrict claude to read-only tools (Read, Glob, Grep). Good
-    /// default for "summarize / explain this code" prompts where you
-    /// don't want any edits or shell access. Mutually exclusive with
-    /// --full-auto.
-    #[arg(long, conflicts_with = "full_auto")]
+    // ----- Permissions ------------------------------------------------------
+    /// Read, Glob, Grep tools only.
+    #[arg(long, conflicts_with = "full_auto", help_heading = "Permissions")]
     pub readonly: bool,
 
-    /// Bypass all tool permission checks. Equivalent to claude's
-    /// --dangerously-skip-permissions. Only use in a sandbox you
-    /// trust. Mutually exclusive with --readonly.
-    #[arg(long)]
+    /// Bypass all tool permission checks (sandbox use only).
+    #[arg(long, help_heading = "Permissions")]
     pub full_auto: bool,
 
-    /// Prepend the contents of a file to the prompt. Can be passed
-    /// multiple times; files are joined in order with blank lines
-    /// between them. Composes with positional / -f / -e / stdin.
-    #[arg(long, value_name = "PATH")]
-    pub prepend: Vec<PathBuf>,
-
-    /// Append the contents of a file to the prompt. Same semantics
-    /// as --prepend but joined after the main prompt.
-    #[arg(long, value_name = "PATH")]
-    pub append: Vec<PathBuf>,
-
-    /// Attach files matching a glob pattern into the prompt. Each
-    /// file is included with a `File: PATH` header and a fenced
-    /// code block. Pass multiple times for several patterns. Useful
-    /// for "look at these files and answer X" prompts without
-    /// having to paste contents by hand.
-    #[arg(long, value_name = "GLOB")]
-    pub attach: Vec<String>,
-
-    /// Embed `git diff` output (working-tree changes) as a context
-    /// block before the prompt.
-    #[arg(long)]
-    pub git_diff: bool,
-
-    /// Embed `git log --oneline -n N` as a context block. Bare
-    /// --git-log defaults to 5 commits.
-    #[arg(long, value_name = "N", num_args(0..=1), default_missing_value = "5")]
-    pub git_log: Option<usize>,
-
-    /// Embed `git status --short` as a context block.
-    #[arg(long)]
-    pub git_status: bool,
-
-    /// Substitute `{{KEY}}` placeholders in the assembled prompt with
-    /// the given value. Pass multiple --var K=V flags for several
-    /// substitutions. Applied after all composition.
-    #[arg(long, value_name = "K=V", value_parser = parse_kv)]
-    pub var: Vec<(String, String)>,
-
-    /// Apply a named profile from `~/.config/cwr/profiles.toml`. The
-    /// profile fills in any flags you didn't pass on the command line.
-    /// CLI flags always override profile values.
-    #[arg(long, value_name = "NAME")]
+    // ----- Profiles ---------------------------------------------------------
+    /// Apply a named profile from ~/.config/cwr/profiles.toml.
+    #[arg(long, value_name = "NAME", help_heading = "Profiles")]
     pub profile: Option<String>,
-
-    /// Disable all visual decoration -- no markdown rendering, no
-    /// spinner, no color. Useful when piping into a script or when
-    /// the rendered form is getting in the way. NO_COLOR=1 in the
-    /// environment achieves a partial version (color only).
-    #[arg(long)]
-    pub plain: bool,
 }
 
 /// Parser for `--var K=V`. Splits on the first `=` so values may
