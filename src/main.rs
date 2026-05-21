@@ -182,6 +182,49 @@ mod tests {
         let md = "```rust\nfn open() {\n";
         assert_eq!(extract_code_blocks(md, None), "");
     }
+
+    #[test]
+    fn format_count_under_1k_is_plain() {
+        assert_eq!(format_count(0), "0");
+        assert_eq!(format_count(7), "7");
+        assert_eq!(format_count(999), "999");
+    }
+
+    #[test]
+    fn format_count_thousand_scale() {
+        assert_eq!(format_count(1_000), "1.0k");
+        assert_eq!(format_count(1_234), "1.2k");
+        assert_eq!(format_count(999_999), "1000.0k");
+    }
+
+    #[test]
+    fn format_count_million_scale() {
+        assert_eq!(format_count(1_000_000), "1.0M");
+        assert_eq!(format_count(1_500_000), "1.5M");
+    }
+
+    #[test]
+    fn extract_tokens_reads_nested_usage_keys() {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            "usage".to_string(),
+            serde_json::json!({"input_tokens": 42, "output_tokens": 7}),
+        );
+        assert_eq!(extract_tokens(&extra), Some((42, 7)));
+    }
+
+    #[test]
+    fn extract_tokens_returns_none_when_usage_missing() {
+        let extra = std::collections::HashMap::new();
+        assert_eq!(extract_tokens(&extra), None);
+    }
+
+    #[test]
+    fn extract_tokens_returns_none_on_wrong_shape() {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert("usage".to_string(), serde_json::json!("string instead"));
+        assert_eq!(extract_tokens(&extra), None);
+    }
 }
 
 fn should_show_footer(args: &Args) -> bool {
@@ -190,6 +233,13 @@ fn should_show_footer(args: &Args) -> bool {
 
 fn format_footer(r: &QueryResult) -> String {
     let mut parts = Vec::new();
+    if let Some((input, output)) = extract_tokens(&r.extra) {
+        parts.push(format!(
+            "tokens {}/{}",
+            format_count(input),
+            format_count(output)
+        ));
+    }
     if let Some(cost) = r.cost_usd {
         parts.push(format!("cost ${cost:.4}"));
     }
@@ -199,6 +249,25 @@ fn format_footer(r: &QueryResult) -> String {
     let id = r.session_id.get(..8).unwrap_or(&r.session_id);
     parts.push(format!("session {id}"));
     parts.join(" . ")
+}
+
+fn extract_tokens(
+    extra: &std::collections::HashMap<String, serde_json::Value>,
+) -> Option<(u64, u64)> {
+    let usage = extra.get("usage")?;
+    let input = usage.get("input_tokens")?.as_u64()?;
+    let output = usage.get("output_tokens")?.as_u64()?;
+    Some((input, output))
+}
+
+fn format_count(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        format!("{n}")
+    }
 }
 
 fn format_duration(ms: u64) -> String {
