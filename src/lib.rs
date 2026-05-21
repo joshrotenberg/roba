@@ -103,7 +103,7 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     if should_show_footer(&args) {
         render::print_meta_blank();
         if looks_like_refusal(&result.result) {
-            render::print_meta("warning: response looks like a refusal", &style);
+            render::print_warning("response looks like a refusal", &style);
         }
         render::print_meta(&format_footer(&result), &style);
     }

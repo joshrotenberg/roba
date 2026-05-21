@@ -46,7 +46,7 @@ pub async fn run_streaming(claude: &Claude, prompt: String, args: &AskArgs) -> R
         let style = Style::detect(args);
         crate::render::print_meta_blank();
         if looks_like_refusal(&qr.result) {
-            crate::render::print_meta("warning: response looks like a refusal", &style);
+            crate::render::print_warning("response looks like a refusal", &style);
         }
         if !tool_counts.is_empty() {
             crate::render::print_meta(

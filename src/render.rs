@@ -58,6 +58,18 @@ impl Style {
             color: false,
         }
     }
+
+    /// Best-effort style for surfaces that fire before AskArgs is
+    /// fully resolved (most notably the fatal-error path in main).
+    /// Honors NO_COLOR + stderr-TTY only -- no --plain visibility.
+    pub fn detect_for_error() -> Self {
+        let stderr_tty = std::io::stderr().is_terminal();
+        let no_color = std::env::var_os("NO_COLOR").is_some();
+        Self {
+            render_markdown: false,
+            color: stderr_tty && !no_color,
+        }
+    }
 }
 
 /// Print the answer body to stdout, optionally with markdown
@@ -104,4 +116,26 @@ pub fn print_meta(line: &str, style: &Style) {
 /// footer block.
 pub fn print_meta_blank() {
     eprintln!();
+}
+
+/// Print a warning line on stderr (refusal detection, soft warning).
+/// Bold yellow with a `◆ warning:` prefix when color is on; plain
+/// `warning:` prefix otherwise.
+pub fn print_warning(message: &str, style: &Style) {
+    if style.color {
+        eprintln!("\x1b[1;33m◆ warning:\x1b[0m {message}");
+    } else {
+        eprintln!("warning: {message}");
+    }
+}
+
+/// Print an error line on stderr (hard failures from main).
+/// Bold red with a `◆ error:` prefix when color is on; plain
+/// `error:` prefix otherwise.
+pub fn print_error(message: &str, style: &Style) {
+    if style.color {
+        eprintln!("\x1b[1;31m◆ error:\x1b[0m {message}");
+    } else {
+        eprintln!("error: {message}");
+    }
 }
