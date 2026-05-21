@@ -2,7 +2,8 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use claude_wrapper::{Claude, ClaudeCommand, QueryCommand};
 use std::io::{IsTerminal, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Single-prompt CLI runner built on claude-wrapper.
 #[derive(Parser, Debug)]
@@ -10,25 +11,42 @@ use std::path::PathBuf;
 struct Args {
     /// The prompt to send to Claude. Pass `-` to read from stdin
     /// explicitly. If omitted and stdin is piped, stdin is used.
-    #[arg(conflicts_with = "file")]
+    #[arg(conflicts_with_all = ["file", "editor"])]
     prompt: Option<String>,
 
     /// Read the prompt from a file.
-    #[arg(short, long, value_name = "PATH")]
+    #[arg(short, long, value_name = "PATH", conflicts_with = "editor")]
     file: Option<PathBuf>,
+
+    /// Open $VISUAL or $EDITOR (falling back to vi) to compose the
+    /// prompt. The editor opens an empty markdown buffer; on save +
+    /// exit the content becomes the prompt. Aborts on non-zero
+    /// editor exit or empty buffer.
+    #[arg(short = 'e', long = "editor")]
+    editor: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let prompt = resolve_prompt(args.prompt, args.file)?;
+    let prompt = resolve_prompt(args.prompt, args.file, args.editor)?;
     let claude = Claude::builder().build()?;
     let output = QueryCommand::new(prompt).execute(&claude).await?;
     print!("{}", output.stdout);
     Ok(())
 }
 
-fn resolve_prompt(positional: Option<String>, file: Option<PathBuf>) -> Result<String> {
+fn resolve_prompt(
+    positional: Option<String>,
+    file: Option<PathBuf>,
+    editor: bool,
+) -> Result<String> {
+    if editor {
+        if !std::io::stdin().is_terminal() {
+            bail!("--editor requires a TTY; pipe-mode input is incompatible");
+        }
+        return compose_in_editor();
+    }
     if let Some(path) = file {
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("reading prompt from {}", path.display()))?;
@@ -44,7 +62,7 @@ fn resolve_prompt(positional: Option<String>, file: Option<PathBuf>) -> Result<S
         None => {
             if std::io::stdin().is_terminal() {
                 bail!(
-                    "no prompt: pass one as an argument, use -f <path>, pipe via stdin, or use `-` to read stdin explicitly"
+                    "no prompt: pass one as an argument, use -f <path>, use -e for an editor, pipe via stdin, or use `-` to read stdin explicitly"
                 );
             }
             read_stdin()
@@ -60,4 +78,38 @@ fn read_stdin() -> Result<String> {
         bail!("empty stdin");
     }
     Ok(trimmed)
+}
+
+fn compose_in_editor() -> Result<String> {
+    let tmp = tempfile::Builder::new()
+        .prefix("cwr-prompt-")
+        .suffix(".md")
+        .tempfile()
+        .context("creating editor scratch file")?;
+    let path = tmp.path().to_path_buf();
+    let editor = editor_command();
+    let status = spawn_editor(&editor, &path)
+        .with_context(|| format!("running editor `{}`", editor))?;
+    if !status.success() {
+        bail!("editor exited with {status}");
+    }
+    let content = std::fs::read_to_string(&path).context("reading editor buffer")?;
+    let trimmed = content.trim_end().to_string();
+    if trimmed.is_empty() {
+        bail!("editor returned an empty prompt");
+    }
+    Ok(trimmed)
+}
+
+fn editor_command() -> String {
+    std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_string())
+}
+
+fn spawn_editor(editor: &str, path: &Path) -> std::io::Result<std::process::ExitStatus> {
+    let mut parts = editor.split_whitespace();
+    let program = parts.next().expect("editor_command never returns empty");
+    let extra_args: Vec<&str> = parts.collect();
+    Command::new(program).args(&extra_args).arg(path).status()
 }
