@@ -37,10 +37,10 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let prompt = resolve_prompt(args.prompt, args.file, args.editor)?;
     if args.echo {
-        println!("{prompt}");
-        println!();
-        println!("---");
-        println!();
+        eprintln!("{prompt}");
+        eprintln!();
+        eprintln!("---");
+        eprintln!();
     }
     let claude = Claude::builder().build()?;
     let output = QueryCommand::new(prompt).execute(&claude).await?;
