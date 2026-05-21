@@ -205,6 +205,12 @@ pub struct AskArgs {
     /// substitutions. Applied after all composition.
     #[arg(long, value_name = "K=V", value_parser = parse_kv)]
     pub var: Vec<(String, String)>,
+
+    /// Apply a named profile from `~/.config/cwr/profiles.toml`. The
+    /// profile fills in any flags you didn't pass on the command line.
+    /// CLI flags always override profile values.
+    #[arg(long, value_name = "NAME")]
+    pub profile: Option<String>,
 }
 
 /// Parser for `--var K=V`. Splits on the first `=` so values may

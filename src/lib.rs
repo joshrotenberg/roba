@@ -12,6 +12,7 @@ use claude_wrapper::{Claude, QueryCommand};
 pub mod cli;
 pub mod history;
 pub mod output;
+pub mod profile;
 pub mod prompt;
 pub mod session;
 pub mod stream;
@@ -43,6 +44,10 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
 /// Default action: resolve a prompt, send it through claude, render
 /// the result.
 pub async fn run_ask(mut args: AskArgs) -> Result<()> {
+    if let Some(name) = args.profile.clone() {
+        let profile = profile::load_profile(&name)?;
+        profile::merge_into_args(&mut args, profile);
+    }
     if args.pick {
         let id = pick_session_interactive()?;
         eprintln!("resuming session {}", id.get(..8).unwrap_or(&id));
