@@ -19,7 +19,7 @@
 //! Lookup by `--profile NAME`; missing names error.
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -27,23 +27,32 @@ use crate::cli::AskArgs;
 
 /// One named profile. Each field is optional so users only specify
 /// what they want to override.
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Profile {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub prepend: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub append: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub attach: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub git_diff: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub git_log: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub git_status: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub readonly: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub full_auto: Option<bool>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub vars: HashMap<String, String>,
 }
 
 /// Top-level file shape: `[profile.NAME]` tables under a `profile`
 /// key. Other top-level keys are rejected so typos surface fast.
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProfilesConfig {
     pub profile: HashMap<String, Profile>,
@@ -82,6 +91,88 @@ pub fn load_profile_from(path: &Path, name: &str) -> Result<Profile> {
         .get(name)
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("no profile named `{name}` in {}", path.display()))
+}
+
+/// Load the entire config (all profiles). Used by `cwr profile list`.
+/// A missing file is treated as an empty config.
+pub fn load_config() -> Result<(PathBuf, ProfilesConfig)> {
+    let path = default_config_path()
+        .ok_or_else(|| anyhow::anyhow!("could not determine config directory"))?;
+    let config = if path.exists() {
+        let content = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading profiles config at {}", path.display()))?;
+        toml::from_str(&content)
+            .with_context(|| format!("parsing profiles config at {}", path.display()))?
+    } else {
+        ProfilesConfig::default()
+    };
+    Ok((path, config))
+}
+
+/// Starter `profiles.toml` content used by `cwr profile init`. Kept
+/// minimal -- the user is expected to edit and extend.
+pub const STARTER_PROFILES_TOML: &str = include_str!("starter_profiles.toml");
+
+/// Run a `cwr profile <action>` subcommand.
+pub fn run(action: crate::cli::ProfileAction) -> Result<()> {
+    use crate::cli::ProfileAction;
+    match action {
+        ProfileAction::List => run_list(),
+        ProfileAction::Show { name } => run_show(&name),
+        ProfileAction::Init { force } => run_init(force),
+        ProfileAction::Path => run_path(),
+    }
+}
+
+fn run_list() -> Result<()> {
+    let (path, config) = load_config()?;
+    if config.profile.is_empty() {
+        eprintln!("no profiles defined in {}", path.display());
+        eprintln!("hint: `cwr profile init` to drop a starter file");
+        return Ok(());
+    }
+    let mut names: Vec<&String> = config.profile.keys().collect();
+    names.sort();
+    for name in names {
+        println!("{name}");
+    }
+    Ok(())
+}
+
+fn run_show(name: &str) -> Result<()> {
+    let profile = load_profile(name)?;
+    let mut wrapper = HashMap::new();
+    wrapper.insert(name.to_string(), profile);
+    let config = ProfilesConfig { profile: wrapper };
+    let rendered = toml::to_string_pretty(&config).context("re-serializing profile")?;
+    print!("{rendered}");
+    Ok(())
+}
+
+fn run_init(force: bool) -> Result<()> {
+    let path = default_config_path()
+        .ok_or_else(|| anyhow::anyhow!("could not determine config directory"))?;
+    if path.exists() && !force {
+        bail!(
+            "{} already exists -- pass --force to overwrite",
+            path.display()
+        );
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(&path, STARTER_PROFILES_TOML)
+        .with_context(|| format!("writing {}", path.display()))?;
+    println!("wrote {}", path.display());
+    Ok(())
+}
+
+fn run_path() -> Result<()> {
+    let path = default_config_path()
+        .ok_or_else(|| anyhow::anyhow!("could not determine config directory"))?;
+    println!("{}", path.display());
+    Ok(())
 }
 
 /// Apply a profile's defaults to [`AskArgs`]. CLI values always

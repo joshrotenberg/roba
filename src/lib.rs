@@ -37,6 +37,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
         Some(SubCommand::History(args)) => run_history(args),
         Some(SubCommand::Last(args)) => run_last(args),
+        Some(SubCommand::Profile { action }) => profile::run(action),
         None => run_ask(cli.ask).await,
     }
 }

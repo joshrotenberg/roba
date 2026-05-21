@@ -1,0 +1,29 @@
+# cwr profiles -- bundles of CLI flags you'd otherwise type every time.
+# CLI flags always win over profile values.
+# Full reference: docs/profiles.md
+
+# Read-only review against current working-tree changes.
+# Usage: cwr --profile review "is this safe to merge?"
+[profile.review]
+readonly = true
+git_diff = true
+
+# Read-only walkthrough. Pair with --attach to focus on specific files.
+# Usage: cwr --profile explain --attach 'src/foo.rs' "what does this do?"
+[profile.explain]
+readonly = true
+
+# Generate a commit message from staged work.
+# Usage: cwr --profile commit-msg "write a commit message"
+[profile.commit-msg]
+readonly = true
+git_diff = true
+
+[profile.commit-msg.vars]
+STYLE = "imperative, concise, no marketing"
+
+# Diagnose a failed build from piped output.
+# Usage: cargo build 2>&1 | cwr --profile fix-build "what's broken?"
+[profile.fix-build]
+readonly = true
+git_status = true

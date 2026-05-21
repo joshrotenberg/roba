@@ -22,6 +22,30 @@ pub enum SubCommand {
     History(HistoryArgs),
     /// Reprint the most recent session's last answer.
     Last(LastArgs),
+    /// Inspect or initialize the user profiles config.
+    Profile {
+        #[command(subcommand)]
+        action: ProfileAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProfileAction {
+    /// List profile names defined in the config.
+    List,
+    /// Print the TOML for one profile by name.
+    Show {
+        /// Profile name (as it appears under `[profile.NAME]`).
+        name: String,
+    },
+    /// Write a starter `profiles.toml` if none exists yet.
+    Init {
+        /// Overwrite an existing file instead of refusing.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Print the resolved config path.
+    Path,
 }
 
 #[derive(ClapArgs, Debug)]
