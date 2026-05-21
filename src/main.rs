@@ -202,6 +202,12 @@ struct AskArgs {
     /// Embed `git status --short` as a context block.
     #[arg(long)]
     git_status: bool,
+
+    /// Substitute `{{KEY}}` placeholders in the assembled prompt with
+    /// the given value. Pass multiple --var K=V flags for several
+    /// substitutions. Applied after all composition.
+    #[arg(long, value_name = "K=V", value_parser = parse_kv)]
+    var: Vec<(String, String)>,
 }
 
 #[tokio::main]
@@ -249,6 +255,7 @@ async fn run_ask(mut args: AskArgs) -> Result<()> {
     let git_context = collect_git_context(&args)?;
     let context = merge_optional(attachments, git_context);
     let prompt = compose_prompt(main, &args.prepend, context, &args.append)?;
+    let prompt = apply_vars(prompt, &args.var);
     if args.echo && !args.quiet {
         eprintln!("{prompt}");
         eprintln!();
@@ -587,6 +594,61 @@ mod tests {
     fn tool_summary_empty_returns_empty_string() {
         let counts: HashMap<String, usize> = HashMap::new();
         assert_eq!(format_tool_summary(&counts), "");
+    }
+
+    #[test]
+    fn parse_kv_splits_on_first_equals() {
+        assert_eq!(
+            parse_kv("foo=bar"),
+            Ok(("foo".to_string(), "bar".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_kv_keeps_equals_in_value() {
+        assert_eq!(
+            parse_kv("x=a=b=c"),
+            Ok(("x".to_string(), "a=b=c".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_kv_rejects_no_equals() {
+        assert!(parse_kv("foo").is_err());
+    }
+
+    #[test]
+    fn parse_kv_rejects_empty_key() {
+        assert!(parse_kv("=bar").is_err());
+    }
+
+    #[test]
+    fn parse_kv_accepts_empty_value() {
+        assert_eq!(parse_kv("k="), Ok(("k".to_string(), String::new())));
+    }
+
+    #[test]
+    fn apply_vars_substitutes_named_placeholders() {
+        let prompt = "Hello {{NAME}}, ticket {{ID}}".to_string();
+        let vars = vec![
+            ("NAME".to_string(), "Josh".to_string()),
+            ("ID".to_string(), "ABC-123".to_string()),
+        ];
+        assert_eq!(apply_vars(prompt, &vars), "Hello Josh, ticket ABC-123");
+    }
+
+    #[test]
+    fn apply_vars_leaves_unknown_placeholders_alone() {
+        let prompt = "{{KNOWN}} and {{UNKNOWN}}".to_string();
+        let vars = vec![("KNOWN".to_string(), "yes".to_string())];
+        assert_eq!(apply_vars(prompt, &vars), "yes and {{UNKNOWN}}");
+    }
+
+    #[test]
+    fn apply_vars_handles_repeated_placeholders() {
+        let prompt = "{{X}} and {{X}} again".to_string();
+        let vars = vec![("X".to_string(), "go".to_string())];
+        assert_eq!(apply_vars(prompt, &vars), "go and go again");
     }
 }
 
@@ -1002,6 +1064,24 @@ fn compose_prompt(
         );
     }
     Ok(parts.join("\n\n"))
+}
+
+fn parse_kv(s: &str) -> std::result::Result<(String, String), String> {
+    let (k, v) = s
+        .split_once('=')
+        .ok_or_else(|| format!("expected K=V, got `{s}`"))?;
+    if k.is_empty() {
+        return Err(format!("empty key in `{s}`"));
+    }
+    Ok((k.to_string(), v.to_string()))
+}
+
+fn apply_vars(mut prompt: String, vars: &[(String, String)]) -> String {
+    for (k, v) in vars {
+        let placeholder = format!("{{{{{k}}}}}");
+        prompt = prompt.replace(&placeholder, v);
+    }
+    prompt
 }
 
 fn merge_optional(a: Option<String>, b: Option<String>) -> Option<String> {
