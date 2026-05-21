@@ -1,8 +1,9 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use claude_wrapper::types::QueryResult;
+use claude_wrapper::streaming::stream_query;
+use claude_wrapper::types::{OutputFormat, QueryResult};
 use claude_wrapper::{Claude, QueryCommand};
-use std::io::{IsTerminal, Read};
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -78,6 +79,16 @@ struct Args {
     /// Mutually exclusive with --head and --json.
     #[arg(long, value_name = "N", conflicts_with_all = ["head", "json"])]
     tail: Option<usize>,
+
+    /// Stream the response to stdout as it arrives instead of waiting
+    /// for the full result. Mutually exclusive with the output-shaping
+    /// flags (--json, --code, --head, --tail, --save, --tee) since
+    /// they all need the final body assembled before they can act.
+    #[arg(
+        long,
+        conflicts_with_all = ["json", "code", "head", "tail", "save", "tee"],
+    )]
+    stream: bool,
 }
 
 #[tokio::main]
@@ -91,6 +102,11 @@ async fn main() -> Result<()> {
         eprintln!();
     }
     let claude = Claude::builder().build()?;
+
+    if args.stream {
+        return run_streaming(&claude, prompt, &args).await;
+    }
+
     let result = QueryCommand::new(prompt).execute_json(&claude).await?;
 
     let file_path = args.tee.as_deref().or(args.save.as_deref());
@@ -359,6 +375,52 @@ mod tests {
 
 fn should_show_footer(args: &Args) -> bool {
     !args.quiet && std::io::stderr().is_terminal()
+}
+
+async fn run_streaming(claude: &Claude, prompt: String, args: &Args) -> Result<()> {
+    let cmd = QueryCommand::new(prompt).output_format(OutputFormat::StreamJson);
+    let mut final_result: Option<QueryResult> = None;
+
+    stream_query(claude, &cmd, |event| {
+        if event.is_result() {
+            if let Ok(qr) = serde_json::from_value::<QueryResult>(event.data.clone()) {
+                final_result = Some(qr);
+            }
+            return;
+        }
+        if event.event_type() == Some("assistant")
+            && let Some(text) = extract_assistant_text(&event.data)
+        {
+            print!("{text}");
+            let _ = std::io::stdout().flush();
+        }
+    })
+    .await?;
+    println!();
+
+    if should_show_footer(args)
+        && let Some(qr) = &final_result
+    {
+        eprintln!();
+        if looks_like_refusal(&qr.result) {
+            eprintln!("warning: response looks like a refusal");
+        }
+        eprintln!("{}", format_footer(qr));
+    }
+    Ok(())
+}
+
+fn extract_assistant_text(data: &serde_json::Value) -> Option<String> {
+    let content = data.get("message")?.get("content")?.as_array()?;
+    let mut out = String::new();
+    for block in content {
+        if block.get("type").and_then(|t| t.as_str()) == Some("text")
+            && let Some(text) = block.get("text").and_then(|v| v.as_str())
+        {
+            out.push_str(text);
+        }
+    }
+    if out.is_empty() { None } else { Some(out) }
 }
 
 fn format_footer(r: &QueryResult) -> String {
