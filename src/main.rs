@@ -43,6 +43,18 @@ struct Args {
     /// num_turns, is_error, and the answer text. Pretty-printed.
     #[arg(long)]
     json: bool,
+
+    /// Write the result to PATH instead of stdout. If the path ends
+    /// in .json, the full structured record is written; otherwise
+    /// the plain answer. --json overrides the extension and forces
+    /// JSON regardless.
+    #[arg(long, value_name = "PATH")]
+    save: Option<PathBuf>,
+
+    /// Write the result to both stdout and PATH (like Unix tee).
+    /// Same extension-driven format rules as --save.
+    #[arg(long, value_name = "PATH", conflicts_with = "save")]
+    tee: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -57,20 +69,36 @@ async fn main() -> Result<()> {
     }
     let claude = Claude::builder().build()?;
     let result = QueryCommand::new(prompt).execute_json(&claude).await?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+
+    let file_path = args.tee.as_deref().or(args.save.as_deref());
+    let want_json = args.json || file_path.is_some_and(path_is_json);
+    let body = if want_json {
+        serde_json::to_string_pretty(&result)?
     } else {
-        println!("{}", result.result);
-        if should_show_footer(&args) {
-            eprintln!();
-            eprintln!("{}", format_footer(&result));
-        }
+        result.result.clone()
+    };
+
+    let write_stdout = args.save.is_none();
+    if write_stdout {
+        println!("{body}");
+    }
+    if let Some(path) = file_path {
+        std::fs::write(path, format!("{body}\n"))
+            .with_context(|| format!("writing result to {}", path.display()))?;
+    }
+    if should_show_footer(&args) {
+        eprintln!();
+        eprintln!("{}", format_footer(&result));
     }
     Ok(())
 }
 
+fn path_is_json(path: &Path) -> bool {
+    path.extension().and_then(|s| s.to_str()) == Some("json")
+}
+
 fn should_show_footer(args: &Args) -> bool {
-    !args.quiet && !args.json && std::io::stderr().is_terminal()
+    !args.quiet && std::io::stderr().is_terminal()
 }
 
 fn format_footer(r: &QueryResult) -> String {
