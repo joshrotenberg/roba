@@ -15,6 +15,7 @@ pub mod history;
 pub mod output;
 pub mod profile;
 pub mod prompt;
+pub mod render;
 pub mod session;
 pub mod stream;
 
@@ -90,9 +91,10 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     };
     let body = truncate_lines(&body, args.head, args.tail);
 
+    let style = render::Style::detect(&args);
     let write_stdout = args.save.is_none();
     if write_stdout {
-        println!("{body}");
+        render::print_body(&body, &style);
     }
     if let Some(path) = file_path {
         std::fs::write(path, format!("{body}\n"))

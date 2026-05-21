@@ -257,6 +257,13 @@ pub struct AskArgs {
     /// CLI flags always override profile values.
     #[arg(long, value_name = "NAME")]
     pub profile: Option<String>,
+
+    /// Disable all visual decoration -- no markdown rendering, no
+    /// spinner, no color. Useful when piping into a script or when
+    /// the rendered form is getting in the way. NO_COLOR=1 in the
+    /// environment achieves a partial version (color only).
+    #[arg(long)]
+    pub plain: bool,
 }
 
 /// Parser for `--var K=V`. Splits on the first `=` so values may
