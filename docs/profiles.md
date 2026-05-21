@@ -8,15 +8,41 @@ pass on the command line. CLI flags always win.
 cwr --profile review "what changed and is it safe to merge?"
 ```
 
-## Where the file lives
+## Where profiles live
 
-`cwr` looks for profiles in this order:
+`cwr` builds a merged pool from three sources, later sources
+overriding earlier ones on the same name:
 
-1. `$XDG_CONFIG_HOME/cwr/profiles.toml`
-2. `~/.config/cwr/profiles.toml`
+1. **User-level:** `$XDG_CONFIG_HOME/cwr/profiles.toml` or
+   `~/.config/cwr/profiles.toml`. Your global tools.
+2. **Project-local:** the closest `.cwr/profiles.toml` walking up
+   from the current directory; stops at the git root if there is
+   one, else the filesystem root. Per-project tools.
+3. **Env file:** `CWR_PROFILES_FILE=path` adds another file at the
+   highest priority. Useful for ephemeral overrides or sharing a
+   set across machines.
 
-Missing file is fine until you ask for `--profile NAME`; then the
-load errors with a clear path so you know where to put it.
+Missing files are fine. `cwr profile path` prints what's currently
+in the chain so you can see which file would supply which name.
+
+## Auto-apply and explicit invocation
+
+When `cwr` runs the default ask path:
+
+1. `cwr --profile NAME ...` -> apply `NAME`. Error if it doesn't exist.
+2. `cwr --no-default-profile ...` -> skip auto-apply for this call.
+3. `CWR_PROFILE=NAME cwr ...` (env) -> apply `NAME` as the default.
+4. If a `default` profile exists in the pool -> apply it silently.
+5. Otherwise no profile.
+
+Explicit `--profile` always wins. `--no-default-profile` bypasses
+both steps 3 and 4 in one go.
+
+To see what would auto-apply without making a call:
+
+```bash
+cwr profile active
+```
 
 ## Schema
 
@@ -33,6 +59,7 @@ override.
 | `git_status` | `bool` | `--git-status` | |
 | `readonly` | `bool` | `--readonly` | Read, Glob, Grep only |
 | `full_auto` | `bool` | `--full-auto` | Bypass all permission checks |
+| `continue_session` | `bool` | `-c` / `--continue` | Skipped if `--resume` is also passed |
 | `vars` | `{ key = "value" }` | `--var KEY=VALUE` (repeatable) | CLI keys override profile keys |
 
 Unknown keys are rejected at parse time -- a typo errors fast instead
@@ -52,8 +79,31 @@ the profile's `NAME` and the rest of the profile's vars still apply.
 
 ## Worked examples
 
-Drop these into `~/.config/cwr/profiles.toml`. They're starting points,
-not opinions -- adapt to your habits.
+Drop these into `~/.config/cwr/profiles.toml` (or a project-local
+`.cwr/profiles.toml`). They're starting points, not opinions --
+adapt to your habits.
+
+### `default` -- per-project auto-apply
+
+Drop this into your project's `.cwr/profiles.toml` and `cwr "..."`
+in that tree picks it up without `--profile`:
+
+```toml
+# /path/to/my-project/.cwr/profiles.toml
+[profile.default]
+readonly = true
+continue_session = true
+prepend = ["CLAUDE.md"]
+```
+
+What happens:
+
+- `cd /path/to/my-project && cwr "what does this do"` ->
+  read-only tools, continues the most recent session, prepends
+  your project's CLAUDE.md to every prompt.
+- `cd ~ && cwr "..."` -> no default applies (no `.cwr/profiles.toml`
+  walking up).
+- `cwr --no-default-profile "..."` -> bypass even inside the project.
 
 ### `review` -- code review on current changes
 

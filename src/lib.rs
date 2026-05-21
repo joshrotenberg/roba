@@ -48,9 +48,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
 /// Default action: resolve a prompt, send it through claude, render
 /// the result.
 pub async fn run_ask(mut args: AskArgs) -> Result<()> {
-    if let Some(name) = args.profile.clone() {
-        let profile = profile::load_profile(&name)?;
-        profile::merge_into_args(&mut args, profile);
+    let pool = profile::load_pool()?;
+    if let Some(chosen) = profile::resolve(&args, &pool)? {
+        profile::merge_into_args(&mut args, chosen);
     }
     if args.pick {
         let id = pick_session_interactive()?;

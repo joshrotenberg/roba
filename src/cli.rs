@@ -66,8 +66,10 @@ pub enum ProfileAction {
         #[arg(long)]
         force: bool,
     },
-    /// Print the resolved config path.
+    /// Print the resolved config path(s) and pool sources.
     Path,
+    /// Show which profile would auto-apply right now (none, env, or default).
+    Active,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -262,9 +264,13 @@ pub struct AskArgs {
     pub full_auto: bool,
 
     // ----- Profiles ---------------------------------------------------------
-    /// Apply a named profile from ~/.config/cwr/profiles.toml.
+    /// Apply a named profile (user, project, or env source).
     #[arg(long, value_name = "NAME", help_heading = "Profiles")]
     pub profile: Option<String>,
+
+    /// Skip auto-applying `default` and `CWR_PROFILE`.
+    #[arg(long, help_heading = "Profiles")]
+    pub no_default_profile: bool,
 }
 
 /// Parser for `--var K=V`. Splits on the first `=` so values may
