@@ -325,6 +325,73 @@ but for prose answers, you couldn't read the wrapping/markdown
 until the end anyway. For "show me what claude is doing" the
 tool-call counter on the spinner covers it.
 
+### Async / detached execution
+
+`cwr --async "..."` returns immediately with a session id; the
+prompt continues running in the background until claude completes.
+Useful for long-running prompts ("review this whole module") where
+you don't want to hold the terminal hostage.
+
+```bash
+$ cwr --async "do a deep review of the auth module"
+session 7c3f9a21 dispatched (pid 91234)
+$ # ... go do other work ...
+$ cwr status 7c3f9a21
+session 7c3f9a21 running (4m12s, 8 tool calls so far)
+$ cwr wait 7c3f9a21
+... blocks until done, then prints the rendered output ...
+$ cwr attach 7c3f9a21
+... attaches to the live stream from this point forward ...
+```
+
+Mechanics:
+
+- **Double fork** to detach from the parent's terminal session.
+  Standard Unix pattern: fork, parent exits, child setsid()s and
+  forks again; grandchild is reparented to init and survives the
+  terminal closing. Closes stdin/stdout/stderr or redirects to a
+  log file in the cwr state dir.
+- **State directory**: `~/.local/state/cwr/sessions/<id>/` holds:
+  - `meta.json` (pid, started_at, prompt, profile applied, status)
+  - `stream.jsonl` (events as they arrive from claude)
+  - `out.txt` (final rendered text once complete)
+- **Status / wait / attach** subcommands read from the state
+  directory; `attach` tails `stream.jsonl` and renders new events
+  as if it were a live `--stream`.
+- **Lifecycle**: the background process updates `meta.json` status
+  through `dispatched -> running -> completed | failed`. A periodic
+  cleanup job (or manual `cwr clean`) prunes old completed sessions.
+
+Open questions:
+
+1. **Queued messages.** If a session is mid-run and the user wants
+   to send another prompt to the SAME session, do we queue it?
+   Spawn a parallel? My instinct: queueing inside a session is
+   hard (duplex needed), so each `cwr` invocation makes its own
+   background session. Use `--resume <id>` to chain.
+2. **Output capture.** Background sessions can't render to the
+   user's terminal directly. Do we keep the full streamed
+   `stream.jsonl` for `cwr attach` replay, or only the final text?
+   Probably both -- jsonl is cheap.
+3. **Notifications.** Should `cwr` notify on completion (system
+   notification, terminal bell, slack webhook)? Optional flag.
+4. **Composition with `dispatch` crate.** The existing `dispatch`
+   crate at the workspace level prototyped much of this. Decide:
+   absorb its code into cwr, depend on it, or keep separate and
+   document the relationship.
+5. **--resume with async**: `cwr "first prompt" --async` then
+   `cwr "follow-up" --resume <id>` -- does the follow-up wait for
+   the first to complete, or queue, or fork? Most consistent:
+   error if the resumed session is still running; user can
+   `cwr wait` then resume.
+
+This is where duplex genuinely earns its keep on the wrapper
+side: a long-running background process IS a duplex session.
+Inline `respond_to_permission` becomes valuable (background
+claude can ask, we can answer via a side channel like a unix
+socket). Worth revisiting the `DuplexSession` design once async
+is in flight.
+
 ### Tool-call expansion levels
 
 Today's tool-call rendering (both live `--stream` and `cwr last
