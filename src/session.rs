@@ -23,27 +23,47 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     apply_permissions(cmd, args)
 }
 
-/// Apply permission presets (--readonly, --full-auto) and the
-/// explicit allow/deny lists. Composition:
+/// Apply permission policy.
 ///
-/// - `--readonly` seeds the allow list with Read, Glob, Grep.
-/// - `--allow-tool` / profile `allow_tools` add to that list.
-/// - `--deny-tool` / profile `deny_tools` add to the deny list.
-/// - `--full-auto` bypasses all checks; the lists become irrelevant.
+/// The default behavior is "readonly": claude can use Read, Glob,
+/// and Grep but nothing else. To open more up, layer additions:
+///
+/// - `--readonly` -- explicit form of the default; no-op.
+/// - `--writable` -- preset that adds Edit + Write.
+/// - `--allow-tool` / profile `allow_tools` -- add specific tools or
+///   patterns (e.g. `"Bash(git status)"`).
+/// - `--deny-tool` / profile `deny_tools` -- block patterns. Applied
+///   independently; useful with `--full-auto` to keep some teeth.
+/// - `--full-auto` -- bypass everything (overrides above).
 pub fn apply_permissions(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
-    let mut allow: Vec<String> = Vec::new();
-    if args.readonly {
-        allow.extend(["Read", "Glob", "Grep"].iter().map(|s| (*s).to_string()));
+    if args.full_auto {
+        return cmd.dangerously_skip_permissions();
     }
-    allow.extend(args.allow_tool.iter().cloned());
-    if !allow.is_empty() {
-        cmd = cmd.allowed_tools(allow);
+
+    // Always-on safe defaults. --readonly is the explicit form;
+    // either way these three are in the allow list.
+    let mut allow: Vec<String> = vec![
+        "Read".to_string(),
+        "Glob".to_string(),
+        "Grep".to_string(),
+    ];
+    if args.writable {
+        push_unique(&mut allow, "Edit");
+        push_unique(&mut allow, "Write");
     }
+    for t in &args.allow_tool {
+        push_unique(&mut allow, t);
+    }
+    cmd = cmd.allowed_tools(allow);
+
     if !args.deny_tool.is_empty() {
         cmd = cmd.disallowed_tools(args.deny_tool.clone());
     }
-    if args.full_auto {
-        cmd = cmd.dangerously_skip_permissions();
-    }
     cmd
+}
+
+fn push_unique(list: &mut Vec<String>, item: &str) {
+    if !list.iter().any(|s| s == item) {
+        list.push(item.to_string());
+    }
 }

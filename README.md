@@ -103,6 +103,23 @@ cwr profile show review      # the TOML for one profile
 So `cwr "foo" | jq` always sees clean stdout, even with the
 spinner / footer / tool calls humming on stderr.
 
+## Permissions
+
+Safe by default. claude can use `Read`, `Glob`, and `Grep` but
+nothing else unless you say so:
+
+```bash
+cwr "explain this"              # readonly default
+cwr "..." --writable            # add Edit + Write
+cwr "..." --allow-tool "Bash(git status)"   # add one specific pattern
+cwr "..." --deny-tool WebFetch  # block a specific tool
+cwr "..." --full-auto           # bypass every check (sandbox only)
+```
+
+Same knobs work as profile fields (`writable = true`,
+`allow_tools = [...]`, etc.) so you can codify a project's policy
+in `.cwr/profiles.toml` once and not think about it again.
+
 ## Status
 
 Early. The CLI surface (flag names, exit codes, config schema) is

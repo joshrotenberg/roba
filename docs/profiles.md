@@ -57,9 +57,10 @@ override.
 | `git_diff` | `bool` | `--git-diff` | |
 | `git_log` | `int` | `--git-log N` | |
 | `git_status` | `bool` | `--git-status` | |
-| `readonly` | `bool` | `--readonly` | Preset: Read, Glob, Grep |
+| `readonly` | `bool` | `--readonly` | Explicit form of the default; no-op (the default) |
+| `writable` | `bool` | `--writable` | Adds Edit + Write to the allow list |
 | `full_auto` | `bool` | `--full-auto` | Bypass all permission checks |
-| `allow_tools` | `[string]` | `--allow-tool TOOL` (repeatable) | Composes additively with `readonly` |
+| `allow_tools` | `[string]` | `--allow-tool TOOL` (repeatable) | Adds to the allow list |
 | `deny_tools` | `[string]` | `--deny-tool TOOL` (repeatable) | Deny patterns; useful with `full_auto` to keep some teeth |
 | `continue_session` | `bool` | `-c` / `--continue` | Skipped if `--resume` is also passed |
 | `vars` | `{ key = "value" }` | `--var KEY=VALUE` (repeatable) | CLI keys override profile keys |

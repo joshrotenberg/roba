@@ -261,15 +261,19 @@ pub struct AskArgs {
     pub pick: bool,
 
     // ----- Permissions ------------------------------------------------------
-    /// Read, Glob, Grep tools only (preset).
+    /// Explicit form of the default: Read, Glob, Grep only. No-op (the default).
     #[arg(long, conflicts_with = "full_auto", help_heading = "Permissions")]
     pub readonly: bool,
+
+    /// Add Edit + Write to the allow list (preset for code edits).
+    #[arg(long, conflicts_with = "full_auto", help_heading = "Permissions")]
+    pub writable: bool,
 
     /// Bypass all tool permission checks (sandbox use only).
     #[arg(long, help_heading = "Permissions")]
     pub full_auto: bool,
 
-    /// Allow a tool or tool pattern (repeatable). Composes with --readonly.
+    /// Allow a tool or tool pattern (repeatable). Adds to the default.
     #[arg(
         long = "allow-tool",
         value_name = "TOOL",

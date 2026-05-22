@@ -54,6 +54,8 @@ pub struct Profile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub readonly: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub writable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub full_auto: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub continue_session: Option<bool>,
@@ -312,6 +314,11 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile) {
         && !args.readonly
     {
         args.readonly = v;
+    }
+    if let Some(v) = profile.writable
+        && !args.writable
+    {
+        args.writable = v;
     }
     if let Some(v) = profile.full_auto
         && !args.full_auto
