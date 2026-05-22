@@ -174,12 +174,14 @@ pub fn print_error(message: &str, style: &Style) {
 }
 
 /// Print a tool-call indicator on stderr during --stream. Dim with
-/// a `▸` glyph when color is on; plain `>` prefix otherwise.
+/// a `▸` glyph when color is on; plain `>` prefix otherwise. Same
+/// 3-space cargo-style indent as the rendered body, so tools sit
+/// as visible sub-actions under the response.
 pub fn print_tool_call(line: &str, style: &Style) {
     if style.color {
-        eprintln!("\x1b[2m▸ {line}\x1b[0m");
+        eprintln!("   \x1b[2m▸ {line}\x1b[0m");
     } else {
-        eprintln!("> {line}");
+        eprintln!("   > {line}");
     }
 }
 

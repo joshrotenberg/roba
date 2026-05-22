@@ -79,7 +79,13 @@ pub fn handle_assistant_blocks(
         match block.get("type").and_then(|t| t.as_str()) {
             Some("text") => {
                 if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                    print!("{text}");
+                    // Normalize trailing whitespace and always end
+                    // with exactly one newline so the next stream
+                    // event (tool call, more text) lands on its own
+                    // line instead of smashing in via the parallel
+                    // stderr stream.
+                    let trimmed = text.trim_end_matches(['\n', ' ', '\t']);
+                    println!("{trimmed}");
                     let _ = std::io::stdout().flush();
                 }
             }
