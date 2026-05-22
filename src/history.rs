@@ -97,31 +97,78 @@ pub fn run_last(args: LastArgs) -> Result<()> {
         .read_session(&summary.session_id)
         .context("reading most recent session")?;
 
-    let assistants: Vec<&serde_json::Value> = log
-        .entries
+    // Expand assistant entries into per-block items so text and
+    // tool_use can be filtered / counted independently.
+    let mut items: Vec<Item> = Vec::new();
+    for entry in &log.entries {
+        if let HistoryEntry::Assistant { message, .. } = entry {
+            let Some(blocks) = message.get("content").and_then(|c| c.as_array()) else {
+                continue;
+            };
+            for block in blocks {
+                match block.get("type").and_then(|t| t.as_str()) {
+                    Some("text") => {
+                        if let Some(t) = block.get("text").and_then(|v| v.as_str())
+                            && !t.trim().is_empty()
+                        {
+                            items.push(Item::Text(t.to_string()));
+                        }
+                    }
+                    Some("tool_use") => {
+                        let name = block
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?")
+                            .to_string();
+                        let input = block.get("input").cloned().unwrap_or(serde_json::Value::Null);
+                        items.push(Item::Tool { name, input });
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let filtered: Vec<&Item> = items
         .iter()
-        .filter_map(|entry| match entry {
-            HistoryEntry::Assistant { message, .. } => Some(message),
-            _ => None,
+        .filter(|it| match args.kind {
+            crate::cli::LastKind::Text => matches!(it, Item::Text(_)),
+            crate::cli::LastKind::Tools => matches!(it, Item::Tool { .. }),
+            crate::cli::LastKind::All => true,
         })
         .collect();
-    if assistants.is_empty() {
-        bail!("session has no assistant entries");
+
+    if filtered.is_empty() {
+        bail!(
+            "session has no {} ({} total items)",
+            args.kind.label(),
+            items.len()
+        );
     }
-    let start = assistants.len().saturating_sub(n);
-    let recent = &assistants[start..];
+
+    let start = filtered.len().saturating_sub(n);
+    let recent = &filtered[start..];
 
     let style = crate::render::Style::detect_for_subcommand();
-    for (i, message) in recent.iter().enumerate() {
-        if i > 0 {
-            crate::render::print_meta_blank();
-            crate::render::print_meta("---", &style);
-            crate::render::print_meta_blank();
-        }
-        if let Some(text) = extract_message_text(message) {
-            crate::render::print_body(&text, &style);
-        } else {
-            crate::render::print_meta("(assistant entry had no text content)", &style);
+    let mut prev_text = false;
+    for (i, item) in recent.iter().enumerate() {
+        match item {
+            Item::Text(text) => {
+                // Divider between consecutive text answers so they
+                // don't blur together.
+                if i > 0 && prev_text {
+                    crate::render::print_meta_blank();
+                    crate::render::print_meta("---", &style);
+                    crate::render::print_meta_blank();
+                }
+                crate::render::print_body(text, &style);
+                prev_text = true;
+            }
+            Item::Tool { name, input } => {
+                let summary = crate::stream::summarize_tool(name, input);
+                crate::render::print_tool_call(&summary, &style);
+                prev_text = false;
+            }
         }
     }
 
@@ -135,15 +182,22 @@ pub fn run_last(args: LastArgs) -> Result<()> {
         crate::render::print_meta_blank();
         crate::render::print_meta(
             &format!(
-                "session {short} . {} messages . {when} . showing {} of {}",
+                "session {short} . {} messages . {when} . showing {} of {} {}",
                 summary.message_count,
                 recent.len(),
-                assistants.len(),
+                filtered.len(),
+                args.kind.label(),
             ),
             &style,
         );
     }
     Ok(())
+}
+
+/// One renderable item from an assistant message's content blocks.
+enum Item {
+    Text(String),
+    Tool { name: String, input: serde_json::Value },
 }
 
 /// Extract concatenated text content from an assistant message's

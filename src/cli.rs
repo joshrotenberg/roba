@@ -74,9 +74,13 @@ pub enum ProfileAction {
 
 #[derive(ClapArgs, Debug)]
 pub struct LastArgs {
-    /// How many assistant messages to show (default 1).
+    /// How many items to show (default 1).
     #[arg(short = 'n', long = "number", value_name = "N")]
     pub number: Option<usize>,
+
+    /// What kind of item to show.
+    #[arg(long = "type", value_enum, default_value_t = LastKind::Text)]
+    pub kind: LastKind,
 
     /// Filter to one project by slug. Overrides cwd inference.
     #[arg(long, value_name = "SLUG", allow_hyphen_values = true)]
@@ -85,6 +89,26 @@ pub struct LastArgs {
     /// Look across all projects instead of just the current cwd's.
     #[arg(long, conflicts_with = "project")]
     pub all_projects: bool,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LastKind {
+    /// Assistant text answers (default).
+    Text,
+    /// Tool calls only.
+    Tools,
+    /// Everything in order -- text answers interleaved with tool calls.
+    All,
+}
+
+impl LastKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            LastKind::Text => "text answers",
+            LastKind::Tools => "tool calls",
+            LastKind::All => "items",
+        }
+    }
 }
 
 #[derive(ClapArgs, Debug)]
