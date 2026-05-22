@@ -325,6 +325,42 @@ but for prose answers, you couldn't read the wrapping/markdown
 until the end anyway. For "show me what claude is doing" the
 tool-call counter on the spinner covers it.
 
+### `-C` / `--cwd PATH` -- run prompt in a different directory
+
+```bash
+cwr -C ~/Code/foo "what does this crate do?"
+cwr --cwd ../bar -c "follow up about bar"
+```
+
+Matches `git -C` / `make -C` convention. Without it, cwr inherits
+the shell's cwd; with it, claude (and all cwd-derived behavior)
+operates as if invoked from that path.
+
+Knock-on effects to think through:
+
+- **Claude's working dir.** Pass through to `QueryCommand` /
+  process spawn so claude actually sees the right cwd.
+- **Profile discovery.** The walk-up that finds
+  `.cwr/profiles.toml` (and the `default` auto-apply) walks from
+  `--cwd`, not the shell's cwd. Probably what users want -- "run
+  as if I were in that project."
+- **History scope.** `cwr history` / `cwr last` infer the project
+  slug from cwd; with `-C`, infer from `--cwd`. Same logic, just
+  different starting point.
+- **User-supplied paths** (`-f`, `--prepend`, `--append`,
+  `--attach` globs). Open question: resolve relative to the
+  shell's cwd (since the user typed them there) or to `--cwd`
+  (consistent with everything else)? Lean toward shell's cwd:
+  `cwr -C ~/proj -f notes.md` should pick up `./notes.md` from
+  where the user typed, not from `~/proj/notes.md`. Document
+  clearly; absolute paths sidestep the ambiguity.
+- **Composition with async.** `cwr --async -C path "..."` lets
+  you fire off a background job for another project without
+  cd-ing. Common case.
+
+Pairs naturally with the async story above -- the two flags
+compose well.
+
 ### Async / detached execution
 
 `cwr --async "..."` returns immediately with a session id; the
