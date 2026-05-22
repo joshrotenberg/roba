@@ -279,6 +279,56 @@ not a from-scratch project.
 
 (scratch space; add freely)
 
+### Transient status bar / "TUI while working, shell when done"
+
+A mental model worth chasing: while cwr is making a call, the
+terminal briefly becomes a lightweight TUI -- a pinned status bar
+at the bottom showing elapsed time, tool count, latest action --
+while content (text, tool calls) scrolls above. When the call
+completes, the status bar clears and we're back to a normal shell
+prompt with the answer rendered above. No persistent UI, no
+"launch a full TUI" mode -- just a transient panel that exists
+exactly as long as cwr is doing something.
+
+Concretely:
+
+```
+   That makes sense -- let me check the diff first.
+   ▸ Bash(git diff --stat)
+   ▸ Read(src/info.rs)
+   Looking at info.rs now...
+   ▸ Edit(src/info.rs)
+
+   [pinned status bar at bottom, redraws in place]
+   ⠋ 12.4s · 4 tools · Edit(src/info.rs)
+```
+
+After completion, the status bar disappears, the answer's footer
+prints, and you're back to your shell prompt. Nothing lingers.
+
+Implementation: indicatif's `MultiProgress` -- it coordinates a
+spinner with anything else printing to the terminal. Spinner stays
+pinned; everything else scrolls above. We'd route tool-call lines
+and streamed text through `multi.println(...)` instead of
+`eprintln!` / `println!` directly. The spinner's `set_message`
+gets updated on each event with elapsed time + tool count + latest
+action.
+
+Composes with:
+
+- **Live-text stream mode** (today): status bar adds the "still
+  working during quiet stretches" signal that pure live tokens
+  miss.
+- **Buffered stream mode** (future): the status bar IS the only
+  live UI; final render happens once it disappears.
+- **Non-stream mode** (today): we already have a spinner here,
+  but it doesn't "pin" -- could use the same MultiProgress
+  treatment for consistency.
+
+Add as one focused commit when ready. Pairs naturally with the
+buffered-stream work since both need the spinner-as-status-channel
+infrastructure.
+
 ### Streamed text re-render
 
 Today `--stream` shows raw text with a 3-space indent but no
