@@ -23,10 +23,24 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     apply_permissions(cmd, args)
 }
 
-/// Apply permission presets (--readonly, --full-auto).
+/// Apply permission presets (--readonly, --full-auto) and the
+/// explicit allow/deny lists. Composition:
+///
+/// - `--readonly` seeds the allow list with Read, Glob, Grep.
+/// - `--allow-tool` / profile `allow_tools` add to that list.
+/// - `--deny-tool` / profile `deny_tools` add to the deny list.
+/// - `--full-auto` bypasses all checks; the lists become irrelevant.
 pub fn apply_permissions(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
+    let mut allow: Vec<String> = Vec::new();
     if args.readonly {
-        cmd = cmd.allowed_tools(["Read", "Glob", "Grep"]);
+        allow.extend(["Read", "Glob", "Grep"].iter().map(|s| (*s).to_string()));
+    }
+    allow.extend(args.allow_tool.iter().cloned());
+    if !allow.is_empty() {
+        cmd = cmd.allowed_tools(allow);
+    }
+    if !args.deny_tool.is_empty() {
+        cmd = cmd.disallowed_tools(args.deny_tool.clone());
     }
     if args.full_auto {
         cmd = cmd.dangerously_skip_permissions();

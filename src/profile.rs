@@ -57,6 +57,12 @@ pub struct Profile {
     pub full_auto: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub continue_session: Option<bool>,
+    /// Tools or tool patterns to allow (composes with `readonly`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub allow_tools: Vec<String>,
+    /// Tools or tool patterns to deny.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub deny_tools: Vec<String>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub vars: HashMap<String, String>,
 }
@@ -319,6 +325,12 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile) {
         && args.resume.is_none()
     {
         args.continue_session = v;
+    }
+    if args.allow_tool.is_empty() {
+        args.allow_tool = std::mem::take(&mut profile.allow_tools);
+    }
+    if args.deny_tool.is_empty() {
+        args.deny_tool = std::mem::take(&mut profile.deny_tools);
     }
     for (k, v) in profile.vars {
         if !args.var.iter().any(|(ak, _)| ak == &k) {
@@ -737,6 +749,33 @@ git_diff = true
         merge_into_args(&mut args, profile);
         // CLI --resume wins -- the conflict means -c stays off
         assert!(!args.continue_session);
+    }
+
+    #[test]
+    fn merge_allow_tools_from_profile_when_cli_empty() {
+        let mut args = empty_args();
+        let profile = Profile {
+            allow_tools: vec!["Bash(git status)".to_string(), "Bash(git diff)".to_string()],
+            deny_tools: vec!["WebFetch".to_string()],
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile);
+        assert_eq!(
+            args.allow_tool,
+            vec!["Bash(git status)".to_string(), "Bash(git diff)".to_string()]
+        );
+        assert_eq!(args.deny_tool, vec!["WebFetch".to_string()]);
+    }
+
+    #[test]
+    fn merge_allow_tools_cli_replaces_profile() {
+        let mut args = args_with(&["--allow-tool", "Edit"]);
+        let profile = Profile {
+            allow_tools: vec!["Bash(git status)".to_string()],
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile);
+        assert_eq!(args.allow_tool, vec!["Edit".to_string()]);
     }
 
     // -- resolve precedence ------------------------------------------------

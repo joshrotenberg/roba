@@ -261,13 +261,29 @@ pub struct AskArgs {
     pub pick: bool,
 
     // ----- Permissions ------------------------------------------------------
-    /// Read, Glob, Grep tools only.
+    /// Read, Glob, Grep tools only (preset).
     #[arg(long, conflicts_with = "full_auto", help_heading = "Permissions")]
     pub readonly: bool,
 
     /// Bypass all tool permission checks (sandbox use only).
     #[arg(long, help_heading = "Permissions")]
     pub full_auto: bool,
+
+    /// Allow a tool or tool pattern (repeatable). Composes with --readonly.
+    #[arg(
+        long = "allow-tool",
+        value_name = "TOOL",
+        help_heading = "Permissions"
+    )]
+    pub allow_tool: Vec<String>,
+
+    /// Deny a tool or tool pattern (repeatable).
+    #[arg(
+        long = "deny-tool",
+        value_name = "TOOL",
+        help_heading = "Permissions"
+    )]
+    pub deny_tool: Vec<String>,
 
     // ----- Profiles ---------------------------------------------------------
     /// Apply a named profile (user, project, or env source).

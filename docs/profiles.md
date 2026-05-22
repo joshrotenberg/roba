@@ -57,8 +57,10 @@ override.
 | `git_diff` | `bool` | `--git-diff` | |
 | `git_log` | `int` | `--git-log N` | |
 | `git_status` | `bool` | `--git-status` | |
-| `readonly` | `bool` | `--readonly` | Read, Glob, Grep only |
+| `readonly` | `bool` | `--readonly` | Preset: Read, Glob, Grep |
 | `full_auto` | `bool` | `--full-auto` | Bypass all permission checks |
+| `allow_tools` | `[string]` | `--allow-tool TOOL` (repeatable) | Composes additively with `readonly` |
+| `deny_tools` | `[string]` | `--deny-tool TOOL` (repeatable) | Deny patterns; useful with `full_auto` to keep some teeth |
 | `continue_session` | `bool` | `-c` / `--continue` | Skipped if `--resume` is also passed |
 | `vars` | `{ key = "value" }` | `--var KEY=VALUE` (repeatable) | CLI keys override profile keys |
 
@@ -104,6 +106,29 @@ What happens:
 - `cd ~ && cwr "..."` -> no default applies (no `.cwr/profiles.toml`
   walking up).
 - `cwr --no-default-profile "..."` -> bypass even inside the project.
+
+### `default` with project-aware permissions
+
+Discussion + read-only git introspection. Lets claude run
+`git status` / `git diff` to ground its answers without opening up
+branch operations or edits:
+
+```toml
+[profile.default]
+readonly = true
+continue_session = true
+allow_tools = [
+    "Bash(git status)",
+    "Bash(git diff)",
+    "Bash(git diff --stat)",
+    "Bash(git log)",
+    "Bash(git log --oneline)",
+]
+```
+
+`readonly` seeds the allow list with Read/Glob/Grep; `allow_tools`
+adds these specific Bash patterns. Anything else (Edit, Write,
+`Bash(git checkout)`, etc.) still gets blocked.
 
 ### `review` -- code review on current changes
 
