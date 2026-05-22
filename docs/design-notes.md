@@ -279,6 +279,52 @@ not a from-scratch project.
 
 (scratch space; add freely)
 
+### Streamed text re-render
+
+Today `--stream` shows raw text with a 3-space indent but no
+markdown rendering -- termimad needs the whole text at once to
+parse structure, and we don't have that until the result event
+arrives.
+
+Three approaches if we want formatting in stream:
+
+1. **Render at end via cursor manipulation.** Stream live as today,
+   then on the result event cursor-up over the streamed text region
+   and redraw via termimad. One redraw, no flicker. Needs accurate
+   "rendered line count" tracking (soft-wrap aware) and crossterm
+   cursor manipulation. Add as `--final-render` opt-in flag.
+
+2. **Re-render every chunk.** Each new text event triggers
+   clear-to-end + redraw the accumulated buffer. Real flicker risk,
+   ANSI scroll math gets hairy when tool calls (stderr) interleave
+   with the text region (stdout). Probably annoying to read.
+
+3. **Buffered + rich spinner (preferred).** Don't stream the text
+   body visibly. Show a status line on stderr that updates with
+   each event:
+
+       ⠋ thinking... 4.3s
+       ⠙ thinking... 6.1s · Bash(git status)
+       ⠹ thinking... 8.2s · Read(src/foo.rs) · 4 tools
+
+   When the result event arrives, clear the status line and render
+   the full text via termimad with tool calls inline at their
+   chronological positions. The user still sees "claude is working"
+   (latest tool + count + elapsed), and the final output is fully
+   formatted -- without any mid-stream redraw mess.
+
+   Implementation: existing indicatif spinner gains a `set_message`
+   call on each assistant/result event. The streaming closure
+   accumulates a `Vec<Item>` (text vs tool) instead of printing
+   live. Final render walks the buffer and dispatches to
+   `print_body` / `print_tool_call`.
+
+Option 3 is the cleanest and avoids the line-counting pain of
+option 1. The tradeoff is "you don't see the text appear live" --
+but for prose answers, you couldn't read the wrapping/markdown
+until the end anyway. For "show me what claude is doing" the
+tool-call counter on the spinner covers it.
+
 ### Tool-call expansion levels
 
 Today's tool-call rendering (both live `--stream` and `cwr last
