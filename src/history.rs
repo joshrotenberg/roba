@@ -102,8 +102,9 @@ pub fn run_last(args: LastArgs) -> Result<()> {
         })
         .ok_or_else(|| anyhow::anyhow!("session has no assistant entries"))?;
 
+    let style = crate::render::Style::detect_for_subcommand();
     if let Some(text) = extract_message_text(last_assistant) {
-        println!("{text}");
+        crate::render::print_body(&text, &style);
     } else {
         eprintln!("(last assistant entry had no text content)");
     }
@@ -115,10 +116,13 @@ pub fn run_last(args: LastArgs) -> Result<()> {
             .as_deref()
             .and_then(format_timestamp)
             .unwrap_or_else(|| "?".to_string());
-        eprintln!();
-        eprintln!(
-            "session {short} . {} messages . {when}",
-            summary.message_count
+        crate::render::print_meta_blank();
+        crate::render::print_meta(
+            &format!(
+                "session {short} . {} messages . {when}",
+                summary.message_count
+            ),
+            &style,
         );
     }
     Ok(())

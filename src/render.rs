@@ -81,6 +81,19 @@ impl Style {
             spinner: false,
         }
     }
+
+    /// Style for subcommands (history, last, profile, cost) that
+    /// emit display output but don't have AskArgs in scope. Renders
+    /// markdown on TTY, honors NO_COLOR, no spinner (no live call).
+    pub fn detect_for_subcommand() -> Self {
+        let stdout_tty = std::io::stdout().is_terminal();
+        let no_color = std::env::var_os("NO_COLOR").is_some();
+        Self {
+            render_markdown: stdout_tty && !no_color,
+            color: stdout_tty && !no_color,
+            spinner: false,
+        }
+    }
 }
 
 /// Print the answer body to stdout, optionally with markdown
