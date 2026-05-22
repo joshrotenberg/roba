@@ -79,13 +79,21 @@ pub fn handle_assistant_blocks(
         match block.get("type").and_then(|t| t.as_str()) {
             Some("text") => {
                 if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                    // Normalize trailing whitespace and always end
-                    // with exactly one newline so the next stream
-                    // event (tool call, more text) lands on its own
-                    // line instead of smashing in via the parallel
-                    // stderr stream.
+                    // Stream-friendly format: each line indented to
+                    // match the non-stream body. termimad's full
+                    // markdown render needs the whole text at once,
+                    // so we don't get bold/headings/bullets here --
+                    // but the indent + clean line breaks are cheap
+                    // and keep the visual rhythm consistent with
+                    // tool-call indent.
                     let trimmed = text.trim_end_matches(['\n', ' ', '\t']);
-                    println!("{trimmed}");
+                    for line in trimmed.split('\n') {
+                        if line.is_empty() {
+                            println!();
+                        } else {
+                            println!("   {line}");
+                        }
+                    }
                     let _ = std::io::stdout().flush();
                 }
             }
