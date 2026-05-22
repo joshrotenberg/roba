@@ -278,3 +278,29 @@ not a from-scratch project.
 ## More ideas
 
 (scratch space; add freely)
+
+### Tool-call expansion levels
+
+Today's tool-call rendering (both live `--stream` and `cwr last
+--type tools`) is one line per call: name + truncated primary arg.
+Sometimes you want more, sometimes less. A verbosity knob would
+help:
+
+| Level | What | Approx use case |
+|---|---|---|
+| L0 | name only (`▸ Bash`) | "what tools is claude reaching for?" overview |
+| L1 (today) | name + primary arg truncated to 60 chars | quick glance |
+| L2 | name + full input JSON formatted | "what was the exact command?" |
+| L3 | input + the tool_result content claude got back | full audit trail |
+
+Surfaces:
+
+- Live `--stream`: maybe `-v` / `-vv` count flags, or `--show-tools
+  full`.
+- `cwr last`: same knob, applied to historical replay.
+
+L3 is the interesting one. `tool_result` entries aren't in the
+`tool_use` assistant block -- they live in subsequent `user`
+entries with content blocks of type `tool_result`, paired by
+`tool_use_id`. A small pairing pass over the entry stream would
+build the (call, result) pairs. Cheap; not in flight yet.
