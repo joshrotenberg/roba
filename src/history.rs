@@ -70,6 +70,11 @@ pub fn run_history(args: HistoryArgs) -> Result<()> {
 pub fn run_last(args: LastArgs) -> Result<()> {
     use claude_wrapper::history::{HistoryEntry, HistoryRoot, ListOptions, ListSort};
 
+    let n = args.number.unwrap_or(1);
+    if n == 0 {
+        return Ok(());
+    }
+
     let root = HistoryRoot::home().context("locating ~/.claude/projects")?;
     let opts = ListOptions {
         limit: Some(1),
@@ -92,21 +97,32 @@ pub fn run_last(args: LastArgs) -> Result<()> {
         .read_session(&summary.session_id)
         .context("reading most recent session")?;
 
-    let last_assistant = log
+    let assistants: Vec<&serde_json::Value> = log
         .entries
         .iter()
-        .rev()
-        .find_map(|entry| match entry {
+        .filter_map(|entry| match entry {
             HistoryEntry::Assistant { message, .. } => Some(message),
             _ => None,
         })
-        .ok_or_else(|| anyhow::anyhow!("session has no assistant entries"))?;
+        .collect();
+    if assistants.is_empty() {
+        bail!("session has no assistant entries");
+    }
+    let start = assistants.len().saturating_sub(n);
+    let recent = &assistants[start..];
 
     let style = crate::render::Style::detect_for_subcommand();
-    if let Some(text) = extract_message_text(last_assistant) {
-        crate::render::print_body(&text, &style);
-    } else {
-        eprintln!("(last assistant entry had no text content)");
+    for (i, message) in recent.iter().enumerate() {
+        if i > 0 {
+            crate::render::print_meta_blank();
+            crate::render::print_meta("---", &style);
+            crate::render::print_meta_blank();
+        }
+        if let Some(text) = extract_message_text(message) {
+            crate::render::print_body(&text, &style);
+        } else {
+            crate::render::print_meta("(assistant entry had no text content)", &style);
+        }
     }
 
     if std::io::stderr().is_terminal() {
@@ -119,8 +135,10 @@ pub fn run_last(args: LastArgs) -> Result<()> {
         crate::render::print_meta_blank();
         crate::render::print_meta(
             &format!(
-                "session {short} . {} messages . {when}",
-                summary.message_count
+                "session {short} . {} messages . {when} . showing {} of {}",
+                summary.message_count,
+                recent.len(),
+                assistants.len(),
             ),
             &style,
         );

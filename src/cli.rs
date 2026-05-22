@@ -74,6 +74,10 @@ pub enum ProfileAction {
 
 #[derive(ClapArgs, Debug)]
 pub struct LastArgs {
+    /// How many assistant messages to show (default 1).
+    #[arg(short = 'n', long = "number", value_name = "N")]
+    pub number: Option<usize>,
+
     /// Filter to one project by slug. Overrides cwd inference.
     #[arg(long, value_name = "SLUG", allow_hyphen_values = true)]
     pub project: Option<String>,
