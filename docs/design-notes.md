@@ -11,6 +11,21 @@ better ergonomics, and a friendlier surface for scripts and humans.
 
 The name `cwr` (claude wrapper runner) was a placeholder that stuck.
 
+## Decisions log
+
+Settled in conversation; pending execution.
+
+- **Name: `roba`** (2026-05-24). Venetian / Italian for "stuff,
+  things." Four chars, no `claude` substring (avoids trademark
+  drift), confirmed free on crates.io. Affects: crate name, bin
+  name, repo URL, config dir (`~/.config/roba/`), project-local dir
+  (`.roba/profiles.toml`). Rename mechanics tracked in
+  `migration-plan.md`.
+- **Repo: dedicated** (2026-05-24). Move out of the
+  claude-wrapper workspace into its own GitHub repo. Switch
+  claude-wrapper dep from path to crates.io version. Mechanics in
+  `migration-plan.md`.
+
 ## Premise
 
 `claude -p` is the obvious tool for one-shot prompts, but the experience
@@ -278,6 +293,47 @@ not a from-scratch project.
 ## More ideas
 
 (scratch space; add freely)
+
+### Session export -- `cwr export <id>` / `cwr cat <id>`
+
+Field-discovered use case: pull a full conversation out of cwr's
+history to use as context elsewhere. Today you can fake it via
+`cwr last --type all -n 9999 --project <slug>` but the name and
+flag combo don't advertise the use case.
+
+A proper surface would be:
+
+```bash
+cwr export <session-id>                   # default: markdown to stdout
+cwr export <session-id> --format prompt-context
+cwr export <session-id> --format jsonl    # raw stream events
+cwr export <session-id> --save out.md
+cwr cat <session-id>                      # alias for export markdown to stdout
+```
+
+Format options worth thinking through:
+
+- **markdown** (default): rendered transcript with `## user` /
+  `## assistant` headings, code blocks preserved, tool calls
+  shown inline as italic markers.
+- **prompt-context**: formatted as a primer you can feed back
+  into another LLM ("Here's a prior conversation. Continue from
+  here:"). Strips tool noise; just the user/assistant text.
+- **jsonl**: pass-through the raw session JSONL for tools that
+  want structure.
+- **plain**: just the text content, no headers/markers (clean
+  for grep / wc -l / pipe-into-another-thing).
+
+Resolution: most-recent in cwd by default if no `<id>` given.
+`--all-projects` widens; `--project SLUG` filters; matches the
+existing history / last semantics.
+
+Companion thoughts:
+
+- `cwr export latest` as a shorthand for "the most recent session
+  in this cwd" since that's probably the common case.
+- A `--with-meta` flag to also dump cost / token totals / model
+  used / timestamps, useful for audit or sharing.
 
 ### Transient status bar / "TUI while working, shell when done"
 
