@@ -15,6 +15,15 @@ The name `roba` (claude wrapper runner) was a placeholder that stuck.
 
 Settled in conversation; pending execution.
 
+- **Config system: roba.toml + layered resolution** (2026-05-27).
+  Single `roba.toml` file at any tier (no `.roba/` directory).
+  Resolution: CLI > env (`ROBA_<PARAM>`) > files walking up from cwd,
+  closer-beats-farther. Profiles kept as opt-in `[profile.NAME]`
+  overlays in the same file. Recency-windowed auto-continue parked;
+  `continue` stays binary. roba is positioned as a pass-through
+  convenience layer to `claude -p`, not a sticky-session product.
+  Full design in "Config system" section below; implementation
+  tracked in GitHub #1.
 - **Name: `roba`** (2026-05-24). Venetian / Italian for "stuff,
   things." Four chars, no `claude` substring (avoids trademark
   drift), confirmed free on crates.io. Affects: crate name, bin
@@ -559,3 +568,126 @@ L3 is the interesting one. `tool_result` entries aren't in the
 entries with content blocks of type `tool_result`, paired by
 `tool_use_id`. A small pairing pass over the entry stream would
 build the (call, result) pairs. Cheap; not in flight yet.
+
+### Config system: roba.toml + layered resolution
+
+Settled 2026-05-27. Supersedes the earlier `~/.config/roba/profiles.toml`
++ `.roba/profiles.toml` scheme described in "Profiles / templates"
+above. Implementation tracked in GitHub #1.
+
+#### Positioning
+
+roba is a **pass-through convenience layer to `claude -p`** -- not a
+sticky-session product, not a parallel re-implementation. The config
+system reflects that: it exists to let you stack defaults without
+re-typing flags, never to inject hidden behavior. The mental slot it
+fills is "something between `claude -p` and a full interactive
+claude session."
+
+#### Resolution model
+
+For any single roba run, every setting comes from the highest layer
+that defines it:
+
+1. **CLI flag** -- explicit, per-call
+2. **`ROBA_<PARAM>` env var** -- matches the CLI long name (lists
+   comma-separated, e.g. `ROBA_ALLOW_TOOL="Edit,Write"`)
+3. **`[profile.NAME]` overlay** in any `roba.toml` -- activated by
+   `--profile NAME` or `ROBA_PROFILE=NAME`
+4. **Top-level keys** in any `roba.toml`
+5. **`~/.config/roba.toml`** -- your baseline overriding roba's
+   built-in defaults
+6. **roba's built-in defaults** (readonly by default, etc.)
+7. **claude's defaults** -- the floor
+
+Files (#3 + #4) walk up from cwd to the git root (or `~` if there
+is none), with closer beating farther on the same key. Lists merge
+across files; CLI and env replace.
+
+#### Schema (v1)
+
+One file, top-level keys = defaults, `[profile.NAME]` blocks use the
+exact same field set as opt-in overlays.
+
+```toml
+model = "claude-sonnet-4-6"   # passthrough; omit for claude default
+
+continue = false              # binary; no recency window
+
+prepend = []
+append = []
+attach = []
+git_diff = false
+git_log = 0
+git_status = false
+
+[vars]
+
+readonly = false
+writable = false
+full_auto = false
+allow_tool = []
+deny_tool = []
+
+stream = false
+echo = false
+plain = false
+quiet = false
+json = false
+
+[profile.NAME]
+# same field set as overlays
+```
+
+#### Renames from the old schema
+
+- `continue_session` -> `continue`
+- `allow_tools` -> `allow_tool` (singular; matches CLI `--allow-tool`)
+- `deny_tools` -> `deny_tool` (same)
+
+`continue` is a Rust keyword; the struct uses
+`#[serde(rename = "continue")]`.
+
+#### File-layout changes
+
+- Project: `.roba/profiles.toml` -> `roba.toml`. No directory.
+- User: `~/.config/roba/profiles.toml` -> `~/.config/roba.toml`. No
+  directory.
+
+`ROBA_PROFILES_FILE` (today: points at an extra file at top priority)
+is subsumed by the more general `ROBA_<PARAM>` override layer plus
+the regular file discovery walk.
+
+#### Conflict rules
+
+- `readonly` / `writable` / `full_auto` remain mutually exclusive --
+  error if more than one resolves to true after all layers compose.
+- List vs scalar semantics: CLI and env **replace** the resolved
+  value; multiple files **merge** (per-key for scalars, concat for
+  lists, closer-wins on duplicate scalars).
+
+#### Parked decisions (intentionally deferred)
+
+- **Recency-windowed auto-continue.** Briefly explored; tabled. The
+  framing landed on "do a piece of work with ability to follow up
+  once or twice," but the cost of guessing wrong (wasted prompt,
+  claude has no context) is asymmetric. `continue` stays binary;
+  explicit `-c` / `--continue` is the surface.
+- **Profile vs top-level precedence within the same file.** Current
+  intent: an active `[profile.NAME]` block sits above same-file
+  top-level keys but below env and CLI. Revisit when implementing --
+  edge cases around explicit `false` values matter.
+- **Keep profiles at all?** Kept for v1; reconsider if the layered
+  defaults + env layer turn out to cover every real use case in
+  practice.
+- **`ROBA_SESSION` env var** for shell-scoped session pinning. Not
+  in v1; comes back if the layered model proves insufficient.
+- **`--fresh` flag** to force a new session despite resolved
+  `continue = true`. Tracked separately as GitHub #2.
+
+#### What this kills
+
+- `ROBA_PROFILES_FILE` (subsumed by direct env-var overrides + file
+  walk-up)
+- `.roba/` directory (collapsed to a single `roba.toml`)
+- Active investigation into recency / time-windowed stickiness
