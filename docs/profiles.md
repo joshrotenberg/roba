@@ -63,6 +63,11 @@ flag, since `--writable` is presence-flagged -- but
 `--allow-tool Edit` on the CLI fully replaces any `ROBA_ALLOW_TOOL`
 list, same as it overrides a profile's `allow_tool` list.
 
+The one bool that *does* have an explicit kill switch is `continue`:
+pass `--fresh` to force a new session even when a profile or env var
+sets `continue = true`. Pair it with `ROBA_CONTINUE=1` enabled in a
+project default to opt out for one call without re-typing config.
+
 ## Auto-apply and explicit invocation
 
 When `roba` runs the default ask path:

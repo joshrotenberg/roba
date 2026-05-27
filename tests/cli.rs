@@ -148,6 +148,21 @@ fn conflict_pick_and_continue() {
 }
 
 #[test]
+fn conflict_fresh_and_continue() {
+    assert_conflict(&["foo", "--fresh", "-c"]);
+}
+
+#[test]
+fn conflict_fresh_and_resume() {
+    assert_conflict(&["foo", "--fresh", "--resume", "abc123"]);
+}
+
+#[test]
+fn conflict_fresh_and_pick() {
+    assert_conflict(&["foo", "--fresh", "--pick"]);
+}
+
+#[test]
 fn conflict_readonly_and_full_auto() {
     assert_conflict(&["foo", "--readonly", "--full-auto"]);
 }
