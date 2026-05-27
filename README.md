@@ -21,7 +21,7 @@ tokens 1.2k/450 . cost $0.0192 . 2.0s . session abc12345
 ## Install
 
 ```bash
-cargo install --path crates/roba   # from this repo, for now
+cargo install --path .   # from this repo, for now
 ```
 
 `roba` shells out to the `claude` binary, so you need
@@ -82,8 +82,8 @@ echo "summarize this" | roba  # stdin works
 ## Profiles
 
 A profile is a TOML alias for a bunch of flags you'd otherwise type
-every time. See [`docs/roba/profiles.md`](../../docs/roba/profiles.md)
-for the schema and worked examples.
+every time. See [`docs/profiles.md`](docs/profiles.md) for the schema
+and worked examples.
 
 ```bash
 roba profile init             # drops a starter profiles.toml
