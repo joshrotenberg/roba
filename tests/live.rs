@@ -302,6 +302,119 @@ fn live_stream_emits_to_stdout() {
 }
 
 // ---------------------------------------------------------------------------
+// permissions
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn live_perms_readonly_blocks_edit() {
+    let dir = fresh_dir();
+    let target = dir.path().join("subject.txt");
+    std::fs::write(&target, "original").expect("seed file");
+
+    // Default: Edit isn't in the allow list. Claude should respond
+    // (perhaps explaining it can't), but the file should be unchanged.
+    roba_in(dir.path())
+        .arg(format!(
+            "edit the file at {} to replace its contents with the single word: changed. \
+             if you cannot, briefly say so.",
+            target.display()
+        ))
+        .assert()
+        .success();
+
+    let contents = std::fs::read_to_string(&target).expect("read target");
+    assert_eq!(
+        contents.trim(),
+        "original",
+        "readonly default should keep the file unchanged, got: {contents}"
+    );
+}
+
+#[test]
+#[ignore]
+fn live_perms_writable_enables_edit() {
+    let dir = fresh_dir();
+    let target = dir.path().join("subject.txt");
+    std::fs::write(&target, "original").expect("seed file");
+
+    roba_in(dir.path())
+        .args([
+            "--writable",
+            &format!(
+                "edit the file at {} so its contents are exactly the single word: changed",
+                target.display()
+            ),
+        ])
+        .assert()
+        .success();
+
+    let contents = std::fs::read_to_string(&target).expect("read target");
+    assert!(
+        contents.contains("changed"),
+        "--writable should allow edits, got: {contents}"
+    );
+}
+
+#[test]
+#[ignore]
+fn live_perms_deny_tool_blocks_writable_edit() {
+    let dir = fresh_dir();
+    let target = dir.path().join("subject.txt");
+    std::fs::write(&target, "original").expect("seed file");
+
+    // --writable opens Edit + Write; --deny-tool Edit should still
+    // block the Edit call. The file should be unchanged.
+    roba_in(dir.path())
+        .args([
+            "--writable",
+            "--deny-tool",
+            "Edit",
+            &format!(
+                "edit the file at {} to replace its contents with the single word: changed. \
+                 if you cannot, briefly say so.",
+                target.display()
+            ),
+        ])
+        .assert()
+        .success();
+
+    let contents = std::fs::read_to_string(&target).expect("read target");
+    assert_eq!(
+        contents.trim(),
+        "original",
+        "--deny-tool Edit should block edits even with --writable, got: {contents}"
+    );
+}
+
+#[test]
+#[ignore]
+fn live_perms_full_auto_enables_bash() {
+    let dir = fresh_dir();
+    let target = dir.path().join("flag.txt");
+
+    // --full-auto bypasses everything; Bash should work even though
+    // it isn't in the default allow list.
+    roba_in(dir.path())
+        .args([
+            "--full-auto",
+            &format!(
+                "use the Bash tool to write the literal string `bypassed` into the file at {}. \
+                 just run the shell command; no other prose.",
+                target.display()
+            ),
+        ])
+        .assert()
+        .success();
+
+    let contents = std::fs::read_to_string(&target).expect("read target");
+    assert!(
+        contents.contains("bypassed"),
+        "--full-auto should allow Bash to write the file, got: {contents}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // composition: attach / var
 // ---------------------------------------------------------------------------
 
