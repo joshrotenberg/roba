@@ -12,6 +12,10 @@ when published the entries below become version sections.
 
 ### Added
 
+- `--fresh` CLI flag to force a fresh session. Cancels any
+  profile- or env-supplied `continue = true`; the kill switch for
+  accidental auto-continuation. Conflicts with `-c` / `--resume` /
+  `--pick`.
 - `--model MODEL` CLI flag to override the claude model per call
   (alias or full id).
 - `ROBA_<PARAM>` env-var override layer. Every config knob is

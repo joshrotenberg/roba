@@ -297,6 +297,16 @@ pub struct AskArgs {
     )]
     pub pick: bool,
 
+    /// Force a fresh session. Cancels a profile- or env-supplied
+    /// `continue = true`. The kill switch for accidental
+    /// auto-continuation.
+    #[arg(
+        long,
+        conflicts_with_all = ["continue_session", "resume", "pick"],
+        help_heading = "Sessions"
+    )]
+    pub fresh: bool,
+
     // ----- Permissions ------------------------------------------------------
     /// Explicit form of the default: Read, Glob, Grep only. No-op (the default).
     #[arg(long, conflicts_with = "full_auto", help_heading = "Permissions")]

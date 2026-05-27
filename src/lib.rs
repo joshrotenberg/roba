@@ -54,6 +54,11 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     if let Some(chosen) = profile::resolve(&args, &pool)? {
         profile::merge_into_args(&mut args, chosen);
     }
+    // --fresh is the kill switch: it cancels any continuation
+    // settings that arrived via env vars or profile defaults.
+    if args.fresh {
+        args.continue_session = false;
+    }
     if args.pick {
         let id = pick_session_interactive()?;
         eprintln!("resuming session {}", id.get(..8).unwrap_or(&id));
