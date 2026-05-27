@@ -208,8 +208,8 @@ pub fn compose_in_editor() -> Result<String> {
         .context("creating editor scratch file")?;
     let path = tmp.path().to_path_buf();
     let editor = editor_command();
-    let status = spawn_editor(&editor, &path)
-        .with_context(|| format!("running editor `{editor}`"))?;
+    let status =
+        spawn_editor(&editor, &path).with_context(|| format!("running editor `{editor}`"))?;
     if !status.success() {
         bail!("editor exited with {status}");
     }
@@ -332,9 +332,13 @@ mod tests {
     #[test]
     fn compose_prompt_main_optional_when_prepend_present() {
         let pre = write_temp("STANDALONE");
-        let out =
-            compose_prompt(None, std::slice::from_ref(&pre.path().to_path_buf()), None, &[])
-                .unwrap();
+        let out = compose_prompt(
+            None,
+            std::slice::from_ref(&pre.path().to_path_buf()),
+            None,
+            &[],
+        )
+        .unwrap();
         assert_eq!(out, "STANDALONE");
     }
 

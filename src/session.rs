@@ -30,9 +30,9 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
 ///
 /// - `--readonly` -- explicit form of the default; no-op.
 /// - `--writable` -- preset that adds Edit + Write.
-/// - `--allow-tool` / profile `allow_tools` -- add specific tools or
+/// - `--allow-tool` / profile `allow_tool` -- add specific tools or
 ///   patterns (e.g. `"Bash(git status)"`).
-/// - `--deny-tool` / profile `deny_tools` -- block patterns. Applied
+/// - `--deny-tool` / profile `deny_tool` -- block patterns. Applied
 ///   independently; useful with `--full-auto` to keep some teeth.
 /// - `--full-auto` -- bypass everything (overrides above).
 pub fn apply_permissions(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
@@ -42,11 +42,7 @@ pub fn apply_permissions(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand 
 
     // Always-on safe defaults. --readonly is the explicit form;
     // either way these three are in the allow list.
-    let mut allow: Vec<String> = vec![
-        "Read".to_string(),
-        "Glob".to_string(),
-        "Grep".to_string(),
-    ];
+    let mut allow: Vec<String> = vec!["Read".to_string(), "Glob".to_string(), "Grep".to_string()];
     if args.writable {
         push_unique(&mut allow, "Edit");
         push_unique(&mut allow, "Write");

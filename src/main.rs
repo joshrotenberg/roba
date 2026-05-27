@@ -9,7 +9,11 @@ async fn main() {
     // consumes the AskArgs -- error styling needs to honor it too.
     let plain = cli.ask.plain;
     if let Err(err) = roba::dispatch(cli).await {
-        let style = if plain { Style::plain() } else { Style::detect_for_error() };
+        let style = if plain {
+            Style::plain()
+        } else {
+            Style::detect_for_error()
+        };
         roba::render::print_error(&format!("{err:#}"), &style);
         std::process::exit(roba::classify_exit_code(&err));
     }
