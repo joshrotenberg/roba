@@ -36,7 +36,7 @@ and authenticated on your PATH.
 | **Output shaping** | `--json`, `--quiet`, `--code [LANG]`, `--head N`/`--tail N`, `--save PATH`, `--tee PATH` |
 | **Sessions** | `-c` continue most recent, `--resume ID`, `--fork`, `--pick` (interactive fuzzy chooser), `roba history`, `roba last` |
 | **Permissions** | `--readonly`, `--full-auto` presets |
-| **Profiles** | `--profile NAME` from `~/.config/roba/profiles.toml`, `roba profile {list,show,init,path}` |
+| **Profiles** | `--profile NAME` from `~/.config/roba.toml`, `roba profile {list,show,init,path}` |
 | **TTY UX** | termimad markdown render, indicatif spinner, dim metadata, colored refusal/error markers, `--plain` master kill-switch, `NO_COLOR` honored |
 | **Scripting** | typed exit codes (auth=2, budget=3, timeout=4), clean stdout/stderr split, structured `--json` output |
 | **Usage tracking** | `roba cost`, `roba cost --by-project` |
@@ -86,7 +86,7 @@ every time. See [`docs/profiles.md`](docs/profiles.md) for the schema
 and worked examples.
 
 ```bash
-roba profile init             # drops a starter profiles.toml
+roba profile init             # drops a starter roba.toml
 roba profile list             # names defined
 roba profile show review      # the TOML for one profile
 ```
@@ -117,8 +117,8 @@ roba "..." --full-auto           # bypass every check (sandbox only)
 ```
 
 Same knobs work as profile fields (`writable = true`,
-`allow_tools = [...]`, etc.) so you can codify a project's policy
-in `.roba/profiles.toml` once and not think about it again.
+`allow_tool = [...]`, etc.) so you can codify a project's policy
+in `roba.toml` once and not think about it again.
 
 ## Status
 

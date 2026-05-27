@@ -10,17 +10,25 @@ roba --profile review "what changed and is it safe to merge?"
 
 ## Where profiles live
 
-`roba` builds a merged pool from three sources, later sources
-overriding earlier ones on the same name:
+`roba` builds a merged pool from a chain of `roba.toml` files. Later
+sources override earlier ones; when the same profile name appears in
+more than one file, fields merge per-key (closer-to-cwd file wins on
+scalars, lists concat, vars merge per-key).
 
-1. **User-level:** `$XDG_CONFIG_HOME/roba/profiles.toml` or
-   `~/.config/roba/profiles.toml`. Your global tools.
-2. **Project-local:** the closest `.roba/profiles.toml` walking up
-   from the current directory; stops at the git root if there is
-   one, else the filesystem root. Per-project tools.
+1. **User-level:** `$XDG_CONFIG_HOME/roba.toml` or
+   `~/.config/roba.toml`. Your global baseline.
+2. **Project chain:** every `roba.toml` walking up from the current
+   directory; stops at the git root if there is one, else the
+   filesystem root. Closer-to-cwd files override farther ones on
+   the same key.
 3. **Env file:** `ROBA_PROFILES_FILE=path` adds another file at the
    highest priority. Useful for ephemeral overrides or sharing a
    set across machines.
+
+Top-level keys in a `roba.toml` are project-wide defaults: every
+roba call in the dir inherits them. `[profile.NAME]` tables sit
+above those defaults and activate via `--profile NAME` (or
+`ROBA_PROFILE`, or by being named `default`).
 
 Missing files are fine. `roba profile path` prints what's currently
 in the chain so you can see which file would supply which name.
@@ -60,9 +68,9 @@ override.
 | `readonly` | `bool` | `--readonly` | Explicit form of the default; no-op (the default) |
 | `writable` | `bool` | `--writable` | Adds Edit + Write to the allow list |
 | `full_auto` | `bool` | `--full-auto` | Bypass all permission checks |
-| `allow_tools` | `[string]` | `--allow-tool TOOL` (repeatable) | Adds to the allow list |
-| `deny_tools` | `[string]` | `--deny-tool TOOL` (repeatable) | Deny patterns; useful with `full_auto` to keep some teeth |
-| `continue_session` | `bool` | `-c` / `--continue` | Skipped if `--resume` is also passed |
+| `allow_tool` | `[string]` | `--allow-tool TOOL` (repeatable) | Adds to the allow list |
+| `deny_tool` | `[string]` | `--deny-tool TOOL` (repeatable) | Deny patterns; useful with `full_auto` to keep some teeth |
+| `continue` | `bool` | `-c` / `--continue` | Skipped if `--resume` is also passed |
 | `vars` | `{ key = "value" }` | `--var KEY=VALUE` (repeatable) | CLI keys override profile keys |
 
 Unknown keys are rejected at parse time -- a typo errors fast instead
@@ -82,20 +90,20 @@ the profile's `NAME` and the rest of the profile's vars still apply.
 
 ## Worked examples
 
-Drop these into `~/.config/roba/profiles.toml` (or a project-local
-`.roba/profiles.toml`). They're starting points, not opinions --
-adapt to your habits.
+Drop these into `~/.config/roba.toml` (or a project-local
+`roba.toml`). They're starting points, not opinions -- adapt to
+your habits.
 
 ### `default` -- per-project auto-apply
 
-Drop this into your project's `.roba/profiles.toml` and `roba "..."`
-in that tree picks it up without `--profile`:
+Drop this into your project's `roba.toml` and `roba "..."` in
+that tree picks it up without `--profile`:
 
 ```toml
-# /path/to/my-project/.roba/profiles.toml
+# /path/to/my-project/roba.toml
 [profile.default]
 readonly = true
-continue_session = true
+continue = true
 prepend = ["CLAUDE.md"]
 ```
 
@@ -104,7 +112,7 @@ What happens:
 - `cd /path/to/my-project && roba "what does this do"` ->
   read-only tools, continues the most recent session, prepends
   your project's CLAUDE.md to every prompt.
-- `cd ~ && roba "..."` -> no default applies (no `.roba/profiles.toml`
+- `cd ~ && roba "..."` -> no default applies (no `roba.toml`
   walking up).
 - `roba --no-default-profile "..."` -> bypass even inside the project.
 
@@ -117,8 +125,8 @@ branch operations or edits:
 ```toml
 [profile.default]
 readonly = true
-continue_session = true
-allow_tools = [
+continue = true
+allow_tool = [
     "Bash(git status)",
     "Bash(git diff)",
     "Bash(git diff --stat)",
@@ -127,7 +135,7 @@ allow_tools = [
 ]
 ```
 
-`readonly` seeds the allow list with Read/Glob/Grep; `allow_tools`
+`readonly` seeds the allow list with Read/Glob/Grep; `allow_tool`
 adds these specific Bash patterns. Anything else (Edit, Write,
 `Bash(git checkout)`, etc.) still gets blocked.
 
@@ -266,14 +274,14 @@ roba --profile ticket -f ~/.config/roba/prompts/standup.md
 
   prints the assembled prompt to stderr without making a real call.
 - **Share profiles with your team** by checking
-  `profiles.toml` into a dotfiles repo or by dropping a copy in your
+  `roba.toml` into a dotfiles repo or by dropping a copy in your
   project root and pointing `XDG_CONFIG_HOME` at it for that shell.
 
 ## Future
 
-- `roba profile list` / `roba profile show NAME` for managing the
-  config from the CLI
-- `roba profile init` to drop a starter `profiles.toml`
-- Project-local `./.roba/profiles.toml` overriding user-level
+- `ROBA_<PARAM>` env-var override layer (set one knob without a
+  file) -- tracked in #1
+- `model` field + output-policy fields (`stream`, `echo`, `plain`,
+  `quiet`, `json`) -- tracked in #1
 - Inline prompt text in profile schema (`prepend_inline = ["..."]`)
   so a profile can carry a prompt without a separate file

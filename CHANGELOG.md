@@ -10,6 +10,21 @@ when published the entries below become version sections.
 
 ## [Unreleased]
 
+### Changed
+
+- **Config schema** (breaking; no published users yet):
+  - File renamed: `~/.config/roba/profiles.toml` -> `~/.config/roba.toml`;
+    `.roba/profiles.toml` -> `roba.toml` (no more `.roba/` directory).
+  - Fields renamed: `continue_session` -> `continue`,
+    `allow_tools` -> `allow_tool`, `deny_tools` -> `deny_tool`.
+  - Top-level keys in `roba.toml` are now project-wide defaults
+    that apply to every call (previously only `[profile.NAME]`
+    tables were honored).
+  - Project chain walks all the way up to the git root collecting
+    every `roba.toml`; closer-to-cwd files override farther ones
+    per-key, lists concat, vars merge per-key (previously only
+    the closest file was loaded).
+
 ### Added
 
 - Initial cut of `roba`: single-prompt CLI runner over `claude-wrapper`.
@@ -21,7 +36,7 @@ when published the entries below become version sections.
 - Sessions: `-c` / `--resume ID`, `--fork`, `--pick` fuzzy chooser,
   `roba history`, `roba last`.
 - Permissions: `--readonly`, `--full-auto` presets.
-- Profiles: `--profile NAME` from `~/.config/roba/profiles.toml`,
+- Profiles: `--profile NAME` from `~/.config/roba.toml`,
   `roba profile {list,show,init,path}` subcommands.
 - Cost: `roba cost` token rollup, `--by-project`, `--project`,
   `--json`.

@@ -1,6 +1,11 @@
-# roba profiles -- bundles of CLI flags you'd otherwise type every time.
-# CLI flags always win over profile values.
-# Full reference: docs/profiles.md
+# roba config -- top-level keys are project-wide defaults; [profile.NAME]
+# tables are named overlays activated with --profile NAME. CLI flags always
+# win over file values. Full reference: docs/profiles.md
+
+# Example top-level defaults: every roba call in this dir would get these.
+#
+# readonly = true
+# prepend = ["CLAUDE.md"]
 
 # Read-only review against current working-tree changes.
 # Usage: roba --profile review "is this safe to merge?"
