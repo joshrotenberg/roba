@@ -14,6 +14,13 @@ pub struct Cli {
 
     #[command(flatten)]
     pub ask: AskArgs,
+
+    /// Run as if invoked from PATH (changes the working directory
+    /// before any other resolution: session scoping, config walk-up,
+    /// `--attach` globs, `--prepend` / `--append` relative paths,
+    /// `--git-*` context).
+    #[arg(short = 'C', long, value_name = "PATH", global = true)]
+    pub cwd: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]

@@ -12,6 +12,11 @@ when published the entries below become version sections.
 
 ### Added
 
+- `-C` / `--cwd PATH` global flag to run as if invoked from a
+  different directory. Applies before any other resolution (session
+  scoping, config walk-up, `--attach` globs, `--prepend` / `--append`
+  relative paths, `--git-*` context). Pairs especially well with
+  scripts and tests that want roba to operate in a tmp dir.
 - `--fresh` CLI flag to force a fresh session. Cancels any
   profile- or env-supplied `continue = true`; the kill switch for
   accidental auto-continuation. Conflicts with `-c` / `--resume` /
