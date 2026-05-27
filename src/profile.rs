@@ -1,31 +1,44 @@
-//! Named profiles for `roba`.
+//! Config system for `roba`.
 //!
-//! A profile is a bundle of [`AskArgs`] defaults. CLI flags always
-//! override profile values; the profile only fills in fields the
-//! user didn't set on the command line.
+//! A `roba.toml` file holds two kinds of content:
 //!
-//! # Lookup pool
+//! - **Top-level keys** -- defaults applied to every call in this dir
+//! - **`[profile.NAME]` tables** -- named overlays opted into with
+//!   `--profile NAME` or `ROBA_PROFILE=NAME`
 //!
-//! Profiles are merged from these sources, later sources overriding
-//! earlier ones on the same name:
+//! # Resolution
 //!
-//! 1. **User-level:** `$XDG_CONFIG_HOME/roba/profiles.toml` or
-//!    `~/.config/roba/profiles.toml`
-//! 2. **Project-local:** the closest `.roba/profiles.toml` walking up
-//!    from cwd; stops at the git root if there is one, else the
-//!    filesystem root
+//! For any setting, the highest layer that defines it wins:
+//!
+//! 1. CLI flag
+//! 2. `[profile.NAME]` overlay (when activated)
+//! 3. Top-level keys in `roba.toml` files
+//! 4. roba's built-in defaults
+//! 5. claude's defaults
+//!
+//! (The `ROBA_<PARAM>` env-var override layer slots in between CLI
+//! and the profile overlay; it lands in a follow-up PR.)
+//!
+//! # File discovery
+//!
+//! 1. **User-level:** `$XDG_CONFIG_HOME/roba.toml` or
+//!    `~/.config/roba.toml`
+//! 2. **Project chain:** every ancestor `roba.toml` walking up from
+//!    cwd to the git root (or `~` if no git root); farther-from-cwd
+//!    files are loaded first so closer files override on conflict
 //! 3. **Env file:** `ROBA_PROFILES_FILE=path` adds a file at the
 //!    highest priority -- useful for ephemeral overrides
 //!
-//! # Auto-apply
+//! # Merge semantics
 //!
-//! When the default ask path runs:
+//! When the same key appears in multiple files (top-level or inside
+//! a `[profile.NAME]` of the same name):
 //!
-//! 1. `--profile NAME` -> apply that, no auto-apply
-//! 2. `--no-default-profile` -> skip env + default
-//! 3. `ROBA_PROFILE=NAME` env -> apply that
-//! 4. `default` profile present in the pool -> apply silently
-//! 5. otherwise -> no profile
+//! - Scalars: closer-to-cwd file wins.
+//! - Lists: concat. Closer-file items appended after farther ones.
+//! - Maps (vars): per-key merge with closer winning on key conflicts.
+//!
+//! CLI flags then override the merged result via [`merge_into_args`].
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -34,8 +47,9 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::AskArgs;
 
-/// One named profile. Each field is optional so users only specify
-/// what they want to override.
+/// A profile = a bundle of optional defaults. Used both for top-level
+/// keys (the unnamed "defaults" baseline) and for named
+/// `[profile.NAME]` overlays.
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Profile {
@@ -57,33 +71,110 @@ pub struct Profile {
     pub writable: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub full_auto: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// `-c` / `--continue`. TOML key is `continue` (a Rust keyword,
+    /// so the struct field uses a non-keyword name).
+    #[serde(rename = "continue", skip_serializing_if = "Option::is_none")]
     pub continue_session: Option<bool>,
-    /// Tools or tool patterns to allow (composes with `readonly`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub allow_tools: Vec<String>,
-    /// Tools or tool patterns to deny.
+    pub allow_tool: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub deny_tools: Vec<String>,
+    pub deny_tool: Vec<String>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub vars: HashMap<String, String>,
 }
 
-/// Top-level file shape: `[profile.NAME]` tables under a `profile`
-/// key. Other top-level keys are rejected so typos surface fast.
-#[derive(Debug, Default, Clone, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ProfilesConfig {
+impl Profile {
+    /// True if every field is at its default (no overrides).
+    pub fn is_empty(&self) -> bool {
+        self.prepend.is_empty()
+            && self.append.is_empty()
+            && self.attach.is_empty()
+            && self.git_diff.is_none()
+            && self.git_log.is_none()
+            && self.git_status.is_none()
+            && self.readonly.is_none()
+            && self.writable.is_none()
+            && self.full_auto.is_none()
+            && self.continue_session.is_none()
+            && self.allow_tool.is_empty()
+            && self.deny_tool.is_empty()
+            && self.vars.is_empty()
+    }
+
+    /// Merge `other` on top of `self`. Used to layer roba.toml files
+    /// closer-to-cwd on top of farther-from-cwd ones.
+    ///
+    /// - `Option<T>`: when `other.field.is_some()`, it overrides
+    /// - `Vec<T>`: concat (self's items first, then other's)
+    /// - `HashMap` (vars): per-key merge; other wins on key conflict
+    pub fn merge_in(&mut self, other: Profile) {
+        let Profile {
+            mut prepend,
+            mut append,
+            mut attach,
+            git_diff,
+            git_log,
+            git_status,
+            readonly,
+            writable,
+            full_auto,
+            continue_session,
+            mut allow_tool,
+            mut deny_tool,
+            vars,
+        } = other;
+
+        self.prepend.append(&mut prepend);
+        self.append.append(&mut append);
+        self.attach.append(&mut attach);
+        if git_diff.is_some() {
+            self.git_diff = git_diff;
+        }
+        if git_log.is_some() {
+            self.git_log = git_log;
+        }
+        if git_status.is_some() {
+            self.git_status = git_status;
+        }
+        if readonly.is_some() {
+            self.readonly = readonly;
+        }
+        if writable.is_some() {
+            self.writable = writable;
+        }
+        if full_auto.is_some() {
+            self.full_auto = full_auto;
+        }
+        if continue_session.is_some() {
+            self.continue_session = continue_session;
+        }
+        self.allow_tool.append(&mut allow_tool);
+        self.deny_tool.append(&mut deny_tool);
+        for (k, v) in vars {
+            self.vars.insert(k, v);
+        }
+    }
+}
+
+/// One loaded `roba.toml` file: top-level keys parsed as the
+/// unnamed defaults profile, plus the map of `[profile.NAME]`
+/// overlays.
+#[derive(Debug, Default, Clone)]
+pub struct ConfigFile {
+    pub defaults: Profile,
     pub profile: HashMap<String, Profile>,
 }
 
-/// Resolved view of all profile sources for a single roba invocation.
+/// Resolved view across every config source for one roba invocation.
 #[derive(Debug, Default, Clone)]
 pub struct Pool {
-    /// Merged profiles, later sources winning on the same name.
+    /// Merged top-level defaults across all loaded files.
+    pub defaults: Profile,
+    /// Merged named profiles. When the same name appears in multiple
+    /// files, fields are merged per [`Profile::merge_in`].
     pub profiles: HashMap<String, Profile>,
-    /// Source files that contributed, in load order. Used for
-    /// diagnostics and `roba profile path`.
+    /// Source files that contributed, in load order. Used by
+    /// `roba profile path` for diagnostics.
     pub sources: Vec<PathBuf>,
 }
 
@@ -97,36 +188,46 @@ impl Pool {
 // Path discovery
 // ---------------------------------------------------------------------------
 
-/// User-level config path: `$XDG_CONFIG_HOME/roba/profiles.toml` or
-/// `~/.config/roba/profiles.toml`.
+/// User-level config path: `$XDG_CONFIG_HOME/roba.toml` or
+/// `~/.config/roba.toml`.
 pub fn user_config_path() -> Option<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
         && !xdg.is_empty()
     {
-        return Some(PathBuf::from(xdg).join("roba").join("profiles.toml"));
+        return Some(PathBuf::from(xdg).join("roba.toml"));
     }
-    home_dir().map(|h| h.join(".config").join("roba").join("profiles.toml"))
+    home_dir().map(|h| h.join(".config").join("roba.toml"))
 }
 
-/// Walk up from `start` looking for `.roba/profiles.toml`. Stops at
-/// the git root (a directory containing `.git`) if encountered, else
-/// at the filesystem root. Returns the first match, or `None`.
-pub fn discover_project_config(start: &Path) -> Option<PathBuf> {
+/// Walk up from `start` collecting every `roba.toml`. Stops at the
+/// git root (a directory containing `.git`) if encountered, else at
+/// the filesystem root.
+///
+/// Results are ordered **farther-first**: index 0 is the farthest-
+/// from-cwd file (likely closest to the git root); the last entry is
+/// the closest to cwd. This matches the load order used by the pool,
+/// so closer-to-cwd files overlay farther-from-cwd ones.
+pub fn discover_project_configs(start: &Path) -> Vec<PathBuf> {
+    let mut hits: Vec<PathBuf> = Vec::new();
     let mut current = start.to_path_buf();
     loop {
-        let candidate = current.join(".roba").join("profiles.toml");
+        let candidate = current.join("roba.toml");
         if candidate.is_file() {
-            return Some(candidate);
+            hits.push(candidate);
         }
         let is_git_root = current.join(".git").exists();
         if is_git_root {
-            return None;
+            break;
         }
         match current.parent() {
             Some(p) => current = p.to_path_buf(),
-            None => return None,
+            None => break,
         }
     }
+    // Collected closer-first; reverse so callers iterate
+    // farther-first (lowest priority loaded earliest).
+    hits.reverse();
+    hits
 }
 
 /// Optional path from the `ROBA_PROFILES_FILE` env var.
@@ -137,24 +238,49 @@ fn env_profiles_file() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Back-compat alias for the old name. Prefer `user_config_path`.
-pub fn default_config_path() -> Option<PathBuf> {
-    user_config_path()
-}
-
 // ---------------------------------------------------------------------------
 // File loading
 // ---------------------------------------------------------------------------
 
-fn load_file(path: &Path) -> Result<ProfilesConfig> {
+/// Parse a `roba.toml`. Splits top-level keys (the defaults profile)
+/// from `[profile.NAME]` tables before deserializing each as a
+/// [`Profile`] so `#[serde(deny_unknown_fields)]` catches typos in
+/// either place.
+fn load_file(path: &Path) -> Result<ConfigFile> {
     let content = std::fs::read_to_string(path)
-        .with_context(|| format!("reading profiles config at {}", path.display()))?;
-    toml::from_str(&content)
-        .with_context(|| format!("parsing profiles config at {}", path.display()))
+        .with_context(|| format!("reading config at {}", path.display()))?;
+    let mut value: toml::Value = toml::from_str(&content)
+        .with_context(|| format!("parsing config at {}", path.display()))?;
+
+    let profile_map: HashMap<String, Profile> = if let toml::Value::Table(table) = &mut value {
+        match table.remove("profile") {
+            Some(v) => v
+                .try_into()
+                .with_context(|| format!("parsing [profile.*] tables in {}", path.display()))?,
+            None => HashMap::new(),
+        }
+    } else {
+        HashMap::new()
+    };
+
+    let defaults: Profile = value
+        .try_into()
+        .with_context(|| format!("parsing top-level keys in {}", path.display()))?;
+
+    Ok(ConfigFile {
+        defaults,
+        profile: profile_map,
+    })
 }
 
 /// Build the merged pool for the given cwd. Missing files are
 /// silently treated as empty. Parse errors propagate.
+///
+/// Load order (lowest priority first):
+///
+/// 1. User-level config
+/// 2. Project chain, farther-from-cwd first
+/// 3. `ROBA_PROFILES_FILE` (highest of the file layer)
 pub fn load_pool_from(cwd: &Path) -> Result<Pool> {
     let mut pool = Pool::default();
 
@@ -164,9 +290,7 @@ pub fn load_pool_from(cwd: &Path) -> Result<Pool> {
     {
         layers.push(user);
     }
-    if let Some(project) = discover_project_config(cwd) {
-        layers.push(project);
-    }
+    layers.extend(discover_project_configs(cwd));
     if let Some(env_path) = env_profiles_file() {
         if !env_path.exists() {
             bail!(
@@ -179,8 +303,12 @@ pub fn load_pool_from(cwd: &Path) -> Result<Pool> {
 
     for path in layers {
         let cfg = load_file(&path)?;
+        pool.defaults.merge_in(cfg.defaults);
         for (name, profile) in cfg.profile {
-            pool.profiles.insert(name, profile);
+            pool.profiles
+                .entry(name)
+                .or_insert_with(Profile::default)
+                .merge_in(profile);
         }
         pool.sources.push(path);
     }
@@ -194,75 +322,59 @@ pub fn load_pool() -> Result<Pool> {
     load_pool_from(&cwd)
 }
 
-/// Look up one named profile across the merged pool. Errors with a
-/// helpful path list if the name is missing.
-pub fn load_profile(name: &str) -> Result<Profile> {
-    let pool = load_pool()?;
-    pool.get(name).cloned().ok_or_else(|| {
-        let sources = if pool.sources.is_empty() {
-            "(no profile sources found)".to_string()
-        } else {
-            pool.sources
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        anyhow::anyhow!("no profile named `{name}` in {sources}")
-    })
-}
-
-/// Lower-level: load from one explicit path. Kept for tests.
-pub fn load_profile_from(path: &Path, name: &str) -> Result<Profile> {
-    if !path.exists() {
-        bail!("no profiles config at {}", path.display());
-    }
-    let config = load_file(path)?;
-    config
-        .profile
-        .get(name)
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("no profile named `{name}` in {}", path.display()))
-}
-
 // ---------------------------------------------------------------------------
 // Resolution: which profile should this invocation apply?
 // ---------------------------------------------------------------------------
 
-/// Pick the profile to apply (if any), given parsed args + the
-/// resolved pool. The full precedence model:
+/// Pick the effective profile for this run: the merged top-level
+/// defaults, optionally overlaid with a selected named profile.
+///
+/// Returns `None` only when there's nothing to apply (no defaults, no
+/// selected profile). Otherwise the returned profile is what
+/// [`merge_into_args`] should be called with.
+///
+/// Selection precedence:
 ///
 /// 1. `--profile NAME` -> that profile (error if missing)
-/// 2. `--no-default-profile` -> None
+/// 2. `--no-default-profile` -> no overlay (defaults still apply)
 /// 3. `ROBA_PROFILE=NAME` env -> that profile (error if missing)
 /// 4. `default` profile in pool -> that profile
-/// 5. otherwise -> None
+/// 5. otherwise -> no overlay (defaults still apply)
 pub fn resolve(args: &AskArgs, pool: &Pool) -> Result<Option<Profile>> {
-    if let Some(name) = &args.profile {
-        return pool
-            .get(name)
-            .cloned()
-            .map(Some)
-            .ok_or_else(|| missing_profile_error(name, pool));
-    }
-    if args.no_default_profile {
-        return Ok(None);
-    }
-    if let Ok(name) = std::env::var("ROBA_PROFILE")
+    let mut effective = pool.defaults.clone();
+
+    let chosen: Option<String> = if let Some(name) = &args.profile {
+        Some(name.clone())
+    } else if args.no_default_profile {
+        None
+    } else if let Ok(name) = std::env::var("ROBA_PROFILE")
         && !name.is_empty()
     {
-        return pool
+        Some(name)
+    } else if pool.profiles.contains_key("default") {
+        Some("default".to_string())
+    } else {
+        None
+    };
+
+    if let Some(name) = chosen {
+        let overlay = pool
             .get(&name)
             .cloned()
-            .map(Some)
-            .ok_or_else(|| missing_profile_error(&name, pool));
+            .ok_or_else(|| missing_profile_error(&name, pool))?;
+        effective.merge_in(overlay);
     }
-    Ok(pool.get("default").cloned())
+
+    if effective.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(effective))
+    }
 }
 
 fn missing_profile_error(name: &str, pool: &Pool) -> anyhow::Error {
     let sources = if pool.sources.is_empty() {
-        "(no profile sources found)".to_string()
+        "(no config sources found)".to_string()
     } else {
         pool.sources
             .iter()
@@ -274,7 +386,7 @@ fn missing_profile_error(name: &str, pool: &Pool) -> anyhow::Error {
 }
 
 // ---------------------------------------------------------------------------
-// Merging
+// Merging into AskArgs
 // ---------------------------------------------------------------------------
 
 /// Apply a profile's defaults to [`AskArgs`]. CLI values always
@@ -334,10 +446,10 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile) {
         args.continue_session = v;
     }
     if args.allow_tool.is_empty() {
-        args.allow_tool = std::mem::take(&mut profile.allow_tools);
+        args.allow_tool = std::mem::take(&mut profile.allow_tool);
     }
     if args.deny_tool.is_empty() {
-        args.deny_tool = std::mem::take(&mut profile.deny_tools);
+        args.deny_tool = std::mem::take(&mut profile.deny_tool);
     }
     for (k, v) in profile.vars {
         if !args.var.iter().any(|(ak, _)| ak == &k) {
@@ -350,9 +462,9 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile) {
 // Starter template + subcommand
 // ---------------------------------------------------------------------------
 
-/// Starter `profiles.toml` content used by `roba profile init`. Kept
+/// Starter `roba.toml` content used by `roba profile init`. Kept
 /// minimal -- the user is expected to edit and extend.
-pub const STARTER_PROFILES_TOML: &str = include_str!("starter_profiles.toml");
+pub const STARTER_CONFIG_TOML: &str = include_str!("starter_roba.toml");
 
 /// Run a `roba profile <action>` subcommand.
 pub fn run(action: crate::cli::ProfileAction) -> Result<()> {
@@ -389,11 +501,12 @@ fn run_list() -> Result<()> {
 }
 
 fn run_show(name: &str) -> Result<()> {
-    let profile = load_profile(name)?;
-    let mut wrapper = HashMap::new();
-    wrapper.insert(name.to_string(), profile);
-    let config = ProfilesConfig { profile: wrapper };
-    let rendered = toml::to_string_pretty(&config).context("re-serializing profile")?;
+    let pool = load_pool()?;
+    let profile = pool
+        .get(name)
+        .cloned()
+        .ok_or_else(|| missing_profile_error(name, &pool))?;
+    let rendered = render_named_profile(name, &profile)?;
     print!("{rendered}");
     Ok(())
 }
@@ -411,7 +524,7 @@ fn run_init(force: bool) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    std::fs::write(&path, STARTER_PROFILES_TOML)
+    std::fs::write(&path, STARTER_CONFIG_TOML)
         .with_context(|| format!("writing {}", path.display()))?;
     println!("wrote {}", path.display());
     Ok(())
@@ -450,10 +563,7 @@ fn run_active() -> Result<()> {
     let profile = pool.get(&name).cloned().expect("checked above");
     println!("active: {name} ({reason})");
     println!();
-    let mut wrapper = HashMap::new();
-    wrapper.insert(name, profile);
-    let cfg = ProfilesConfig { profile: wrapper };
-    let rendered = toml::to_string_pretty(&cfg).context("re-serializing profile")?;
+    let rendered = render_named_profile(&name, &profile)?;
     print!("{rendered}");
     Ok(())
 }
@@ -463,12 +573,19 @@ fn run_path() -> Result<()> {
     let user = user_config_path();
     println!(
         "user:    {}",
-        user.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(none)".to_string())
+        user.as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(none)".to_string())
     );
     let cwd = std::env::current_dir().unwrap_or_default();
-    match discover_project_config(&cwd) {
-        Some(p) => println!("project: {}", p.display()),
-        None => println!("project: (none found above {})", cwd.display()),
+    let project = discover_project_configs(&cwd);
+    if project.is_empty() {
+        println!("project: (none found above {})", cwd.display());
+    } else {
+        for (i, p) in project.iter().enumerate() {
+            let label = if i == 0 { "project:" } else { "        " };
+            println!("{label} {}", p.display());
+        }
     }
     if let Some(env_path) = env_profiles_file() {
         println!("env:     {}", env_path.display());
@@ -481,6 +598,15 @@ fn run_path() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Render one named profile back to TOML for `profile show` / `active`.
+fn render_named_profile(name: &str, profile: &Profile) -> Result<String> {
+    let mut wrapper: HashMap<String, HashMap<String, Profile>> = HashMap::new();
+    let mut inner: HashMap<String, Profile> = HashMap::new();
+    inner.insert(name.to_string(), profile.clone());
+    wrapper.insert("profile".to_string(), inner);
+    toml::to_string_pretty(&wrapper).context("re-serializing profile")
 }
 
 // ---------------------------------------------------------------------------
@@ -533,6 +659,8 @@ mod tests {
         std::fs::write(&path, content).unwrap();
     }
 
+    // -- Profile parsing ---------------------------------------------------
+
     #[test]
     fn parse_minimal_profile() {
         let toml = r#"
@@ -540,7 +668,7 @@ mod tests {
 readonly = true
 git_diff = true
 "#;
-        let cfg: ProfilesConfig = toml::from_str(toml).unwrap();
+        let cfg = load_file_from_str(toml).unwrap();
         let p = &cfg.profile["review"];
         assert_eq!(p.readonly, Some(true));
         assert_eq!(p.git_diff, Some(true));
@@ -559,7 +687,7 @@ git_log = 5
 NAME = "Josh"
 TICKET = "ABC-123"
 "#;
-        let cfg: ProfilesConfig = toml::from_str(toml).unwrap();
+        let cfg = load_file_from_str(toml).unwrap();
         let p = &cfg.profile["fancy"];
         assert_eq!(p.prepend.len(), 2);
         assert_eq!(p.attach, vec!["**/*.rs"]);
@@ -568,130 +696,391 @@ TICKET = "ABC-123"
     }
 
     #[test]
-    fn parse_rejects_unknown_fields() {
+    fn parse_rejects_unknown_fields_in_profile() {
         let toml = r#"
 [profile.bad]
 typo_field = "oops"
 "#;
-        assert!(toml::from_str::<ProfilesConfig>(toml).is_err());
+        assert!(load_file_from_str(toml).is_err());
     }
 
     #[test]
-    fn parse_continue_session_field() {
+    fn parse_rejects_unknown_top_level_keys() {
+        let toml = r#"
+prependz = ["/tmp/a"]
+"#;
+        assert!(load_file_from_str(toml).is_err());
+    }
+
+    #[test]
+    fn parse_continue_field_uses_renamed_key() {
         let toml = r#"
 [profile.persist]
-continue_session = true
+continue = true
 "#;
-        let cfg: ProfilesConfig = toml::from_str(toml).unwrap();
+        let cfg = load_file_from_str(toml).unwrap();
         assert_eq!(cfg.profile["persist"].continue_session, Some(true));
     }
 
     #[test]
-    fn load_profile_from_finds_named_block() {
-        let file = write_tmp(
-            r#"
+    fn parse_allow_tool_singular() {
+        let toml = r#"
 [profile.x]
+allow_tool = ["Edit", "Write"]
+deny_tool = ["WebFetch"]
+"#;
+        let cfg = load_file_from_str(toml).unwrap();
+        let p = &cfg.profile["x"];
+        assert_eq!(p.allow_tool, vec!["Edit".to_string(), "Write".to_string()]);
+        assert_eq!(p.deny_tool, vec!["WebFetch".to_string()]);
+    }
+
+    #[test]
+    fn parse_top_level_defaults() {
+        let toml = r#"
 readonly = true
+attach = ["**/*.rs"]
 
-[profile.y]
+[profile.review]
 git_diff = true
-"#,
+"#;
+        let cfg = load_file_from_str(toml).unwrap();
+        assert_eq!(cfg.defaults.readonly, Some(true));
+        assert_eq!(cfg.defaults.attach, vec!["**/*.rs"]);
+        assert_eq!(cfg.profile["review"].git_diff, Some(true));
+    }
+
+    /// Test helper: parse a TOML string the way load_file would
+    /// (splitting top-level vs [profile.*]).
+    fn load_file_from_str(s: &str) -> Result<ConfigFile> {
+        let mut value: toml::Value = toml::from_str(s)?;
+        let profile_map: HashMap<String, Profile> = if let toml::Value::Table(t) = &mut value {
+            match t.remove("profile") {
+                Some(v) => v.try_into()?,
+                None => HashMap::new(),
+            }
+        } else {
+            HashMap::new()
+        };
+        let defaults: Profile = value.try_into()?;
+        Ok(ConfigFile {
+            defaults,
+            profile: profile_map,
+        })
+    }
+
+    // -- Profile merging ---------------------------------------------------
+
+    #[test]
+    fn merge_in_concats_lists() {
+        let mut a = Profile {
+            prepend: vec![PathBuf::from("/a")],
+            allow_tool: vec!["Edit".into()],
+            ..Default::default()
+        };
+        let b = Profile {
+            prepend: vec![PathBuf::from("/b")],
+            allow_tool: vec!["Write".into()],
+            ..Default::default()
+        };
+        a.merge_in(b);
+        assert_eq!(a.prepend, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+        assert_eq!(a.allow_tool, vec!["Edit".to_string(), "Write".to_string()]);
+    }
+
+    #[test]
+    fn merge_in_other_wins_on_scalars() {
+        let mut a = Profile {
+            readonly: Some(false),
+            git_log: Some(3),
+            ..Default::default()
+        };
+        let b = Profile {
+            readonly: Some(true),
+            git_log: None,
+            git_diff: Some(true),
+            ..Default::default()
+        };
+        a.merge_in(b);
+        assert_eq!(a.readonly, Some(true)); // other overrode
+        assert_eq!(a.git_log, Some(3)); // other was None, keep self
+        assert_eq!(a.git_diff, Some(true)); // self was None, take other
+    }
+
+    #[test]
+    fn merge_in_vars_other_wins_per_key() {
+        let mut vars_a = HashMap::new();
+        vars_a.insert("X".to_string(), "from_a".to_string());
+        vars_a.insert("Y".to_string(), "from_a".to_string());
+        let mut a = Profile {
+            vars: vars_a,
+            ..Default::default()
+        };
+        let mut vars_b = HashMap::new();
+        vars_b.insert("X".to_string(), "from_b".to_string());
+        vars_b.insert("Z".to_string(), "from_b".to_string());
+        let b = Profile {
+            vars: vars_b,
+            ..Default::default()
+        };
+        a.merge_in(b);
+        assert_eq!(a.vars["X"], "from_b"); // other won
+        assert_eq!(a.vars["Y"], "from_a"); // kept from self
+        assert_eq!(a.vars["Z"], "from_b"); // added by other
+    }
+
+    // -- Discovery walk ----------------------------------------------------
+
+    #[test]
+    fn discover_finds_roba_toml_in_starting_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_file(tmp.path(), "roba.toml", "");
+        let found = discover_project_configs(tmp.path());
+        assert_eq!(found, vec![tmp.path().join("roba.toml")]);
+    }
+
+    #[test]
+    fn discover_walks_up_collecting_all_hits() {
+        let tmp = tempfile::tempdir().unwrap();
+        // git root at tmp/repo
+        write_file(tmp.path(), "repo/.git/HEAD", "");
+        write_file(tmp.path(), "repo/roba.toml", "");
+        write_file(tmp.path(), "repo/sub/roba.toml", "");
+        write_file(tmp.path(), "repo/sub/deeper/.gitkeep", "");
+        let found = discover_project_configs(&tmp.path().join("repo/sub/deeper"));
+        // farther-first, so repo/ before repo/sub/
+        assert_eq!(
+            found,
+            vec![
+                tmp.path().join("repo/roba.toml"),
+                tmp.path().join("repo/sub/roba.toml"),
+            ]
         );
-        let p = load_profile_from(file.path(), "y").unwrap();
-        assert_eq!(p.git_diff, Some(true));
-        assert_eq!(p.readonly, None);
-    }
-
-    #[test]
-    fn load_profile_from_missing_name_errors_with_path() {
-        let file = write_tmp("[profile.x]\nreadonly = true\n");
-        let err = load_profile_from(file.path(), "nope").unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains("no profile named `nope`"));
-        assert!(msg.contains(file.path().to_str().unwrap()));
-    }
-
-    #[test]
-    fn load_profile_from_missing_file_errors() {
-        let err = load_profile_from(Path::new("/no/such/profiles.toml"), "x").unwrap_err();
-        assert!(format!("{err:#}").contains("no profiles config"));
-    }
-
-    // -- discovery walk ----------------------------------------------------
-
-    #[test]
-    fn discover_finds_profiles_in_starting_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_file(tmp.path(), ".roba/profiles.toml", "[profile.x]\n");
-        let found = discover_project_config(tmp.path());
-        assert_eq!(found, Some(tmp.path().join(".roba/profiles.toml")));
-    }
-
-    #[test]
-    fn discover_walks_up_until_match() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_file(tmp.path(), ".roba/profiles.toml", "[profile.x]\n");
-        write_file(tmp.path(), "a/b/c/.gitkeep", "");
-        let found = discover_project_config(&tmp.path().join("a/b/c"));
-        assert_eq!(found, Some(tmp.path().join(".roba/profiles.toml")));
     }
 
     #[test]
     fn discover_stops_at_git_root() {
         let tmp = tempfile::tempdir().unwrap();
-        // .roba at the PARENT of the git root, should NOT be found
-        write_file(tmp.path(), ".roba/profiles.toml", "[profile.x]\n");
+        // roba.toml at the PARENT of the git root, should NOT be found
+        write_file(tmp.path(), "roba.toml", "");
         write_file(tmp.path(), "repo/.git/HEAD", "");
         write_file(tmp.path(), "repo/sub/.gitkeep", "");
-        let found = discover_project_config(&tmp.path().join("repo/sub"));
-        assert_eq!(found, None);
+        let found = discover_project_configs(&tmp.path().join("repo/sub"));
+        assert!(found.is_empty());
     }
 
     #[test]
     fn discover_finds_at_git_root_itself() {
         let tmp = tempfile::tempdir().unwrap();
         write_file(tmp.path(), "repo/.git/HEAD", "");
-        write_file(tmp.path(), "repo/.roba/profiles.toml", "[profile.x]\n");
+        write_file(tmp.path(), "repo/roba.toml", "");
         write_file(tmp.path(), "repo/sub/.gitkeep", "");
-        let found = discover_project_config(&tmp.path().join("repo/sub"));
-        assert_eq!(found, Some(tmp.path().join("repo/.roba/profiles.toml")));
+        let found = discover_project_configs(&tmp.path().join("repo/sub"));
+        assert_eq!(found, vec![tmp.path().join("repo/roba.toml")]);
     }
 
     #[test]
-    fn discover_returns_none_when_no_file_anywhere() {
+    fn discover_returns_empty_when_no_file_anywhere() {
         let tmp = tempfile::tempdir().unwrap();
         write_file(tmp.path(), "a/b/c/.gitkeep", "");
-        let found = discover_project_config(&tmp.path().join("a/b/c"));
-        assert_eq!(found, None);
+        let found = discover_project_configs(&tmp.path().join("a/b/c"));
+        assert!(found.is_empty());
     }
 
-    // -- merge / resolve helpers -------------------------------------------
+    // -- File load round-trip ----------------------------------------------
+
+    #[test]
+    fn load_file_splits_defaults_and_profiles() {
+        let f = write_tmp(
+            r#"
+readonly = true
+
+[profile.x]
+git_diff = true
+"#,
+        );
+        let cfg = load_file(f.path()).unwrap();
+        assert_eq!(cfg.defaults.readonly, Some(true));
+        assert_eq!(cfg.profile["x"].git_diff, Some(true));
+    }
+
+    #[test]
+    fn load_file_errors_on_typo_top_level() {
+        let f = write_tmp("readonlyz = true\n");
+        let err = load_file(f.path()).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("parsing top-level keys"));
+    }
+
+    // -- Pool walk-up merge ------------------------------------------------
+
+    #[test]
+    fn pool_walkup_merges_top_level_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_file(tmp.path(), "repo/.git/HEAD", "");
+        // farther file sets readonly + an allow_tool
+        write_file(
+            tmp.path(),
+            "repo/roba.toml",
+            r#"
+readonly = true
+allow_tool = ["Bash(git status)"]
+"#,
+        );
+        // closer file overrides readonly and adds another allow_tool
+        write_file(
+            tmp.path(),
+            "repo/sub/roba.toml",
+            r#"
+readonly = false
+allow_tool = ["Bash(git diff)"]
+"#,
+        );
+        write_file(tmp.path(), "repo/sub/inner/.gitkeep", "");
+        let pool = load_pool_from(&tmp.path().join("repo/sub/inner")).unwrap();
+        // Closer wins on scalar
+        assert_eq!(pool.defaults.readonly, Some(false));
+        // Lists concat, farther first
+        assert_eq!(
+            pool.defaults.allow_tool,
+            vec!["Bash(git status)".to_string(), "Bash(git diff)".to_string()]
+        );
+    }
+
+    #[test]
+    fn pool_walkup_merges_named_profile_across_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_file(tmp.path(), "repo/.git/HEAD", "");
+        write_file(
+            tmp.path(),
+            "repo/roba.toml",
+            r#"
+[profile.review]
+readonly = true
+prepend = ["/farther.md"]
+"#,
+        );
+        write_file(
+            tmp.path(),
+            "repo/sub/roba.toml",
+            r#"
+[profile.review]
+git_diff = true
+prepend = ["/closer.md"]
+"#,
+        );
+        write_file(tmp.path(), "repo/sub/inner/.gitkeep", "");
+        let pool = load_pool_from(&tmp.path().join("repo/sub/inner")).unwrap();
+        let p = pool.get("review").unwrap();
+        assert_eq!(p.readonly, Some(true));
+        assert_eq!(p.git_diff, Some(true));
+        assert_eq!(
+            p.prepend,
+            vec![PathBuf::from("/farther.md"), PathBuf::from("/closer.md")]
+        );
+    }
+
+    // -- Resolve precedence ------------------------------------------------
 
     fn empty_args() -> AskArgs {
         use clap::Parser;
-
         let cli = crate::cli::Cli::try_parse_from(["roba", "placeholder"]).unwrap();
         cli.ask
     }
 
     fn args_with(extra: &[&str]) -> AskArgs {
         use clap::Parser;
-
         let mut argv = vec!["roba", "placeholder"];
         argv.extend(extra);
         crate::cli::Cli::try_parse_from(&argv).unwrap().ask
     }
 
-    fn pool_of(entries: &[(&str, Profile)]) -> Pool {
+    fn pool_of(defaults: Profile, named: &[(&str, Profile)]) -> Pool {
         let mut profiles = HashMap::new();
-        for (name, profile) in entries {
+        for (name, profile) in named {
             profiles.insert((*name).to_string(), profile.clone());
         }
         Pool {
+            defaults,
             profiles,
             sources: vec![],
         }
     }
+
+    #[test]
+    fn resolve_explicit_profile_overlays_defaults() {
+        let defaults = Profile {
+            readonly: Some(true),
+            prepend: vec![PathBuf::from("/d.md")],
+            ..Default::default()
+        };
+        let foo = Profile {
+            git_diff: Some(true),
+            prepend: vec![PathBuf::from("/foo.md")],
+            ..Default::default()
+        };
+        let pool = pool_of(defaults, &[("foo", foo)]);
+        let args = args_with(&["--profile", "foo"]);
+        let resolved = resolve(&args, &pool).unwrap().unwrap();
+        // defaults still apply
+        assert_eq!(resolved.readonly, Some(true));
+        // overlay merged in
+        assert_eq!(resolved.git_diff, Some(true));
+        // lists concat (defaults first, overlay second)
+        assert_eq!(
+            resolved.prepend,
+            vec![PathBuf::from("/d.md"), PathBuf::from("/foo.md")]
+        );
+    }
+
+    #[test]
+    fn resolve_default_when_no_explicit() {
+        let p_default = Profile {
+            readonly: Some(true),
+            ..Default::default()
+        };
+        let pool = pool_of(Profile::default(), &[("default", p_default)]);
+        let args = empty_args();
+        let resolved = resolve(&args, &pool).unwrap().unwrap();
+        assert_eq!(resolved.readonly, Some(true));
+    }
+
+    #[test]
+    fn resolve_no_default_profile_skips_overlay_but_keeps_defaults() {
+        let defaults = Profile {
+            readonly: Some(true),
+            ..Default::default()
+        };
+        let p_default = Profile {
+            full_auto: Some(true),
+            ..Default::default()
+        };
+        let pool = pool_of(defaults, &[("default", p_default)]);
+        let args = args_with(&["--no-default-profile"]);
+        let resolved = resolve(&args, &pool).unwrap().unwrap();
+        // top-level defaults still apply
+        assert_eq!(resolved.readonly, Some(true));
+        // [profile.default] overlay was skipped
+        assert_eq!(resolved.full_auto, None);
+    }
+
+    #[test]
+    fn resolve_unknown_explicit_profile_errors() {
+        let pool = Pool::default();
+        let args = args_with(&["--profile", "nope"]);
+        let err = resolve(&args, &pool).unwrap_err();
+        assert!(format!("{err:#}").contains("no profile named `nope`"));
+    }
+
+    #[test]
+    fn resolve_returns_none_when_pool_empty() {
+        let pool = Pool::default();
+        let args = empty_args();
+        let resolved = resolve(&args, &pool).unwrap();
+        assert!(resolved.is_none());
+    }
+
+    // -- Merge into AskArgs ------------------------------------------------
 
     #[test]
     fn merge_fills_unset_fields() {
@@ -754,16 +1143,15 @@ git_diff = true
             ..Default::default()
         };
         merge_into_args(&mut args, profile);
-        // CLI --resume wins -- the conflict means -c stays off
         assert!(!args.continue_session);
     }
 
     #[test]
-    fn merge_allow_tools_from_profile_when_cli_empty() {
+    fn merge_allow_tool_from_profile_when_cli_empty() {
         let mut args = empty_args();
         let profile = Profile {
-            allow_tools: vec!["Bash(git status)".to_string(), "Bash(git diff)".to_string()],
-            deny_tools: vec!["WebFetch".to_string()],
+            allow_tool: vec!["Bash(git status)".to_string(), "Bash(git diff)".to_string()],
+            deny_tool: vec!["WebFetch".to_string()],
             ..Default::default()
         };
         merge_into_args(&mut args, profile);
@@ -775,80 +1163,17 @@ git_diff = true
     }
 
     #[test]
-    fn merge_allow_tools_cli_replaces_profile() {
+    fn merge_allow_tool_cli_replaces_profile() {
         let mut args = args_with(&["--allow-tool", "Edit"]);
         let profile = Profile {
-            allow_tools: vec!["Bash(git status)".to_string()],
+            allow_tool: vec!["Bash(git status)".to_string()],
             ..Default::default()
         };
         merge_into_args(&mut args, profile);
         assert_eq!(args.allow_tool, vec!["Edit".to_string()]);
     }
 
-    // -- resolve precedence ------------------------------------------------
-
-    #[test]
-    fn resolve_explicit_profile_wins() {
-        let p_foo = Profile {
-            readonly: Some(true),
-            ..Default::default()
-        };
-        let p_default = Profile {
-            full_auto: Some(true),
-            ..Default::default()
-        };
-        let pool = pool_of(&[("foo", p_foo), ("default", p_default)]);
-        let args = args_with(&["--profile", "foo"]);
-        let resolved = resolve(&args, &pool).unwrap().unwrap();
-        assert_eq!(resolved.readonly, Some(true));
-        assert_eq!(resolved.full_auto, None);
-    }
-
-    #[test]
-    fn resolve_default_when_no_explicit() {
-        let p_default = Profile {
-            readonly: Some(true),
-            ..Default::default()
-        };
-        let pool = pool_of(&[("default", p_default)]);
-        let args = empty_args();
-        let resolved = resolve(&args, &pool).unwrap().unwrap();
-        assert_eq!(resolved.readonly, Some(true));
-    }
-
-    #[test]
-    fn resolve_no_default_profile_skips_auto() {
-        let p_default = Profile {
-            readonly: Some(true),
-            ..Default::default()
-        };
-        let pool = pool_of(&[("default", p_default)]);
-        let args = args_with(&["--no-default-profile"]);
-        let resolved = resolve(&args, &pool).unwrap();
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn resolve_unknown_explicit_profile_errors() {
-        let pool = pool_of(&[]);
-        let args = args_with(&["--profile", "nope"]);
-        let err = resolve(&args, &pool).unwrap_err();
-        assert!(format!("{err:#}").contains("no profile named `nope`"));
-    }
-
-    #[test]
-    fn resolve_no_default_when_pool_has_no_default() {
-        let p_foo = Profile {
-            readonly: Some(true),
-            ..Default::default()
-        };
-        let pool = pool_of(&[("foo", p_foo)]);
-        let args = empty_args();
-        let resolved = resolve(&args, &pool).unwrap();
-        assert!(resolved.is_none());
-    }
-
-    // -- path expansion ----------------------------------------------------
+    // -- Path expansion ----------------------------------------------------
 
     #[test]
     fn expand_path_handles_tilde() {

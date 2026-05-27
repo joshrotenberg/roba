@@ -60,7 +60,7 @@ pub enum ProfileAction {
         /// Profile name (as it appears under `[profile.NAME]`).
         name: String,
     },
-    /// Write a starter `profiles.toml` if none exists yet.
+    /// Write a starter `roba.toml` if none exists yet.
     Init {
         /// Overwrite an existing file instead of refusing.
         #[arg(long)]
@@ -302,19 +302,11 @@ pub struct AskArgs {
     pub full_auto: bool,
 
     /// Allow a tool or tool pattern (repeatable). Adds to the default.
-    #[arg(
-        long = "allow-tool",
-        value_name = "TOOL",
-        help_heading = "Permissions"
-    )]
+    #[arg(long = "allow-tool", value_name = "TOOL", help_heading = "Permissions")]
     pub allow_tool: Vec<String>,
 
     /// Deny a tool or tool pattern (repeatable).
-    #[arg(
-        long = "deny-tool",
-        value_name = "TOOL",
-        help_heading = "Permissions"
-    )]
+    #[arg(long = "deny-tool", value_name = "TOOL", help_heading = "Permissions")]
     pub deny_tool: Vec<String>,
 
     // ----- Profiles ---------------------------------------------------------

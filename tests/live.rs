@@ -94,7 +94,10 @@ fn live_code_extraction_strips_fences() {
         !stdout.contains("```"),
         "--code did not strip fences: {stdout}"
     );
-    assert!(stdout.contains("fn id"), "expected fn id in output, got: {stdout}");
+    assert!(
+        stdout.contains("fn id"),
+        "expected fn id in output, got: {stdout}"
+    );
 }
 
 #[test]
@@ -102,14 +105,21 @@ fn live_code_extraction_strips_fences() {
 fn live_head_caps_line_count() {
     let dir = fresh_dir();
     let out = roba_in(&dir.path().to_path_buf())
-        .args(["list five fruits, one per line, nothing else", "--head", "3"])
+        .args([
+            "list five fruits, one per line, nothing else",
+            "--head",
+            "3",
+        ])
         .output()
         .expect("run roba");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     // body has at most 3 non-empty lines (println adds a final newline)
     let nonempty = stdout.lines().filter(|l| !l.trim().is_empty()).count();
-    assert!(nonempty <= 3, "expected <=3 non-empty lines, got {nonempty} in: {stdout}");
+    assert!(
+        nonempty <= 3,
+        "expected <=3 non-empty lines, got {nonempty} in: {stdout}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +161,10 @@ fn live_resume_fork_creates_new_session_id() {
         .output()
         .expect("seed run");
     let seed_json: serde_json::Value = serde_json::from_slice(&seed.stdout).expect("json");
-    let seed_id = seed_json["session_id"].as_str().expect("session_id").to_string();
+    let seed_id = seed_json["session_id"]
+        .as_str()
+        .expect("session_id")
+        .to_string();
 
     // 2. resume + fork -- expect a NEW session id in the result
     let fork = roba_in(&path)
@@ -231,12 +244,7 @@ fn live_var_substitution_reaches_model() {
     std::fs::write(&tpl, "Respond with exactly: {{TARGET}}").expect("write tpl");
 
     let out = roba_in(&path)
-        .args([
-            "-f",
-            tpl.to_str().unwrap(),
-            "--var",
-            "TARGET=lighthouse",
-        ])
+        .args(["-f", tpl.to_str().unwrap(), "--var", "TARGET=lighthouse"])
         .output()
         .expect("run roba -f --var");
     assert!(out.status.success());
