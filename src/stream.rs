@@ -21,7 +21,8 @@ use crate::session::apply_session;
 /// stdout as it arrives; tool calls + cost footer + refusal warning
 /// + tool rollup go to stderr at the appropriate moments.
 pub async fn run_streaming(claude: &Claude, prompt: String, args: &AskArgs) -> Result<()> {
-    let cmd = apply_session(QueryCommand::new(prompt), args).output_format(OutputFormat::StreamJson);
+    let cmd =
+        apply_session(QueryCommand::new(prompt), args).output_format(OutputFormat::StreamJson);
     let show_meta = should_show_footer(args);
     let style = Style::detect(args);
     let mut final_result: Option<QueryResult> = None;
@@ -41,9 +42,7 @@ pub async fn run_streaming(claude: &Claude, prompt: String, args: &AskArgs) -> R
     .await?;
     println!();
 
-    if show_meta
-        && let Some(qr) = &final_result
-    {
+    if show_meta && let Some(qr) = &final_result {
         crate::render::print_meta_blank();
         if looks_like_refusal(&qr.result) {
             crate::render::print_warning("response looks like a refusal", &style);

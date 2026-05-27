@@ -35,11 +35,8 @@ impl Style {
         // they asked for a structured / extracted form, or in stream
         // mode (we'd have to buffer to render markdown, defeating the
         // purpose of streaming).
-        let render_markdown = !plain
-            && stdout_tty
-            && !args.json
-            && !args.stream
-            && args.code.is_none();
+        let render_markdown =
+            !plain && stdout_tty && !args.json && !args.stream && args.code.is_none();
 
         // Color governs the footer, refusal warning, error prefixes,
         // and tool call lines. Off when piping, when --plain, or when
@@ -196,8 +193,7 @@ pub fn spinner() -> indicatif::ProgressBar {
     let pb = indicatif::ProgressBar::new_spinner();
     pb.enable_steady_tick(std::time::Duration::from_millis(80));
     pb.set_style(
-        indicatif::ProgressStyle::with_template("{spinner} {elapsed}")
-            .expect("static template"),
+        indicatif::ProgressStyle::with_template("{spinner} {elapsed}").expect("static template"),
     );
     pb
 }

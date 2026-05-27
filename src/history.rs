@@ -120,7 +120,10 @@ pub fn run_last(args: LastArgs) -> Result<()> {
                             .and_then(|v| v.as_str())
                             .unwrap_or("?")
                             .to_string();
-                        let input = block.get("input").cloned().unwrap_or(serde_json::Value::Null);
+                        let input = block
+                            .get("input")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
                         items.push(Item::Tool { name, input });
                     }
                     _ => {}
@@ -197,7 +200,10 @@ pub fn run_last(args: LastArgs) -> Result<()> {
 /// One renderable item from an assistant message's content blocks.
 enum Item {
     Text(String),
-    Tool { name: String, input: serde_json::Value },
+    Tool {
+        name: String,
+        input: serde_json::Value,
+    },
 }
 
 /// Extract concatenated text content from an assistant message's

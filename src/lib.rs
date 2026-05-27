@@ -89,7 +89,11 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     let body = if want_json {
         serde_json::to_string_pretty(&result)?
     } else if let Some(filter) = args.code.as_deref() {
-        let lang = if filter.is_empty() { None } else { Some(filter) };
+        let lang = if filter.is_empty() {
+            None
+        } else {
+            Some(filter)
+        };
         extract_code_blocks(&result.result, lang)
     } else {
         result.result.clone()

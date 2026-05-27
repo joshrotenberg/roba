@@ -94,7 +94,11 @@ pub fn aggregate(sessions: &[SessionSummary]) -> Rollup {
     }
 
     let mut projects: Vec<ProjectRollup> = per_project.into_values().collect();
-    projects.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens).then(a.slug.cmp(&b.slug)));
+    projects.sort_by(|a, b| {
+        b.total_tokens
+            .cmp(&a.total_tokens)
+            .then(a.slug.cmp(&b.slug))
+    });
 
     Rollup {
         sessions: total_sessions,
@@ -109,14 +113,20 @@ fn print_totals(r: &Rollup) {
     println!("messages:  {}", r.messages);
     println!("tokens:    {}", format_count(r.total_tokens));
     println!();
-    println!("note: dollar amounts not yet shown -- claude persists tokens but not cost per session.");
+    println!(
+        "note: dollar amounts not yet shown -- claude persists tokens but not cost per session."
+    );
     println!("      run with --by-project for a breakdown, or --json for machine output.");
 }
 
 fn print_by_project(r: &Rollup, limit: usize) {
     println!("sessions:  {}", r.sessions);
     println!("messages:  {}", r.messages);
-    println!("tokens:    {} (across {} projects)", format_count(r.total_tokens), r.projects.len());
+    println!(
+        "tokens:    {} (across {} projects)",
+        format_count(r.total_tokens),
+        r.projects.len()
+    );
     println!();
     println!("{:>5}  {:>9}  {:>9}  PROJECT", "SES", "MSGS", "TOKENS");
     let cap = if limit == 0 { r.projects.len() } else { limit };
