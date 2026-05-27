@@ -2,27 +2,54 @@
 //! binary and cost money. Marked `#[ignore]` so they only run when
 //! you opt in:
 //!
-//!   cargo test -p roba --test live -- --ignored --nocapture
+//!   cargo test --test live -- --ignored --nocapture
+//!   just live              # equivalent
+//!   just live-smoke        # ~3 tests, ~$0.05, ~10s
+//!   just live-perms        # one category
 //!
-//! Each test runs in a fresh tempdir so sessions don't bleed between
-//! tests (claude scopes -c "most recent" by project, and each tempdir
-//! is its own project from claude's POV).
+//! Each test runs in a fresh tempdir via `-C PATH` so sessions don't
+//! bleed between tests (claude scopes sessions by cwd / project, and
+//! each tempdir is its own project from claude's POV).
 //!
-//! Budget: at sonnet/haiku rates the full suite is roughly $1-2.
+//! All tests default to `--model haiku` for cost. A test that cares
+//! about a specific model can append `--model <id>` -- clap's
+//! last-wins semantics applies.
+//!
+//! Budget: at haiku rates the full suite is well under $1.
 //! Keep prompts short and answers terse to minimize spend.
+//!
+//! Naming convention: `live_<category>_<descriptor>` so `cargo test`
+//! filters work: `live_perms`, `live_output`, `live_session`, etc.
 
 use assert_cmd::Command;
 use predicates::prelude::*;
-use std::path::PathBuf;
+use std::path::Path;
 
-fn roba_in(dir: &PathBuf) -> Command {
+/// Run `roba` against `dir` via `-C`, defaulting to the haiku model.
+/// Tests that need a specific model can append `--model <id>` later;
+/// clap's last-occurrence-wins semantics applies.
+fn roba_in(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("roba").expect("cargo-built roba binary");
-    cmd.current_dir(dir);
+    cmd.args([
+        "-C",
+        dir.to_str().expect("utf-8 tempdir path"),
+        "--model",
+        "haiku",
+    ]);
     cmd
 }
 
 fn fresh_dir() -> tempfile::TempDir {
     tempfile::tempdir().expect("create test tempdir")
+}
+
+/// Make a tempdir pre-seeded with a `roba.toml`. Returns the TempDir
+/// so the caller can keep it alive for the duration of the test.
+#[allow(dead_code)]
+fn fixture_with_config(content: &str) -> tempfile::TempDir {
+    let tmp = fresh_dir();
+    std::fs::write(tmp.path().join("roba.toml"), content).expect("write roba.toml");
+    tmp
 }
 
 // ---------------------------------------------------------------------------
@@ -33,7 +60,7 @@ fn fresh_dir() -> tempfile::TempDir {
 #[ignore]
 fn live_basic_prompt() {
     let dir = fresh_dir();
-    roba_in(&dir.path().to_path_buf())
+    roba_in(dir.path())
         .arg("respond with the single word: pong")
         .assert()
         .success()
@@ -42,9 +69,37 @@ fn live_basic_prompt() {
 
 #[test]
 #[ignore]
-fn live_quiet_suppresses_stderr_metadata() {
+fn live_basic_cwd_scopes_session_to_path() {
+    // Verify -C scopes claude's session to the given path: a seeded
+    // session in dir A is reachable from -c when we point -C at A again,
+    // even though the test process's cwd never changed.
     let dir = fresh_dir();
-    let out = roba_in(&dir.path().to_path_buf())
+    roba_in(dir.path())
+        .arg("remember the word: aurora")
+        .assert()
+        .success();
+
+    let out = roba_in(dir.path())
+        .args(["-c", "what word did I ask you to remember"])
+        .output()
+        .expect("run roba -c");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.to_lowercase().contains("aurora"),
+        "expected -C to scope sessions to the tmp dir, got: {stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// output shaping
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn live_output_quiet_no_metadata() {
+    let dir = fresh_dir();
+    let out = roba_in(dir.path())
         .args(["-q", "respond with the single word: hush"])
         .output()
         .expect("run roba");
@@ -58,9 +113,9 @@ fn live_quiet_suppresses_stderr_metadata() {
 
 #[test]
 #[ignore]
-fn live_json_output_is_valid_json() {
+fn live_output_json_valid() {
     let dir = fresh_dir();
-    let out = roba_in(&dir.path().to_path_buf())
+    let out = roba_in(dir.path())
         .args(["--json", "respond with the single word: jay"])
         .output()
         .expect("run roba");
@@ -73,15 +128,11 @@ fn live_json_output_is_valid_json() {
     assert!(parsed.get("duration_ms").is_some());
 }
 
-// ---------------------------------------------------------------------------
-// output shaping
-// ---------------------------------------------------------------------------
-
 #[test]
 #[ignore]
-fn live_code_extraction_strips_fences() {
+fn live_output_code_strips_fences() {
     let dir = fresh_dir();
-    let out = roba_in(&dir.path().to_path_buf())
+    let out = roba_in(dir.path())
         .args([
             "write exactly one rust function called id that takes i32 and returns it. fenced code block, no other prose.",
             "--code",
@@ -102,9 +153,9 @@ fn live_code_extraction_strips_fences() {
 
 #[test]
 #[ignore]
-fn live_head_caps_line_count() {
+fn live_output_head_caps_lines() {
     let dir = fresh_dir();
-    let out = roba_in(&dir.path().to_path_buf())
+    let out = roba_in(dir.path())
         .args([
             "list five fruits, one per line, nothing else",
             "--head",
@@ -114,12 +165,59 @@ fn live_head_caps_line_count() {
         .expect("run roba");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // body has at most 3 non-empty lines (println adds a final newline)
     let nonempty = stdout.lines().filter(|l| !l.trim().is_empty()).count();
     assert!(
         nonempty <= 3,
         "expected <=3 non-empty lines, got {nonempty} in: {stdout}"
     );
+}
+
+#[test]
+#[ignore]
+fn live_output_save_writes_file() {
+    let dir = fresh_dir();
+    let target = dir.path().join("out.md");
+
+    let out = roba_in(dir.path())
+        .args([
+            "respond with the single word: saved",
+            "--save",
+            target.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run roba --save");
+    assert!(out.status.success());
+    assert!(
+        out.stdout.is_empty(),
+        "expected empty stdout with --save, got: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let file_contents = std::fs::read_to_string(&target).expect("read saved file");
+    assert!(
+        file_contents.to_lowercase().contains("saved"),
+        "expected 'saved' in saved file, got: {file_contents}"
+    );
+}
+
+#[test]
+#[ignore]
+fn live_output_save_json_extension() {
+    let dir = fresh_dir();
+    let target = dir.path().join("out.json");
+
+    roba_in(dir.path())
+        .args([
+            "respond with the single word: jp",
+            "--save",
+            target.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let file_contents = std::fs::read_to_string(&target).expect("read saved file");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&file_contents).expect("saved file should be JSON");
+    assert!(parsed.get("session_id").is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -128,16 +226,14 @@ fn live_head_caps_line_count() {
 
 #[test]
 #[ignore]
-fn live_continue_carries_context() {
+fn live_session_continue_carries_context() {
     let dir = fresh_dir();
-    let path = dir.path().to_path_buf();
-
-    roba_in(&path)
+    roba_in(dir.path())
         .arg("remember the word: zenith")
         .assert()
         .success();
 
-    let out = roba_in(&path)
+    let out = roba_in(dir.path())
         .args(["-c", "what word did I ask you to remember"])
         .output()
         .expect("run roba -c");
@@ -151,12 +247,11 @@ fn live_continue_carries_context() {
 
 #[test]
 #[ignore]
-fn live_resume_fork_creates_new_session_id() {
+fn live_session_resume_fork_new_id() {
     let dir = fresh_dir();
-    let path = dir.path().to_path_buf();
 
     // 1. seed a session and grab its id from --json
-    let seed = roba_in(&path)
+    let seed = roba_in(dir.path())
         .args(["--json", "respond with the single word: seed"])
         .output()
         .expect("seed run");
@@ -167,7 +262,7 @@ fn live_resume_fork_creates_new_session_id() {
         .to_string();
 
     // 2. resume + fork -- expect a NEW session id in the result
-    let fork = roba_in(&path)
+    let fork = roba_in(dir.path())
         .args([
             "--json",
             "--resume",
@@ -194,7 +289,7 @@ fn live_resume_fork_creates_new_session_id() {
 #[ignore]
 fn live_stream_emits_to_stdout() {
     let dir = fresh_dir();
-    let out = roba_in(&dir.path().to_path_buf())
+    let out = roba_in(dir.path())
         .args(["respond with the single word: streamed", "--stream"])
         .output()
         .expect("run roba --stream");
@@ -207,22 +302,20 @@ fn live_stream_emits_to_stdout() {
 }
 
 // ---------------------------------------------------------------------------
-// composition: attach / git / var
+// composition: attach / var
 // ---------------------------------------------------------------------------
 
 #[test]
 #[ignore]
-fn live_attach_makes_files_visible_to_claude() {
+fn live_compose_attach_files_visible() {
     let dir = fresh_dir();
-    let path = dir.path().to_path_buf();
-    let attach_path = path.join("greeting.txt");
+    let attach_path = dir.path().join("greeting.txt");
     std::fs::write(&attach_path, "secret word: kazoo").expect("write attach file");
 
-    let glob = path.join("greeting.txt");
-    let out = roba_in(&path)
+    let out = roba_in(dir.path())
         .args([
             "--attach",
-            glob.to_str().unwrap(),
+            attach_path.to_str().unwrap(),
             "what is the secret word in the attached file? answer with just the word.",
         ])
         .output()
@@ -237,13 +330,12 @@ fn live_attach_makes_files_visible_to_claude() {
 
 #[test]
 #[ignore]
-fn live_var_substitution_reaches_model() {
+fn live_compose_var_substitution() {
     let dir = fresh_dir();
-    let path = dir.path().to_path_buf();
-    let tpl = path.join("tpl.md");
+    let tpl = dir.path().join("tpl.md");
     std::fs::write(&tpl, "Respond with exactly: {{TARGET}}").expect("write tpl");
 
-    let out = roba_in(&path)
+    let out = roba_in(dir.path())
         .args(["-f", tpl.to_str().unwrap(), "--var", "TARGET=lighthouse"])
         .output()
         .expect("run roba -f --var");
@@ -253,58 +345,4 @@ fn live_var_substitution_reaches_model() {
         stdout.to_lowercase().contains("lighthouse"),
         "expected substituted value to reach the model, got: {stdout}"
     );
-}
-
-// ---------------------------------------------------------------------------
-// save / tee
-// ---------------------------------------------------------------------------
-
-#[test]
-#[ignore]
-fn live_save_writes_file_and_keeps_stdout_clean() {
-    let dir = fresh_dir();
-    let path = dir.path().to_path_buf();
-    let target = path.join("out.md");
-
-    let out = roba_in(&path)
-        .args([
-            "respond with the single word: saved",
-            "--save",
-            target.to_str().unwrap(),
-        ])
-        .output()
-        .expect("run roba --save");
-    assert!(out.status.success());
-    assert!(
-        out.stdout.is_empty(),
-        "expected empty stdout with --save, got: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    let file_contents = std::fs::read_to_string(&target).expect("read saved file");
-    assert!(
-        file_contents.to_lowercase().contains("saved"),
-        "expected 'saved' in saved file, got: {file_contents}"
-    );
-}
-
-#[test]
-#[ignore]
-fn live_save_json_extension_promotes_to_json() {
-    let dir = fresh_dir();
-    let path = dir.path().to_path_buf();
-    let target = path.join("out.json");
-
-    roba_in(&path)
-        .args([
-            "respond with the single word: jp",
-            "--save",
-            target.to_str().unwrap(),
-        ])
-        .assert()
-        .success();
-
-    let file_contents = std::fs::read_to_string(&target).expect("read saved file");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&file_contents).expect("saved file should be JSON");
-    assert!(parsed.get("session_id").is_some());
 }

@@ -37,6 +37,10 @@ use crate::stream::run_streaming;
 /// (history, last) run synchronously; the default action (`run_ask`)
 /// is async.
 pub async fn dispatch(cli: Cli) -> Result<()> {
+    if let Some(path) = cli.cwd.as_deref() {
+        std::env::set_current_dir(path)
+            .with_context(|| format!("--cwd: cannot change directory to {}", path.display()))?;
+    }
     match cli.command {
         Some(SubCommand::History(args)) => run_history(args),
         Some(SubCommand::Last(args)) => run_last(args),
