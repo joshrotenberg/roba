@@ -162,6 +162,28 @@ fn conflict_fresh_and_pick() {
     assert_conflict(&["foo", "--fresh", "--pick"]);
 }
 
+// ---------------------------------------------------------------------------
+// -C / --cwd
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cwd_to_missing_dir_errors_cleanly() {
+    roba()
+        .args(["-C", "/no/such/dir/should/exist/xyz", "foo"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot change directory"));
+}
+
+#[test]
+fn help_mentions_cwd_flag() {
+    roba()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--cwd"));
+}
+
 #[test]
 fn conflict_readonly_and_full_auto() {
     assert_conflict(&["foo", "--readonly", "--full-auto"]);
