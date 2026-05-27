@@ -26,8 +26,10 @@
 //! 2. **Project chain:** every ancestor `roba.toml` walking up from
 //!    cwd to the git root (or `~` if no git root); farther-from-cwd
 //!    files are loaded first so closer files override on conflict
-//! 3. **Env file:** `ROBA_PROFILES_FILE=path` adds a file at the
-//!    highest priority -- useful for ephemeral overrides
+//!
+//! `ROBA_PROFILES_FILE` (point-at-an-extra-file env var) was retired
+//! in favour of the per-knob `ROBA_<PARAM>` override layer; see
+//! [`crate::env`].
 //!
 //! # Merge semantics
 //!
@@ -81,6 +83,19 @@ pub struct Profile {
     pub deny_tool: Vec<String>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub vars: HashMap<String, String>,
+    /// Override the claude model (alias or full id).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub echo: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plain: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quiet: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub json: Option<bool>,
 }
 
 impl Profile {
@@ -99,6 +114,12 @@ impl Profile {
             && self.allow_tool.is_empty()
             && self.deny_tool.is_empty()
             && self.vars.is_empty()
+            && self.model.is_none()
+            && self.stream.is_none()
+            && self.echo.is_none()
+            && self.plain.is_none()
+            && self.quiet.is_none()
+            && self.json.is_none()
     }
 
     /// Merge `other` on top of `self`. Used to layer roba.toml files
@@ -122,6 +143,12 @@ impl Profile {
             mut allow_tool,
             mut deny_tool,
             vars,
+            model,
+            stream,
+            echo,
+            plain,
+            quiet,
+            json,
         } = other;
 
         self.prepend.append(&mut prepend);
@@ -152,6 +179,24 @@ impl Profile {
         self.deny_tool.append(&mut deny_tool);
         for (k, v) in vars {
             self.vars.insert(k, v);
+        }
+        if model.is_some() {
+            self.model = model;
+        }
+        if stream.is_some() {
+            self.stream = stream;
+        }
+        if echo.is_some() {
+            self.echo = echo;
+        }
+        if plain.is_some() {
+            self.plain = plain;
+        }
+        if quiet.is_some() {
+            self.quiet = quiet;
+        }
+        if json.is_some() {
+            self.json = json;
         }
     }
 }
@@ -230,14 +275,6 @@ pub fn discover_project_configs(start: &Path) -> Vec<PathBuf> {
     hits
 }
 
-/// Optional path from the `ROBA_PROFILES_FILE` env var.
-fn env_profiles_file() -> Option<PathBuf> {
-    std::env::var("ROBA_PROFILES_FILE")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-}
-
 // ---------------------------------------------------------------------------
 // File loading
 // ---------------------------------------------------------------------------
@@ -280,7 +317,6 @@ fn load_file(path: &Path) -> Result<ConfigFile> {
 ///
 /// 1. User-level config
 /// 2. Project chain, farther-from-cwd first
-/// 3. `ROBA_PROFILES_FILE` (highest of the file layer)
 pub fn load_pool_from(cwd: &Path) -> Result<Pool> {
     let mut pool = Pool::default();
 
@@ -291,15 +327,6 @@ pub fn load_pool_from(cwd: &Path) -> Result<Pool> {
         layers.push(user);
     }
     layers.extend(discover_project_configs(cwd));
-    if let Some(env_path) = env_profiles_file() {
-        if !env_path.exists() {
-            bail!(
-                "ROBA_PROFILES_FILE points to {} but the file doesn't exist",
-                env_path.display()
-            );
-        }
-        layers.push(env_path);
-    }
 
     for path in layers {
         let cfg = load_file(&path)?;
@@ -456,6 +483,36 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile) {
             args.var.push((k, v));
         }
     }
+    if args.model.is_none()
+        && let Some(m) = profile.model.take()
+    {
+        args.model = Some(m);
+    }
+    if let Some(v) = profile.stream
+        && !args.stream
+    {
+        args.stream = v;
+    }
+    if let Some(v) = profile.echo
+        && !args.echo
+    {
+        args.echo = v;
+    }
+    if let Some(v) = profile.plain
+        && !args.plain
+    {
+        args.plain = v;
+    }
+    if let Some(v) = profile.quiet
+        && !args.quiet
+    {
+        args.quiet = v;
+    }
+    if let Some(v) = profile.json
+        && !args.json
+    {
+        args.json = v;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -586,9 +643,6 @@ fn run_path() -> Result<()> {
             let label = if i == 0 { "project:" } else { "        " };
             println!("{label} {}", p.display());
         }
-    }
-    if let Some(env_path) = env_profiles_file() {
-        println!("env:     {}", env_path.display());
     }
     if !pool.sources.is_empty() {
         println!();

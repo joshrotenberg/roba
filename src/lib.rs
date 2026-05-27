@@ -11,6 +11,7 @@ use claude_wrapper::{Claude, QueryCommand};
 
 pub mod cli;
 pub mod cost;
+pub mod env;
 pub mod history;
 pub mod output;
 pub mod profile;
@@ -48,6 +49,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
 /// Default action: resolve a prompt, send it through claude, render
 /// the result.
 pub async fn run_ask(mut args: AskArgs) -> Result<()> {
+    env::apply_env_overrides(&mut args);
     let pool = profile::load_pool()?;
     if let Some(chosen) = profile::resolve(&args, &pool)? {
         profile::merge_into_args(&mut args, chosen);

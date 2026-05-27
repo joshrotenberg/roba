@@ -10,6 +10,18 @@ when published the entries below become version sections.
 
 ## [Unreleased]
 
+### Added
+
+- `--model MODEL` CLI flag to override the claude model per call
+  (alias or full id).
+- `ROBA_<PARAM>` env-var override layer. Every config knob is
+  settable via an env var matching the CLI long-form (uppercased,
+  `-` -> `_`, prefixed `ROBA_`). Lists comma-separated; vars via
+  per-key `ROBA_VAR_<KEY>=value`. Sits between CLI and the file
+  pool in precedence.
+- Output-policy fields in `roba.toml` / profiles: `model`, `stream`,
+  `echo`, `plain`, `quiet`, `json`.
+
 ### Changed
 
 - **Config schema** (breaking; no published users yet):
@@ -24,6 +36,11 @@ when published the entries below become version sections.
     every `roba.toml`; closer-to-cwd files override farther ones
     per-key, lists concat, vars merge per-key (previously only
     the closest file was loaded).
+
+### Removed
+
+- `ROBA_PROFILES_FILE` env var (point-at-an-extra-file). Subsumed
+  by the per-knob `ROBA_<PARAM>` override layer.
 
 ### Added
 
