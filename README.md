@@ -1,14 +1,14 @@
-# cwr
+# roba
 
 A single-prompt CLI runner for [Claude Code](https://github.com/anthropics/claude-code).
 Built on [`claude-wrapper`](https://crates.io/crates/claude-wrapper).
 
-`cwr` is what `claude -p` could be: opinionated defaults, composable
+`roba` is what `claude -p` could be: opinionated defaults, composable
 flags, rich on a TTY, scriptable on a pipe. One invocation, one
 answer, done.
 
 ```bash
-$ cwr "summarize the rust ownership model in 3 bullets"
+$ roba "summarize the rust ownership model in 3 bullets"
    Rust's ownership model rests on three rules:
 
      • Each value has a single owner.
@@ -21,10 +21,10 @@ tokens 1.2k/450 . cost $0.0192 . 2.0s . session abc12345
 ## Install
 
 ```bash
-cargo install --path crates/cwr   # from this repo, for now
+cargo install --path crates/roba   # from this repo, for now
 ```
 
-`cwr` shells out to the `claude` binary, so you need
+`roba` shells out to the `claude` binary, so you need
 [claude-code](https://github.com/anthropics/claude-code) installed
 and authenticated on your PATH.
 
@@ -34,12 +34,12 @@ and authenticated on your PATH.
 |---|---|
 | **Prompt sources** | positional, stdin (`-` or piped), `-f FILE`, `-e` ($EDITOR), `--prepend`/`--append` files, `--attach GLOB`, `--git-diff`/`--git-log`/`--git-status`, `--var K=V` template substitution |
 | **Output shaping** | `--json`, `--quiet`, `--code [LANG]`, `--head N`/`--tail N`, `--save PATH`, `--tee PATH` |
-| **Sessions** | `-c` continue most recent, `--resume ID`, `--fork`, `--pick` (interactive fuzzy chooser), `cwr history`, `cwr last` |
+| **Sessions** | `-c` continue most recent, `--resume ID`, `--fork`, `--pick` (interactive fuzzy chooser), `roba history`, `roba last` |
 | **Permissions** | `--readonly`, `--full-auto` presets |
-| **Profiles** | `--profile NAME` from `~/.config/cwr/profiles.toml`, `cwr profile {list,show,init,path}` |
+| **Profiles** | `--profile NAME` from `~/.config/roba/profiles.toml`, `roba profile {list,show,init,path}` |
 | **TTY UX** | termimad markdown render, indicatif spinner, dim metadata, colored refusal/error markers, `--plain` master kill-switch, `NO_COLOR` honored |
 | **Scripting** | typed exit codes (auth=2, budget=3, timeout=4), clean stdout/stderr split, structured `--json` output |
-| **Usage tracking** | `cwr cost`, `cwr cost --by-project` |
+| **Usage tracking** | `roba cost`, `roba cost --by-project` |
 
 Streaming mode (`--stream`) emits tokens live with inline tool-call
 indicators and a `used: Tool xN` rollup at the end.
@@ -48,47 +48,47 @@ indicators and a `used: Tool xN` rollup at the end.
 
 ```bash
 # Just ask
-cwr "what's the difference between Arc and Rc?"
+roba "what's the difference between Arc and Rc?"
 
 # Compose: system preamble + question + appendix
-cwr --prepend system.md "review this design" --append context.md
+roba --prepend system.md "review this design" --append context.md
 
 # Code extraction (handy in scripts)
-cwr "write a python one-liner that reverses a string" --code python
+roba "write a python one-liner that reverses a string" --code python
 
 # Look at files
-cwr --attach 'src/**/*.rs' "is the error handling consistent?"
+roba --attach 'src/**/*.rs' "is the error handling consistent?"
 
 # Continue the previous session
-cwr -c "now show me how to test the unsafe variant"
+roba -c "now show me how to test the unsafe variant"
 
 # Fuzzy-pick a recent session to resume
-cwr --pick "follow up to whatever I select"
+roba --pick "follow up to whatever I select"
 
 # Save the structured record
-cwr "explain quicksort" --save out.json
+roba "explain quicksort" --save out.json
 
 # Read-only review against current git diff
-cwr --readonly --git-diff "is this safe to merge?"
+roba --readonly --git-diff "is this safe to merge?"
 
 # Named profile (combo of the above)
-cwr --profile review "look at this change"
+roba --profile review "look at this change"
 
 # Pipe-friendly (no decoration, just the answer)
-cwr "what's 2+2" -q          # prints "4"
-echo "summarize this" | cwr  # stdin works
+roba "what's 2+2" -q          # prints "4"
+echo "summarize this" | roba  # stdin works
 ```
 
 ## Profiles
 
 A profile is a TOML alias for a bunch of flags you'd otherwise type
-every time. See [`docs/cwr/profiles.md`](../../docs/cwr/profiles.md)
+every time. See [`docs/roba/profiles.md`](../../docs/roba/profiles.md)
 for the schema and worked examples.
 
 ```bash
-cwr profile init             # drops a starter profiles.toml
-cwr profile list             # names defined
-cwr profile show review      # the TOML for one profile
+roba profile init             # drops a starter profiles.toml
+roba profile list             # names defined
+roba profile show review      # the TOML for one profile
 ```
 
 ## Output discipline
@@ -100,7 +100,7 @@ cwr profile show review      # the TOML for one profile
 - Auto-detect: rich on a TTY, plain on a pipe. `--plain` is the
   manual override. `NO_COLOR=1` honored.
 
-So `cwr "foo" | jq` always sees clean stdout, even with the
+So `roba "foo" | jq` always sees clean stdout, even with the
 spinner / footer / tool calls humming on stderr.
 
 ## Permissions
@@ -109,22 +109,22 @@ Safe by default. claude can use `Read`, `Glob`, and `Grep` but
 nothing else unless you say so:
 
 ```bash
-cwr "explain this"              # readonly default
-cwr "..." --writable            # add Edit + Write
-cwr "..." --allow-tool "Bash(git status)"   # add one specific pattern
-cwr "..." --deny-tool WebFetch  # block a specific tool
-cwr "..." --full-auto           # bypass every check (sandbox only)
+roba "explain this"              # readonly default
+roba "..." --writable            # add Edit + Write
+roba "..." --allow-tool "Bash(git status)"   # add one specific pattern
+roba "..." --deny-tool WebFetch  # block a specific tool
+roba "..." --full-auto           # bypass every check (sandbox only)
 ```
 
 Same knobs work as profile fields (`writable = true`,
 `allow_tools = [...]`, etc.) so you can codify a project's policy
-in `.cwr/profiles.toml` once and not think about it again.
+in `.roba/profiles.toml` once and not think about it again.
 
 ## Status
 
 Early. The CLI surface (flag names, exit codes, config schema) is
 the part we'd like to keep stable across 0.1.x. The library API
-(everything under `cwr::*` for integration testing) may shift
+(everything under `roba::*` for integration testing) may shift
 freely.
 
 ## License

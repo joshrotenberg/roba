@@ -1,4 +1,4 @@
-//! Named profiles for `cwr`.
+//! Named profiles for `roba`.
 //!
 //! A profile is a bundle of [`AskArgs`] defaults. CLI flags always
 //! override profile values; the profile only fills in fields the
@@ -9,12 +9,12 @@
 //! Profiles are merged from these sources, later sources overriding
 //! earlier ones on the same name:
 //!
-//! 1. **User-level:** `$XDG_CONFIG_HOME/cwr/profiles.toml` or
-//!    `~/.config/cwr/profiles.toml`
-//! 2. **Project-local:** the closest `.cwr/profiles.toml` walking up
+//! 1. **User-level:** `$XDG_CONFIG_HOME/roba/profiles.toml` or
+//!    `~/.config/roba/profiles.toml`
+//! 2. **Project-local:** the closest `.roba/profiles.toml` walking up
 //!    from cwd; stops at the git root if there is one, else the
 //!    filesystem root
-//! 3. **Env file:** `CWR_PROFILES_FILE=path` adds a file at the
+//! 3. **Env file:** `ROBA_PROFILES_FILE=path` adds a file at the
 //!    highest priority -- useful for ephemeral overrides
 //!
 //! # Auto-apply
@@ -23,7 +23,7 @@
 //!
 //! 1. `--profile NAME` -> apply that, no auto-apply
 //! 2. `--no-default-profile` -> skip env + default
-//! 3. `CWR_PROFILE=NAME` env -> apply that
+//! 3. `ROBA_PROFILE=NAME` env -> apply that
 //! 4. `default` profile present in the pool -> apply silently
 //! 5. otherwise -> no profile
 
@@ -77,13 +77,13 @@ pub struct ProfilesConfig {
     pub profile: HashMap<String, Profile>,
 }
 
-/// Resolved view of all profile sources for a single cwr invocation.
+/// Resolved view of all profile sources for a single roba invocation.
 #[derive(Debug, Default, Clone)]
 pub struct Pool {
     /// Merged profiles, later sources winning on the same name.
     pub profiles: HashMap<String, Profile>,
     /// Source files that contributed, in load order. Used for
-    /// diagnostics and `cwr profile path`.
+    /// diagnostics and `roba profile path`.
     pub sources: Vec<PathBuf>,
 }
 
@@ -97,24 +97,24 @@ impl Pool {
 // Path discovery
 // ---------------------------------------------------------------------------
 
-/// User-level config path: `$XDG_CONFIG_HOME/cwr/profiles.toml` or
-/// `~/.config/cwr/profiles.toml`.
+/// User-level config path: `$XDG_CONFIG_HOME/roba/profiles.toml` or
+/// `~/.config/roba/profiles.toml`.
 pub fn user_config_path() -> Option<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
         && !xdg.is_empty()
     {
-        return Some(PathBuf::from(xdg).join("cwr").join("profiles.toml"));
+        return Some(PathBuf::from(xdg).join("roba").join("profiles.toml"));
     }
-    home_dir().map(|h| h.join(".config").join("cwr").join("profiles.toml"))
+    home_dir().map(|h| h.join(".config").join("roba").join("profiles.toml"))
 }
 
-/// Walk up from `start` looking for `.cwr/profiles.toml`. Stops at
+/// Walk up from `start` looking for `.roba/profiles.toml`. Stops at
 /// the git root (a directory containing `.git`) if encountered, else
 /// at the filesystem root. Returns the first match, or `None`.
 pub fn discover_project_config(start: &Path) -> Option<PathBuf> {
     let mut current = start.to_path_buf();
     loop {
-        let candidate = current.join(".cwr").join("profiles.toml");
+        let candidate = current.join(".roba").join("profiles.toml");
         if candidate.is_file() {
             return Some(candidate);
         }
@@ -129,9 +129,9 @@ pub fn discover_project_config(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Optional path from the `CWR_PROFILES_FILE` env var.
+/// Optional path from the `ROBA_PROFILES_FILE` env var.
 fn env_profiles_file() -> Option<PathBuf> {
-    std::env::var("CWR_PROFILES_FILE")
+    std::env::var("ROBA_PROFILES_FILE")
         .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
@@ -170,7 +170,7 @@ pub fn load_pool_from(cwd: &Path) -> Result<Pool> {
     if let Some(env_path) = env_profiles_file() {
         if !env_path.exists() {
             bail!(
-                "CWR_PROFILES_FILE points to {} but the file doesn't exist",
+                "ROBA_PROFILES_FILE points to {} but the file doesn't exist",
                 env_path.display()
             );
         }
@@ -234,7 +234,7 @@ pub fn load_profile_from(path: &Path, name: &str) -> Result<Profile> {
 ///
 /// 1. `--profile NAME` -> that profile (error if missing)
 /// 2. `--no-default-profile` -> None
-/// 3. `CWR_PROFILE=NAME` env -> that profile (error if missing)
+/// 3. `ROBA_PROFILE=NAME` env -> that profile (error if missing)
 /// 4. `default` profile in pool -> that profile
 /// 5. otherwise -> None
 pub fn resolve(args: &AskArgs, pool: &Pool) -> Result<Option<Profile>> {
@@ -248,7 +248,7 @@ pub fn resolve(args: &AskArgs, pool: &Pool) -> Result<Option<Profile>> {
     if args.no_default_profile {
         return Ok(None);
     }
-    if let Ok(name) = std::env::var("CWR_PROFILE")
+    if let Ok(name) = std::env::var("ROBA_PROFILE")
         && !name.is_empty()
     {
         return pool
@@ -350,11 +350,11 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile) {
 // Starter template + subcommand
 // ---------------------------------------------------------------------------
 
-/// Starter `profiles.toml` content used by `cwr profile init`. Kept
+/// Starter `profiles.toml` content used by `roba profile init`. Kept
 /// minimal -- the user is expected to edit and extend.
 pub const STARTER_PROFILES_TOML: &str = include_str!("starter_profiles.toml");
 
-/// Run a `cwr profile <action>` subcommand.
+/// Run a `roba profile <action>` subcommand.
 pub fn run(action: crate::cli::ProfileAction) -> Result<()> {
     use crate::cli::ProfileAction;
     match action {
@@ -371,7 +371,7 @@ fn run_list() -> Result<()> {
     if pool.profiles.is_empty() {
         eprintln!("no profiles defined");
         if pool.sources.is_empty() {
-            eprintln!("hint: `cwr profile init` to drop a starter file");
+            eprintln!("hint: `roba profile init` to drop a starter file");
         } else {
             eprintln!("sources checked:");
             for s in &pool.sources {
@@ -419,19 +419,19 @@ fn run_init(force: bool) -> Result<()> {
 
 fn run_active() -> Result<()> {
     let pool = load_pool()?;
-    let env_name = std::env::var("CWR_PROFILE").ok().filter(|s| !s.is_empty());
+    let env_name = std::env::var("ROBA_PROFILE").ok().filter(|s| !s.is_empty());
 
     let (name, reason) = if let Some(name) = env_name {
         if pool.get(&name).is_none() {
-            bail!("CWR_PROFILE={name} but no such profile in the pool");
+            bail!("ROBA_PROFILE={name} but no such profile in the pool");
         }
-        (name, "from CWR_PROFILE env")
+        (name, "from ROBA_PROFILE env")
     } else if pool.get("default").is_some() {
         ("default".to_string(), "auto-applied")
     } else {
         eprintln!("no profile would auto-apply");
         if pool.profiles.is_empty() {
-            eprintln!("hint: `cwr profile init` to drop a starter file");
+            eprintln!("hint: `roba profile init` to drop a starter file");
         } else {
             let mut names: Vec<&String> = pool.profiles.keys().collect();
             names.sort();
@@ -622,25 +622,25 @@ git_diff = true
     #[test]
     fn discover_finds_profiles_in_starting_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        write_file(tmp.path(), ".cwr/profiles.toml", "[profile.x]\n");
+        write_file(tmp.path(), ".roba/profiles.toml", "[profile.x]\n");
         let found = discover_project_config(tmp.path());
-        assert_eq!(found, Some(tmp.path().join(".cwr/profiles.toml")));
+        assert_eq!(found, Some(tmp.path().join(".roba/profiles.toml")));
     }
 
     #[test]
     fn discover_walks_up_until_match() {
         let tmp = tempfile::tempdir().unwrap();
-        write_file(tmp.path(), ".cwr/profiles.toml", "[profile.x]\n");
+        write_file(tmp.path(), ".roba/profiles.toml", "[profile.x]\n");
         write_file(tmp.path(), "a/b/c/.gitkeep", "");
         let found = discover_project_config(&tmp.path().join("a/b/c"));
-        assert_eq!(found, Some(tmp.path().join(".cwr/profiles.toml")));
+        assert_eq!(found, Some(tmp.path().join(".roba/profiles.toml")));
     }
 
     #[test]
     fn discover_stops_at_git_root() {
         let tmp = tempfile::tempdir().unwrap();
-        // .cwr at the PARENT of the git root, should NOT be found
-        write_file(tmp.path(), ".cwr/profiles.toml", "[profile.x]\n");
+        // .roba at the PARENT of the git root, should NOT be found
+        write_file(tmp.path(), ".roba/profiles.toml", "[profile.x]\n");
         write_file(tmp.path(), "repo/.git/HEAD", "");
         write_file(tmp.path(), "repo/sub/.gitkeep", "");
         let found = discover_project_config(&tmp.path().join("repo/sub"));
@@ -651,10 +651,10 @@ git_diff = true
     fn discover_finds_at_git_root_itself() {
         let tmp = tempfile::tempdir().unwrap();
         write_file(tmp.path(), "repo/.git/HEAD", "");
-        write_file(tmp.path(), "repo/.cwr/profiles.toml", "[profile.x]\n");
+        write_file(tmp.path(), "repo/.roba/profiles.toml", "[profile.x]\n");
         write_file(tmp.path(), "repo/sub/.gitkeep", "");
         let found = discover_project_config(&tmp.path().join("repo/sub"));
-        assert_eq!(found, Some(tmp.path().join("repo/.cwr/profiles.toml")));
+        assert_eq!(found, Some(tmp.path().join("repo/.roba/profiles.toml")));
     }
 
     #[test]
@@ -670,14 +670,14 @@ git_diff = true
     fn empty_args() -> AskArgs {
         use clap::Parser;
 
-        let cli = crate::cli::Cli::try_parse_from(["cwr", "placeholder"]).unwrap();
+        let cli = crate::cli::Cli::try_parse_from(["roba", "placeholder"]).unwrap();
         cli.ask
     }
 
     fn args_with(extra: &[&str]) -> AskArgs {
         use clap::Parser;
 
-        let mut argv = vec!["cwr", "placeholder"];
+        let mut argv = vec!["roba", "placeholder"];
         argv.extend(extra);
         crate::cli::Cli::try_parse_from(&argv).unwrap().ask
     }
@@ -855,8 +855,8 @@ git_diff = true
         unsafe {
             std::env::set_var("HOME", "/fake/home");
         }
-        let out = expand_path(PathBuf::from("~/.config/cwr/prompt.md"));
-        assert_eq!(out, PathBuf::from("/fake/home/.config/cwr/prompt.md"));
+        let out = expand_path(PathBuf::from("~/.config/roba/prompt.md"));
+        assert_eq!(out, PathBuf::from("/fake/home/.config/roba/prompt.md"));
     }
 
     #[test]

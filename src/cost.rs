@@ -1,4 +1,4 @@
-//! `cwr cost` -- aggregate token usage from session history.
+//! `roba cost` -- aggregate token usage from session history.
 //!
 //! Reads `~/.claude/projects/<slug>/<session>.jsonl` summaries via
 //! `claude_wrapper::history::HistoryRoot` and rolls them up by total
@@ -26,7 +26,7 @@ pub struct Rollup {
     pub projects: Vec<ProjectRollup>,
 }
 
-/// Per-project rollup. Sorted by total_tokens descending in `cwr cost
+/// Per-project rollup. Sorted by total_tokens descending in `roba cost
 /// --by-project` output.
 #[derive(Debug, Serialize)]
 pub struct ProjectRollup {
@@ -36,7 +36,7 @@ pub struct ProjectRollup {
     pub total_tokens: u64,
 }
 
-/// Entry point: dispatch the `cwr cost` subcommand.
+/// Entry point: dispatch the `roba cost` subcommand.
 pub fn run(args: CostArgs) -> Result<()> {
     use claude_wrapper::history::{HistoryRoot, ListOptions, ListSort};
 

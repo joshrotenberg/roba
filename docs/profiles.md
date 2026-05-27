@@ -1,37 +1,37 @@
-# cwr profiles
+# roba profiles
 
-A profile is a named bundle of `cwr` flags you'd otherwise type every
+A profile is a named bundle of `roba` flags you'd otherwise type every
 time. Nothing magical -- the profile only fills in fields you didn't
 pass on the command line. CLI flags always win.
 
 ```bash
-cwr --profile review "what changed and is it safe to merge?"
+roba --profile review "what changed and is it safe to merge?"
 ```
 
 ## Where profiles live
 
-`cwr` builds a merged pool from three sources, later sources
+`roba` builds a merged pool from three sources, later sources
 overriding earlier ones on the same name:
 
-1. **User-level:** `$XDG_CONFIG_HOME/cwr/profiles.toml` or
-   `~/.config/cwr/profiles.toml`. Your global tools.
-2. **Project-local:** the closest `.cwr/profiles.toml` walking up
+1. **User-level:** `$XDG_CONFIG_HOME/roba/profiles.toml` or
+   `~/.config/roba/profiles.toml`. Your global tools.
+2. **Project-local:** the closest `.roba/profiles.toml` walking up
    from the current directory; stops at the git root if there is
    one, else the filesystem root. Per-project tools.
-3. **Env file:** `CWR_PROFILES_FILE=path` adds another file at the
+3. **Env file:** `ROBA_PROFILES_FILE=path` adds another file at the
    highest priority. Useful for ephemeral overrides or sharing a
    set across machines.
 
-Missing files are fine. `cwr profile path` prints what's currently
+Missing files are fine. `roba profile path` prints what's currently
 in the chain so you can see which file would supply which name.
 
 ## Auto-apply and explicit invocation
 
-When `cwr` runs the default ask path:
+When `roba` runs the default ask path:
 
-1. `cwr --profile NAME ...` -> apply `NAME`. Error if it doesn't exist.
-2. `cwr --no-default-profile ...` -> skip auto-apply for this call.
-3. `CWR_PROFILE=NAME cwr ...` (env) -> apply `NAME` as the default.
+1. `roba --profile NAME ...` -> apply `NAME`. Error if it doesn't exist.
+2. `roba --no-default-profile ...` -> skip auto-apply for this call.
+3. `ROBA_PROFILE=NAME roba ...` (env) -> apply `NAME` as the default.
 4. If a `default` profile exists in the pool -> apply it silently.
 5. Otherwise no profile.
 
@@ -41,7 +41,7 @@ both steps 3 and 4 in one go.
 To see what would auto-apply without making a call:
 
 ```bash
-cwr profile active
+roba profile active
 ```
 
 ## Schema
@@ -82,17 +82,17 @@ the profile's `NAME` and the rest of the profile's vars still apply.
 
 ## Worked examples
 
-Drop these into `~/.config/cwr/profiles.toml` (or a project-local
-`.cwr/profiles.toml`). They're starting points, not opinions --
+Drop these into `~/.config/roba/profiles.toml` (or a project-local
+`.roba/profiles.toml`). They're starting points, not opinions --
 adapt to your habits.
 
 ### `default` -- per-project auto-apply
 
-Drop this into your project's `.cwr/profiles.toml` and `cwr "..."`
+Drop this into your project's `.roba/profiles.toml` and `roba "..."`
 in that tree picks it up without `--profile`:
 
 ```toml
-# /path/to/my-project/.cwr/profiles.toml
+# /path/to/my-project/.roba/profiles.toml
 [profile.default]
 readonly = true
 continue_session = true
@@ -101,12 +101,12 @@ prepend = ["CLAUDE.md"]
 
 What happens:
 
-- `cd /path/to/my-project && cwr "what does this do"` ->
+- `cd /path/to/my-project && roba "what does this do"` ->
   read-only tools, continues the most recent session, prepends
   your project's CLAUDE.md to every prompt.
-- `cd ~ && cwr "..."` -> no default applies (no `.cwr/profiles.toml`
+- `cd ~ && roba "..."` -> no default applies (no `.roba/profiles.toml`
   walking up).
-- `cwr --no-default-profile "..."` -> bypass even inside the project.
+- `roba --no-default-profile "..."` -> bypass even inside the project.
 
 ### `default` with project-aware permissions
 
@@ -142,7 +142,7 @@ git_diff = true
 Usage:
 
 ```bash
-cwr --profile review "is the auth change safe to merge?"
+roba --profile review "is the auth change safe to merge?"
 ```
 
 What it does: locks claude to read-only tools (no edits, no shell)
@@ -153,7 +153,7 @@ file with your own review style if you want stronger opinions:
 [profile.review]
 readonly = true
 git_diff = true
-prepend = ["~/.config/cwr/prompts/review-style.md"]
+prepend = ["~/.config/roba/prompts/review-style.md"]
 ```
 
 ### `explain` -- read-only walkthrough
@@ -166,7 +166,7 @@ readonly = true
 Usage:
 
 ```bash
-cwr --profile explain --attach 'src/foo.rs' "what does this module do, and what assumptions does it make?"
+roba --profile explain --attach 'src/foo.rs' "what does this module do, and what assumptions does it make?"
 ```
 
 Pairs well with `--attach`. The profile keeps claude from poking at
@@ -186,14 +186,14 @@ STYLE = "imperative, concise, no marketing"
 Usage:
 
 ```bash
-cwr --profile commit-msg "write a commit message in the {{STYLE}} style"
+roba --profile commit-msg "write a commit message in the {{STYLE}} style"
 ```
 
 The `STYLE` placeholder is substituted from the profile's vars. You
 can override per-invocation:
 
 ```bash
-cwr --profile commit-msg --var STYLE="bullet points" "write a commit message in the {{STYLE}} style"
+roba --profile commit-msg --var STYLE="bullet points" "write a commit message in the {{STYLE}} style"
 ```
 
 ### `summarize` -- distill long content
@@ -209,7 +209,7 @@ LENGTH = "one paragraph"
 Usage with stdin:
 
 ```bash
-cat long-doc.md | cwr --profile summarize "summarize this in {{LENGTH}}, plain prose"
+cat long-doc.md | roba --profile summarize "summarize this in {{LENGTH}}, plain prose"
 ```
 
 ### `fix-build` -- diagnose a failed build from piped output
@@ -223,7 +223,7 @@ git_status = true
 Usage:
 
 ```bash
-cargo build 2>&1 | cwr --profile fix-build "what's broken and how do I fix it?"
+cargo build 2>&1 | roba --profile fix-build "what's broken and how do I fix it?"
 ```
 
 The `git_status` line gives claude context on which files you've been
@@ -243,10 +243,10 @@ PROJECT = "MYPROJ"
 Usage with a template file:
 
 ```bash
-# ~/.config/cwr/prompts/standup.md
+# ~/.config/roba/prompts/standup.md
 # Write today's standup in the {{PROJECT}} format. Recent commits:
 
-cwr --profile ticket -f ~/.config/cwr/prompts/standup.md
+roba --profile ticket -f ~/.config/roba/prompts/standup.md
 ```
 
 ## Tips
@@ -261,7 +261,7 @@ cwr --profile ticket -f ~/.config/cwr/prompts/standup.md
 - **Inspect what a profile sets** by combining with `--echo`:
 
   ```bash
-  echo "" | cwr --profile review --echo -q
+  echo "" | roba --profile review --echo -q
   ```
 
   prints the assembled prompt to stderr without making a real call.
@@ -271,9 +271,9 @@ cwr --profile ticket -f ~/.config/cwr/prompts/standup.md
 
 ## Future
 
-- `cwr profile list` / `cwr profile show NAME` for managing the
+- `roba profile list` / `roba profile show NAME` for managing the
   config from the CLI
-- `cwr profile init` to drop a starter `profiles.toml`
-- Project-local `./.cwr/profiles.toml` overriding user-level
+- `roba profile init` to drop a starter `profiles.toml`
+- Project-local `./.roba/profiles.toml` overriding user-level
 - Inline prompt text in profile schema (`prepend_inline = ["..."]`)
   so a profile can carry a prompt without a separate file

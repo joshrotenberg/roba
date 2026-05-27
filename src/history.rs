@@ -1,4 +1,4 @@
-//! `cwr history`, `cwr last`, and the `--pick` interactive chooser.
+//! `roba history`, `roba last`, and the `--pick` interactive chooser.
 //!
 //! All read-only operations over `~/.claude/projects` via
 //! `claude_wrapper::history`. No claude calls.
@@ -9,7 +9,7 @@ use std::io::IsTerminal;
 use crate::cli::{HistoryArgs, LastArgs};
 use crate::output::{format_timestamp, truncate_arg};
 
-/// Implementation of `cwr history`.
+/// Implementation of `roba history`.
 pub fn run_history(args: HistoryArgs) -> Result<()> {
     use claude_wrapper::history::{HistoryRoot, ListOptions, ListSort};
 
@@ -66,7 +66,7 @@ pub fn run_history(args: HistoryArgs) -> Result<()> {
     Ok(())
 }
 
-/// Implementation of `cwr last`.
+/// Implementation of `roba last`.
 pub fn run_last(args: LastArgs) -> Result<()> {
     use claude_wrapper::history::{HistoryEntry, HistoryRoot, ListOptions, ListSort};
 

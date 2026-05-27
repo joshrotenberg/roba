@@ -1,4 +1,4 @@
-//! Mechanical integration tests -- exercise the cwr binary surface
+//! Mechanical integration tests -- exercise the roba binary surface
 //! without ever calling claude. Covers: clap dispatch, conflict
 //! matrix, exit codes, file-side error paths.
 //!
@@ -8,8 +8,8 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 
-fn cwr() -> Command {
-    Command::cargo_bin("cwr").expect("cargo-built cwr binary")
+fn roba() -> Command {
+    Command::cargo_bin("roba").expect("cargo-built roba binary")
 }
 
 // ---------------------------------------------------------------------------
@@ -18,27 +18,27 @@ fn cwr() -> Command {
 
 #[test]
 fn help_prints_usage_and_exits_zero() {
-    cwr()
+    roba()
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Usage: cwr"))
+        .stdout(predicate::str::contains("Usage: roba"))
         .stdout(predicate::str::contains("history"))
         .stdout(predicate::str::contains("last"));
 }
 
 #[test]
 fn version_prints_crate_version_and_exits_zero() {
-    cwr()
+    roba()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("cwr 0.1.0"));
+        .stdout(predicate::str::contains("roba 0.1.0"));
 }
 
 #[test]
 fn history_help_describes_subcommand() {
-    cwr()
+    roba()
         .args(["history", "--help"])
         .assert()
         .success()
@@ -53,7 +53,7 @@ fn history_help_describes_subcommand() {
 
 #[test]
 fn missing_file_errors_with_exit_1() {
-    cwr()
+    roba()
         .arg("-f")
         .arg("/no/such/path-12345.md")
         .assert()
@@ -65,7 +65,7 @@ fn missing_file_errors_with_exit_1() {
 #[test]
 fn empty_file_errors_with_exit_1() {
     let f = tempfile::NamedTempFile::new().unwrap();
-    cwr()
+    roba()
         .arg("-f")
         .arg(f.path())
         .assert()
@@ -76,7 +76,7 @@ fn empty_file_errors_with_exit_1() {
 
 #[test]
 fn missing_prepend_errors_with_exit_1() {
-    cwr()
+    roba()
         .args(["foo", "--prepend", "/no/such/prepend-12345"])
         .assert()
         .failure()
@@ -86,7 +86,7 @@ fn missing_prepend_errors_with_exit_1() {
 
 #[test]
 fn dash_with_empty_stdin_errors() {
-    cwr()
+    roba()
         .arg("-")
         .write_stdin("")
         .assert()
@@ -100,7 +100,7 @@ fn dash_with_empty_stdin_errors() {
 // ---------------------------------------------------------------------------
 
 fn assert_conflict(args: &[&str]) {
-    cwr()
+    roba()
         .args(args)
         .assert()
         .failure()
@@ -174,7 +174,7 @@ fn conflict_stream_and_save() {
 
 #[test]
 fn fork_without_resume_errors() {
-    cwr()
+    roba()
         .args(["foo", "--fork"])
         .assert()
         .failure()
@@ -183,7 +183,7 @@ fn fork_without_resume_errors() {
 
 #[test]
 fn var_bad_syntax_errors() {
-    cwr()
+    roba()
         .args(["foo", "--var", "no-equals"])
         .assert()
         .failure()

@@ -1,4 +1,4 @@
-//! `cwr` -- single-prompt CLI runner built on `claude-wrapper`.
+//! `roba` -- single-prompt CLI runner built on `claude-wrapper`.
 //!
 //! This lib hosts the module surface so integration tests can drive
 //! the same code paths the binary uses. `main.rs` is just an entry

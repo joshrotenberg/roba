@@ -322,7 +322,7 @@ pub struct AskArgs {
     #[arg(long, value_name = "NAME", help_heading = "Profiles")]
     pub profile: Option<String>,
 
-    /// Skip auto-applying `default` and `CWR_PROFILE`.
+    /// Skip auto-applying `default` and `ROBA_PROFILE`.
     #[arg(long, help_heading = "Profiles")]
     pub no_default_profile: bool,
 }

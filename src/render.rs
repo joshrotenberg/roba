@@ -10,7 +10,7 @@ use std::io::IsTerminal;
 
 use crate::cli::AskArgs;
 
-/// Resolved presentation policy for one cwr invocation. Built once
+/// Resolved presentation policy for one roba invocation. Built once
 /// and threaded through wherever output happens.
 #[derive(Debug, Clone, Copy)]
 pub struct Style {

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `cwr` are documented here. Format follows
+All notable changes to `roba` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning
 follows [SemVer](https://semver.org/).
 
@@ -12,18 +12,18 @@ when published the entries below become version sections.
 
 ### Added
 
-- Initial cut of `cwr`: single-prompt CLI runner over `claude-wrapper`.
+- Initial cut of `roba`: single-prompt CLI runner over `claude-wrapper`.
 - Input sources: positional, stdin (`-` or piped), `-f`, `-e`,
   `--prepend`, `--append`, `--attach` (glob), `--git-diff`,
   `--git-log`, `--git-status`, `--var K=V`.
 - Output: plain default, `--json`, `--quiet`, `--code [LANG]`,
   `--head N` / `--tail N`, `--save`, `--tee`, `--stream`.
 - Sessions: `-c` / `--resume ID`, `--fork`, `--pick` fuzzy chooser,
-  `cwr history`, `cwr last`.
+  `roba history`, `roba last`.
 - Permissions: `--readonly`, `--full-auto` presets.
-- Profiles: `--profile NAME` from `~/.config/cwr/profiles.toml`,
-  `cwr profile {list,show,init,path}` subcommands.
-- Cost: `cwr cost` token rollup, `--by-project`, `--project`,
+- Profiles: `--profile NAME` from `~/.config/roba/profiles.toml`,
+  `roba profile {list,show,init,path}` subcommands.
+- Cost: `roba cost` token rollup, `--by-project`, `--project`,
   `--json`.
 - TTY UX: termimad markdown render, indicatif spinner, dim
   metadata, colored refusal/error markers, `--plain` master

@@ -1,7 +1,7 @@
-# cwr design notes (brainstorm)
+# roba design notes (brainstorm)
 
 > **Note on status:** this is a brainstorm / idea log, not an
-> authoritative spec. The actual state of `cwr` lives in the code,
+> authoritative spec. The actual state of `roba` lives in the code,
 > the per-crate CHANGELOG, and the crate README. Items here may be
 > shipped, partly shipped, or still purely speculative -- treat
 > them as design context, not a project board.
@@ -9,7 +9,7 @@
 Working notes for a CLI that wraps `claude -p` with better defaults,
 better ergonomics, and a friendlier surface for scripts and humans.
 
-The name `cwr` (claude wrapper runner) was a placeholder that stuck.
+The name `roba` (claude wrapper runner) was a placeholder that stuck.
 
 ## Decisions log
 
@@ -68,7 +68,7 @@ flag combinations.
 
 - stdout = the answer. stderr = metadata (cost, duration, session id,
   echo, spinner, tool calls, errors). Becomes pipeable:
-  `cwr "summarize" | jq` works because the answer is alone on stdout
+  `roba "summarize" | jq` works because the answer is alone on stdout
 - TTY/pipe auto-detect: markdown-render on TTY, plain on pipe.
   Honor `NO_COLOR`
 - `--save out.{md,json}` writes a copy to a file; extension drives
@@ -102,7 +102,7 @@ flag combinations.
 - Cost footer (stderr, on TTY by default): 
   `tokens 1.2k/600 . cost $0.018 . 4.3s . sonnet . session abc123`
 - Tool rollup: `Used: Read x3, Edit x1, Bash x2` summary
-- Session footer: `Session: abc123 (continue with cwr -c)`
+- Session footer: `Session: abc123 (continue with roba -c)`
 - Citations list: if claude referenced files, list them at the end
 
 #### Content shaping
@@ -129,7 +129,7 @@ flag combinations.
   (file path + fenced code block)
 - `--git-diff` / `--git-log -n 5` / `--git-status` snap-in context blocks
 - Templating: `--var TICKET=ABC-123` substitutes into the prompt body
-- Heredoc-style: `cwr <<EOF` for inline multi-line without quoting
+- Heredoc-style: `roba <<EOF` for inline multi-line without quoting
 
 ### Tool / permission ergonomics
 
@@ -146,14 +146,14 @@ flag combinations.
 
 ### Sessions
 
-- `cwr -c` prints which session it picked (title + last-mod) so you're
+- `roba -c` prints which session it picked (title + last-mod) so you're
   not guessing
-- `cwr --pick` fzf-style chooser over recent sessions; pairs with `-c`
-- `cwr history` lists recent N with title/cost/age/cwd (already have
+- `roba --pick` fzf-style chooser over recent sessions; pairs with `-c`
+- `roba history` lists recent N with title/cost/age/cwd (already have
   the wrapper-side reader -- `claude_wrapper::history`)
-- `cwr last` reprints last run's answer/cost/session-id (cheap re-read
+- `roba last` reprints last run's answer/cost/session-id (cheap re-read
   of disk)
-- `cwr fork <id>` clones a session to experiment without polluting
+- `roba fork <id>` clones a session to experiment without polluting
   the original
 
 ### Cost / budget
@@ -164,7 +164,7 @@ flag combinations.
   no API call needed
 - Per-run footer on stderr:
   `tokens 1.2k/600  cost $0.018  4.3s  sonnet`
-- `cwr cost --since 1d` rolls up history JSONL into a usage report
+- `roba cost --since 1d` rolls up history JSONL into a usage report
   (uses the new `SessionSummary.total_tokens` field)
 
 ### Failure modes
@@ -184,15 +184,15 @@ flag combinations.
 
 ### Profiles / templates
 
-- `~/.config/cwr/profiles.toml` with named combos:
+- `~/.config/roba/profiles.toml` with named combos:
   ```toml
   [profile.review-rust]
   model = "opus"
-  system-prompt-file = "~/.config/cwr/prompts/review-rust.md"
+  system-prompt-file = "~/.config/roba/prompts/review-rust.md"
   tools = ["Read", "Glob", "Grep"]
   budget = 0.50
   ```
-- Invocation: `cwr --profile review-rust @src/main.rs`
+- Invocation: `roba --profile review-rust @src/main.rs`
 - Built-in profiles shipped with the binary:
   - `review` -- code review on changed files
   - `explain` -- explain code at a path/range
@@ -202,10 +202,10 @@ flag combinations.
 
 ### Async / detached
 
-- `cwr -p "..." --async` prints session id and exits; useful for long
+- `roba -p "..." --async` prints session id and exits; useful for long
   ones the user wants to background
-- `cwr attach <id>` resumes streaming output for a running session
-- `cwr wait <id>` blocks until done, then dumps result
+- `roba attach <id>` resumes streaming output for a running session
+- `roba wait <id>` blocks until done, then dumps result
 - (The `dispatch` crate already prototyped this; revisit whether to
   fold it in or keep separate)
 
@@ -223,15 +223,15 @@ flag combinations.
 - `--with-mcp ./local-mcp.json` quick-attach an MCP config
 - `--temp-mcp '{"server-x":{...}}'` inline JSON, no file needed
 - `--agent foo` (already in wrapper)
-- Auto-discover `cwr.toml` in cwd for project-level defaults
+- Auto-discover `roba.toml` in cwd for project-level defaults
 - `--workdir` (already supported) plus `--worktree` to drop into a
   fresh worktree first (wrapper has the typed builder)
 
 ### REPL mode (future, on top of duplex)
 
-A `cwr repl` subcommand for interactive multi-turn work without
+A `roba repl` subcommand for interactive multi-turn work without
 opening a full `claude` session. Lighter than claude proper, but
-heavier than one-shot `cwr "..."`. The "not quite the full claude
+heavier than one-shot `roba "..."`. The "not quite the full claude
 but still interactive turns" sweet spot.
 
 Implementation: reedline-repl on the front, `DuplexSession` on the
@@ -245,7 +245,7 @@ Sketch:
 - Slash commands: `/exit`, `/clear`, `/model opus`, `/tools list`,
   `/cost`, `/save out.md`, `/fork`, `/resume <id>`, `/help`
 - History recall (reedline's persistent history)
-- Per-turn footer (same shape as one-shot cwr) plus a cumulative
+- Per-turn footer (same shape as one-shot roba) plus a cumulative
   cost line at the prompt: `[$0.42 total] >`
 - Auto-checkpoint: every N turns, write the session id so a crash
   doesn't lose context
@@ -268,7 +268,7 @@ If we ship a minimal v0.1, the highest-impact subset is probably:
    the "how do I get my prompt in" friction
 3. **Permission presets (`--readonly`, `--code`, `--no-bash`)** --
    turns a quoting nightmare into one flag
-4. **Cost footer on stderr + `--estimate` + `cwr cost`** -- makes cost
+4. **Cost footer on stderr + `--estimate` + `roba cost`** -- makes cost
    legible without forcing JSON mode
 5. **Typed exit codes + auto-retry transients** -- turns the runner
    into a script-friendly building block
@@ -280,12 +280,12 @@ not a from-scratch project.
 ## Open questions
 
 - Where does this live? New crate in this workspace? Separate repo?
-- Binary name. `cwr`? `cq` (claude-query)? Something else?
+- Binary name. `roba`? `cq` (claude-query)? Something else?
 - Sync default or async default? Sync is simpler for single-prompt;
   async fits long-running ones.
 - Color/markdown rendering -- pull in a TUI dep (`ratatui`, `crossterm`)
   or stay minimal with `termcolor`?
-- Profiles: ship as TOML or use the existing `cwr.toml` shape we'd
+- Profiles: ship as TOML or use the existing `roba.toml` shape we'd
   invent here?
 - Does it absorb the `dispatch` crate's async/detach work, or stay
   separate and compose?
@@ -294,21 +294,21 @@ not a from-scratch project.
 
 (scratch space; add freely)
 
-### Session export -- `cwr export <id>` / `cwr cat <id>`
+### Session export -- `roba export <id>` / `roba cat <id>`
 
-Field-discovered use case: pull a full conversation out of cwr's
+Field-discovered use case: pull a full conversation out of roba's
 history to use as context elsewhere. Today you can fake it via
-`cwr last --type all -n 9999 --project <slug>` but the name and
+`roba last --type all -n 9999 --project <slug>` but the name and
 flag combo don't advertise the use case.
 
 A proper surface would be:
 
 ```bash
-cwr export <session-id>                   # default: markdown to stdout
-cwr export <session-id> --format prompt-context
-cwr export <session-id> --format jsonl    # raw stream events
-cwr export <session-id> --save out.md
-cwr cat <session-id>                      # alias for export markdown to stdout
+roba export <session-id>                   # default: markdown to stdout
+roba export <session-id> --format prompt-context
+roba export <session-id> --format jsonl    # raw stream events
+roba export <session-id> --save out.md
+roba cat <session-id>                      # alias for export markdown to stdout
 ```
 
 Format options worth thinking through:
@@ -330,21 +330,21 @@ existing history / last semantics.
 
 Companion thoughts:
 
-- `cwr export latest` as a shorthand for "the most recent session
+- `roba export latest` as a shorthand for "the most recent session
   in this cwd" since that's probably the common case.
 - A `--with-meta` flag to also dump cost / token totals / model
   used / timestamps, useful for audit or sharing.
 
 ### Transient status bar / "TUI while working, shell when done"
 
-A mental model worth chasing: while cwr is making a call, the
+A mental model worth chasing: while roba is making a call, the
 terminal briefly becomes a lightweight TUI -- a pinned status bar
 at the bottom showing elapsed time, tool count, latest action --
 while content (text, tool calls) scrolls above. When the call
 completes, the status bar clears and we're back to a normal shell
 prompt with the answer rendered above. No persistent UI, no
 "launch a full TUI" mode -- just a transient panel that exists
-exactly as long as cwr is doing something.
+exactly as long as roba is doing something.
 
 Concretely:
 
@@ -434,11 +434,11 @@ tool-call counter on the spinner covers it.
 ### `-C` / `--cwd PATH` -- run prompt in a different directory
 
 ```bash
-cwr -C ~/Code/foo "what does this crate do?"
-cwr --cwd ../bar -c "follow up about bar"
+roba -C ~/Code/foo "what does this crate do?"
+roba --cwd ../bar -c "follow up about bar"
 ```
 
-Matches `git -C` / `make -C` convention. Without it, cwr inherits
+Matches `git -C` / `make -C` convention. Without it, roba inherits
 the shell's cwd; with it, claude (and all cwd-derived behavior)
 operates as if invoked from that path.
 
@@ -447,20 +447,20 @@ Knock-on effects to think through:
 - **Claude's working dir.** Pass through to `QueryCommand` /
   process spawn so claude actually sees the right cwd.
 - **Profile discovery.** The walk-up that finds
-  `.cwr/profiles.toml` (and the `default` auto-apply) walks from
+  `.roba/profiles.toml` (and the `default` auto-apply) walks from
   `--cwd`, not the shell's cwd. Probably what users want -- "run
   as if I were in that project."
-- **History scope.** `cwr history` / `cwr last` infer the project
+- **History scope.** `roba history` / `roba last` infer the project
   slug from cwd; with `-C`, infer from `--cwd`. Same logic, just
   different starting point.
 - **User-supplied paths** (`-f`, `--prepend`, `--append`,
   `--attach` globs). Open question: resolve relative to the
   shell's cwd (since the user typed them there) or to `--cwd`
   (consistent with everything else)? Lean toward shell's cwd:
-  `cwr -C ~/proj -f notes.md` should pick up `./notes.md` from
+  `roba -C ~/proj -f notes.md` should pick up `./notes.md` from
   where the user typed, not from `~/proj/notes.md`. Document
   clearly; absolute paths sidestep the ambiguity.
-- **Composition with async.** `cwr --async -C path "..."` lets
+- **Composition with async.** `roba --async -C path "..."` lets
   you fire off a background job for another project without
   cd-ing. Common case.
 
@@ -469,20 +469,20 @@ compose well.
 
 ### Async / detached execution
 
-`cwr --async "..."` returns immediately with a session id; the
+`roba --async "..."` returns immediately with a session id; the
 prompt continues running in the background until claude completes.
 Useful for long-running prompts ("review this whole module") where
 you don't want to hold the terminal hostage.
 
 ```bash
-$ cwr --async "do a deep review of the auth module"
+$ roba --async "do a deep review of the auth module"
 session 7c3f9a21 dispatched (pid 91234)
 $ # ... go do other work ...
-$ cwr status 7c3f9a21
+$ roba status 7c3f9a21
 session 7c3f9a21 running (4m12s, 8 tool calls so far)
-$ cwr wait 7c3f9a21
+$ roba wait 7c3f9a21
 ... blocks until done, then prints the rendered output ...
-$ cwr attach 7c3f9a21
+$ roba attach 7c3f9a21
 ... attaches to the live stream from this point forward ...
 ```
 
@@ -492,8 +492,8 @@ Mechanics:
   Standard Unix pattern: fork, parent exits, child setsid()s and
   forks again; grandchild is reparented to init and survives the
   terminal closing. Closes stdin/stdout/stderr or redirects to a
-  log file in the cwr state dir.
-- **State directory**: `~/.local/state/cwr/sessions/<id>/` holds:
+  log file in the roba state dir.
+- **State directory**: `~/.local/state/roba/sessions/<id>/` holds:
   - `meta.json` (pid, started_at, prompt, profile applied, status)
   - `stream.jsonl` (events as they arrive from claude)
   - `out.txt` (final rendered text once complete)
@@ -502,30 +502,30 @@ Mechanics:
   as if it were a live `--stream`.
 - **Lifecycle**: the background process updates `meta.json` status
   through `dispatched -> running -> completed | failed`. A periodic
-  cleanup job (or manual `cwr clean`) prunes old completed sessions.
+  cleanup job (or manual `roba clean`) prunes old completed sessions.
 
 Open questions:
 
 1. **Queued messages.** If a session is mid-run and the user wants
    to send another prompt to the SAME session, do we queue it?
    Spawn a parallel? My instinct: queueing inside a session is
-   hard (duplex needed), so each `cwr` invocation makes its own
+   hard (duplex needed), so each `roba` invocation makes its own
    background session. Use `--resume <id>` to chain.
 2. **Output capture.** Background sessions can't render to the
    user's terminal directly. Do we keep the full streamed
-   `stream.jsonl` for `cwr attach` replay, or only the final text?
+   `stream.jsonl` for `roba attach` replay, or only the final text?
    Probably both -- jsonl is cheap.
-3. **Notifications.** Should `cwr` notify on completion (system
+3. **Notifications.** Should `roba` notify on completion (system
    notification, terminal bell, slack webhook)? Optional flag.
 4. **Composition with `dispatch` crate.** The existing `dispatch`
    crate at the workspace level prototyped much of this. Decide:
-   absorb its code into cwr, depend on it, or keep separate and
+   absorb its code into roba, depend on it, or keep separate and
    document the relationship.
-5. **--resume with async**: `cwr "first prompt" --async` then
-   `cwr "follow-up" --resume <id>` -- does the follow-up wait for
+5. **--resume with async**: `roba "first prompt" --async` then
+   `roba "follow-up" --resume <id>` -- does the follow-up wait for
    the first to complete, or queue, or fork? Most consistent:
    error if the resumed session is still running; user can
-   `cwr wait` then resume.
+   `roba wait` then resume.
 
 This is where duplex genuinely earns its keep on the wrapper
 side: a long-running background process IS a duplex session.
@@ -536,7 +536,7 @@ is in flight.
 
 ### Tool-call expansion levels
 
-Today's tool-call rendering (both live `--stream` and `cwr last
+Today's tool-call rendering (both live `--stream` and `roba last
 --type tools`) is one line per call: name + truncated primary arg.
 Sometimes you want more, sometimes less. A verbosity knob would
 help:
@@ -552,7 +552,7 @@ Surfaces:
 
 - Live `--stream`: maybe `-v` / `-vv` count flags, or `--show-tools
   full`.
-- `cwr last`: same knob, applied to historical replay.
+- `roba last`: same knob, applied to historical replay.
 
 L3 is the interesting one. `tool_result` entries aren't in the
 `tool_use` assistant block -- they live in subsequent `user`

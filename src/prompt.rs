@@ -202,7 +202,7 @@ pub fn read_stdin() -> Result<String> {
 /// and return whatever the user typed on save + exit.
 pub fn compose_in_editor() -> Result<String> {
     let tmp = tempfile::Builder::new()
-        .prefix("cwr-prompt-")
+        .prefix("roba-prompt-")
         .suffix(".md")
         .tempfile()
         .context("creating editor scratch file")?;

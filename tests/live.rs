@@ -2,7 +2,7 @@
 //! binary and cost money. Marked `#[ignore]` so they only run when
 //! you opt in:
 //!
-//!   cargo test -p cwr --test live -- --ignored --nocapture
+//!   cargo test -p roba --test live -- --ignored --nocapture
 //!
 //! Each test runs in a fresh tempdir so sessions don't bleed between
 //! tests (claude scopes -c "most recent" by project, and each tempdir
@@ -15,8 +15,8 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::PathBuf;
 
-fn cwr_in(dir: &PathBuf) -> Command {
-    let mut cmd = Command::cargo_bin("cwr").expect("cargo-built cwr binary");
+fn roba_in(dir: &PathBuf) -> Command {
+    let mut cmd = Command::cargo_bin("roba").expect("cargo-built roba binary");
     cmd.current_dir(dir);
     cmd
 }
@@ -33,7 +33,7 @@ fn fresh_dir() -> tempfile::TempDir {
 #[ignore]
 fn live_basic_prompt() {
     let dir = fresh_dir();
-    cwr_in(&dir.path().to_path_buf())
+    roba_in(&dir.path().to_path_buf())
         .arg("respond with the single word: pong")
         .assert()
         .success()
@@ -44,11 +44,11 @@ fn live_basic_prompt() {
 #[ignore]
 fn live_quiet_suppresses_stderr_metadata() {
     let dir = fresh_dir();
-    let out = cwr_in(&dir.path().to_path_buf())
+    let out = roba_in(&dir.path().to_path_buf())
         .args(["-q", "respond with the single word: hush"])
         .output()
-        .expect("run cwr");
-    assert!(out.status.success(), "cwr failed: {out:?}");
+        .expect("run roba");
+    assert!(out.status.success(), "roba failed: {out:?}");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !stderr.contains("cost"),
@@ -60,10 +60,10 @@ fn live_quiet_suppresses_stderr_metadata() {
 #[ignore]
 fn live_json_output_is_valid_json() {
     let dir = fresh_dir();
-    let out = cwr_in(&dir.path().to_path_buf())
+    let out = roba_in(&dir.path().to_path_buf())
         .args(["--json", "respond with the single word: jay"])
         .output()
-        .expect("run cwr");
+        .expect("run roba");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value =
@@ -81,13 +81,13 @@ fn live_json_output_is_valid_json() {
 #[ignore]
 fn live_code_extraction_strips_fences() {
     let dir = fresh_dir();
-    let out = cwr_in(&dir.path().to_path_buf())
+    let out = roba_in(&dir.path().to_path_buf())
         .args([
             "write exactly one rust function called id that takes i32 and returns it. fenced code block, no other prose.",
             "--code",
         ])
         .output()
-        .expect("run cwr");
+        .expect("run roba");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -101,10 +101,10 @@ fn live_code_extraction_strips_fences() {
 #[ignore]
 fn live_head_caps_line_count() {
     let dir = fresh_dir();
-    let out = cwr_in(&dir.path().to_path_buf())
+    let out = roba_in(&dir.path().to_path_buf())
         .args(["list five fruits, one per line, nothing else", "--head", "3"])
         .output()
-        .expect("run cwr");
+        .expect("run roba");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     // body has at most 3 non-empty lines (println adds a final newline)
@@ -122,15 +122,15 @@ fn live_continue_carries_context() {
     let dir = fresh_dir();
     let path = dir.path().to_path_buf();
 
-    cwr_in(&path)
+    roba_in(&path)
         .arg("remember the word: zenith")
         .assert()
         .success();
 
-    let out = cwr_in(&path)
+    let out = roba_in(&path)
         .args(["-c", "what word did I ask you to remember"])
         .output()
-        .expect("run cwr -c");
+        .expect("run roba -c");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -146,7 +146,7 @@ fn live_resume_fork_creates_new_session_id() {
     let path = dir.path().to_path_buf();
 
     // 1. seed a session and grab its id from --json
-    let seed = cwr_in(&path)
+    let seed = roba_in(&path)
         .args(["--json", "respond with the single word: seed"])
         .output()
         .expect("seed run");
@@ -154,7 +154,7 @@ fn live_resume_fork_creates_new_session_id() {
     let seed_id = seed_json["session_id"].as_str().expect("session_id").to_string();
 
     // 2. resume + fork -- expect a NEW session id in the result
-    let fork = cwr_in(&path)
+    let fork = roba_in(&path)
         .args([
             "--json",
             "--resume",
@@ -181,10 +181,10 @@ fn live_resume_fork_creates_new_session_id() {
 #[ignore]
 fn live_stream_emits_to_stdout() {
     let dir = fresh_dir();
-    let out = cwr_in(&dir.path().to_path_buf())
+    let out = roba_in(&dir.path().to_path_buf())
         .args(["respond with the single word: streamed", "--stream"])
         .output()
-        .expect("run cwr --stream");
+        .expect("run roba --stream");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -206,14 +206,14 @@ fn live_attach_makes_files_visible_to_claude() {
     std::fs::write(&attach_path, "secret word: kazoo").expect("write attach file");
 
     let glob = path.join("greeting.txt");
-    let out = cwr_in(&path)
+    let out = roba_in(&path)
         .args([
             "--attach",
             glob.to_str().unwrap(),
             "what is the secret word in the attached file? answer with just the word.",
         ])
         .output()
-        .expect("run cwr --attach");
+        .expect("run roba --attach");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -230,7 +230,7 @@ fn live_var_substitution_reaches_model() {
     let tpl = path.join("tpl.md");
     std::fs::write(&tpl, "Respond with exactly: {{TARGET}}").expect("write tpl");
 
-    let out = cwr_in(&path)
+    let out = roba_in(&path)
         .args([
             "-f",
             tpl.to_str().unwrap(),
@@ -238,7 +238,7 @@ fn live_var_substitution_reaches_model() {
             "TARGET=lighthouse",
         ])
         .output()
-        .expect("run cwr -f --var");
+        .expect("run roba -f --var");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -258,14 +258,14 @@ fn live_save_writes_file_and_keeps_stdout_clean() {
     let path = dir.path().to_path_buf();
     let target = path.join("out.md");
 
-    let out = cwr_in(&path)
+    let out = roba_in(&path)
         .args([
             "respond with the single word: saved",
             "--save",
             target.to_str().unwrap(),
         ])
         .output()
-        .expect("run cwr --save");
+        .expect("run roba --save");
     assert!(out.status.success());
     assert!(
         out.stdout.is_empty(),
@@ -286,7 +286,7 @@ fn live_save_json_extension_promotes_to_json() {
     let path = dir.path().to_path_buf();
     let target = path.join("out.json");
 
-    cwr_in(&path)
+    roba_in(&path)
         .args([
             "respond with the single word: jp",
             "--save",
