@@ -21,9 +21,6 @@ scalars, lists concat, vars merge per-key).
    directory; stops at the git root if there is one, else the
    filesystem root. Closer-to-cwd files override farther ones on
    the same key.
-3. **Env file:** `ROBA_PROFILES_FILE=path` adds another file at the
-   highest priority. Useful for ephemeral overrides or sharing a
-   set across machines.
 
 Top-level keys in a `roba.toml` are project-wide defaults: every
 roba call in the dir inherits them. `[profile.NAME]` tables sit
@@ -32,6 +29,39 @@ above those defaults and activate via `--profile NAME` (or
 
 Missing files are fine. `roba profile path` prints what's currently
 in the chain so you can see which file would supply which name.
+
+## Env-var overrides
+
+Every config knob is also settable via an env var matching the CLI
+long-form, uppercased with `-` -> `_` and prefixed `ROBA_`. Sits
+between CLI flags (top priority) and the file pool, so you can
+override one knob for a single shell session without editing a file:
+
+```bash
+ROBA_WRITABLE=1 roba "rename the foo variable to bar"
+ROBA_MODEL=opus roba "review this design"
+ROBA_GIT_LOG=10 roba "summarize recent work"
+ROBA_ALLOW_TOOL="Bash(git status),Bash(git diff)" roba "..."
+ROBA_VAR_TICKET=ABC-123 roba --profile commit-msg "..."
+```
+
+Value rules:
+
+- **String** (e.g. `ROBA_MODEL`): any non-empty value.
+- **Bool** (e.g. `ROBA_WRITABLE`): truthy `1`/`true`/`yes`/`on`
+  (case-insensitive) enables. Other values are ignored -- the env
+  layer can only enable a bool, never disable a file-set one.
+- **Number** (e.g. `ROBA_GIT_LOG=5`): parsed; invalid values
+  silently ignored.
+- **List** (e.g. `ROBA_ALLOW_TOOL`, `ROBA_PREPEND`): comma-separated,
+  whitespace trimmed, empty entries dropped.
+- **Vars**: one env var per key, `ROBA_VAR_<KEY>=<value>`.
+
+Like files, env-var overrides only fill fields the user didn't set
+on the CLI. `roba --writable=false ...` -- well, there's no such
+flag, since `--writable` is presence-flagged -- but
+`--allow-tool Edit` on the CLI fully replaces any `ROBA_ALLOW_TOOL`
+list, same as it overrides a profile's `allow_tool` list.
 
 ## Auto-apply and explicit invocation
 
@@ -72,6 +102,12 @@ override.
 | `deny_tool` | `[string]` | `--deny-tool TOOL` (repeatable) | Deny patterns; useful with `full_auto` to keep some teeth |
 | `continue` | `bool` | `-c` / `--continue` | Skipped if `--resume` is also passed |
 | `vars` | `{ key = "value" }` | `--var KEY=VALUE` (repeatable) | CLI keys override profile keys |
+| `model` | `string` | `--model MODEL` | Alias (`sonnet`/`opus`/`haiku`) or full id (`claude-sonnet-4-6`) |
+| `stream` | `bool` | `--stream` | Stream tokens as they arrive |
+| `echo` | `bool` | `--echo` | Print resolved prompt before the response |
+| `plain` | `bool` | `--plain` | No rendering, color, or spinner |
+| `quiet` | `bool` | `-q` / `--quiet` | Answer only, no metadata |
+| `json` | `bool` | `--json` | Structured result as JSON on stdout |
 
 Unknown keys are rejected at parse time -- a typo errors fast instead
 of being silently ignored.
@@ -279,9 +315,5 @@ roba --profile ticket -f ~/.config/roba/prompts/standup.md
 
 ## Future
 
-- `ROBA_<PARAM>` env-var override layer (set one knob without a
-  file) -- tracked in #1
-- `model` field + output-policy fields (`stream`, `echo`, `plain`,
-  `quiet`, `json`) -- tracked in #1
 - Inline prompt text in profile schema (`prepend_inline = ["..."]`)
   so a profile can carry a prompt without a separate file
