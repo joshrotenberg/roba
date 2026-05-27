@@ -8,8 +8,9 @@ use claude_wrapper::QueryCommand;
 
 use crate::cli::AskArgs;
 
-/// Apply session-related flags (-c, --resume, --fork) and then
-/// permission-related flags. Returns the configured QueryCommand.
+/// Apply session-related flags (-c, --resume, --fork), the model
+/// override (--model), and then permission-related flags. Returns
+/// the configured QueryCommand.
 pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     if args.continue_session {
         cmd = cmd.continue_session();
@@ -19,6 +20,9 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     }
     if args.fork {
         cmd = cmd.fork_session();
+    }
+    if let Some(m) = &args.model {
+        cmd = cmd.model(m.clone());
     }
     apply_permissions(cmd, args)
 }

@@ -262,6 +262,15 @@ pub struct AskArgs {
     #[arg(long, help_heading = "Output")]
     pub plain: bool,
 
+    // ----- Model ------------------------------------------------------------
+    /// Override the claude model for this call.
+    ///
+    /// Accepts an alias (`sonnet`, `opus`, `haiku`) or a full model
+    /// ID (`claude-sonnet-4-6`, `claude-opus-4-7`, etc.). Passed
+    /// through to `claude -p --model`.
+    #[arg(long, value_name = "MODEL", help_heading = "Model")]
+    pub model: Option<String>,
+
     // ----- Sessions ---------------------------------------------------------
     /// Continue the most recent session in this directory.
     #[arg(
