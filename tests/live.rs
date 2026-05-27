@@ -358,18 +358,23 @@ fn live_perms_writable_enables_edit() {
 
 #[test]
 #[ignore]
-fn live_perms_deny_tool_blocks_writable_edit() {
+fn live_perms_deny_tools_blocks_modification() {
     let dir = fresh_dir();
     let target = dir.path().join("subject.txt");
     std::fs::write(&target, "original").expect("seed file");
 
-    // --writable opens Edit + Write; --deny-tool Edit should still
-    // block the Edit call. The file should be unchanged.
+    // --writable opens Edit + Write. Denying only Edit isn't enough --
+    // claude would fall back to Write to satisfy the request, which is
+    // correct semantically (deny-tool only blocks the named tool, not
+    // its alternatives). To actually prevent file modification with
+    // --writable on, both writing tools must be denied.
     roba_in(dir.path())
         .args([
             "--writable",
             "--deny-tool",
             "Edit",
+            "--deny-tool",
+            "Write",
             &format!(
                 "edit the file at {} to replace its contents with the single word: changed. \
                  if you cannot, briefly say so.",
@@ -383,7 +388,7 @@ fn live_perms_deny_tool_blocks_writable_edit() {
     assert_eq!(
         contents.trim(),
         "original",
-        "--deny-tool Edit should block edits even with --writable, got: {contents}"
+        "denying Edit + Write should block all file modifications, got: {contents}"
     );
 }
 
