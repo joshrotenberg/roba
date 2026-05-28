@@ -24,12 +24,14 @@ pub fn resolve_main_prompt(
     positional: Option<&str>,
     file: Option<&Path>,
     editor: bool,
+    editor_history: Option<usize>,
 ) -> Result<Option<String>> {
     if editor {
         if !std::io::stdin().is_terminal() {
             bail!("--editor requires a TTY; pipe-mode input is incompatible");
         }
-        return Ok(Some(compose_in_editor()?));
+        let n = editor_history.unwrap_or(1);
+        return Ok(Some(compose_in_editor(n)?));
     }
     if let Some(path) = file {
         let content = std::fs::read_to_string(path)
@@ -198,15 +200,37 @@ pub fn read_stdin() -> Result<String> {
     Ok(trimmed)
 }
 
-/// Open `$VISUAL` / `$EDITOR` / `vi` on an empty `.md` scratch file
-/// and return whatever the user typed on save + exit.
-pub fn compose_in_editor() -> Result<String> {
+/// The scissors line that separates the editor preamble from the
+/// user's actual prompt. Lifted from `git commit --verbose`; users
+/// who've seen one will recognize the other.
+const SCISSORS: &str = "# ------------------------ >8 ------------------------";
+
+/// Open `$VISUAL` / `$EDITOR` / `vi` on a `.md` scratch file
+/// (optionally pre-filled with the last N assistant responses for
+/// reference, separated from the user's prompt area by a scissors
+/// line) and return whatever they typed below the scissors on save.
+///
+/// `history_n == 0` (or "no last session in cwd") gives an empty
+/// editor, same as the original behavior.
+pub fn compose_in_editor(history_n: usize) -> Result<String> {
     let tmp = tempfile::Builder::new()
         .prefix("roba-prompt-")
         .suffix(".md")
         .tempfile()
         .context("creating editor scratch file")?;
     let path = tmp.path().to_path_buf();
+
+    let preamble = if history_n == 0 {
+        String::new()
+    } else {
+        let responses =
+            crate::history::last_n_assistant_texts_in_cwd(history_n).unwrap_or_default();
+        build_editor_preamble(&responses)
+    };
+    if !preamble.is_empty() {
+        std::fs::write(&path, &preamble).context("writing editor preamble")?;
+    }
+
     let editor = editor_command();
     let status =
         spawn_editor(&editor, &path).with_context(|| format!("running editor `{editor}`"))?;
@@ -214,11 +238,75 @@ pub fn compose_in_editor() -> Result<String> {
         bail!("editor exited with {status}");
     }
     let content = std::fs::read_to_string(&path).context("reading editor buffer")?;
-    let trimmed = content.trim_end().to_string();
+    let body = strip_above_scissors(&content);
+    let trimmed = body.trim_end().to_string();
     if trimmed.is_empty() {
         bail!("editor returned an empty prompt");
     }
     Ok(trimmed)
+}
+
+/// Build the preamble shown above the scissors line in the editor.
+/// Returns empty if there are no responses to show.
+pub fn build_editor_preamble(responses: &[String]) -> String {
+    if responses.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    if responses.len() == 1 {
+        out.push_str("# Last response from the most recent session in this dir.\n");
+        out.push_str(
+            "# Shown for reference; stripped before sending. Type below the scissors.\n\n",
+        );
+        out.push_str(&responses[0]);
+        out.push_str("\n\n");
+    } else {
+        out.push_str(&format!(
+            "# Last {} responses from the most recent session in this dir (oldest first).\n",
+            responses.len()
+        ));
+        out.push_str(
+            "# Shown for reference; stripped before sending. Type below the scissors.\n\n",
+        );
+        for (i, r) in responses.iter().enumerate() {
+            out.push_str(&format!(
+                "# --- response {} of {} ---\n",
+                i + 1,
+                responses.len()
+            ));
+            out.push_str(r);
+            out.push_str("\n\n");
+        }
+    }
+    out.push_str(SCISSORS);
+    out.push('\n');
+    out.push('\n');
+    out
+}
+
+/// Return everything after the scissors line; if no scissors line is
+/// found, return the whole content (defensive: a user who deletes the
+/// scissors still gets their content sent, not silently lost).
+pub fn strip_above_scissors(content: &str) -> String {
+    // Find the LAST scissors line, so a stray one in the response
+    // content can't hide the real one (also handles the case where
+    // a user pastes the scissors above the real one).
+    let mut idx_of_last_scissors: Option<usize> = None;
+    for (i, line) in content.lines().enumerate() {
+        if line == SCISSORS {
+            idx_of_last_scissors = Some(i);
+        }
+    }
+    let Some(scissors_idx) = idx_of_last_scissors else {
+        return content.to_string();
+    };
+    content
+        .lines()
+        .skip(scissors_idx + 1)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_start()
+        .to_string()
 }
 
 fn editor_command() -> String {
@@ -359,5 +447,67 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out, "only");
+    }
+
+    // -- editor preamble + scissors strip ----------------------------------
+
+    #[test]
+    fn preamble_empty_for_no_responses() {
+        assert_eq!(build_editor_preamble(&[]), "");
+    }
+
+    #[test]
+    fn preamble_single_response_includes_scissors() {
+        let p = build_editor_preamble(&["the previous answer".to_string()]);
+        assert!(p.contains("the previous answer"));
+        assert!(p.contains(SCISSORS));
+        assert!(p.contains("Last response"));
+    }
+
+    #[test]
+    fn preamble_multi_response_numbers_each() {
+        let p = build_editor_preamble(&["older one".to_string(), "newer one".to_string()]);
+        assert!(p.contains("older one"));
+        assert!(p.contains("newer one"));
+        assert!(p.contains("response 1 of 2"));
+        assert!(p.contains("response 2 of 2"));
+        assert!(p.contains("Last 2 responses"));
+        assert!(p.contains(SCISSORS));
+    }
+
+    #[test]
+    fn strip_returns_below_scissors() {
+        let buf = format!("preamble line 1\npreamble line 2\n{SCISSORS}\n\nmy prompt\nsecond line");
+        assert_eq!(strip_above_scissors(&buf), "my prompt\nsecond line");
+    }
+
+    #[test]
+    fn strip_trims_leading_blank_lines_after_scissors() {
+        let buf = format!("preamble\n{SCISSORS}\n\n\n\n# Heading\nbody");
+        assert_eq!(strip_above_scissors(&buf), "# Heading\nbody");
+    }
+
+    #[test]
+    fn strip_uses_last_scissors_when_multiple_exist() {
+        // If the response content somehow includes the scissors string,
+        // we still take the last one (the "real" separator).
+        let buf = format!("preamble {SCISSORS} inside response\n{SCISSORS}\nactual prompt");
+        assert_eq!(strip_above_scissors(&buf), "actual prompt");
+    }
+
+    #[test]
+    fn strip_no_scissors_returns_whole_content() {
+        // Defensive: if the user deletes the scissors, send what they
+        // typed rather than losing it.
+        let buf = "just the prompt\nno scissors here";
+        assert_eq!(strip_above_scissors(buf), buf);
+    }
+
+    #[test]
+    fn strip_preserves_markdown_headers_below_scissors() {
+        // Confirms the choice of scissors-based strip over `#`-line
+        // filtering: user's markdown headers survive.
+        let buf = format!("preamble\n{SCISSORS}\n\n# Real heading\n## Sub\nbody");
+        assert_eq!(strip_above_scissors(&buf), "# Real heading\n## Sub\nbody");
     }
 }

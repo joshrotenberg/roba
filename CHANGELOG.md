@@ -12,6 +12,15 @@ when published the entries below become version sections.
 
 ### Added
 
+- `--editor-history N` (default 1): when composing with `-e`, the
+  editor opens pre-filled with the last N assistant responses from
+  the most recent session in this dir, separated from the prompt
+  area by a `git commit --verbose`-style scissors line. Strip
+  removes everything above-and-including the scissors on save,
+  preserving the user's markdown headers below. `--editor-history
+  0` reverts to the empty-editor behavior. Also configurable via
+  profile (`editor_history = N`) and env (`ROBA_EDITOR_HISTORY=N`).
+  Closes #5.
 - Auto-named sessions: every roba call now passes `--name "roba: <preview>"`
   to claude so sessions surface in the `claude --resume` picker
   (which only lists named sessions). Prefix makes them
