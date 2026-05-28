@@ -88,7 +88,8 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
 
     let pre_style = render::Style::detect(&args);
     let spinner = pre_style.spinner.then(render::spinner);
-    let result = apply_session(QueryCommand::new(prompt), &args)
+    let name = session::derive_session_name(&prompt);
+    let result = apply_session(QueryCommand::new(prompt).name(name), &args)
         .execute_json(&claude)
         .await?;
     if let Some(pb) = spinner {

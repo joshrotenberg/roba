@@ -67,3 +67,72 @@ fn push_unique(list: &mut Vec<String>, item: &str) {
         list.push(item.to_string());
     }
 }
+
+/// Derive a display name from the resolved prompt for `claude
+/// --name`. Shows up in the `claude --resume` picker, the terminal
+/// title, and the prompt box. Without it, sessions roba creates
+/// are effectively invisible to the picker.
+///
+/// Shape: `roba: <first 40 chars of the first non-empty line>`. The
+/// `roba:` prefix makes sessions distinguishable from interactive
+/// Claude Code sessions in the same project's history.
+pub fn derive_session_name(prompt: &str) -> String {
+    let first_line = prompt
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    let preview: String = if first_line.chars().count() > 40 {
+        let head: String = first_line.chars().take(40).collect();
+        format!("{head}…")
+    } else {
+        first_line.to_string()
+    };
+    if preview.is_empty() {
+        "roba".to_string()
+    } else {
+        format!("roba: {preview}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn name_short_prompt_passes_through() {
+        assert_eq!(derive_session_name("hello"), "roba: hello");
+    }
+
+    #[test]
+    fn name_truncates_at_40_chars_with_ellipsis() {
+        let prompt = "this is a fairly long prompt that should get cut off somewhere";
+        let name = derive_session_name(prompt);
+        assert!(name.starts_with("roba: "), "got: {name}");
+        assert!(name.ends_with('…'), "got: {name}");
+        let body = name.trim_start_matches("roba: ").trim_end_matches('…');
+        assert_eq!(body.chars().count(), 40, "got body: {body:?}");
+    }
+
+    #[test]
+    fn name_uses_first_nonempty_line() {
+        let prompt = "\n\n   \nthe real prompt\nignored continuation";
+        assert_eq!(derive_session_name(prompt), "roba: the real prompt");
+    }
+
+    #[test]
+    fn name_empty_prompt_falls_back_to_bare_roba() {
+        assert_eq!(derive_session_name(""), "roba");
+        assert_eq!(derive_session_name("   \n  \n"), "roba");
+    }
+
+    #[test]
+    fn name_handles_unicode_correctly() {
+        // 40 chars of CJK; truncation must use char boundaries, not byte
+        let prompt = "あ".repeat(50);
+        let name = derive_session_name(&prompt);
+        // "roba: " + 40 "あ" + "…"
+        let body = name.trim_start_matches("roba: ").trim_end_matches('…');
+        assert_eq!(body.chars().count(), 40);
+    }
+}

@@ -15,14 +15,15 @@ use std::io::Write;
 use crate::cli::AskArgs;
 use crate::output::{format_footer, looks_like_refusal, should_show_footer, truncate_arg};
 use crate::render::Style;
-use crate::session::apply_session;
+use crate::session::{apply_session, derive_session_name};
 
 /// Run a prompt through the streaming pipeline. Text flushes to
 /// stdout as it arrives; tool calls + cost footer + refusal warning
 /// + tool rollup go to stderr at the appropriate moments.
 pub async fn run_streaming(claude: &Claude, prompt: String, args: &AskArgs) -> Result<()> {
-    let cmd =
-        apply_session(QueryCommand::new(prompt), args).output_format(OutputFormat::StreamJson);
+    let name = derive_session_name(&prompt);
+    let cmd = apply_session(QueryCommand::new(prompt).name(name), args)
+        .output_format(OutputFormat::StreamJson);
     let show_meta = should_show_footer(args);
     let style = Style::detect(args);
     let mut final_result: Option<QueryResult> = None;
