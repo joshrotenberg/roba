@@ -646,7 +646,7 @@ fn live_env_var_per_key_substitution() {
 
 #[test]
 #[ignore]
-fn live_fresh_cancels_env_continue() {
+fn live_env_fresh_cancels_continue() {
     // With ROBA_CONTINUE=1 active, default would continue the last
     // session in this cwd. --fresh cancels it and starts a new one;
     // the resulting session id differs from the seeded one.
