@@ -184,6 +184,154 @@ fn help_mentions_cwd_flag() {
         .stdout(predicate::str::contains("--cwd"));
 }
 
+// ---------------------------------------------------------------------------
+// profile subcommand: config layering (no claude calls)
+// ---------------------------------------------------------------------------
+
+/// Seed a tempdir with the given relative files. Convenient for
+/// fixtures that need a `.git` boundary plus one or more
+/// `roba.toml` files at different depths.
+fn make_dir_with_files(files: &[(&str, &str)]) -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    for (relpath, content) in files {
+        let p = tmp.path().join(relpath);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        std::fs::write(&p, content).expect("write file");
+    }
+    tmp
+}
+
+#[test]
+fn cli_profile_path_lists_walkup_chain() {
+    let project = make_dir_with_files(&[
+        (".git/HEAD", ""),
+        ("roba.toml", "[profile.outer]\n"),
+        ("a/b/roba.toml", "[profile.inner]\n"),
+    ]);
+    let user_home = tempfile::tempdir().expect("user home");
+    let nested = project.path().join("a/b");
+
+    let out = roba()
+        .args(["-C", nested.to_str().unwrap(), "profile", "path"])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let pathlines: Vec<&str> = stdout.lines().filter(|l| l.contains("roba.toml")).collect();
+    assert!(
+        pathlines.len() >= 2,
+        "expected >= 2 roba.toml entries (project root + nested), got:\n{stdout}"
+    );
+}
+
+#[test]
+fn cli_profile_active_default_auto_applies() {
+    let project = make_dir_with_files(&[
+        (".git/HEAD", ""),
+        ("roba.toml", "[profile.default]\nreadonly = true\n"),
+    ]);
+    let user_home = tempfile::tempdir().expect("user home");
+
+    let out = roba()
+        .args(["-C", project.path().to_str().unwrap(), "profile", "active"])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("active: default"),
+        "expected active default, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("auto-applied"),
+        "expected auto-applied note, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn cli_profile_active_env_override() {
+    let project = make_dir_with_files(&[
+        (".git/HEAD", ""),
+        ("roba.toml", "[profile.foo]\nwritable = true\n"),
+    ]);
+    let user_home = tempfile::tempdir().expect("user home");
+
+    let out = roba()
+        .args(["-C", project.path().to_str().unwrap(), "profile", "active"])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env("ROBA_PROFILE", "foo")
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("active: foo"),
+        "expected active foo, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("from ROBA_PROFILE env"),
+        "expected env-source note, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn cli_profile_show_merges_walkup() {
+    let project = make_dir_with_files(&[
+        (".git/HEAD", ""),
+        (
+            "roba.toml",
+            "[profile.review]\nreadonly = true\nprepend = [\"/parent.md\"]\n",
+        ),
+        (
+            "sub/roba.toml",
+            "[profile.review]\ngit_diff = true\nprepend = [\"/child.md\"]\n",
+        ),
+    ]);
+    let user_home = tempfile::tempdir().expect("user home");
+    let sub = project.path().join("sub");
+
+    let out = roba()
+        .args(["-C", sub.to_str().unwrap(), "profile", "show", "review"])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("readonly = true"),
+        "expected parent's readonly: {stdout}"
+    );
+    assert!(
+        stdout.contains("git_diff = true"),
+        "expected child's git_diff: {stdout}"
+    );
+    assert!(
+        stdout.contains("/parent.md"),
+        "expected parent's prepend: {stdout}"
+    );
+    assert!(
+        stdout.contains("/child.md"),
+        "expected child's prepend: {stdout}"
+    );
+}
+
 #[test]
 fn conflict_readonly_and_full_auto() {
     assert_conflict(&["foo", "--readonly", "--full-auto"]);
