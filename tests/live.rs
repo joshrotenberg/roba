@@ -43,13 +43,24 @@ fn fresh_dir() -> tempfile::TempDir {
     tempfile::tempdir().expect("create test tempdir")
 }
 
-/// Make a tempdir pre-seeded with a `roba.toml`. Returns the TempDir
-/// so the caller can keep it alive for the duration of the test.
-#[allow(dead_code)]
+/// Make a tempdir pre-seeded with a `roba.toml`. Adds a `.git`
+/// marker so the config walk-up stops at the tempdir boundary
+/// (otherwise it could leak the developer's own `roba.toml` higher
+/// up the tree). Returns the TempDir so the caller can keep it
+/// alive for the duration of the test.
 fn fixture_with_config(content: &str) -> tempfile::TempDir {
     let tmp = fresh_dir();
+    std::fs::create_dir_all(tmp.path().join(".git")).expect(".git marker");
     std::fs::write(tmp.path().join("roba.toml"), content).expect("write roba.toml");
     tmp
+}
+
+/// An empty tempdir to set `XDG_CONFIG_HOME` to. Each test that wants
+/// to be sure it doesn't pick up the developer's own
+/// `~/.config/roba.toml` should hold this for the duration of the
+/// `roba` call.
+fn empty_user_home() -> tempfile::TempDir {
+    fresh_dir()
 }
 
 // ---------------------------------------------------------------------------
@@ -462,5 +473,208 @@ fn live_compose_var_substitution() {
     assert!(
         stdout.to_lowercase().contains("lighthouse"),
         "expected substituted value to reach the model, got: {stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// profiles + env-var layer
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn live_profile_writable_via_top_level() {
+    // Top-level `writable = true` in roba.toml should let claude
+    // edit a file, with no --profile flag and no env var.
+    let dir = fixture_with_config("writable = true\n");
+    let user = empty_user_home();
+    let target = dir.path().join("t.txt");
+    std::fs::write(&target, "original").expect("seed");
+
+    roba_in(dir.path())
+        .env("XDG_CONFIG_HOME", user.path())
+        .arg(format!(
+            "edit the file at {} so its contents are exactly the single word: changed",
+            target.display()
+        ))
+        .assert()
+        .success();
+
+    let contents = std::fs::read_to_string(&target).expect("read");
+    assert!(
+        contents.contains("changed"),
+        "top-level writable should apply, got: {contents}"
+    );
+}
+
+#[test]
+#[ignore]
+fn live_profile_named_overlay_via_flag() {
+    // [profile.edit].writable = true activated via --profile edit.
+    let dir = fixture_with_config("[profile.edit]\nwritable = true\n");
+    let user = empty_user_home();
+    let target = dir.path().join("t.txt");
+    std::fs::write(&target, "original").expect("seed");
+
+    roba_in(dir.path())
+        .env("XDG_CONFIG_HOME", user.path())
+        .args([
+            "--profile",
+            "edit",
+            &format!(
+                "edit the file at {} so its contents are exactly the single word: changed",
+                target.display()
+            ),
+        ])
+        .assert()
+        .success();
+
+    let contents = std::fs::read_to_string(&target).expect("read");
+    assert!(
+        contents.contains("changed"),
+        "--profile edit overlay should apply writable, got: {contents}"
+    );
+}
+
+#[test]
+#[ignore]
+fn live_profile_default_auto_applies() {
+    // [profile.default].writable = true should apply with no flag.
+    let dir = fixture_with_config("[profile.default]\nwritable = true\n");
+    let user = empty_user_home();
+    let target = dir.path().join("t.txt");
+    std::fs::write(&target, "original").expect("seed");
+
+    roba_in(dir.path())
+        .env("XDG_CONFIG_HOME", user.path())
+        .env_remove("ROBA_PROFILE")
+        .arg(format!(
+            "edit the file at {} so its contents are exactly the single word: changed",
+            target.display()
+        ))
+        .assert()
+        .success();
+
+    let contents = std::fs::read_to_string(&target).expect("read");
+    assert!(
+        contents.contains("changed"),
+        "[profile.default] should auto-apply, got: {contents}"
+    );
+}
+
+#[test]
+#[ignore]
+fn live_profile_no_default_skips_auto() {
+    // Same [profile.default] config but --no-default-profile bypasses
+    // it, so writable stays off and the file is unchanged.
+    let dir = fixture_with_config("[profile.default]\nwritable = true\n");
+    let user = empty_user_home();
+    let target = dir.path().join("t.txt");
+    std::fs::write(&target, "original").expect("seed");
+
+    roba_in(dir.path())
+        .env("XDG_CONFIG_HOME", user.path())
+        .env_remove("ROBA_PROFILE")
+        .args([
+            "--no-default-profile",
+            &format!(
+                "edit the file at {} to replace its contents with the single word: changed. \
+                 if you cannot, briefly say so.",
+                target.display()
+            ),
+        ])
+        .assert()
+        .success();
+
+    let contents = std::fs::read_to_string(&target).expect("read");
+    assert_eq!(
+        contents.trim(),
+        "original",
+        "--no-default-profile should skip auto-apply, got: {contents}"
+    );
+}
+
+#[test]
+#[ignore]
+fn live_env_writable_enables_edit() {
+    // ROBA_WRITABLE=1 should add Edit/Write to the allow list even
+    // when no CLI flag and no profile sets it.
+    let dir = fresh_dir();
+    let user = empty_user_home();
+    let target = dir.path().join("t.txt");
+    std::fs::write(&target, "original").expect("seed");
+
+    roba_in(dir.path())
+        .env("XDG_CONFIG_HOME", user.path())
+        .env("ROBA_WRITABLE", "1")
+        .arg(format!(
+            "edit the file at {} so its contents are exactly the single word: changed",
+            target.display()
+        ))
+        .assert()
+        .success();
+
+    let contents = std::fs::read_to_string(&target).expect("read");
+    assert!(
+        contents.contains("changed"),
+        "ROBA_WRITABLE=1 should enable Edit, got: {contents}"
+    );
+}
+
+#[test]
+#[ignore]
+fn live_env_var_per_key_substitution() {
+    // ROBA_VAR_TARGET=spruce substitutes {{TARGET}} in the prompt
+    // template loaded via -f, no --var CLI flag needed.
+    let dir = fresh_dir();
+    let user = empty_user_home();
+    let tpl = dir.path().join("tpl.md");
+    std::fs::write(&tpl, "Respond with exactly: {{TARGET}}").expect("seed tpl");
+
+    let out = roba_in(dir.path())
+        .env("XDG_CONFIG_HOME", user.path())
+        .env("ROBA_VAR_TARGET", "spruce")
+        .args(["-f", tpl.to_str().unwrap()])
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.to_lowercase().contains("spruce"),
+        "ROBA_VAR_TARGET=spruce should reach the model, got: {stdout}"
+    );
+}
+
+#[test]
+#[ignore]
+fn live_env_fresh_cancels_continue() {
+    // With ROBA_CONTINUE=1 active, default would continue the last
+    // session in this cwd. --fresh cancels it and starts a new one;
+    // the resulting session id differs from the seeded one.
+    let dir = fresh_dir();
+    let user = empty_user_home();
+
+    let seed = roba_in(dir.path())
+        .env("XDG_CONFIG_HOME", user.path())
+        .args(["--json", "respond with the single word: anchor"])
+        .output()
+        .expect("seed run");
+    let seed_json: serde_json::Value = serde_json::from_slice(&seed.stdout).expect("seed json");
+    let seed_id = seed_json["session_id"]
+        .as_str()
+        .expect("session_id")
+        .to_string();
+
+    let fresh = roba_in(dir.path())
+        .env("XDG_CONFIG_HOME", user.path())
+        .env("ROBA_CONTINUE", "1")
+        .args(["--fresh", "--json", "respond with the single word: cedar"])
+        .output()
+        .expect("fresh run");
+    let fresh_json: serde_json::Value = serde_json::from_slice(&fresh.stdout).expect("fresh json");
+    let fresh_id = fresh_json["session_id"].as_str().expect("session_id");
+
+    assert_ne!(
+        seed_id, fresh_id,
+        "--fresh should produce a new session id even with ROBA_CONTINUE=1"
     );
 }
