@@ -12,6 +12,11 @@ when published the entries below become version sections.
 
 ### Added
 
+- Auto-named sessions: every roba call now passes `--name "roba: <preview>"`
+  to claude so sessions surface in the `claude --resume` picker
+  (which only lists named sessions). Prefix makes them
+  distinguishable from interactive Claude Code sessions in the same
+  project. Closes #3.
 - `-C` / `--cwd PATH` global flag to run as if invoked from a
   different directory. Applies before any other resolution (session
   scoping, config walk-up, `--attach` globs, `--prepend` / `--append`
