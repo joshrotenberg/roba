@@ -13,11 +13,13 @@ when published the entries below become version sections.
 ### Added
 
 - `--editor-history N` (default 1): when composing with `-e`, the
-  editor opens pre-filled with the last N assistant responses from
-  the most recent session in this dir, separated from the prompt
-  area by a `git commit --verbose`-style scissors line. Strip
-  removes everything above-and-including the scissors on save,
-  preserving the user's markdown headers below. `--editor-history
+  editor opens in `git commit`-style layout -- empty cursor area at
+  the top for your prompt, then a `// ----- >8 -----` scissors
+  line, then the last N responses below as a `//`-prefixed
+  reference block. Strip removes everything from the scissors line
+  down on save, so the response is for your eyes only (use `-c` to
+  give claude the conversation context). `// ` prefix on reference
+  lines avoids `#`-vs-markdown-header conflicts. `--editor-history
   0` reverts to the empty-editor behavior. Also configurable via
   profile (`editor_history = N`) and env (`ROBA_EDITOR_HISTORY=N`).
   Closes #5.
