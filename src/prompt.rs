@@ -249,9 +249,11 @@ pub fn compose_in_editor(history_n: usize) -> Result<String> {
     Ok(trimmed)
 }
 
-/// Build the preamble: empty cursor area at the top, scissors line,
-/// then the reference block (each response line `// `-prefixed).
-/// Returns empty if there are no responses to show.
+/// Build the preamble: empty cursor area at the top, scissors line
+/// with `//`-prefixed instructions, then the reference block. The
+/// response body itself is *unprefixed* plain text so it's visually
+/// distinct from the `//` boilerplate. Returns empty if there are no
+/// responses to show.
 pub fn build_editor_preamble(responses: &[String]) -> String {
     if responses.is_empty() {
         return String::new();
@@ -265,39 +267,26 @@ pub fn build_editor_preamble(responses: &[String]) -> String {
     out.push('\n');
     out.push_str("// Reference only -- everything from the scissors down is stripped on save.\n");
     out.push_str("// Type your prompt above the scissors line.\n");
-    out.push_str("//\n");
+    out.push('\n');
     if responses.len() == 1 {
-        out.push_str("// Last response from the most recent session in this dir:\n");
-        out.push_str("//\n");
-        write_quoted(&mut out, &responses[0]);
+        out.push_str("// --- last response from the most recent session in this dir ---\n");
+        out.push('\n');
+        out.push_str(responses[0].trim_end());
+        out.push('\n');
     } else {
         out.push_str(&format!(
-            "// Last {} responses from the most recent session in this dir (oldest first):\n",
+            "// --- last {} responses from the most recent session in this dir (oldest first) ---\n",
             responses.len()
         ));
         for (i, r) in responses.iter().enumerate() {
-            out.push_str("//\n");
-            out.push_str(&format!(
-                "// --- response {} of {} ---\n",
-                i + 1,
-                responses.len()
-            ));
-            write_quoted(&mut out, r);
-        }
-    }
-    out
-}
-
-fn write_quoted(out: &mut String, body: &str) {
-    for line in body.lines() {
-        if line.is_empty() {
-            out.push_str("//\n");
-        } else {
-            out.push_str("// ");
-            out.push_str(line);
+            out.push('\n');
+            out.push_str(&format!("// --- {} of {} ---\n", i + 1, responses.len()));
+            out.push('\n');
+            out.push_str(r.trim_end());
             out.push('\n');
         }
     }
+    out
 }
 
 /// Return everything before the scissors line; if no scissors line
@@ -480,31 +469,39 @@ mod tests {
             "expected leading blank lines for cursor area, got: {p:?}"
         );
         assert!(p.contains(SCISSORS));
-        // Response present, each line // -prefixed
-        assert!(p.contains("// the previous answer"));
-        // Hint text present
+        // Hint text is `//`-prefixed and visible.
         assert!(p.contains("// Type your prompt above the scissors line."));
+        // Section divider for the response.
+        assert!(p.contains("// --- last response"));
+        // The response body itself is unprefixed -- visually distinct
+        // from the `//` instructions/dividers.
+        assert!(
+            p.contains("\nthe previous answer\n"),
+            "expected unprefixed response body, got:\n{p}"
+        );
     }
 
     #[test]
-    fn preamble_multi_response_numbers_each() {
+    fn preamble_multi_response_uses_section_dividers() {
         let p = build_editor_preamble(&["older one".to_string(), "newer one".to_string()]);
-        assert!(p.contains("// older one"));
-        assert!(p.contains("// newer one"));
-        assert!(p.contains("response 1 of 2"));
-        assert!(p.contains("response 2 of 2"));
-        assert!(p.contains("Last 2 responses"));
+        // Header mentions the count
+        assert!(p.contains("// --- last 2 responses"));
+        // Each response gets a numbered divider
+        assert!(p.contains("// --- 1 of 2 ---"));
+        assert!(p.contains("// --- 2 of 2 ---"));
+        // Bodies are unprefixed
+        assert!(p.contains("\nolder one\n"));
+        assert!(p.contains("\nnewer one\n"));
         assert!(p.contains(SCISSORS));
     }
 
     #[test]
     fn preamble_preserves_blank_lines_in_response() {
         let p = build_editor_preamble(&["first\n\nsecond".to_string()]);
-        // Blank line inside the body becomes a bare `//` (no
-        // trailing space), so blank lines round-trip cleanly.
+        // Response goes in verbatim (unprefixed), blank lines included.
         assert!(
-            p.contains("// first\n//\n// second"),
-            "expected //-quoting of blank line, got:\n{p}"
+            p.contains("\nfirst\n\nsecond\n"),
+            "expected verbatim response with blank line preserved, got:\n{p}"
         );
     }
 
