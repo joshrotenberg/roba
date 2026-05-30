@@ -15,6 +15,11 @@ The name `roba` (claude wrapper runner) was a placeholder that stuck.
 
 Settled in conversation; pending execution.
 
+- **Positioning + 0.1 surface freeze, working notes** (2026-05-29).
+  See `docs/positioning.md` for the running document on what roba
+  is for ("augments interactive, doesn't replace") and the
+  candidate cuts / collapses before the 0.1 surface gets frozen.
+  Parking-lot items tracked as individual GitHub issues.
 - **Config system: roba.toml + layered resolution** (2026-05-27).
   Single `roba.toml` file at any tier (no `.roba/` directory).
   Resolution: CLI > env (`ROBA_<PARAM>`) > files walking up from cwd,
