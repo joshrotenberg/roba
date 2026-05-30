@@ -321,6 +321,13 @@ pub struct AskArgs {
     )]
     pub fresh: bool,
 
+    /// Run in a fresh git worktree (claude generates the name).
+    /// The worktree persists after the session; clean up manually with
+    /// `git worktree remove`. Pairs naturally with `--writable` or
+    /// `--full-auto` -- the worktree is your sandbox.
+    #[arg(short = 'w', long, help_heading = "Sessions")]
+    pub worktree: bool,
+
     // ----- Permissions ------------------------------------------------------
     /// Explicit form of the default: Read, Glob, Grep only. No-op (the default).
     #[arg(long, conflicts_with = "full_auto", help_heading = "Permissions")]

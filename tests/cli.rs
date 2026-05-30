@@ -184,6 +184,15 @@ fn help_mentions_cwd_flag() {
         .stdout(predicate::str::contains("--cwd"));
 }
 
+#[test]
+fn help_mentions_worktree_flag() {
+    roba()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--worktree"));
+}
+
 // ---------------------------------------------------------------------------
 // profile subcommand: config layering (no claude calls)
 // ---------------------------------------------------------------------------

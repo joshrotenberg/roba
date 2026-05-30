@@ -24,6 +24,9 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     if let Some(m) = &args.model {
         cmd = cmd.model(m.clone());
     }
+    if args.worktree {
+        cmd = cmd.worktree();
+    }
     apply_permissions(cmd, args)
 }
 
