@@ -6,8 +6,9 @@
 //!
 //! See `cli-runner.md` at the repo root for the design brainstorm.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use claude_wrapper::{Claude, QueryCommand};
+use std::io::IsTerminal;
 
 pub mod cli;
 pub mod cost;
@@ -63,6 +64,7 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     if args.fresh {
         args.continue_session = false;
     }
+    ensure_interactive_for_flags(&args)?;
     if args.pick {
         let id = pick_session_interactive()?;
         eprintln!("resuming session {}", id.get(..8).unwrap_or(&id));
@@ -147,6 +149,21 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
             );
         }
         render::print_meta(&format_footer(&result), &style);
+    }
+    Ok(())
+}
+
+/// Fail fast when an interactive-only flag is set without a TTY on
+/// stdin. `-e` / `--editor` and `--pick` both block on human input;
+/// in a head-less context (script, CI step, orchestrator) the
+/// process would hang waiting for keystrokes that can't arrive.
+/// stderr-not-a-TTY is fine -- output redirection is normal.
+fn ensure_interactive_for_flags(args: &AskArgs) -> Result<()> {
+    if args.editor && !std::io::stdin().is_terminal() {
+        bail!("--editor requires an interactive terminal (stdin not a TTY)");
+    }
+    if args.pick && !std::io::stdin().is_terminal() {
+        bail!("--pick requires an interactive terminal (stdin not a TTY)");
     }
     Ok(())
 }
