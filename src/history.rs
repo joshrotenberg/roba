@@ -255,6 +255,53 @@ pub fn current_project_slug() -> Option<String> {
     Some(s.replace('/', "-"))
 }
 
+/// Fetch up to `n` recent assistant text responses from the most
+/// recent session in the current cwd's project. Returns oldest-first
+/// (so direct concatenation reads chronologically). Returns
+/// `Ok(vec![])` when no session exists, no text content was found,
+/// or `n == 0`.
+///
+/// Used by the editor compose flow to pre-fill the buffer with prior
+/// context (see `prompt::build_editor_preamble`).
+pub fn last_n_assistant_texts_in_cwd(n: usize) -> Result<Vec<String>> {
+    use claude_wrapper::history::{HistoryEntry, HistoryRoot, ListOptions, ListSort};
+
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    let Some(slug) = current_project_slug() else {
+        return Ok(Vec::new());
+    };
+    let root = HistoryRoot::home().context("locating ~/.claude/projects")?;
+    let opts = ListOptions {
+        limit: Some(1),
+        offset: 0,
+        include_empty: false,
+        sort: ListSort::RecencyDesc,
+    };
+    let sessions = root
+        .list_sessions_with(Some(&slug), &opts)
+        .context("reading session history")?;
+    let Some(summary) = sessions.first() else {
+        return Ok(Vec::new());
+    };
+    let log = root
+        .read_session(&summary.session_id)
+        .context("reading most recent session")?;
+
+    let mut texts: Vec<String> = Vec::new();
+    for entry in &log.entries {
+        if let HistoryEntry::Assistant { message, .. } = entry
+            && let Some(t) = extract_message_text(message)
+            && !t.trim().is_empty()
+        {
+            texts.push(t);
+        }
+    }
+    let start = texts.len().saturating_sub(n);
+    Ok(texts[start..].to_vec())
+}
+
 /// `--pick`: open a fuzzy-filter picker over the 50 most recent
 /// sessions and return the selected session id. Requires a TTY.
 pub fn pick_session_interactive() -> Result<String> {

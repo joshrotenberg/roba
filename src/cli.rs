@@ -162,6 +162,13 @@ pub struct AskArgs {
     #[arg(short = 'e', long = "editor", help_heading = "Prompt sources")]
     pub editor: bool,
 
+    /// With `-e`, pre-fill the editor with the last N assistant
+    /// responses from the most recent session in this dir, separated
+    /// from your prompt by a scissors line. Default 1; pass 0 to
+    /// disable. Only meaningful with `-e`.
+    #[arg(long, value_name = "N", help_heading = "Prompt sources")]
+    pub editor_history: Option<usize>,
+
     // ----- Composition ------------------------------------------------------
     /// Prepend a file to the prompt (repeatable).
     #[arg(long, value_name = "PATH", help_heading = "Composition")]

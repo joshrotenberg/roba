@@ -125,6 +125,11 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     if !args.json && read_truthy(env, "ROBA_JSON") {
         args.json = true;
     }
+    if args.editor_history.is_none()
+        && let Some(n) = read_usize(env, "ROBA_EDITOR_HISTORY")
+    {
+        args.editor_history = Some(n);
+    }
 
     // ----- Vars (ROBA_VAR_<KEY>=<value>) -----
     for (key, value) in env {

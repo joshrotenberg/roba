@@ -24,12 +24,14 @@ pub fn resolve_main_prompt(
     positional: Option<&str>,
     file: Option<&Path>,
     editor: bool,
+    editor_history: Option<usize>,
 ) -> Result<Option<String>> {
     if editor {
         if !std::io::stdin().is_terminal() {
             bail!("--editor requires a TTY; pipe-mode input is incompatible");
         }
-        return Ok(Some(compose_in_editor()?));
+        let n = editor_history.unwrap_or(1);
+        return Ok(Some(compose_in_editor(n)?));
     }
     if let Some(path) = file {
         let content = std::fs::read_to_string(path)
@@ -198,15 +200,40 @@ pub fn read_stdin() -> Result<String> {
     Ok(trimmed)
 }
 
-/// Open `$VISUAL` / `$EDITOR` / `vi` on an empty `.md` scratch file
-/// and return whatever the user typed on save + exit.
-pub fn compose_in_editor() -> Result<String> {
+/// The scissors line that separates the user's prompt area (above)
+/// from the reference block (below). Uses `//` prefix so it reads as
+/// a code-style comment in editors that highlight markdown -- a
+/// `#`-prefixed scissors would render as a heading in `.md` mode.
+const SCISSORS: &str = "// ------------------------ >8 ------------------------";
+
+/// Open `$VISUAL` / `$EDITOR` / `vi` on a `.md` scratch file. With
+/// `history_n > 0` and a recent session in cwd, the file is
+/// pre-filled in `git commit`-style layout: empty cursor area at the
+/// top, scissors line, then the last N responses below as a
+/// reference block. On save, everything from the scissors down is
+/// stripped, so claude only sees what the user typed above.
+///
+/// `history_n == 0` (or "no last session in cwd") gives an empty
+/// editor, same as the original behavior.
+pub fn compose_in_editor(history_n: usize) -> Result<String> {
     let tmp = tempfile::Builder::new()
         .prefix("roba-prompt-")
         .suffix(".md")
         .tempfile()
         .context("creating editor scratch file")?;
     let path = tmp.path().to_path_buf();
+
+    let preamble = if history_n == 0 {
+        String::new()
+    } else {
+        let responses =
+            crate::history::last_n_assistant_texts_in_cwd(history_n).unwrap_or_default();
+        build_editor_preamble(&responses)
+    };
+    if !preamble.is_empty() {
+        std::fs::write(&path, &preamble).context("writing editor preamble")?;
+    }
+
     let editor = editor_command();
     let status =
         spawn_editor(&editor, &path).with_context(|| format!("running editor `{editor}`"))?;
@@ -214,11 +241,76 @@ pub fn compose_in_editor() -> Result<String> {
         bail!("editor exited with {status}");
     }
     let content = std::fs::read_to_string(&path).context("reading editor buffer")?;
-    let trimmed = content.trim_end().to_string();
+    let body = strip_from_scissors(&content);
+    let trimmed = body.trim().to_string();
     if trimmed.is_empty() {
         bail!("editor returned an empty prompt");
     }
     Ok(trimmed)
+}
+
+/// Build the preamble: empty cursor area at the top, scissors line
+/// with `//`-prefixed instructions, then the reference block. The
+/// response body itself is *unprefixed* plain text so it's visually
+/// distinct from the `//` boilerplate. Returns empty if there are no
+/// responses to show.
+pub fn build_editor_preamble(responses: &[String]) -> String {
+    if responses.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    // Two blank lines for the cursor area. nvim opens on line 1 by
+    // default; the user types there, the scissors stays put below.
+    out.push('\n');
+    out.push('\n');
+    out.push_str(SCISSORS);
+    out.push('\n');
+    out.push_str("// Reference only -- everything from the scissors down is stripped on save.\n");
+    out.push_str("// Type your prompt above the scissors line.\n");
+    out.push('\n');
+    if responses.len() == 1 {
+        out.push_str("// --- last response from the most recent session in this dir ---\n");
+        out.push('\n');
+        out.push_str(responses[0].trim_end());
+        out.push('\n');
+    } else {
+        out.push_str(&format!(
+            "// --- last {} responses from the most recent session in this dir (oldest first) ---\n",
+            responses.len()
+        ));
+        for (i, r) in responses.iter().enumerate() {
+            out.push('\n');
+            out.push_str(&format!("// --- {} of {} ---\n", i + 1, responses.len()));
+            out.push('\n');
+            out.push_str(r.trim_end());
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Return everything before the scissors line; if no scissors line
+/// is found, return the whole content (defensive: a user who
+/// deletes the scissors still gets their content sent, not silently
+/// lost).
+pub fn strip_from_scissors(content: &str) -> String {
+    // Find the FIRST scissors line: the user's prompt area is above,
+    // so an early match wins.
+    let mut idx: Option<usize> = None;
+    for (i, line) in content.lines().enumerate() {
+        if line == SCISSORS {
+            idx = Some(i);
+            break;
+        }
+    }
+    let Some(scissors_idx) = idx else {
+        return content.to_string();
+    };
+    content
+        .lines()
+        .take(scissors_idx)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn editor_command() -> String {
@@ -359,5 +451,90 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out, "only");
+    }
+
+    // -- editor preamble + scissors strip ----------------------------------
+
+    #[test]
+    fn preamble_empty_for_no_responses() {
+        assert_eq!(build_editor_preamble(&[]), "");
+    }
+
+    #[test]
+    fn preamble_single_response_layout() {
+        let p = build_editor_preamble(&["the previous answer".to_string()]);
+        // Starts with blank lines so the cursor lands above the scissors.
+        assert!(
+            p.starts_with("\n\n"),
+            "expected leading blank lines for cursor area, got: {p:?}"
+        );
+        assert!(p.contains(SCISSORS));
+        // Hint text is `//`-prefixed and visible.
+        assert!(p.contains("// Type your prompt above the scissors line."));
+        // Section divider for the response.
+        assert!(p.contains("// --- last response"));
+        // The response body itself is unprefixed -- visually distinct
+        // from the `//` instructions/dividers.
+        assert!(
+            p.contains("\nthe previous answer\n"),
+            "expected unprefixed response body, got:\n{p}"
+        );
+    }
+
+    #[test]
+    fn preamble_multi_response_uses_section_dividers() {
+        let p = build_editor_preamble(&["older one".to_string(), "newer one".to_string()]);
+        // Header mentions the count
+        assert!(p.contains("// --- last 2 responses"));
+        // Each response gets a numbered divider
+        assert!(p.contains("// --- 1 of 2 ---"));
+        assert!(p.contains("// --- 2 of 2 ---"));
+        // Bodies are unprefixed
+        assert!(p.contains("\nolder one\n"));
+        assert!(p.contains("\nnewer one\n"));
+        assert!(p.contains(SCISSORS));
+    }
+
+    #[test]
+    fn preamble_preserves_blank_lines_in_response() {
+        let p = build_editor_preamble(&["first\n\nsecond".to_string()]);
+        // Response goes in verbatim (unprefixed), blank lines included.
+        assert!(
+            p.contains("\nfirst\n\nsecond\n"),
+            "expected verbatim response with blank line preserved, got:\n{p}"
+        );
+    }
+
+    #[test]
+    fn strip_returns_content_above_scissors() {
+        let buf = format!("my prompt line 1\nmy prompt line 2\n\n{SCISSORS}\n// reference");
+        assert_eq!(
+            strip_from_scissors(&buf),
+            "my prompt line 1\nmy prompt line 2\n"
+        );
+    }
+
+    #[test]
+    fn strip_uses_first_scissors_when_multiple_exist() {
+        // Defensive: the FIRST scissors wins (user's prompt is above).
+        // A stray scissors inside reference content can't hijack the split.
+        let buf = format!("real prompt\n{SCISSORS}\n// stuff\n{SCISSORS}\n// more");
+        assert_eq!(strip_from_scissors(&buf), "real prompt");
+    }
+
+    #[test]
+    fn strip_no_scissors_returns_whole_content() {
+        // Defensive: if the user deletes the scissors, send what they
+        // typed rather than losing it.
+        let buf = "just the prompt\nno scissors here";
+        assert_eq!(strip_from_scissors(buf), buf);
+    }
+
+    #[test]
+    fn strip_preserves_markdown_headers_in_prompt() {
+        // The whole reason for scissors-based strip over `#`-line
+        // filtering: user's markdown headers in the prompt survive.
+        let buf = format!("# Real heading\n## Sub\nbody\n{SCISSORS}\n// reference");
+        assert_eq!(strip_from_scissors(&buf), "# Real heading\n## Sub\nbody");
     }
 }
