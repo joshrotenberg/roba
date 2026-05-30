@@ -132,6 +132,67 @@ Two rules:
 For `vars`, the same idea but per-key: CLI `--var NAME=foo` overrides
 the profile's `NAME` and the rest of the profile's vars still apply.
 
+## Precedence (full layer list)
+
+When the same knob is set in more than one place, the highest
+layer wins:
+
+1. **CLI flag** (e.g. `--writable`, `--allow-tool Edit`)
+2. **Env var** (e.g. `ROBA_WRITABLE=1`, `ROBA_ALLOW_TOOL=Edit,Write`)
+3. **Active `[profile.NAME]` overlay** (selected explicitly,
+   auto-applied via `ROBA_PROFILE`, or named `default`)
+4. **Top-level keys** in any `roba.toml` (closer-to-cwd files
+   win for scalars; lists and vars merge as described above)
+5. **roba's built-in defaults** (read-only permissions, no
+   composition, no streaming)
+
+The env layer runs first, then the profile layer; both check
+"did the CLI / a prior layer already set this?" before filling
+in a value. So a CLI flag is never overridden by env or profile,
+and an env var is never overridden by profile.
+
+### Permissions precedence
+
+For the `writable` / `full_auto` knobs, the highest layer that
+sets one wins, and `full_auto` short-circuits `writable` at
+apply time. So:
+
+- profile `writable = true` + no CLI/env override -> writable
+  (Edit, Write added)
+- profile `writable = true` + CLI `--full-auto` -> full-auto
+  (bypasses everything)
+- profile `full_auto = true` + CLI `--writable` -> full-auto
+  (the env / profile layer set `args.full_auto = true`; CLI
+  --writable doesn't unset it)
+
+`--readonly` is the explicit name for the default. It does
+**not** actively suppress a `writable = true` or
+`full_auto = true` coming from a lower layer -- it's a no-op
+marker that pairs cleanly with permissive list additions
+(`--readonly --allow-tool "Bash(git status)"`) but cannot
+cancel out a profile or env override on its own. To enforce
+read-only when a profile sets `writable = true`, pass
+`--no-default-profile` or unset `ROBA_WRITABLE` /
+`ROBA_FULL_AUTO` for that call. This is tracked as a known gap;
+see `docs/positioning.md`.
+
+For `allow_tool` and `deny_tool`, lists **accumulate across
+layers**:
+
+- Across `roba.toml` files, closer-to-cwd entries concat on top
+  of farther-from-cwd entries.
+- The active profile's list concats on top of the merged
+  top-level list.
+- The CLI (`--allow-tool` / `--deny-tool`, repeatable) and env
+  (`ROBA_ALLOW_TOOL` / `ROBA_DENY_TOOL`, comma-separated)
+  **replace** the resolved list when set -- they don't
+  concatenate with the lower layer.
+
+When the same tool ends up in both `allow_tool` and `deny_tool`
+(across any combination of layers), **deny wins**. roba passes
+both resolved lists through to claude unchanged; claude is the
+final arbiter.
+
 ## Worked examples
 
 Drop these into `~/.config/roba.toml` (or a project-local
