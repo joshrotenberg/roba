@@ -103,6 +103,34 @@ roba profile show review      # the TOML for one profile
 So `roba "foo" | jq` always sees clean stdout, even with the
 spinner / footer / tool calls humming on stderr.
 
+### JSON error envelope
+
+When you pass `--json` and a runtime error happens, roba prints a
+structured envelope to **stderr** (stdout stays empty) and exits
+with the existing typed code. Pipe consumers parse it the same way
+they parse the success record.
+
+```json
+{
+  "error": {
+    "kind": "auth",
+    "message": "claude -p exited with 1: not logged in",
+    "exit_code": 2,
+    "chain": ["top context", "...", "root cause"]
+  }
+}
+```
+
+`kind` is one of `"auth"` (exit 2), `"budget"` (3), `"timeout"`
+(4), `"history"` (1), or `"other"` (1). The mapping mirrors the
+typed exit codes. `chain` lists the anyhow context layers from
+top (the most recent context call) down to the root cause.
+
+Without `--json`, the error path is unchanged: a styled
+`error: ...` line on stderr. Clap parse errors (mistyped flags,
+missing values) are emitted by clap itself before roba sees them
+and stay as plain stderr regardless of `--json`.
+
 ## Permissions
 
 Safe by default. claude can use `Read`, `Glob`, and `Grep` but

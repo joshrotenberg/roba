@@ -481,3 +481,56 @@ fn var_bad_syntax_errors() {
         .failure()
         .stderr(predicate::str::contains("expected K=V"));
 }
+
+// ---------------------------------------------------------------------------
+// --json error envelope: structured stderr instead of plain anyhow text
+// ---------------------------------------------------------------------------
+
+#[test]
+fn json_error_envelope_on_empty_stdin() {
+    // Trigger a known exit-1, non-wrapper error path (empty stdin
+    // via `-`) with --json and confirm the stderr parses as the
+    // documented envelope shape.
+    let out = roba()
+        .args(["--json", "-"])
+        .write_stdin("")
+        .output()
+        .expect("run");
+    assert!(!out.status.success(), "expected failure");
+    assert_eq!(out.status.code(), Some(1));
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let value: serde_json::Value = serde_json::from_str(&stderr).unwrap_or_else(|e| {
+        panic!("--json error stderr must be parseable JSON; got:\n{stderr}\nerror: {e}")
+    });
+    assert_eq!(value["error"]["kind"], "other");
+    assert_eq!(value["error"]["exit_code"], 1);
+    assert!(
+        value["error"]["chain"].is_array(),
+        "chain must be an array, got: {stderr}"
+    );
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .is_some_and(|m| !m.is_empty()),
+        "message must be non-empty, got: {stderr}"
+    );
+}
+
+#[test]
+fn plain_error_path_unchanged_without_json() {
+    // Without --json, the existing styled "error: empty stdin..."
+    // message must still be present and stderr must NOT be JSON.
+    let out = roba().arg("-").write_stdin("").output().expect("run");
+    assert!(!out.status.success(), "expected failure");
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("empty stdin"),
+        "expected plain error message, got:\n{stderr}"
+    );
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&stderr).is_err(),
+        "plain stderr should not be JSON, got:\n{stderr}"
+    );
+}
