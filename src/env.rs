@@ -130,8 +130,15 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     {
         args.editor_history = Some(n);
     }
-    if !args.worktree && read_truthy(env, "ROBA_WORKTREE") {
-        args.worktree = true;
+    if args.worktree.is_none()
+        && let Some(s) = env.get("ROBA_WORKTREE").filter(|s| !s.is_empty())
+    {
+        let lower = s.to_ascii_lowercase();
+        match lower.as_str() {
+            "1" | "true" | "yes" | "on" => args.worktree = Some(None),
+            "0" | "false" | "no" | "off" => {} // explicit off -- leave unset
+            _ => args.worktree = Some(Some(s.clone())),
+        }
     }
 
     // ----- Vars (ROBA_VAR_<KEY>=<value>) -----

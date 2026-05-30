@@ -321,12 +321,22 @@ pub struct AskArgs {
     )]
     pub fresh: bool,
 
-    /// Run in a fresh git worktree (claude generates the name).
-    /// The worktree persists after the session; clean up manually with
+    /// Run in a fresh git worktree. With no value, claude generates
+    /// the name; with `=NAME`, pin the worktree directory/branch
+    /// (e.g. `-w=feature-x`). The `=` is required for the named form
+    /// to disambiguate from the positional prompt. The worktree
+    /// persists after the session; clean up manually with
     /// `git worktree remove`. Pairs naturally with `--writable` or
     /// `--full-auto` -- the worktree is your sandbox.
-    #[arg(short = 'w', long, help_heading = "Sessions")]
-    pub worktree: bool,
+    #[arg(
+        short = 'w',
+        long,
+        value_name = "NAME",
+        num_args(0..=1),
+        require_equals = true,
+        help_heading = "Sessions"
+    )]
+    pub worktree: Option<Option<String>>,
 
     // ----- Permissions ------------------------------------------------------
     /// Explicit form of the default: Read, Glob, Grep only. No-op (the default).
@@ -404,5 +414,57 @@ mod tests {
     #[test]
     fn parse_kv_accepts_empty_value() {
         assert_eq!(parse_kv("k="), Ok(("k".to_string(), String::new())));
+    }
+
+    #[test]
+    fn worktree_missing_is_none() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "do thing"]).unwrap();
+        assert!(cli.ask.worktree.is_none());
+    }
+
+    #[test]
+    fn worktree_short_alone_is_presence() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "-w", "do thing"]).unwrap();
+        assert_eq!(cli.ask.worktree, Some(None));
+        assert_eq!(cli.ask.prompt.as_deref(), Some("do thing"));
+    }
+
+    #[test]
+    fn worktree_long_alone_is_presence() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--worktree", "do thing"]).unwrap();
+        assert_eq!(cli.ask.worktree, Some(None));
+        assert_eq!(cli.ask.prompt.as_deref(), Some("do thing"));
+    }
+
+    #[test]
+    fn worktree_short_equals_name() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "-w=mybranch", "do thing"]).unwrap();
+        assert_eq!(cli.ask.worktree, Some(Some("mybranch".to_string())));
+        assert_eq!(cli.ask.prompt.as_deref(), Some("do thing"));
+    }
+
+    #[test]
+    fn worktree_long_equals_name() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--worktree=mybranch", "do thing"]).unwrap();
+        assert_eq!(cli.ask.worktree, Some(Some("mybranch".to_string())));
+    }
+
+    #[test]
+    fn worktree_long_space_name_is_rejected() {
+        // require_equals = true forbids `--worktree NAME` (the space form);
+        // NAME would otherwise get swallowed as the worktree value or the
+        // prompt depending on positions. Reject it at parse time.
+        use clap::Parser;
+        let err = Cli::try_parse_from(["roba", "--worktree", "mybranch", "do thing"]).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("equal") || msg.contains("unexpected"),
+            "expected equals-required parse error, got: {msg}"
+        );
     }
 }

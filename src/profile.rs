@@ -101,8 +101,20 @@ pub struct Profile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub editor_history: Option<usize>,
     /// Run every session in a fresh git worktree (`-w` / `--worktree`).
+    /// TOML accepts either `worktree = true` (claude generates the
+    /// name) or `worktree = "NAME"` (pinned name).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree: Option<bool>,
+    pub worktree: Option<WorktreeSetting>,
+}
+
+/// Profile value for the `worktree` field. Mirrors the CLI's
+/// `--worktree[=NAME]` shape: `true` means presence-only, a string
+/// means a pinned name, `false` is an explicit off.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum WorktreeSetting {
+    Enabled(bool),
+    Named(String),
 }
 
 impl Profile {
@@ -533,10 +545,12 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile) {
     if args.editor_history.is_none() && profile.editor_history.is_some() {
         args.editor_history = profile.editor_history;
     }
-    if let Some(v) = profile.worktree
-        && !args.worktree
-    {
-        args.worktree = v;
+    if args.worktree.is_none() {
+        args.worktree = match profile.worktree {
+            Some(WorktreeSetting::Enabled(true)) => Some(None),
+            Some(WorktreeSetting::Named(s)) => Some(Some(s)),
+            Some(WorktreeSetting::Enabled(false)) | None => None,
+        };
     }
 }
 

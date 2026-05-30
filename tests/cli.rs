@@ -193,6 +193,49 @@ fn help_mentions_worktree_flag() {
         .stdout(predicate::str::contains("--worktree"));
 }
 
+#[test]
+fn worktree_alone_parses_and_fails_at_runtime_not_clap() {
+    // -w by itself + missing prepend file: parse must succeed,
+    // failure comes from the runtime (not clap), confirming the
+    // presence form still works.
+    roba()
+        .args(["foo", "-w", "--prepend", "/no/such/worktree-test-noname"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("reading --prepend"));
+}
+
+#[test]
+fn worktree_named_with_equals_parses() {
+    // -w=NAME + missing prepend file: parse must succeed (clap
+    // accepts the `=` form), failure is the runtime read error.
+    roba()
+        .args([
+            "foo",
+            "-w=mybranch",
+            "--prepend",
+            "/no/such/worktree-test-named",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("reading --prepend"));
+}
+
+#[test]
+fn worktree_long_space_name_is_rejected() {
+    // require_equals = true: `--worktree NAME` (space form) is a
+    // clap parse error, not silently consumed.
+    roba()
+        .args(["foo", "--worktree", "mybranch"])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("equal").or(predicate::str::contains("unexpected argument")),
+        );
+}
+
 // ---------------------------------------------------------------------------
 // profile subcommand: config layering (no claude calls)
 // ---------------------------------------------------------------------------

@@ -114,7 +114,7 @@ override.
 | `quiet` | `bool` | `-q` / `--quiet` | Answer only, no metadata |
 | `json` | `bool` | `--json` | Structured result as JSON on stdout |
 | `editor_history` | `int` | `--editor-history N` | With `-e`, pre-fill the editor with the last N assistant responses, separated by a scissors line. Default 1; 0 disables |
-| `worktree` | `bool` | `-w` / `--worktree` | Run every session in a fresh git worktree (claude generates the name) |
+| `worktree` | `bool` or `string` | `-w` / `--worktree[=NAME]` | `true` runs every session in a fresh git worktree (claude generates the name); a string pins the worktree directory/branch (e.g. `worktree = "feature-x"`) |
 
 Unknown keys are rejected at parse time -- a typo errors fast instead
 of being silently ignored.
