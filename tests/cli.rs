@@ -446,6 +446,34 @@ fn fork_without_resume_errors() {
 }
 
 #[test]
+fn editor_without_tty_fails_fast() {
+    // assert_cmd's write_stdin attaches a pipe to stdin, so stdin
+    // is not a TTY. -e must error early with the canonical message.
+    roba()
+        .arg("-e")
+        .write_stdin("")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--editor requires an interactive terminal (stdin not a TTY)",
+        ));
+}
+
+#[test]
+fn pick_without_tty_fails_fast() {
+    roba()
+        .args(["foo", "--pick"])
+        .write_stdin("")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--pick requires an interactive terminal (stdin not a TTY)",
+        ));
+}
+
+#[test]
 fn var_bad_syntax_errors() {
     roba()
         .args(["foo", "--var", "no-equals"])
