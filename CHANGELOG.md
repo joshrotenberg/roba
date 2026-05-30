@@ -10,6 +10,18 @@ when published the entries below become version sections.
 
 ## [Unreleased]
 
+### Fixed
+
+- Fail fast when an interactive-only flag is set without a TTY on
+  stdin. `-e` / `--editor` and `--pick` both block on human input;
+  in a head-less context (script, CI step, orchestrator) the
+  process would hang waiting for keystrokes that can't arrive. Now
+  both flags pre-check `stdin.is_terminal()` at the top of
+  `run_ask` (right after env + profile resolution) and exit 1 with
+  a canonical message: `--editor requires an interactive terminal
+  (stdin not a TTY)` / `--pick requires an interactive terminal
+  (stdin not a TTY)`. Closes #36.
+
 ### Added
 
 - `--show-thinking` flag: render extended-thinking blocks live on
