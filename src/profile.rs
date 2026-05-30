@@ -96,6 +96,10 @@ pub struct Profile {
     pub quiet: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub json: Option<bool>,
+    /// Default N for `--editor-history` when `-e` is on. 0 disables
+    /// the preamble entirely. Only consulted with `-e`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub editor_history: Option<usize>,
 }
 
 impl Profile {
@@ -120,6 +124,7 @@ impl Profile {
             && self.plain.is_none()
             && self.quiet.is_none()
             && self.json.is_none()
+            && self.editor_history.is_none()
     }
 
     /// Merge `other` on top of `self`. Used to layer roba.toml files
@@ -149,6 +154,7 @@ impl Profile {
             plain,
             quiet,
             json,
+            editor_history,
         } = other;
 
         self.prepend.append(&mut prepend);
@@ -197,6 +203,9 @@ impl Profile {
         }
         if json.is_some() {
             self.json = json;
+        }
+        if editor_history.is_some() {
+            self.editor_history = editor_history;
         }
     }
 }
@@ -512,6 +521,9 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile) {
         && !args.json
     {
         args.json = v;
+    }
+    if args.editor_history.is_none() && profile.editor_history.is_some() {
+        args.editor_history = profile.editor_history;
     }
 }
 

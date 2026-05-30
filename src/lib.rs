@@ -68,7 +68,12 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         eprintln!("resuming session {}", id.get(..8).unwrap_or(&id));
         args.resume = Some(id);
     }
-    let main = resolve_main_prompt(args.prompt.as_deref(), args.file.as_deref(), args.editor)?;
+    let main = resolve_main_prompt(
+        args.prompt.as_deref(),
+        args.file.as_deref(),
+        args.editor,
+        args.editor_history,
+    )?;
     let attachments = collect_attachments(&args.attach)?;
     let git_context = collect_git_context(&args)?;
     let context = merge_optional(attachments, git_context);
