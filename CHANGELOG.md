@@ -12,6 +12,14 @@ when published the entries below become version sections.
 
 ### Added
 
+- `--show-thinking` flag: render extended-thinking blocks live on
+  stderr in the dim meta-channel style during `--stream`. Uses
+  `StreamEvent::partial_message` from claude-wrapper 0.10.1 to
+  decode `content_block_delta` events with a `thinking_delta`
+  payload. Only takes effect alongside `--stream`; without it the
+  flag is a silent no-op (profiles may legitimately set both). Also
+  configurable via profile (`show_thinking = true`) and env
+  (`ROBA_SHOW_THINKING=1`). Closes #10.
 - `-w` / `--worktree[=NAME]` flag: passthrough to claude's
   `--worktree`, runs the session in a fresh git worktree. With no
   value, claude generates the name; with `=NAME` (e.g.

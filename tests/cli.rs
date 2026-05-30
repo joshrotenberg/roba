@@ -410,6 +410,33 @@ fn conflict_stream_and_save() {
 }
 
 #[test]
+fn help_mentions_show_thinking_flag() {
+    roba()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--show-thinking"));
+}
+
+#[test]
+fn show_thinking_parses_with_stream() {
+    // --show-thinking + --stream + missing prepend file: parse must
+    // succeed, failure comes from the runtime not from clap.
+    roba()
+        .args([
+            "foo",
+            "--show-thinking",
+            "--stream",
+            "--prepend",
+            "/no/such/show-thinking-test",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("reading --prepend"));
+}
+
+#[test]
 fn fork_without_resume_errors() {
     roba()
         .args(["foo", "--fork"])

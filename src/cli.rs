@@ -268,6 +268,11 @@ pub struct AskArgs {
     )]
     pub stream: bool,
 
+    /// Render extended-thinking blocks live on stderr. Only takes
+    /// effect with `--stream`; ignored otherwise.
+    #[arg(long, help_heading = "Output")]
+    pub show_thinking: bool,
+
     /// Print the resolved prompt before the response.
     #[arg(long, help_heading = "Output")]
     pub echo: bool,
