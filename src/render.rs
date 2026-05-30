@@ -170,6 +170,22 @@ pub fn print_error(message: &str, style: &Style) {
     }
 }
 
+/// Stream a thinking-block delta chunk to stderr. Chunks arrive
+/// piecewise without newlines so this uses `eprint!` (no trailing
+/// newline) and wraps each chunk in dim/reset when color is on, so
+/// ANSI state never bleeds past one chunk.
+pub fn print_thinking_delta(text: &str, style: &Style) {
+    use std::io::Write;
+    let stderr = std::io::stderr();
+    let mut lock = stderr.lock();
+    if style.color {
+        let _ = write!(lock, "\x1b[2m{text}\x1b[0m");
+    } else {
+        let _ = write!(lock, "{text}");
+    }
+    let _ = lock.flush();
+}
+
 /// Print a tool-call indicator on stderr during --stream. Dim with
 /// a `▸` glyph when color is on; plain `>` prefix otherwise. Same
 /// 3-space cargo-style indent as the rendered body, so tools sit

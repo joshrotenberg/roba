@@ -89,6 +89,8 @@ pub struct Profile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_thinking: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub echo: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plain: Option<bool>,
@@ -135,6 +137,7 @@ impl Profile {
             && self.vars.is_empty()
             && self.model.is_none()
             && self.stream.is_none()
+            && self.show_thinking.is_none()
             && self.echo.is_none()
             && self.plain.is_none()
             && self.quiet.is_none()
@@ -166,6 +169,7 @@ impl Profile {
             vars,
             model,
             stream,
+            show_thinking,
             echo,
             plain,
             quiet,
@@ -208,6 +212,9 @@ impl Profile {
         }
         if stream.is_some() {
             self.stream = stream;
+        }
+        if show_thinking.is_some() {
+            self.show_thinking = show_thinking;
         }
         if echo.is_some() {
             self.echo = echo;
@@ -521,6 +528,11 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile) {
         && !args.stream
     {
         args.stream = v;
+    }
+    if let Some(v) = profile.show_thinking
+        && !args.show_thinking
+    {
+        args.show_thinking = v;
     }
     if let Some(v) = profile.echo
         && !args.echo

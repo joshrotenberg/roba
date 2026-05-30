@@ -109,6 +109,7 @@ override.
 | `vars` | `{ key = "value" }` | `--var KEY=VALUE` (repeatable) | CLI keys override profile keys |
 | `model` | `string` | `--model MODEL` | Alias (`sonnet`/`opus`/`haiku`) or full id (`claude-sonnet-4-6`) |
 | `stream` | `bool` | `--stream` | Stream tokens as they arrive |
+| `show_thinking` | `bool` | `--show-thinking` | Render extended-thinking blocks live on stderr. Only takes effect with `--stream`; ignored otherwise |
 | `echo` | `bool` | `--echo` | Print resolved prompt before the response |
 | `plain` | `bool` | `--plain` | No rendering, color, or spinner |
 | `quiet` | `bool` | `-q` / `--quiet` | Answer only, no metadata |

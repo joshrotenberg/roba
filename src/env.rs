@@ -113,6 +113,9 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     if !args.stream && read_truthy(env, "ROBA_STREAM") {
         args.stream = true;
     }
+    if !args.show_thinking && read_truthy(env, "ROBA_SHOW_THINKING") {
+        args.show_thinking = true;
+    }
     if !args.echo && read_truthy(env, "ROBA_ECHO") {
         args.echo = true;
     }

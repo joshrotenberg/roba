@@ -30,6 +30,9 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
             None => cmd.worktree(),
         };
     }
+    if args.show_thinking {
+        cmd = cmd.include_partial_messages();
+    }
     apply_permissions(cmd, args)
 }
 
