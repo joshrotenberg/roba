@@ -1267,6 +1267,44 @@ prepend = ["/closer.md"]
         assert_eq!(args.deny_tool, vec!["WebFetch".to_string()]);
     }
 
+    /// Spec-as-test for the precedence docs in README.md ("Permissions
+    /// precedence") and docs/profiles.md ("Permissions precedence").
+    ///
+    /// `--readonly` on the CLI is the explicit name for the built-in
+    /// default; it does NOT actively suppress a `writable = true`
+    /// coming from a profile. Reason: [`apply_permissions`] inspects
+    /// `args.writable` (and `args.full_auto`), not `args.readonly`,
+    /// and [`merge_into_args`] gates the profile fill on
+    /// `!args.<flag>` per-flag rather than cross-checking the trio
+    /// for mutual exclusion. So profile `writable = true` lands on
+    /// `args.writable` regardless of the CLI's `--readonly`.
+    ///
+    /// To get read-only behavior when a profile turns writable on,
+    /// the documented workaround is `--no-default-profile`. See
+    /// `docs/positioning.md` for the proposed-but-unimplemented
+    /// "CLI --readonly suppresses profile writable" semantics.
+    #[test]
+    fn merge_cli_readonly_does_not_suppress_profile_writable() {
+        let mut args = args_with(&["--readonly"]);
+        assert!(args.readonly, "CLI --readonly should set args.readonly");
+        assert!(!args.writable, "CLI didn't pass --writable");
+
+        let profile = Profile {
+            writable: Some(true),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile);
+
+        // CLI value preserved.
+        assert!(args.readonly, "CLI --readonly stays set after merge");
+        // Profile's writable=true still applied -- the gate is
+        // `!args.writable`, which is independent of args.readonly.
+        assert!(
+            args.writable,
+            "profile writable=true lands on args.writable even when CLI passed --readonly"
+        );
+    }
+
     #[test]
     fn merge_allow_tool_cli_replaces_profile() {
         let mut args = args_with(&["--allow-tool", "Edit"]);

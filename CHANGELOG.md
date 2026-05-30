@@ -80,6 +80,18 @@ when published the entries below become version sections.
 
 ### Changed
 
+- Documented the permissions precedence model explicitly in
+  README.md (new "Precedence" subsection in `## Permissions`) and
+  `docs/profiles.md` (new "Precedence (full layer list)" section
+  with a permissions-specific subsection). Spells out the
+  CLI > env > profile overlay > top-level > built-in default
+  layering, the `writable` / `full_auto` interaction, the
+  `allow_tool` / `deny_tool` concat-vs-replace behavior, and the
+  deny-wins rule. Also documents the known gap that CLI
+  `--readonly` does not actively suppress a profile / env
+  `writable = true` (workaround: `--no-default-profile`). Pinned
+  by a new unit test in `src/profile.rs`. Closes #44.
+
 - **Config schema** (breaking; no published users yet):
   - File renamed: `~/.config/roba/profiles.toml` -> `~/.config/roba.toml`;
     `.roba/profiles.toml` -> `roba.toml` (no more `.roba/` directory).
