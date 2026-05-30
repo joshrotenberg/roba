@@ -24,6 +24,17 @@ when published the entries below become version sections.
 
 ### Added
 
+- Structured JSON error envelope when `--json` is set. Runtime
+  failures now print a parseable `{"error": {...}}` object on
+  stderr (stdout stays clean) instead of the plain anyhow chain.
+  Shape: `kind` (`"auth"` | `"budget"` | `"timeout"` | `"history"`
+  | `"other"`, mirroring the existing typed exit codes), `message`
+  (top of the anyhow context chain), `exit_code` (the same int
+  roba exits with), and `chain` (the full anyhow chain, top to
+  root). Without `--json`, the error path is unchanged -- the
+  styled `error: ...` prefix still goes to stderr. Clap parse
+  errors (exit 2 from the deriver) stay as clap's stderr output
+  since they predate flag resolution. Closes #34.
 - `--show-thinking` flag: render extended-thinking blocks live on
   stderr in the dim meta-channel style during `--stream`. Uses
   `StreamEvent::partial_message` from claude-wrapper 0.10.1 to

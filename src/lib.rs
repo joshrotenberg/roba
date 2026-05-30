@@ -13,6 +13,7 @@ use std::io::IsTerminal;
 pub mod cli;
 pub mod cost;
 pub mod env;
+pub mod error;
 pub mod history;
 pub mod output;
 pub mod profile;
