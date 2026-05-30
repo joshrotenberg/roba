@@ -120,6 +120,64 @@ Same knobs work as profile fields (`writable = true`,
 `allow_tool = [...]`, etc.) so you can codify a project's policy
 in `roba.toml` once and not think about it again.
 
+### Precedence
+
+When the same permission knob is set in more than one place, the
+highest layer wins:
+
+| Layer | Example |
+|---|---|
+| CLI flag | `--writable`, `--allow-tool Edit` |
+| Env var | `ROBA_WRITABLE=1`, `ROBA_ALLOW_TOOL=Edit,Write` |
+| Active profile overlay | `[profile.NAME] writable = true` |
+| Top-level `roba.toml` | `writable = true` at the file's top level |
+| Built-in default | read-only: `Read`, `Glob`, `Grep` only |
+
+`--writable` and `--full-auto` are mutually exclusive with the
+default (they're presence flags that flip a bool). The highest
+layer that sets one wins. `--full-auto` beats `--writable`
+because `apply_permissions` short-circuits on `full_auto` before
+inspecting `writable`.
+
+`--readonly` is the explicit name for the built-in default. It is
+a no-op marker, **not** an active suppressor: passing `--readonly`
+on the CLI does not cancel a `writable = true` or
+`full_auto = true` coming from a profile or env var. To enforce
+read-only behavior when a profile turns on writable, pass
+`--no-default-profile` (skips the auto-applied profile) or unset
+`ROBA_WRITABLE` / `ROBA_FULL_AUTO` for the call. (Tracked as a
+known gap; see `docs/positioning.md`.)
+
+`allow_tool` and `deny_tool` lists **accumulate across layers**.
+Across `roba.toml` files, closer-to-cwd entries concat on top of
+farther-from-cwd entries, and the active profile's list concats
+on top of the top-level list. The CLI (`--allow-tool` /
+`--deny-tool`, repeatable) and env (`ROBA_ALLOW_TOOL` /
+`ROBA_DENY_TOOL`, comma-separated) each **replace** the resolved
+list when set, rather than concatenating with it.
+
+When the same tool ends up in both the allow list and the deny
+list, **deny wins**. roba passes both lists through to claude
+unchanged; claude is the final arbiter.
+
+#### Worked example
+
+Profile in `roba.toml`:
+
+```toml
+[profile.default]
+writable = true
+allow_tool = ["Bash(git status)"]
+```
+
+| Invocation | Resolved permissions |
+|---|---|
+| `roba "..."` | writable (Edit, Write) + `Bash(git status)` (auto-applied profile) |
+| `roba --full-auto "..."` | full-auto bypasses everything; profile's writable + allow_tool ignored |
+| `roba --no-default-profile "..."` | read-only default (Read, Glob, Grep); profile skipped |
+| `roba --readonly "..."` | **still writable** -- `--readonly` doesn't suppress profile writable; use `--no-default-profile` instead |
+| `roba --allow-tool Edit "..."` | read-only base + `Edit` only; profile's `allow_tool` list is replaced, but `writable = true` from the profile still applies (so Edit, Write are also in) |
+
 ## Status
 
 Early. The CLI surface (flag names, exit codes, config schema) is
