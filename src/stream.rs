@@ -6,7 +6,7 @@
 //! Tool calls are tallied for the rollup line at the end.
 
 use anyhow::Result;
-use claude_wrapper::streaming::stream_query;
+use claude_wrapper::streaming::{BlockDelta, PartialMessageEvent, stream_query};
 use claude_wrapper::types::{OutputFormat, QueryResult};
 use claude_wrapper::{Claude, QueryCommand};
 use std::collections::HashMap;
@@ -36,6 +36,15 @@ pub async fn run_streaming(claude: &Claude, prompt: String, args: &AskArgs) -> R
             }
             return;
         }
+        if args.show_thinking
+            && let Some(PartialMessageEvent::BlockDelta {
+                delta: BlockDelta::Thinking(text),
+                ..
+            }) = event.partial_message()
+        {
+            render_thinking_delta(&text, &style);
+            return;
+        }
         if event.event_type() == Some("assistant") {
             handle_assistant_blocks(&event.data, show_meta, &style, &mut tool_counts);
         }
@@ -57,6 +66,14 @@ pub async fn run_streaming(claude: &Claude, prompt: String, args: &AskArgs) -> R
         crate::render::print_meta(&format_footer(qr), &style);
     }
     Ok(())
+}
+
+/// Render a thinking-block delta to stderr in the dim meta style.
+/// Chunks arrive piecewise so this hands off to
+/// [`crate::render::print_thinking_delta`], which writes without a
+/// trailing newline.
+fn render_thinking_delta(text: &str, style: &Style) {
+    crate::render::print_thinking_delta(text, style);
 }
 
 /// Walk one assistant event's content blocks. Text blocks flush
