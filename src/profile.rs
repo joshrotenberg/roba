@@ -100,6 +100,9 @@ pub struct Profile {
     /// the preamble entirely. Only consulted with `-e`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub editor_history: Option<usize>,
+    /// Run every session in a fresh git worktree (`-w` / `--worktree`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<bool>,
 }
 
 impl Profile {
@@ -125,6 +128,7 @@ impl Profile {
             && self.quiet.is_none()
             && self.json.is_none()
             && self.editor_history.is_none()
+            && self.worktree.is_none()
     }
 
     /// Merge `other` on top of `self`. Used to layer roba.toml files
@@ -155,6 +159,7 @@ impl Profile {
             quiet,
             json,
             editor_history,
+            worktree,
         } = other;
 
         self.prepend.append(&mut prepend);
@@ -206,6 +211,9 @@ impl Profile {
         }
         if editor_history.is_some() {
             self.editor_history = editor_history;
+        }
+        if worktree.is_some() {
+            self.worktree = worktree;
         }
     }
 }
@@ -524,6 +532,11 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile) {
     }
     if args.editor_history.is_none() && profile.editor_history.is_some() {
         args.editor_history = profile.editor_history;
+    }
+    if let Some(v) = profile.worktree
+        && !args.worktree
+    {
+        args.worktree = v;
     }
 }
 

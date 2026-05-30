@@ -130,6 +130,9 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     {
         args.editor_history = Some(n);
     }
+    if !args.worktree && read_truthy(env, "ROBA_WORKTREE") {
+        args.worktree = true;
+    }
 
     // ----- Vars (ROBA_VAR_<KEY>=<value>) -----
     for (key, value) in env {

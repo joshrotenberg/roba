@@ -12,6 +12,14 @@ when published the entries below become version sections.
 
 ### Added
 
+- `-w` / `--worktree` flag: passthrough to claude's `--worktree`, runs
+  the session in a fresh git worktree (claude generates the name).
+  The worktree persists after the session; clean up manually with
+  `git worktree remove`. Pairs naturally with `--writable` or
+  `--full-auto` -- the worktree is your sandbox. Also configurable
+  via profile (`worktree = true`) and env (`ROBA_WORKTREE=1`).
+  Named-worktree form (e.g. `-w NAME`) is blocked on
+  joshrotenberg/claude-wrapper#616; partial closes #28.
 - `--editor-history N` (default 1): when composing with `-e`, the
   editor opens in `git commit`-style layout -- empty cursor area at
   the top for your prompt, then a `// ----- >8 -----` scissors
