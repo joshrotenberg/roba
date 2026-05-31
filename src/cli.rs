@@ -229,24 +229,6 @@ pub struct AskArgs {
     )]
     pub code: Option<String>,
 
-    /// First N lines only.
-    #[arg(
-        long,
-        value_name = "N",
-        conflicts_with_all = ["tail", "json"],
-        help_heading = "Output"
-    )]
-    pub head: Option<usize>,
-
-    /// Last N lines only.
-    #[arg(
-        long,
-        value_name = "N",
-        conflicts_with_all = ["head", "json"],
-        help_heading = "Output"
-    )]
-    pub tail: Option<usize>,
-
     /// Write the result to PATH instead of stdout.
     #[arg(long, value_name = "PATH", help_heading = "Output")]
     pub save: Option<PathBuf>,
@@ -263,7 +245,7 @@ pub struct AskArgs {
     /// Stream tokens as they arrive.
     #[arg(
         long,
-        conflicts_with_all = ["json", "code", "head", "tail", "save", "tee"],
+        conflicts_with_all = ["json", "code", "save", "tee"],
         help_heading = "Output"
     )]
     pub stream: bool,
