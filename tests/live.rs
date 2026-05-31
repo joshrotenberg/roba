@@ -185,23 +185,23 @@ fn live_output_head_caps_lines() {
 
 #[test]
 #[ignore]
-fn live_output_save_writes_file() {
+fn live_output_out_writes_file_and_stdout() {
     let dir = fresh_dir();
     let target = dir.path().join("out.md");
 
     let out = roba_in(dir.path())
         .args([
             "respond with the single word: saved",
-            "--save",
+            "--out",
             target.to_str().unwrap(),
         ])
         .output()
-        .expect("run roba --save");
+        .expect("run roba --out");
     assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        out.stdout.is_empty(),
-        "expected empty stdout with --save, got: {}",
-        String::from_utf8_lossy(&out.stdout)
+        stdout.to_lowercase().contains("saved"),
+        "expected 'saved' in stdout with --out, got: {stdout}"
     );
     let file_contents = std::fs::read_to_string(&target).expect("read saved file");
     assert!(
@@ -212,14 +212,14 @@ fn live_output_save_writes_file() {
 
 #[test]
 #[ignore]
-fn live_output_save_json_extension() {
+fn live_output_out_json_extension() {
     let dir = fresh_dir();
     let target = dir.path().join("out.json");
 
     roba_in(dir.path())
         .args([
             "respond with the single word: jp",
-            "--save",
+            "--out",
             target.to_str().unwrap(),
         ])
         .assert()
