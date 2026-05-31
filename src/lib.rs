@@ -103,7 +103,7 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         pb.finish_and_clear();
     }
 
-    let file_path = args.tee.as_deref().or(args.save.as_deref());
+    let file_path = args.out.as_deref();
     let want_json = args.json || file_path.is_some_and(path_is_json);
     let body = if want_json {
         serde_json::to_string_pretty(&result)?
@@ -118,10 +118,8 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         result.result.clone()
     };
     let style = render::Style::detect(&args);
-    let write_stdout = args.save.is_none();
-    if write_stdout {
-        render::print_body(&body, &style);
-    }
+    // --out always also writes stdout; redirect to /dev/null to suppress.
+    render::print_body(&body, &style);
     if let Some(path) = file_path {
         std::fs::write(path, format!("{body}\n"))
             .with_context(|| format!("writing result to {}", path.display()))?;

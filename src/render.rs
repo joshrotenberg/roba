@@ -57,7 +57,7 @@ impl Style {
 
     /// Build a style with all visual features off. Useful when the
     /// caller has already decided rendering is inappropriate (e.g.
-    /// inside `--save` writing).
+    /// inside `--out` writing).
     pub fn plain() -> Self {
         Self {
             render_markdown: false,
