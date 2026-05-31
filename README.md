@@ -33,7 +33,7 @@ and authenticated on your PATH.
 | | |
 |---|---|
 | **Prompt sources** | positional, stdin (`-` or piped), `-f FILE`, `-e` ($EDITOR), `--prepend`/`--append` files, `--attach GLOB`, `--git-diff`/`--git-log`/`--git-status`, `--var K=V` template substitution |
-| **Output shaping** | `--json`, `--quiet`, `--code [LANG]`, `--save PATH`, `--tee PATH` |
+| **Output shaping** | `--json`, `--quiet`, `--code [LANG]`, `-o/--out PATH` (write to file and stdout) |
 | **Sessions** | `-c` continue most recent, `--resume ID`, `--fork`, `--pick` (interactive fuzzy chooser), `roba history`, `roba last` |
 | **Permissions** | `--readonly`, `--full-auto` presets |
 | **Profiles** | `--profile NAME` from `~/.config/roba.toml`, `roba profile {list,show,init,path}` |
@@ -65,8 +65,8 @@ roba -c "now show me how to test the unsafe variant"
 # Fuzzy-pick a recent session to resume
 roba --pick "follow up to whatever I select"
 
-# Save the structured record
-roba "explain quicksort" --save out.json
+# Save the structured record (also echoes to stdout; redirect to suppress)
+roba "explain quicksort" --out out.json
 
 # Read-only review against current git diff
 roba --readonly --git-diff "is this safe to merge?"

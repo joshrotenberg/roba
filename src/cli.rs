@@ -229,23 +229,15 @@ pub struct AskArgs {
     )]
     pub code: Option<String>,
 
-    /// Write the result to PATH instead of stdout.
-    #[arg(long, value_name = "PATH", help_heading = "Output")]
-    pub save: Option<PathBuf>,
-
-    /// Write the result to both stdout and PATH (like tee).
-    #[arg(
-        long,
-        value_name = "PATH",
-        conflicts_with = "save",
-        help_heading = "Output"
-    )]
-    pub tee: Option<PathBuf>,
+    /// Write the result to a file AND to stdout (format from
+    /// extension, or --json wins).
+    #[arg(short = 'o', long, value_name = "PATH", help_heading = "Output")]
+    pub out: Option<PathBuf>,
 
     /// Stream tokens as they arrive.
     #[arg(
         long,
-        conflicts_with_all = ["json", "code", "save", "tee"],
+        conflicts_with_all = ["json", "code", "out"],
         help_heading = "Output"
     )]
     pub stream: bool,
@@ -401,6 +393,21 @@ mod tests {
     #[test]
     fn parse_kv_accepts_empty_value() {
         assert_eq!(parse_kv("k="), Ok(("k".to_string(), String::new())));
+    }
+
+    #[test]
+    fn out_and_json_compose() {
+        // --out (destination) and --json (format) are orthogonal axes:
+        // they must parse together without conflict. The run path then
+        // lets --json force JSON regardless of the path extension.
+        use clap::Parser;
+        let cli =
+            Cli::try_parse_from(["roba", "ask thing", "--out", "result.txt", "--json"]).unwrap();
+        assert_eq!(
+            cli.ask.out.as_deref(),
+            Some(std::path::Path::new("result.txt"))
+        );
+        assert!(cli.ask.json);
     }
 
     #[test]

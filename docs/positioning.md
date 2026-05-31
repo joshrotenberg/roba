@@ -62,6 +62,8 @@ frequency (the established method), not taste.
   structured/file output. `--save` reads like `--tee` minus stdout. Consider one flag
   with a mode, or at least decide the orthogonal axes: (format: pretty|json) x
   (destination: stdout|file|both). Today those axes are tangled across three flags.
+  _Resolved (#41): keep `--json` (format) + new `-o`/`--out` (destination + stdout);
+  `--save`/`--tee` removed._ File-only output is the Unix idiom `-o f > /dev/null`.
 - **`--head N` / `--tail N`:** arguably reimplementing coreutils. Only justified in
   TTY mode (no pipe to pipe into). And then: do they truncate *rendered* lines or
   *source* lines? Ambiguous against the markdown renderer. Lean cut unless history
