@@ -85,9 +85,10 @@ flag combinations.
   `roba "summarize" | jq` works because the answer is alone on stdout
 - TTY/pipe auto-detect: markdown-render on TTY, plain on pipe.
   Honor `NO_COLOR`
-- `--save out.{md,json}` writes a copy to a file; extension drives
-  format. stdout stays clean
-- `--tee out.md` writes both stdout and file (like Unix tee)
+- `-o`/`--out out.{md,json}` writes a copy to a file AND to stdout;
+  extension drives format (`--json` forces JSON regardless). File-only
+  output is the Unix idiom `-o f > /dev/null`. (Resolved #41: the
+  earlier `--save` / `--tee` split collapsed into this single flag.)
 
 #### Mode switches
 
@@ -320,7 +321,7 @@ A proper surface would be:
 roba export <session-id>                   # default: markdown to stdout
 roba export <session-id> --format prompt-context
 roba export <session-id> --format jsonl    # raw stream events
-roba export <session-id> --save out.md
+roba export <session-id> --out out.md
 roba cat <session-id>                      # alias for export markdown to stdout
 ```
 

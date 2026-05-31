@@ -380,11 +380,6 @@ fn conflict_readonly_and_full_auto() {
 }
 
 #[test]
-fn conflict_save_and_tee() {
-    assert_conflict(&["foo", "--save", "/tmp/a", "--tee", "/tmp/b"]);
-}
-
-#[test]
 fn conflict_stream_and_json() {
     assert_conflict(&["foo", "--stream", "--json"]);
 }
@@ -395,8 +390,8 @@ fn conflict_stream_and_code() {
 }
 
 #[test]
-fn conflict_stream_and_save() {
-    assert_conflict(&["foo", "--stream", "--save", "/tmp/a"]);
+fn conflict_stream_and_out() {
+    assert_conflict(&["foo", "--stream", "--out", "/tmp/a"]);
 }
 
 #[test]

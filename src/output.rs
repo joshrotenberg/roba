@@ -44,7 +44,7 @@ pub fn looks_like_refusal(text: &str) -> bool {
     MARKERS.iter().any(|m| lower.starts_with(m))
 }
 
-/// `.json` extension check for --save / --tee format inference.
+/// `.json` extension check for --out format inference.
 pub fn path_is_json(path: &Path) -> bool {
     path.extension().and_then(|s| s.to_str()) == Some("json")
 }
