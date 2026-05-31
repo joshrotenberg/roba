@@ -210,7 +210,7 @@ pub struct AskArgs {
     pub var: Vec<(String, String)>,
 
     // ----- Output -----------------------------------------------------------
-    /// Answer only -- no metadata, no decoration.
+    /// Suppress metadata: footer, spinner, tool-call markers. For rendering off, see --plain.
     #[arg(short = 'q', long, help_heading = "Output")]
     pub quiet: bool,
 
@@ -277,7 +277,7 @@ pub struct AskArgs {
     #[arg(long, help_heading = "Output")]
     pub echo: bool,
 
-    /// No rendering, color, or spinner.
+    /// Disable markdown rendering, color, and spinner. Footer still prints; for answer-only, see --quiet.
     #[arg(long, help_heading = "Output")]
     pub plain: bool,
 

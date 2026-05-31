@@ -68,7 +68,11 @@ frequency (the established method), not taste.
   shows real TTY use.
 - **`--quiet`/`-q` vs `--plain`:** adjacent meanings ("answer only" vs "no
   decoration"). Users will grab the wrong one. Either rename for contrast or document
-  the distinction sharply.
+  the distinction sharply. _Resolved (#43): keep both, clarify the help text._ They are
+  orthogonal axes -- `--quiet` is the metadata kill-switch (footer, spinner, tool
+  markers), `--plain` the decoration kill-switch (markdown, color, spinner) -- and each
+  flag's help now cross-references the other. Renaming would lose the `-q` Unix
+  convention and the `--plain` / `NO_COLOR` ecosystem pairing.
 
 ### Permissions precedence (needs explicit model)
 
