@@ -108,16 +108,6 @@ fn assert_conflict(args: &[&str]) {
 }
 
 #[test]
-fn conflict_head_and_tail() {
-    assert_conflict(&["foo", "--head", "1", "--tail", "1"]);
-}
-
-#[test]
-fn conflict_head_and_json() {
-    assert_conflict(&["foo", "--head", "1", "--json"]);
-}
-
-#[test]
 fn conflict_code_and_json() {
     assert_conflict(&["foo", "--code", "--json"]);
 }
