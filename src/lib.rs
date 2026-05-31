@@ -26,7 +26,6 @@ use crate::cli::{AskArgs, Cli, SubCommand};
 use crate::history::{pick_session_interactive, run_history, run_last};
 use crate::output::{
     extract_code_blocks, format_footer, looks_like_refusal, path_is_json, should_show_footer,
-    truncate_lines,
 };
 use crate::prompt::{
     apply_vars, collect_attachments, collect_git_context, compose_prompt, merge_optional,
@@ -118,10 +117,6 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     } else {
         result.result.clone()
     };
-    let pre_truncate_lines = body.lines().count();
-    let body = truncate_lines(&body, args.head, args.tail);
-    let dropped_lines = pre_truncate_lines.saturating_sub(body.lines().count());
-
     let style = render::Style::detect(&args);
     let write_stdout = args.save.is_none();
     if write_stdout {
@@ -135,19 +130,6 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         render::print_meta_blank();
         if looks_like_refusal(&result.result) {
             render::print_warning("response looks like a refusal", &style);
-        }
-        if dropped_lines > 0 {
-            let (flag, n) = if let Some(n) = args.head {
-                ("--head", n)
-            } else if let Some(n) = args.tail {
-                ("--tail", n)
-            } else {
-                ("", 0)
-            };
-            render::print_meta(
-                &format!("… {dropped_lines} more lines truncated by {flag} {n}"),
-                &style,
-            );
         }
         render::print_meta(&format_footer(&result), &style);
     }

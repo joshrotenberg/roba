@@ -65,7 +65,9 @@ frequency (the established method), not taste.
 - **`--head N` / `--tail N`:** arguably reimplementing coreutils. Only justified in
   TTY mode (no pipe to pipe into). And then: do they truncate *rendered* lines or
   *source* lines? Ambiguous against the markdown renderer. Lean cut unless history
-  shows real TTY use.
+  shows real TTY use. _Resolved (#42): cut both flags._ Pipe mode already has
+  `| head`/`| tail`, TTY scrollback covers the TTY case, and the source-vs-rendered
+  semantics were never pinned down.
 - **`--quiet`/`-q` vs `--plain`:** adjacent meanings ("answer only" vs "no
   decoration"). Users will grab the wrong one. Either rename for contrast or document
   the distinction sharply. _Resolved (#43): keep both, clarify the help text._ They are

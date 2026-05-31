@@ -124,7 +124,6 @@ flag combinations.
 - `--code` -- print only fenced code blocks
 - `--code --lang rust` -- filter by language
 - `--code N` -- only the Nth code block (great for "give me a function")
-- `--head N` / `--tail N` -- truncate long answers cleanly
 - `--format auto|markdown|plain|json` -- explicit format override
 
 #### Errors and refusals

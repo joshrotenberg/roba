@@ -33,7 +33,7 @@ and authenticated on your PATH.
 | | |
 |---|---|
 | **Prompt sources** | positional, stdin (`-` or piped), `-f FILE`, `-e` ($EDITOR), `--prepend`/`--append` files, `--attach GLOB`, `--git-diff`/`--git-log`/`--git-status`, `--var K=V` template substitution |
-| **Output shaping** | `--json`, `--quiet`, `--code [LANG]`, `--head N`/`--tail N`, `--save PATH`, `--tee PATH` |
+| **Output shaping** | `--json`, `--quiet`, `--code [LANG]`, `--save PATH`, `--tee PATH` |
 | **Sessions** | `-c` continue most recent, `--resume ID`, `--fork`, `--pick` (interactive fuzzy chooser), `roba history`, `roba last` |
 | **Permissions** | `--readonly`, `--full-auto` presets |
 | **Profiles** | `--profile NAME` from `~/.config/roba.toml`, `roba profile {list,show,init,path}` |
