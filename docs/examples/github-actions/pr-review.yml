@@ -1,0 +1,56 @@
+# Example: run roba as an auto-reviewer on PR open / push.
+#
+# Drop this in .github/workflows/roba-review.yml in your repo, set
+# ANTHROPIC_API_KEY in repo secrets, and adjust the model / prompt to
+# taste. This is a starting point, not a polished tool -- read it,
+# understand what it spends, and trim it to your workflow before
+# relying on it.
+
+name: roba PR auto-review
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+# Cost discipline: this job runs on every PR open and every push to an
+# open PR. Pick a cheap model (haiku) and keep the prompt short. Rough
+# estimate: a few cents per PR depending on diff size. Before pointing
+# this at a busy repo, run it on a handful of PRs and look at the
+# actual spend, then decide whether to gate it (e.g. only on a label,
+# or only when the diff touches certain paths).
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # need full history for --git-diff
+
+      - name: Install roba
+        run: cargo install roba
+
+      - name: Auto-review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          roba --readonly \
+               --model haiku \
+               --quiet \
+               --git-diff \
+               --json \
+               "Review this PR's diff. Flag bugs, missing tests, and \
+                security issues. Be specific (file:line). Group the \
+                output under Critical / Important / Suggestions \
+                headings." \
+               > review.json
+
+      - name: Post review comment
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # roba's --json output is a versioned envelope; the answer
+          # text lives at .result.result (see the repo README's
+          # "Versioned JSON output" section).
+          body=$(jq -r '.result.result' review.json)
+          gh pr comment ${{ github.event.pull_request.number }} \
+              --body "$body"
