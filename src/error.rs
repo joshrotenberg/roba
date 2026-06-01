@@ -27,8 +27,10 @@
 //! The top-level `version` field is the stability contract for
 //! programmatic consumers. It is present on every `--json` output --
 //! both this error envelope and the success envelope (`{ "version":
-//! 1, "result": {...} }`, see [`crate::run_ask`]). Peel off `version`
-//! before inspecting anything inside.
+//! 1, "result": {...}, "refusal": <bool> }`, see [`crate::run_ask`]).
+//! Peel off `version` before inspecting anything inside. The success
+//! envelope's `refusal` flag is the additive v1 field that surfaces
+//! the refusal heuristic to non-TTY consumers.
 //!
 //! Version 1 guarantees:
 //!
