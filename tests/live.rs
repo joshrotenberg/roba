@@ -134,9 +134,12 @@ fn live_output_json_valid() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value =
         serde_json::from_str(&stdout).expect("--json produced non-JSON stdout");
-    assert!(parsed.get("session_id").is_some());
+    // v1 envelope from #33: { version: 1, result: { ... }, refusal: bool }
+    assert_eq!(parsed["version"].as_u64(), Some(1));
     assert!(parsed.get("result").is_some());
-    assert!(parsed.get("duration_ms").is_some());
+    assert!(parsed["result"].get("session_id").is_some());
+    assert!(parsed["result"].get("duration_ms").is_some());
+    assert!(parsed.get("refusal").is_some());
 }
 
 #[test]
@@ -228,7 +231,9 @@ fn live_output_out_json_extension() {
     let file_contents = std::fs::read_to_string(&target).expect("read saved file");
     let parsed: serde_json::Value =
         serde_json::from_str(&file_contents).expect("saved file should be JSON");
-    assert!(parsed.get("session_id").is_some());
+    // v1 envelope from #33: session_id is nested under result
+    assert_eq!(parsed["version"].as_u64(), Some(1));
+    assert!(parsed["result"].get("session_id").is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -261,30 +266,33 @@ fn live_session_continue_carries_context() {
 fn live_session_resume_fork_new_id() {
     let dir = fresh_dir();
 
-    // 1. seed a session and grab its id from --json
+    // 1. seed a session and grab its id from --json (v1 envelope: nested under result)
     let seed = roba_in(dir.path())
         .args(["--json", "respond with the single word: seed"])
         .output()
         .expect("seed run");
     let seed_json: serde_json::Value = serde_json::from_slice(&seed.stdout).expect("json");
-    let seed_id = seed_json["session_id"]
+    let seed_id = seed_json["result"]["session_id"]
         .as_str()
         .expect("session_id")
         .to_string();
 
     // 2. resume + fork -- expect a NEW session id in the result
+    // -c=ID is the unified continue/resume flag from #20
+    let resume_arg = format!("-c={seed_id}");
     let fork = roba_in(dir.path())
         .args([
             "--json",
-            "--resume",
-            &seed_id,
+            &resume_arg,
             "--fork",
             "respond with the single word: forked",
         ])
         .output()
         .expect("fork run");
     let fork_json: serde_json::Value = serde_json::from_slice(&fork.stdout).expect("json");
-    let fork_id = fork_json["session_id"].as_str().expect("session_id");
+    let fork_id = fork_json["result"]["session_id"]
+        .as_str()
+        .expect("session_id");
 
     assert_ne!(
         seed_id, fork_id,
