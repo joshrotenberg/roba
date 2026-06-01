@@ -34,7 +34,7 @@ and authenticated on your PATH.
 |---|---|
 | **Prompt sources** | positional, stdin (`-` or piped), `-f FILE`, `-e` ($EDITOR), `--prepend`/`--append` files, `--attach GLOB`, `--git-diff`/`--git-log`/`--git-status`, `--var K=V` template substitution |
 | **Output shaping** | `--json`, `--quiet`, `--code [LANG]`, `-o/--out PATH` (write to file and stdout) |
-| **Sessions** | `-c` continue most recent, `--resume ID`, `--fork`, `--pick` (interactive fuzzy chooser), `roba history`, `roba last` |
+| **Sessions** | `-c` continue most recent, `-c=ID` resume a specific session, `-c=ID --fork` branch it, `--pick` (interactive fuzzy chooser), `roba history`, `roba last` |
 | **Permissions** | `--readonly`, `--full-auto` presets |
 | **Profiles** | `--profile NAME` from `~/.config/roba.toml`, `roba profile {list,show,init,path}` |
 | **TTY UX** | termimad markdown render, indicatif spinner, dim metadata, colored refusal/error markers, `--plain` master kill-switch, `NO_COLOR` honored |
@@ -62,8 +62,11 @@ roba "write a python one-liner that reverses a string" --code python
 # Look at files
 roba --attach 'src/**/*.rs' "is the error handling consistent?"
 
-# Continue the previous session
+# Continue the most recent session in this directory
 roba -c "now show me how to test the unsafe variant"
+
+# Resume a specific session by id (the `=` is required)
+roba -c=7c3f9a21 "and the safe variant?"
 
 # Fuzzy-pick a recent session to resume
 roba --pick "follow up to whatever I select"

@@ -128,11 +128,6 @@ fn conflict_file_and_editor() {
 }
 
 #[test]
-fn conflict_continue_and_resume() {
-    assert_conflict(&["foo", "-c", "--resume", "abc123"]);
-}
-
-#[test]
 fn conflict_pick_and_continue() {
     assert_conflict(&["foo", "--pick", "-c"]);
 }
@@ -143,13 +138,21 @@ fn conflict_fresh_and_continue() {
 }
 
 #[test]
-fn conflict_fresh_and_resume() {
-    assert_conflict(&["foo", "--fresh", "--resume", "abc123"]);
+fn conflict_fresh_and_pick() {
+    assert_conflict(&["foo", "--fresh", "--pick"]);
 }
 
 #[test]
-fn conflict_fresh_and_pick() {
-    assert_conflict(&["foo", "--fresh", "--pick"]);
+fn continue_bare_parses() {
+    // `-c "prompt"` (bare, no `=ID`) must not swallow the prompt as a
+    // session id. It parses; the failure here is the missing prepend
+    // file, proving parse succeeded.
+    roba()
+        .args(["foo", "-c", "--prepend", "/no/such/continue-bare-test"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("reading --prepend"));
 }
 
 // ---------------------------------------------------------------------------
@@ -538,12 +541,29 @@ fn show_thinking_parses_with_stream() {
 }
 
 #[test]
-fn fork_without_resume_errors() {
+fn fork_alone_errors() {
+    // --fork without any -c: clap's `requires = "continue_session"`
+    // rejects it at parse time.
     roba()
         .args(["foo", "--fork"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("--resume"));
+        .stderr(predicate::str::contains("continue"));
+}
+
+#[test]
+fn fork_with_bare_continue_errors_at_runtime() {
+    // --fork with bare -c (no id): clap is satisfied (the flag is
+    // present), but the runtime check rejects it -- you can't fork
+    // "the most recent" without naming a specific session.
+    roba()
+        .args(["foo", "-c", "--fork"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--fork requires an explicit session id",
+        ));
 }
 
 #[test]
