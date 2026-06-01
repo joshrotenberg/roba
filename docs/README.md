@@ -13,6 +13,7 @@ specific topics.
 |---|---|
 | [profiles.md](profiles.md) | `roba.toml` config + profiles, schema, worked examples |
 | [vs-claude-p.md](vs-claude-p.md) | When to reach for `roba` vs plain `claude -p`, with side-by-side examples |
+| [use-cases.md](use-cases.md) | Cookbook of patterns roba enables, seeded with multi-repo orchestration |
 
 ## Where things live
 
