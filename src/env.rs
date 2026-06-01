@@ -90,10 +90,10 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     if !args.readonly && read_truthy(env, "ROBA_READONLY") {
         args.readonly = true;
     }
-    if !args.writable && read_truthy(env, "ROBA_WRITABLE") {
+    if !args.writable && !args.readonly && read_truthy(env, "ROBA_WRITABLE") {
         args.writable = true;
     }
-    if !args.full_auto && read_truthy(env, "ROBA_FULL_AUTO") {
+    if !args.full_auto && !args.writable && !args.readonly && read_truthy(env, "ROBA_FULL_AUTO") {
         args.full_auto = true;
     }
     if args.allow_tool.is_empty() {
@@ -257,6 +257,39 @@ mod tests {
         args.writable = true;
         apply_env_overrides_from(&mut args, &env_with(&[("ROBA_WRITABLE", "0")]));
         assert!(args.writable, "CLI true should survive env false");
+    }
+
+    #[test]
+    fn env_writable_suppressed_by_cli_readonly() {
+        let mut args = empty_args();
+        args.readonly = true;
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_WRITABLE", "1")]));
+        assert!(
+            !args.writable,
+            "CLI --readonly should suppress lower-layer ROBA_WRITABLE"
+        );
+    }
+
+    #[test]
+    fn env_full_auto_suppressed_by_cli_readonly() {
+        let mut args = empty_args();
+        args.readonly = true;
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_FULL_AUTO", "1")]));
+        assert!(
+            !args.full_auto,
+            "CLI --readonly should suppress lower-layer ROBA_FULL_AUTO"
+        );
+    }
+
+    #[test]
+    fn env_full_auto_suppressed_by_cli_writable() {
+        let mut args = empty_args();
+        args.writable = true;
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_FULL_AUTO", "1")]));
+        assert!(
+            !args.full_auto,
+            "CLI --writable should suppress lower-layer ROBA_FULL_AUTO"
+        );
     }
 
     // -- usize -------------------------------------------------------------
