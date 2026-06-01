@@ -234,7 +234,7 @@ pub struct AskArgs {
     #[arg(short = 'o', long, value_name = "PATH", help_heading = "Output")]
     pub out: Option<PathBuf>,
 
-    /// Stream tokens as they arrive.
+    /// TTY-only progress indicator: stream tokens + inline tool-call lines as they arrive. Never load-bearing on a pipe; conflicts with --json / --code / --out.
     #[arg(
         long,
         conflicts_with_all = ["json", "code", "out"],
