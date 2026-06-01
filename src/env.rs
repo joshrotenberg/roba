@@ -154,6 +154,11 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
         }
     }
 
+    // ----- Failure modes -----
+    if !args.no_retry && read_truthy(env, "ROBA_NO_RETRY") {
+        args.no_retry = true;
+    }
+
     // ----- Vars (ROBA_VAR_<KEY>=<value>) -----
     for (key, value) in env {
         if let Some(var_key) = key.strip_prefix("ROBA_VAR_")
@@ -323,6 +328,27 @@ mod tests {
             !args.full_auto,
             "CLI --writable should suppress lower-layer ROBA_FULL_AUTO"
         );
+    }
+
+    #[test]
+    fn env_no_retry_truthy_values_enable() {
+        for val in ["1", "true", "yes", "on", "TRUE", "Yes"] {
+            let mut args = empty_args();
+            apply_env_overrides_from(&mut args, &env_with(&[("ROBA_NO_RETRY", val)]));
+            assert!(args.no_retry, "env value {val:?} should enable no_retry");
+        }
+    }
+
+    #[test]
+    fn env_no_retry_ignores_falsy_or_garbage() {
+        for val in ["0", "false", "no", "off", "", "garbage"] {
+            let mut args = empty_args();
+            apply_env_overrides_from(&mut args, &env_with(&[("ROBA_NO_RETRY", val)]));
+            assert!(
+                !args.no_retry,
+                "env value {val:?} should leave no_retry off"
+            );
+        }
     }
 
     // -- usize -------------------------------------------------------------

@@ -4,7 +4,7 @@
 //! [`AskArgs`] flags (`-c`, `--resume`, `--fork`, `--readonly`,
 //! `--full-auto`) into the matching builder method calls.
 
-use claude_wrapper::QueryCommand;
+use claude_wrapper::{QueryCommand, RetryPolicy};
 
 use crate::cli::AskArgs;
 
@@ -32,6 +32,14 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     }
     if args.show_thinking {
         cmd = cmd.include_partial_messages();
+    }
+    if args.no_retry {
+        // Force a per-command retry policy of a single attempt. This
+        // overrides any client-level default (the wrapper resolves
+        // per-command policy first), so a transient failure surfaces
+        // immediately instead of being silently re-tried with backoff.
+        // `max_attempts(1)` means "no retries."
+        cmd = cmd.retry(RetryPolicy::new().max_attempts(1));
     }
     apply_permissions(cmd, args)
 }
