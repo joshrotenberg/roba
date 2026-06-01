@@ -51,6 +51,17 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
     }
 }
 
+/// Versioned success envelope for `--json` mode. Top-level `version`
+/// is the stable ABI marker (see the [`error`] module for the v1
+/// contract); `result` holds the wrapper's `QueryResult` shape
+/// verbatim. Mirrors the error envelope's `version` + `error` layout
+/// so success and failure are structurally consistent.
+#[derive(serde::Serialize)]
+struct SuccessEnvelope<'a> {
+    version: u32,
+    result: &'a claude_wrapper::types::QueryResult,
+}
+
 /// Default action: resolve a prompt, send it through claude, render
 /// the result.
 pub async fn run_ask(mut args: AskArgs) -> Result<()> {
@@ -106,7 +117,11 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     let file_path = args.out.as_deref();
     let want_json = args.json || file_path.is_some_and(path_is_json);
     let body = if want_json {
-        serde_json::to_string_pretty(&result)?
+        let envelope = SuccessEnvelope {
+            version: 1,
+            result: &result,
+        };
+        serde_json::to_string_pretty(&envelope)?
     } else if let Some(filter) = args.code.as_deref() {
         let lang = if filter.is_empty() {
             None
@@ -213,5 +228,32 @@ mod tests {
     fn classify_non_wrapper_error_returns_1() {
         let err = anyhow::anyhow!("something else broke");
         assert_eq!(classify_exit_code(&err), 1);
+    }
+
+    #[test]
+    fn success_envelope_has_version_and_result() {
+        let result = claude_wrapper::types::QueryResult {
+            result: "hello".to_string(),
+            session_id: "abc123".to_string(),
+            cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            is_error: false,
+            extra: std::collections::HashMap::new(),
+        };
+        let envelope = SuccessEnvelope {
+            version: 1,
+            result: &result,
+        };
+        let json = serde_json::to_string_pretty(&envelope).expect("serializes");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("round-trips");
+        assert_eq!(value["version"], 1, "top-level version must be 1");
+        assert!(
+            value.get("result").is_some(),
+            "result field must be present"
+        );
+        assert!(value.get("error").is_none(), "error field must be absent");
+        assert_eq!(value["result"]["result"], "hello");
+        assert_eq!(value["result"]["session_id"], "abc123");
     }
 }

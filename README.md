@@ -106,15 +106,32 @@ roba profile show review      # the TOML for one profile
 So `roba "foo" | jq` always sees clean stdout, even with the
 spinner / footer / tool calls humming on stderr.
 
-### JSON error envelope
+### Versioned JSON output
 
-When you pass `--json` and a runtime error happens, roba prints a
-structured envelope to **stderr** (stdout stays empty) and exits
-with the existing typed code. Pipe consumers parse it the same way
-they parse the success record.
+`--json` output is a versioned envelope so agent orchestrators can
+pin a stable ABI. Every `--json` output (success or error) carries a
+top-level `version` field; peel that off before inspecting anything
+inside.
+
+On success the record goes to **stdout** wrapped in `result`:
 
 ```json
 {
+  "version": 1,
+  "result": {
+    "result": "the answer text",
+    "session_id": "abc123",
+    "is_error": false
+  }
+}
+```
+
+On a runtime error roba prints the envelope to **stderr** (stdout
+stays empty) and exits with the typed code:
+
+```json
+{
+  "version": 1,
   "error": {
     "kind": "auth",
     "message": "claude -p exited with 1: not logged in",
@@ -128,6 +145,17 @@ they parse the success record.
 (4), `"history"` (1), or `"other"` (1). The mapping mirrors the
 typed exit codes. `chain` lists the anyhow context layers from
 top (the most recent context call) down to the root cause.
+
+**Version 1 contract:**
+
+- Top-level `version: 1` is present on every `--json` output.
+- Success carries a `result` field, error carries an `error` field;
+  the two are mutually exclusive.
+- Inner fields documented at v1 are preserved. New fields may be
+  added in a backward-compatible (additive) way without bumping the
+  version.
+- Breaking shape changes (renames, removals, type changes) bump the
+  version.
 
 Without `--json`, the error path is unchanged: a styled
 `error: ...` line on stderr. Clap parse errors (mistyped flags,

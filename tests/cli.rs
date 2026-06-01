@@ -488,6 +488,10 @@ fn json_error_envelope_on_empty_stdin() {
     let value: serde_json::Value = serde_json::from_str(&stderr).unwrap_or_else(|e| {
         panic!("--json error stderr must be parseable JSON; got:\n{stderr}\nerror: {e}")
     });
+    assert_eq!(
+        value["version"], 1,
+        "versioned envelope must carry top-level version, got: {stderr}"
+    );
     assert_eq!(value["error"]["kind"], "other");
     assert_eq!(value["error"]["exit_code"], 1);
     assert!(

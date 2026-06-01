@@ -8,6 +8,7 @@
 //!
 //! ```text
 //! {
+//!   "version": 1,
 //!   "error": {
 //!     "kind": "auth" | "budget" | "timeout" | "history" | "other",
 //!     "message": "human-readable summary",
@@ -20,13 +21,35 @@
 //! The `kind` mirrors the same dispatch [`crate::classify_exit_code`]
 //! uses: it inspects the underlying `claude_wrapper::Error` variant
 //! when present, otherwise falls back to `"other"`.
+//!
+//! ## Versioned ABI (v1)
+//!
+//! The top-level `version` field is the stability contract for
+//! programmatic consumers. It is present on every `--json` output --
+//! both this error envelope and the success envelope (`{ "version":
+//! 1, "result": {...} }`, see [`crate::run_ask`]). Peel off `version`
+//! before inspecting anything inside.
+//!
+//! Version 1 guarantees:
+//!
+//! - Top-level `version: 1` is present on every `--json` output.
+//! - Success output carries a `result` field; error output carries an
+//!   `error` field. The two are mutually exclusive.
+//! - Inner fields documented at v1 are preserved. New fields may be
+//!   added in a backward-compatible (additive) way without bumping the
+//!   version.
+//! - Breaking shape changes (renames, removals, type changes) require
+//!   a version bump.
 
 use serde::Serialize;
 
-/// Outer envelope. Key is `"error"` so it's structurally distinct
-/// from the success record (which has its own top-level shape).
+/// Outer envelope. Carries the top-level `version` ABI marker plus an
+/// `"error"` key, which makes it structurally distinct from the
+/// success envelope (which carries `result` instead). `version` is
+/// listed first so it sorts to the top of pretty-printed JSON.
 #[derive(Debug, Serialize)]
 pub struct ErrorEnvelope {
+    pub version: u32,
     pub error: ErrorBody,
 }
 
@@ -65,6 +88,7 @@ pub fn build_envelope(err: &anyhow::Error, exit_code: i32) -> ErrorEnvelope {
     let chain: Vec<String> = err.chain().map(|c| c.to_string()).collect();
     let message = chain.first().cloned().unwrap_or_else(|| err.to_string());
     ErrorEnvelope {
+        version: 1,
         error: ErrorBody {
             kind: kind_of(err),
             message,
@@ -81,7 +105,7 @@ pub fn render_json(err: &anyhow::Error, exit_code: i32) -> String {
     let env = build_envelope(err, exit_code);
     serde_json::to_string_pretty(&env).unwrap_or_else(|_| {
         format!(
-            "{{\"error\":{{\"kind\":\"other\",\"message\":\"serialization failed\",\"exit_code\":{exit_code},\"chain\":[]}}}}"
+            "{{\"version\":1,\"error\":{{\"kind\":\"other\",\"message\":\"serialization failed\",\"exit_code\":{exit_code},\"chain\":[]}}}}"
         )
     })
 }
@@ -106,6 +130,7 @@ mod tests {
             message: "not logged in".to_string(),
         });
         let value = envelope_value(&err, 2);
+        assert_eq!(value["version"], 1, "top-level version must be 1");
         assert_eq!(value["error"]["kind"], "auth");
         assert_eq!(value["error"]["exit_code"], 2);
         assert!(value["error"]["chain"].is_array(), "chain must be an array");
@@ -150,6 +175,7 @@ mod tests {
     fn non_wrapper_error_serializes_as_other_kind() {
         let err = anyhow::anyhow!("something else broke");
         let value = envelope_value(&err, 1);
+        assert_eq!(value["version"], 1, "top-level version must be 1");
         assert_eq!(value["error"]["kind"], "other");
         assert_eq!(value["error"]["exit_code"], 1);
         assert_eq!(value["error"]["message"], "something else broke");
