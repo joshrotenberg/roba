@@ -116,11 +116,14 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile) {
     }
     if let Some(v) = profile.writable
         && !args.writable
+        && !args.readonly
     {
         args.writable = v;
     }
     if let Some(v) = profile.full_auto
         && !args.full_auto
+        && !args.writable
+        && !args.readonly
     {
         args.full_auto = v;
     }
@@ -398,21 +401,13 @@ mod tests {
     /// Spec-as-test for the precedence docs in README.md ("Permissions
     /// precedence") and docs/profiles.md ("Permissions precedence").
     ///
-    /// `--readonly` on the CLI is the explicit name for the built-in
-    /// default; it does NOT actively suppress a `writable = true`
-    /// coming from a profile. Reason: [`apply_permissions`] inspects
-    /// `args.writable` (and `args.full_auto`), not `args.readonly`,
-    /// and [`merge_into_args`] gates the profile fill on
-    /// `!args.<flag>` per-flag rather than cross-checking the trio
-    /// for mutual exclusion. So profile `writable = true` lands on
-    /// `args.writable` regardless of the CLI's `--readonly`.
-    ///
-    /// To get read-only behavior when a profile turns writable on,
-    /// the documented workaround is `--no-default-profile`. See
-    /// issue #52 for the proposed-but-unimplemented
-    /// "CLI --readonly suppresses profile writable" semantics.
+    /// `--readonly` on the CLI actively suppresses a `writable = true`
+    /// coming from a lower-priority profile layer: the trio
+    /// `readonly` / `writable` / `full_auto` is mutually exclusive
+    /// across layers, so a higher-priority `--readonly` blocks a
+    /// lower-layer `writable` from landing. See issue #52.
     #[test]
-    fn merge_cli_readonly_does_not_suppress_profile_writable() {
+    fn merge_cli_readonly_suppresses_profile_writable() {
         let mut args = args_with(&["--readonly"]);
         assert!(args.readonly, "CLI --readonly should set args.readonly");
         assert!(!args.writable, "CLI didn't pass --writable");
@@ -425,11 +420,47 @@ mod tests {
 
         // CLI value preserved.
         assert!(args.readonly, "CLI --readonly stays set after merge");
-        // Profile's writable=true still applied -- the gate is
-        // `!args.writable`, which is independent of args.readonly.
+        // Profile's writable=true is suppressed by the higher-layer
+        // --readonly: the trio is mutually exclusive across layers.
         assert!(
-            args.writable,
-            "profile writable=true lands on args.writable even when CLI passed --readonly"
+            !args.writable,
+            "profile writable=true is suppressed when CLI passed --readonly"
+        );
+    }
+
+    #[test]
+    fn merge_cli_readonly_suppresses_profile_full_auto() {
+        let mut args = args_with(&["--readonly"]);
+        assert!(args.readonly, "CLI --readonly should set args.readonly");
+
+        let profile = Profile {
+            full_auto: Some(true),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile);
+
+        assert!(args.readonly, "CLI --readonly stays set after merge");
+        assert!(
+            !args.full_auto,
+            "profile full_auto=true is suppressed when CLI passed --readonly"
+        );
+    }
+
+    #[test]
+    fn merge_cli_writable_suppresses_profile_full_auto() {
+        let mut args = args_with(&["--writable"]);
+        assert!(args.writable, "CLI --writable should set args.writable");
+
+        let profile = Profile {
+            full_auto: Some(true),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile);
+
+        assert!(args.writable, "CLI --writable stays set after merge");
+        assert!(
+            !args.full_auto,
+            "profile full_auto=true is suppressed when CLI passed --writable"
         );
     }
 
