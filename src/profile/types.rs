@@ -31,9 +31,11 @@ pub struct Profile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub full_auto: Option<bool>,
     /// `-c` / `--continue`. TOML key is `continue` (a Rust keyword,
-    /// so the struct field uses a non-keyword name).
+    /// so the struct field uses a non-keyword name). Accepts
+    /// `continue = true` / `false` (continue the most recent session)
+    /// or `continue = "session-id"` (resume a specific id).
     #[serde(rename = "continue", skip_serializing_if = "Option::is_none")]
-    pub continue_session: Option<bool>,
+    pub continue_session: Option<ContinueSetting>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub allow_tool: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -78,6 +80,17 @@ pub struct Profile {
 pub enum WorktreeSetting {
     Enabled(bool),
     Named(String),
+}
+
+/// Profile value for the `continue` field. Mirrors the CLI's
+/// `-c[=ID]` shape: `true` continues the most recent session, a
+/// string resumes that specific session id, `false` is an explicit
+/// off (stay fresh).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ContinueSetting {
+    MostRecent(bool),
+    Specific(String),
 }
 
 impl Profile {
@@ -315,7 +328,23 @@ prependz = ["/tmp/a"]
 continue = true
 "#;
         let cfg = load_file_from_str(toml).unwrap();
-        assert_eq!(cfg.profile["persist"].continue_session, Some(true));
+        assert_eq!(
+            cfg.profile["persist"].continue_session,
+            Some(ContinueSetting::MostRecent(true))
+        );
+    }
+
+    #[test]
+    fn parse_continue_field_accepts_specific_id() {
+        let toml = r#"
+[profile.persist]
+continue = "abc12345"
+"#;
+        let cfg = load_file_from_str(toml).unwrap();
+        assert_eq!(
+            cfg.profile["persist"].continue_session,
+            Some(ContinueSetting::Specific("abc12345".to_string()))
+        );
     }
 
     #[test]

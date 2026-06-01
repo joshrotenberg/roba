@@ -87,8 +87,18 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     }
 
     // ----- Sessions -----
-    if !args.continue_session && read_truthy(env, "ROBA_CONTINUE") {
-        args.continue_session = true;
+    // ROBA_CONTINUE mirrors `-c` / `-c=ID`: a truthy value continues
+    // the most recent session (`Some(None)`), any other non-empty,
+    // non-falsy value is treated as a specific session id
+    // (`Some(Some(id))`). Falsy / empty leaves it unset (fresh).
+    if args.continue_session.is_none()
+        && let Some(s) = env.get("ROBA_CONTINUE").filter(|s| !s.is_empty())
+    {
+        match s.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => args.continue_session = Some(None),
+            "0" | "false" | "no" | "off" => {} // explicit off -- stay fresh
+            _ => args.continue_session = Some(Some(s.clone())),
+        }
     }
 
     // ----- Permissions -----
@@ -349,6 +359,49 @@ mod tests {
                 "env value {val:?} should leave no_retry off"
             );
         }
+    }
+
+    // -- sessions ----------------------------------------------------------
+
+    #[test]
+    fn continue_truthy_means_most_recent() {
+        for val in ["1", "true", "yes", "on", "TRUE", "Yes"] {
+            let mut args = empty_args();
+            apply_env_overrides_from(&mut args, &env_with(&[("ROBA_CONTINUE", val)]));
+            assert_eq!(
+                args.continue_session,
+                Some(None),
+                "env value {val:?} should continue the most recent session"
+            );
+        }
+    }
+
+    #[test]
+    fn continue_falsy_or_empty_stays_fresh() {
+        for val in ["0", "false", "no", "off", ""] {
+            let mut args = empty_args();
+            apply_env_overrides_from(&mut args, &env_with(&[("ROBA_CONTINUE", val)]));
+            assert_eq!(
+                args.continue_session, None,
+                "env value {val:?} should leave the session fresh"
+            );
+        }
+    }
+
+    #[test]
+    fn continue_arbitrary_value_is_specific_id() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_CONTINUE", "abc12345")]));
+        assert_eq!(args.continue_session, Some(Some("abc12345".to_string())));
+    }
+
+    #[test]
+    fn continue_does_not_override_cli() {
+        // CLI `-c=cli-id` must survive a truthy ROBA_CONTINUE.
+        let mut args = empty_args();
+        args.continue_session = Some(Some("cli-id".to_string()));
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_CONTINUE", "1")]));
+        assert_eq!(args.continue_session, Some(Some("cli-id".to_string())));
     }
 
     // -- usize -------------------------------------------------------------

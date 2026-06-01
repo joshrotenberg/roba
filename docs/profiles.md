@@ -63,10 +63,11 @@ flag, since `--writable` is presence-flagged -- but
 `--allow-tool Edit` on the CLI fully replaces any `ROBA_ALLOW_TOOL`
 list, same as it overrides a profile's `allow_tool` list.
 
-The one bool that *does* have an explicit kill switch is `continue`:
-pass `--fresh` to force a new session even when a profile or env var
-sets `continue = true`. Pair it with `ROBA_CONTINUE=1` enabled in a
-project default to opt out for one call without re-typing config.
+The one setting that *does* have an explicit kill switch is
+`continue`: pass `--fresh` to force a new session even when a profile
+or env var sets `continue = true` (or pins a specific session id).
+Pair it with `ROBA_CONTINUE=1` enabled in a project default to opt out
+for one call without re-typing config.
 
 ## Auto-apply and explicit invocation
 
@@ -105,7 +106,7 @@ override.
 | `full_auto` | `bool` | `--full-auto` | Bypass all permission checks |
 | `allow_tool` | `[string]` | `--allow-tool TOOL` (repeatable) | Adds to the allow list |
 | `deny_tool` | `[string]` | `--deny-tool TOOL` (repeatable) | Deny patterns; useful with `full_auto` to keep some teeth |
-| `continue` | `bool` | `-c` / `--continue` | Skipped if `--resume` is also passed |
+| `continue` | `bool` or `string` | `-c` / `-c=ID` | `true` continues the most recent session in the directory; a string resumes that specific session id (e.g. `continue = "7c3f9a21"`); `false` stays fresh. CLI `-c` / `-c=ID` overrides it |
 | `vars` | `{ key = "value" }` | `--var KEY=VALUE` (repeatable) | CLI keys override profile keys |
 | `model` | `string` | `--model MODEL` | Alias (`sonnet`/`opus`/`haiku`) or full id (`claude-sonnet-4-6`) |
 | `stream` | `bool` | `--stream` | Stream tokens as they arrive |
