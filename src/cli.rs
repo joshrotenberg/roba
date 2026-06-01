@@ -338,6 +338,34 @@ pub struct AskArgs {
     #[arg(long = "deny-tool", value_name = "TOOL", help_heading = "Permissions")]
     pub deny_tool: Vec<String>,
 
+    /// Resolve permissions across all layers (CLI > env > profile >
+    /// built-in default), print the effective allow/deny lists with
+    /// per-entry provenance, and exit 0 without calling claude. Useful
+    /// for verifying what a profile actually opens up before you rely
+    /// on it.
+    #[arg(long, help_heading = "Permissions")]
+    pub show_permissions: bool,
+
+    // ----- Permission provenance (internal; not a CLI surface) --------------
+    // Populated as each layer contributes a value, so --show-permissions
+    // can report where the effective permission set came from. The layer
+    // label is one of "CLI", "env", "profile.<name>", or "config".
+    /// Layer that set `readonly`.
+    #[clap(skip)]
+    pub readonly_source: Option<String>,
+    /// Layer that set `writable`.
+    #[clap(skip)]
+    pub writable_source: Option<String>,
+    /// Layer that set `full_auto`.
+    #[clap(skip)]
+    pub full_auto_source: Option<String>,
+    /// Layer per `allow_tool` entry (parallel-indexed to `allow_tool`).
+    #[clap(skip)]
+    pub allow_tool_sources: Vec<String>,
+    /// Layer per `deny_tool` entry (parallel-indexed to `deny_tool`).
+    #[clap(skip)]
+    pub deny_tool_sources: Vec<String>,
+
     // ----- Profiles ---------------------------------------------------------
     /// Apply a named profile (user, project, or env source).
     #[arg(long, value_name = "NAME", help_heading = "Profiles")]

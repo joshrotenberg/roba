@@ -30,21 +30,7 @@ use crate::cli::AskArgs;
 pub fn resolve(args: &AskArgs, pool: &Pool) -> Result<Option<Profile>> {
     let mut effective = pool.defaults.clone();
 
-    let chosen: Option<String> = if let Some(name) = &args.profile {
-        Some(name.clone())
-    } else if args.no_default_profile {
-        None
-    } else if let Ok(name) = std::env::var("ROBA_PROFILE")
-        && !name.is_empty()
-    {
-        Some(name)
-    } else if pool.profiles.contains_key("default") {
-        Some("default".to_string())
-    } else {
-        None
-    };
-
-    if let Some(name) = chosen {
+    if let Some(name) = select_profile_name(args, pool) {
         let overlay = pool
             .get(&name)
             .cloned()
@@ -56,6 +42,36 @@ pub fn resolve(args: &AskArgs, pool: &Pool) -> Result<Option<Profile>> {
         Ok(None)
     } else {
         Ok(Some(effective))
+    }
+}
+
+/// The named profile this invocation would activate, if any. Mirrors
+/// the selection precedence in [`resolve`]; `None` means "no named
+/// overlay" (top-level defaults still apply). Used to label the
+/// provenance of profile-contributed values for `--show-permissions`.
+pub fn select_profile_name(args: &AskArgs, pool: &Pool) -> Option<String> {
+    if let Some(name) = &args.profile {
+        Some(name.clone())
+    } else if args.no_default_profile {
+        None
+    } else if let Ok(name) = std::env::var("ROBA_PROFILE")
+        && !name.is_empty()
+    {
+        Some(name)
+    } else if pool.profiles.contains_key("default") {
+        Some("default".to_string())
+    } else {
+        None
+    }
+}
+
+/// The provenance label for values the profile layer contributes:
+/// `profile.<name>` when a named overlay is active, else `config`
+/// (top-level `roba.toml` keys).
+pub fn profile_source_label(args: &AskArgs, pool: &Pool) -> String {
+    match select_profile_name(args, pool) {
+        Some(name) => format!("profile.{name}"),
+        None => "config".to_string(),
     }
 }
 
@@ -77,8 +93,10 @@ pub(super) fn missing_profile_error(name: &str, pool: &Pool) -> anyhow::Error {
 // ---------------------------------------------------------------------------
 
 /// Apply a profile's defaults to [`AskArgs`]. CLI values always
-/// win; this only fills in fields the user didn't set.
-pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile) {
+/// win; this only fills in fields the user didn't set. `source` is
+/// the provenance label recorded for any permission value this layer
+/// contributes (see [`profile_source_label`]).
+pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     if args.prepend.is_empty() {
         args.prepend = std::mem::take(&mut profile.prepend)
             .into_iter()
@@ -113,12 +131,18 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile) {
         && !args.readonly
     {
         args.readonly = v;
+        if v {
+            args.readonly_source = Some(source.to_string());
+        }
     }
     if let Some(v) = profile.writable
         && !args.writable
         && !args.readonly
     {
         args.writable = v;
+        if v {
+            args.writable_source = Some(source.to_string());
+        }
     }
     if let Some(v) = profile.full_auto
         && !args.full_auto
@@ -126,6 +150,9 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile) {
         && !args.readonly
     {
         args.full_auto = v;
+        if v {
+            args.full_auto_source = Some(source.to_string());
+        }
     }
     // continue_session is silently skipped if the user passed
     // --resume; the two would conflict and explicit --resume wins.
@@ -137,9 +164,11 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile) {
     }
     if args.allow_tool.is_empty() {
         args.allow_tool = std::mem::take(&mut profile.allow_tool);
+        args.allow_tool_sources = vec![source.to_string(); args.allow_tool.len()];
     }
     if args.deny_tool.is_empty() {
         args.deny_tool = std::mem::take(&mut profile.deny_tool);
+        args.deny_tool_sources = vec![source.to_string(); args.deny_tool.len()];
     }
     for (k, v) in profile.vars {
         if !args.var.iter().any(|(ak, _)| ak == &k) {
@@ -327,7 +356,7 @@ mod tests {
             attach: vec!["src/**/*.rs".to_string()],
             ..Default::default()
         };
-        merge_into_args(&mut args, profile);
+        merge_into_args(&mut args, profile, "profile.test");
         assert!(args.readonly);
         assert_eq!(args.git_log, Some(3));
         assert_eq!(args.attach, vec!["src/**/*.rs".to_string()]);
@@ -340,7 +369,7 @@ mod tests {
             git_log: Some(3),
             ..Default::default()
         };
-        merge_into_args(&mut args, profile);
+        merge_into_args(&mut args, profile, "profile.test");
         assert_eq!(args.git_log, Some(7));
     }
 
@@ -354,7 +383,7 @@ mod tests {
             vars,
             ..Default::default()
         };
-        merge_into_args(&mut args, profile);
+        merge_into_args(&mut args, profile, "profile.test");
         let map: HashMap<_, _> = args.var.iter().cloned().collect();
         assert_eq!(map.get("NAME"), Some(&"cli-josh".to_string()));
         assert_eq!(map.get("TICKET"), Some(&"ABC-123".to_string()));
@@ -367,7 +396,7 @@ mod tests {
             continue_session: Some(true),
             ..Default::default()
         };
-        merge_into_args(&mut args, profile);
+        merge_into_args(&mut args, profile, "profile.test");
         assert!(args.continue_session);
     }
 
@@ -378,7 +407,7 @@ mod tests {
             continue_session: Some(true),
             ..Default::default()
         };
-        merge_into_args(&mut args, profile);
+        merge_into_args(&mut args, profile, "profile.test");
         assert!(!args.continue_session);
     }
 
@@ -390,7 +419,7 @@ mod tests {
             deny_tool: vec!["WebFetch".to_string()],
             ..Default::default()
         };
-        merge_into_args(&mut args, profile);
+        merge_into_args(&mut args, profile, "profile.test");
         assert_eq!(
             args.allow_tool,
             vec!["Bash(git status)".to_string(), "Bash(git diff)".to_string()]
@@ -416,7 +445,7 @@ mod tests {
             writable: Some(true),
             ..Default::default()
         };
-        merge_into_args(&mut args, profile);
+        merge_into_args(&mut args, profile, "profile.test");
 
         // CLI value preserved.
         assert!(args.readonly, "CLI --readonly stays set after merge");
@@ -437,7 +466,7 @@ mod tests {
             full_auto: Some(true),
             ..Default::default()
         };
-        merge_into_args(&mut args, profile);
+        merge_into_args(&mut args, profile, "profile.test");
 
         assert!(args.readonly, "CLI --readonly stays set after merge");
         assert!(
@@ -455,7 +484,7 @@ mod tests {
             full_auto: Some(true),
             ..Default::default()
         };
-        merge_into_args(&mut args, profile);
+        merge_into_args(&mut args, profile, "profile.test");
 
         assert!(args.writable, "CLI --writable stays set after merge");
         assert!(
@@ -465,13 +494,42 @@ mod tests {
     }
 
     #[test]
+    fn merge_records_profile_provenance() {
+        let mut args = empty_args();
+        let profile = Profile {
+            writable: Some(true),
+            deny_tool: vec!["WebFetch".to_string()],
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.review");
+        assert_eq!(args.writable_source.as_deref(), Some("profile.review"));
+        assert_eq!(args.deny_tool_sources, vec!["profile.review".to_string()]);
+    }
+
+    #[test]
+    fn select_profile_name_prefers_explicit_flag() {
+        let pool = pool_of(Profile::default(), &[("review", Profile::default())]);
+        let args = args_with(&["--profile", "review"]);
+        assert_eq!(select_profile_name(&args, &pool).as_deref(), Some("review"));
+        assert_eq!(profile_source_label(&args, &pool), "profile.review");
+    }
+
+    #[test]
+    fn profile_source_label_is_config_when_no_named_profile() {
+        let pool = Pool::default();
+        let args = empty_args();
+        assert!(select_profile_name(&args, &pool).is_none());
+        assert_eq!(profile_source_label(&args, &pool), "config");
+    }
+
+    #[test]
     fn merge_allow_tool_cli_replaces_profile() {
         let mut args = args_with(&["--allow-tool", "Edit"]);
         let profile = Profile {
             allow_tool: vec!["Bash(git status)".to_string()],
             ..Default::default()
         };
-        merge_into_args(&mut args, profile);
+        merge_into_args(&mut args, profile, "profile.test");
         assert_eq!(args.allow_tool, vec!["Edit".to_string()]);
     }
 

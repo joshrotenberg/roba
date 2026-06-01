@@ -180,6 +180,7 @@ roba "..." --writable            # add Edit + Write
 roba "..." --allow-tool "Bash(git status)"   # add one specific pattern
 roba "..." --deny-tool WebFetch  # block a specific tool
 roba "..." --full-auto           # bypass every check (sandbox only)
+roba --profile review --show-permissions   # preview the resolved set, then exit
 ```
 
 Same knobs work as profile fields (`writable = true`,
@@ -227,6 +228,34 @@ list when set, rather than concatenating with it.
 When the same tool ends up in both the allow list and the deny
 list, **deny wins**. roba passes both lists through to claude
 unchanged; claude is the final arbiter.
+
+### Previewing the resolved set
+
+Because a lower-layer profile can quietly add `writable = true` or
+extra allow-list entries, it's easy to fire a prompt assuming a
+permission set you didn't actually get. `--show-permissions`
+resolves every layer (the same flow a real run uses), prints the
+effective allow/deny lists with per-entry provenance, and exits 0
+**without calling claude**:
+
+```text
+$ roba --profile review --show-permissions
+allow:
+  Read       [default]
+  Glob       [default]
+  Grep       [default]
+  Edit       [profile.review]
+  Write      [profile.review]
+deny:
+  Bash(rm *) [profile.review]
+```
+
+Each tag shows the winning layer: `[default]` for the built-in safe
+trio, or `[CLI]` / `[env]` / `[profile.NAME]` / `[config]` for
+anything a higher layer contributed. Under `--full-auto` the output
+collapses to a single line (`all tools allowed (--full-auto from
+...)`), since the resolution is "everything." The preview goes to
+stderr, so stdout stays clean.
 
 #### Worked example
 
