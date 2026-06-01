@@ -227,6 +227,122 @@ fn worktree_long_space_name_is_rejected() {
 }
 
 // ---------------------------------------------------------------------------
+// --show-permissions (resolves layers, prints preview, no claude call)
+// ---------------------------------------------------------------------------
+
+/// A profile-free project dir (just a `.git` boundary) so config
+/// walk-up finds nothing and the resolved permission set is purely
+/// CLI + built-in defaults.
+fn empty_project() -> tempfile::TempDir {
+    make_dir_with_files(&[(".git/HEAD", "")])
+}
+
+#[test]
+fn show_permissions_default_no_profile() {
+    let project = empty_project();
+    let user_home = tempfile::tempdir().expect("user home");
+    let out = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "--show-permissions",
+            "ignored",
+        ])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The answer stream stays clean -- the preview is metadata.
+    assert!(out.stdout.is_empty(), "stdout should be empty for preview");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("allow:"), "got:\n{stderr}");
+    assert!(stderr.contains("Read"), "got:\n{stderr}");
+    assert!(stderr.contains("Glob"), "got:\n{stderr}");
+    assert!(stderr.contains("Grep"), "got:\n{stderr}");
+    assert!(stderr.contains("[default]"), "got:\n{stderr}");
+}
+
+#[test]
+fn show_permissions_with_writable_via_cli() {
+    let project = empty_project();
+    let user_home = tempfile::tempdir().expect("user home");
+    let out = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "--writable",
+            "--show-permissions",
+        ])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Edit"), "got:\n{stderr}");
+    assert!(stderr.contains("Write"), "got:\n{stderr}");
+    assert!(stderr.contains("[CLI]"), "got:\n{stderr}");
+}
+
+#[test]
+fn show_permissions_with_full_auto_via_cli() {
+    let project = empty_project();
+    let user_home = tempfile::tempdir().expect("user home");
+    let out = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "--full-auto",
+            "--show-permissions",
+        ])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("all tools allowed (--full-auto from CLI)"),
+        "got:\n{stderr}"
+    );
+}
+
+#[test]
+fn show_permissions_does_not_spawn_claude() {
+    // A trivially low budget would fail any real claude call. Exit 0
+    // here proves --show-permissions returns before dispatch.
+    let project = empty_project();
+    let user_home = tempfile::tempdir().expect("user home");
+    let out = roba()
+        .args(["-C", project.path().to_str().unwrap(), "--show-permissions"])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .env("ROBA_BUDGET", "0.00001")
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("allow:"), "got:\n{stderr}");
+}
+
+// ---------------------------------------------------------------------------
 // profile subcommand: config layering (no claude calls)
 // ---------------------------------------------------------------------------
 

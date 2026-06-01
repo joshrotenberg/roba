@@ -43,6 +43,11 @@ pub fn apply_env_overrides(args: &mut AskArgs) {
 /// Same as [`apply_env_overrides`] but reads from a provided map.
 /// Used by tests to avoid touching the real process environment.
 pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String>) {
+    // Tag anything the CLI already set as "CLI" provenance before the
+    // env layer gets a chance to fill the gaps. The CLI is the highest
+    // layer, so whatever is set here came from the command line.
+    tag_cli_sources(args);
+
     // ----- Model -----
     if args.model.is_none()
         && let Some(s) = read_string(env, "ROBA_MODEL")
@@ -89,22 +94,27 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     // ----- Permissions -----
     if !args.readonly && read_truthy(env, "ROBA_READONLY") {
         args.readonly = true;
+        args.readonly_source = Some("env".to_string());
     }
     if !args.writable && !args.readonly && read_truthy(env, "ROBA_WRITABLE") {
         args.writable = true;
+        args.writable_source = Some("env".to_string());
     }
     if !args.full_auto && !args.writable && !args.readonly && read_truthy(env, "ROBA_FULL_AUTO") {
         args.full_auto = true;
+        args.full_auto_source = Some("env".to_string());
     }
     if args.allow_tool.is_empty() {
         let tools = read_list(env, "ROBA_ALLOW_TOOL");
         if !tools.is_empty() {
+            args.allow_tool_sources = vec!["env".to_string(); tools.len()];
             args.allow_tool = tools;
         }
     }
     if args.deny_tool.is_empty() {
         let tools = read_list(env, "ROBA_DENY_TOOL");
         if !tools.is_empty() {
+            args.deny_tool_sources = vec!["env".to_string(); tools.len()];
             args.deny_tool = tools;
         }
     }
@@ -151,6 +161,29 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
         {
             args.var.push((var_key.to_string(), value.clone()));
         }
+    }
+}
+
+/// Mark every permission-related field that is already set as
+/// originating from the CLI. Called before the env layer fills gaps,
+/// so any value present at this point must have come from clap (the
+/// highest layer). Idempotent: only tags fields that are set and not
+/// already tagged.
+fn tag_cli_sources(args: &mut AskArgs) {
+    if args.readonly && args.readonly_source.is_none() {
+        args.readonly_source = Some("CLI".to_string());
+    }
+    if args.writable && args.writable_source.is_none() {
+        args.writable_source = Some("CLI".to_string());
+    }
+    if args.full_auto && args.full_auto_source.is_none() {
+        args.full_auto_source = Some("CLI".to_string());
+    }
+    if !args.allow_tool.is_empty() && args.allow_tool_sources.is_empty() {
+        args.allow_tool_sources = vec!["CLI".to_string(); args.allow_tool.len()];
+    }
+    if !args.deny_tool.is_empty() && args.deny_tool_sources.is_empty() {
+        args.deny_tool_sources = vec!["CLI".to_string(); args.deny_tool.len()];
     }
 }
 

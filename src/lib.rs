@@ -73,7 +73,16 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     env::apply_env_overrides(&mut args);
     let pool = profile::load_pool()?;
     if let Some(chosen) = profile::resolve(&args, &pool)? {
-        profile::merge_into_args(&mut args, chosen);
+        let source = profile::profile_source_label(&args, &pool);
+        profile::merge_into_args(&mut args, chosen, &source);
+    }
+    // --show-permissions previews the resolved allow/deny set (with
+    // provenance) using the exact same resolution flow a real run
+    // uses, then exits without calling claude. Must come after the
+    // full CLI > env > profile merge so the preview is faithful.
+    if args.show_permissions {
+        eprintln!("{}", output::format_permissions(&args));
+        return Ok(());
     }
     // --fresh is the kill switch: it cancels any continuation
     // settings that arrived via env vars or profile defaults.
