@@ -324,6 +324,14 @@ pub struct AskArgs {
     )]
     pub worktree: Option<Option<String>>,
 
+    /// Pin a specific claude-code subagent for this run. The named
+    /// subagent must exist in `.claude/agents/NAME.md` within the cwd
+    /// (or be auto-discovered per claude's standard lookup). Lets an
+    /// orchestrator dispatch a run as a known agent instead of an
+    /// unscoped default claude.
+    #[arg(long, value_name = "NAME", help_heading = "Sessions")]
+    pub agent: Option<String>,
+
     // ----- Permissions ------------------------------------------------------
     /// Explicit form of the default: Read, Glob, Grep only. No-op (the default).
     #[arg(long, conflicts_with = "full_auto", help_heading = "Permissions")]
@@ -481,6 +489,21 @@ mod tests {
         use clap::Parser;
         let cli = Cli::try_parse_from(["roba", "--worktree=mybranch", "do thing"]).unwrap();
         assert_eq!(cli.ask.worktree, Some(Some("mybranch".to_string())));
+    }
+
+    #[test]
+    fn agent_parses_with_name() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--agent", "reviewer", "prompt"]).unwrap();
+        assert_eq!(cli.ask.agent.as_deref(), Some("reviewer"));
+        assert_eq!(cli.ask.prompt.as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn agent_omitted_is_none() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "prompt"]).unwrap();
+        assert!(cli.ask.agent.is_none());
     }
 
     #[test]

@@ -9,8 +9,8 @@ use claude_wrapper::{QueryCommand, RetryPolicy};
 use crate::cli::AskArgs;
 
 /// Apply session-related flags (-c / -c=ID, --fork), the model
-/// override (--model), and then permission-related flags. Returns
-/// the configured QueryCommand.
+/// override (--model), the subagent override (--agent), and then
+/// permission-related flags. Returns the configured QueryCommand.
 pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     match &args.continue_session {
         None => {}                                      // fresh session
@@ -22,6 +22,9 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     }
     if let Some(m) = &args.model {
         cmd = cmd.model(m.clone());
+    }
+    if let Some(name) = &args.agent {
+        cmd = cmd.agent(name.clone());
     }
     if let Some(name) = &args.worktree {
         cmd = match name {
