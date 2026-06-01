@@ -47,6 +47,10 @@ progress indicator -- never load-bearing on a pipe, and the scripting
 surface (`--json`, exit codes, structured errors) is the contract for
 non-TTY consumers.
 
+For a deeper side-by-side -- when to reach for `roba` vs plain
+`claude -p`, with worked examples -- see
+[`docs/vs-claude-p.md`](docs/vs-claude-p.md).
+
 ## Quick examples
 
 ```bash
