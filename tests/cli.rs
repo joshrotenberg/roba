@@ -690,3 +690,169 @@ fn plain_error_path_unchanged_without_json() {
         "plain stderr should not be JSON, got:\n{stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// skill / agent library subcommands (#85)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn skill_list_outputs_known_skills() {
+    roba()
+        .args(["skill", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("draft-pr-first"))
+        .stdout(predicate::str::contains("roba-orchestration-prompt"))
+        .stdout(predicate::str::contains("heredoc-backticks"));
+}
+
+#[test]
+fn skill_list_excludes_top_level_readme() {
+    // The repo-level skills/README.md is documentation, not a skill;
+    // it must not appear as a list row.
+    let out = roba().args(["skill", "list"]).output().expect("run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.lines().any(|l| l.starts_with("README")),
+        "README should not be a listed skill, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn skill_install_dry_run_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("skills");
+    roba()
+        .args(["skill", "install", "--dry-run", "--to"])
+        .arg(&dest)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("would write"))
+        .stderr(predicate::str::contains("dry run"));
+    assert!(
+        !dest.exists(),
+        "dry-run must not create the destination tree"
+    );
+}
+
+#[test]
+fn skill_install_writes_expected_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("skills");
+    roba()
+        .args(["skill", "install", "--to"])
+        .arg(&dest)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("installed"));
+    assert!(
+        dest.join("draft-pr-first/SKILL.md").is_file(),
+        "expected draft-pr-first/SKILL.md installed"
+    );
+    // Top-level README is not installed.
+    assert!(
+        !dest.join("README.md").exists(),
+        "repo README.md must not be installed"
+    );
+}
+
+#[test]
+fn skill_install_force_overwrites() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("skills");
+    let target = dest.join("draft-pr-first/SKILL.md");
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, "STALE").unwrap();
+    roba()
+        .args(["skill", "install", "--force", "--to"])
+        .arg(&dest)
+        .assert()
+        .success();
+    let body = std::fs::read_to_string(&target).unwrap();
+    assert_ne!(body, "STALE", "--force should overwrite the seeded file");
+    assert!(body.contains("draft-pr-first"));
+}
+
+#[test]
+fn skill_install_skip_leaves_existing() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("skills");
+    let target = dest.join("draft-pr-first/SKILL.md");
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, "SEEDED").unwrap();
+    roba()
+        .args(["skill", "install", "--skip", "--to"])
+        .arg(&dest)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("skipped"));
+    let body = std::fs::read_to_string(&target).unwrap();
+    assert_eq!(body, "SEEDED", "--skip must leave the existing file intact");
+}
+
+#[test]
+fn skill_show_prints_body() {
+    roba()
+        .args(["skill", "show", "draft-pr-first"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# Draft PR first"))
+        .stdout(predicate::str::contains("name: draft-pr-first"));
+}
+
+#[test]
+fn skill_show_unknown_errors() {
+    roba()
+        .args(["skill", "show", "no-such-skill"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no bundled skill named"));
+}
+
+#[test]
+fn agent_list_outputs_known_agents() {
+    roba()
+        .args(["agent", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("roba-runner"))
+        .stdout(predicate::str::contains("roba-orchestrator"));
+}
+
+#[test]
+fn agent_install_writes_expected_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("agents");
+    roba()
+        .args(["agent", "install", "--to"])
+        .arg(&dest)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("installed"));
+    assert!(
+        dest.join("roba-runner/AGENT.md").is_file(),
+        "expected roba-runner/AGENT.md installed"
+    );
+    assert!(
+        !dest.join("README.md").exists(),
+        "repo README.md must not be installed"
+    );
+}
+
+#[test]
+fn agent_show_prints_body() {
+    roba()
+        .args(["agent", "show", "roba-runner"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("name: roba-runner"));
+}
+
+#[test]
+fn agent_show_unknown_errors() {
+    roba()
+        .args(["agent", "show", "no-such-agent"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no bundled agent named"));
+}

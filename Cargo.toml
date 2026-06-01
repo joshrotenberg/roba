@@ -9,6 +9,7 @@ repository = "https://github.com/joshrotenberg/roba"
 homepage = "https://github.com/joshrotenberg/roba"
 documentation = "https://docs.rs/roba"
 readme = "README.md"
+build = "build.rs"
 description = "Single-prompt CLI runner built on claude-wrapper"
 keywords = ["claude", "cli", "ai", "llm", "anthropic"]
 categories = ["command-line-utilities"]

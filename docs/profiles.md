@@ -364,6 +364,34 @@ Usage with a template file:
 roba --profile ticket -f ~/.config/roba/prompts/standup.md
 ```
 
+## Installing the bundled skill + agent library
+
+Alongside config, roba bundles a starter set of operational *skills*
+and orchestrator *subagents* (the same ones in this repo's `skills/`
+and `agents/`). They're embedded in the binary at build time and
+install into `~/.claude/` so any Claude Code session -- not just roba
+-- auto-discovers them:
+
+```bash
+roba skill install            # copy bundled skills -> ~/.claude/skills/
+roba agent install            # copy bundled agents -> ~/.claude/agents/
+
+roba skill list               # bundled skills with descriptions
+roba skill show draft-pr-first  # print one skill's SKILL.md body
+```
+
+`install` accepts `--to PATH` (custom destination), `--dry-run`
+(preview without writing), `--force` (overwrite existing files), and
+`--skip` (leave existing files in place, install the rest). With no
+flag, an existing file prompts before overwriting (and is left alone
+when there's no TTY). The `roba agent` subcommands mirror `roba skill`
+exactly.
+
+This is what makes the install-and-go path work: `cargo install roba`,
+`roba skill install && roba agent install`, then
+`claude --agent=roba-orchestrator` lands you in an orchestrator that
+already knows the roba dispatch lifecycle.
+
 ## Tips
 
 - **Keep prompts in files, not vars.** Profiles are best at flag
