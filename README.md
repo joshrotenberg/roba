@@ -42,7 +42,10 @@ and authenticated on your PATH.
 | **Usage tracking** | `roba cost`, `roba cost --by-project` |
 
 Streaming mode (`--stream`) emits tokens live with inline tool-call
-indicators and a `used: Tool xN` rollup at the end.
+indicators and a `used: Tool xN` rollup at the end. It's a TTY-only
+progress indicator -- never load-bearing on a pipe, and the scripting
+surface (`--json`, exit codes, structured errors) is the contract for
+non-TTY consumers.
 
 ## Quick examples
 
