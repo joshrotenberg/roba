@@ -25,6 +25,7 @@ This is the first half of the three-layer skill library tracked in
 
 | Skill | When to use |
 |---|---|
+| [`draft-pr-first`](draft-pr-first/SKILL.md) | Starting any work that will become a PR -- open the draft PR with the plan as the body BEFORE the work |
 | [`roba-orchestration-prompt`](roba-orchestration-prompt/SKILL.md) | Firing roba on the user's behalf and writing the prompt |
 | [`roba-spiral-diagnosis`](roba-spiral-diagnosis/SKILL.md) | A roba run hangs, produces no output, or seems stuck |
 | [`git-branch-pr-workflow`](git-branch-pr-workflow/SKILL.md) | Any non-trivial work in this repo |
