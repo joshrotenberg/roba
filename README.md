@@ -122,9 +122,16 @@ On success the record goes to **stdout** wrapped in `result`:
     "result": "the answer text",
     "session_id": "abc123",
     "is_error": false
-  }
+  },
+  "refusal": false
 }
 ```
+
+`refusal` is true when the heuristic in `looks_like_refusal` matched
+the response body; useful for orchestrators that need to branch on
+"got an answer" vs "got refused" without parsing the body text. A
+refusal still exits 0 -- the call succeeded, the heuristic just labels
+the body.
 
 On a runtime error roba prints the envelope to **stderr** (stdout
 stays empty) and exits with the typed code:
