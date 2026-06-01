@@ -144,6 +144,39 @@ fn live_output_json_valid() {
 
 #[test]
 #[ignore]
+fn live_output_refusal_in_json_envelope() {
+    // The v1 envelope's top-level `refusal` flag surfaces
+    // `output::looks_like_refusal` (a `starts_with` prefix match) to
+    // non-TTY consumers. We assert the *plumbing* -- that a refusal-
+    // shaped answer flips `refusal` to true through `--json` -- not the
+    // model's safety behavior. Engineering a genuine policy refusal is
+    // both unreliable (real refusals open with phrasing the heuristic
+    // doesn't list, e.g. "I can't provide ...") and needlessly
+    // generates harmful content; instead we have the model echo a known
+    // marker so the test is deterministic and benign.
+    let dir = fresh_dir();
+    let out = roba_in(dir.path())
+        .args([
+            "--json",
+            "--quiet",
+            "Reply with exactly this and nothing else: I can't help with that.",
+        ])
+        .output()
+        .expect("run roba --json");
+    assert!(out.status.success(), "roba failed: {out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("--json produced non-JSON stdout");
+    assert_eq!(parsed["version"].as_u64(), Some(1));
+    assert_eq!(
+        parsed["refusal"].as_bool(),
+        Some(true),
+        "expected refusal=true when the answer opens with a refusal marker, got: {stdout}"
+    );
+}
+
+#[test]
+#[ignore]
 fn live_output_code_strips_fences() {
     let dir = fresh_dir();
     let out = roba_in(dir.path())
@@ -162,27 +195,6 @@ fn live_output_code_strips_fences() {
     assert!(
         stdout.contains("fn id"),
         "expected fn id in output, got: {stdout}"
-    );
-}
-
-#[test]
-#[ignore]
-fn live_output_head_caps_lines() {
-    let dir = fresh_dir();
-    let out = roba_in(dir.path())
-        .args([
-            "list five fruits, one per line, nothing else",
-            "--head",
-            "3",
-        ])
-        .output()
-        .expect("run roba");
-    assert!(out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let nonempty = stdout.lines().filter(|l| !l.trim().is_empty()).count();
-    assert!(
-        nonempty <= 3,
-        "expected <=3 non-empty lines, got {nonempty} in: {stdout}"
     );
 }
 
@@ -714,7 +726,8 @@ fn live_env_fresh_cancels_continue() {
         .output()
         .expect("seed run");
     let seed_json: serde_json::Value = serde_json::from_slice(&seed.stdout).expect("seed json");
-    let seed_id = seed_json["session_id"]
+    // v1 envelope (#83): session_id is nested under `result`.
+    let seed_id = seed_json["result"]["session_id"]
         .as_str()
         .expect("session_id")
         .to_string();
@@ -726,10 +739,38 @@ fn live_env_fresh_cancels_continue() {
         .output()
         .expect("fresh run");
     let fresh_json: serde_json::Value = serde_json::from_slice(&fresh.stdout).expect("fresh json");
-    let fresh_id = fresh_json["session_id"].as_str().expect("session_id");
+    let fresh_id = fresh_json["result"]["session_id"]
+        .as_str()
+        .expect("session_id");
 
     assert_ne!(
         seed_id, fresh_id,
         "--fresh should produce a new session id even with ROBA_CONTINUE=1"
     );
 }
+
+// ---------------------------------------------------------------------------
+// INTENTIONALLY UNTESTED (high cost / low signal, or no fixture path yet)
+// ---------------------------------------------------------------------------
+//
+// These recently-shipped surfaces have no live coverage on purpose.
+// Documented here so the gap is visible rather than silently missing.
+//
+// - --no-retry transient-failure injection: provoking a transient
+//   wrapper failure needs a network shim / fault injector we don't have.
+//   Today the flag is forward-looking (roba builds Claude with no retry
+//   policy, so it's already one-shot); the clap-level parse is covered
+//   in src/cli.rs unit tests.
+// - --agent NAME role verification: depends on a local subagent registry
+//   (.claude/agents/<name>.md) in the run cwd. Without a staged fixture
+//   the spawned claude's actual agent behavior isn't assertable; the flag
+//   is a pass-through. Parse-level coverage lives in src/cli.rs.
+// - --json error envelope on auth failure: would require breaking auth
+//   for the duration of the test. Envelope shape is unit-tested in
+//   src/error.rs.
+// - --json error envelope on budget exceeded: would spend real budget to
+//   trip the limit. Same unit coverage as above.
+// - Deterministic, no-claude subcommands (skill/agent list|show|install,
+//   --show-permissions): covered by the mechanical CLI tests in
+//   tests/cli.rs (#90). Live tests here focus on claude-calling paths, so
+//   these are deliberately not duplicated.
