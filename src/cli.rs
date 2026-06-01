@@ -46,6 +46,30 @@ pub enum SubCommand {
         #[command(subcommand)]
         action: AgentAction,
     },
+    /// Inspect user-defined aliases (`[alias.NAME]` in roba.toml).
+    Alias {
+        #[command(subcommand)]
+        action: AliasAction,
+    },
+    /// Captures a user-defined alias invocation (`roba NAME [args]`).
+    /// Not a real subcommand -- clap routes any unrecognized leading
+    /// word here, and [`crate::dispatch`] expands it against the alias
+    /// pool (or errors with close-match suggestions).
+    #[command(external_subcommand)]
+    External(Vec<String>),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AliasAction {
+    /// List aliases defined in the merged config pool.
+    List,
+    /// Print one alias's definition plus an expansion preview.
+    Show {
+        /// Alias name (as it appears under `[alias.NAME]`).
+        name: String,
+    },
+    /// Print which files contribute aliases, in walk-up order.
+    Path,
 }
 
 #[derive(Subcommand, Debug)]
@@ -707,16 +731,46 @@ mod tests {
     }
 
     #[test]
-    fn worktree_long_space_name_is_rejected() {
-        // require_equals = true forbids `--worktree NAME` (the space form);
-        // NAME would otherwise get swallowed as the worktree value or the
-        // prompt depending on positions. Reject it at parse time.
+    fn worktree_long_space_name_does_not_attach_value() {
+        // require_equals = true means `--worktree NAME` (space form)
+        // does NOT attach NAME to the worktree flag: the flag stays the
+        // bare presence form (Some(None)) and NAME falls through to the
+        // positional prompt. (Pre-external-subcommand this test used a
+        // second positional to force an "unexpected argument" error;
+        // with the alias external-subcommand variant a trailing word is
+        // now captured as an alias invocation instead, so the invariant
+        // is asserted directly here.)
         use clap::Parser;
-        let err = Cli::try_parse_from(["roba", "--worktree", "mybranch", "do thing"]).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("equal") || msg.contains("unexpected"),
-            "expected equals-required parse error, got: {msg}"
-        );
+        let cli = Cli::try_parse_from(["roba", "--worktree", "mybranch"]).unwrap();
+        assert_eq!(cli.ask.worktree, Some(None));
+        assert_eq!(cli.ask.prompt.as_deref(), Some("mybranch"));
+    }
+
+    #[test]
+    fn external_subcommand_captures_unknown_leading_word() {
+        // An unrecognized leading word with trailing args routes to the
+        // External variant; the word itself lands in the prompt slot and
+        // the rest become the alias args. dispatch() resolves it against
+        // the alias pool.
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "review", "42", "--readonly"]).unwrap();
+        assert_eq!(cli.ask.prompt.as_deref(), Some("review"));
+        match cli.command {
+            Some(SubCommand::External(rest)) => {
+                assert_eq!(rest, vec!["42".to_string(), "--readonly".to_string()]);
+            }
+            other => panic!("expected External, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn single_bare_word_is_prompt_not_external() {
+        // A single leading word has no trailing positional, so clap
+        // keeps it as the prompt (command None). dispatch() then decides
+        // whether it names a zero-arg alias.
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "commit-msg"]).unwrap();
+        assert!(cli.command.is_none());
+        assert_eq!(cli.ask.prompt.as_deref(), Some("commit-msg"));
     }
 }

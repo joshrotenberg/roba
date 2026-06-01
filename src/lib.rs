@@ -11,6 +11,7 @@ use claude_wrapper::{Claude, QueryCommand};
 use std::io::IsTerminal;
 
 pub mod agents;
+pub mod aliases;
 pub mod cli;
 pub mod cost;
 pub mod env;
@@ -52,7 +53,28 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Some(SubCommand::Cost(args)) => cost::run(args),
         Some(SubCommand::Skill { action }) => skills::run(action),
         Some(SubCommand::Agent { action }) => agents::run(action),
-        None => run_ask(cli.ask).await,
+        Some(SubCommand::Alias { action }) => aliases::run(action),
+        // An unrecognized leading word: clap routes it here. The alias
+        // name landed in `ask.prompt`; the remaining tokens are the
+        // alias args (positional + any trailing flags).
+        Some(SubCommand::External(rest)) => {
+            let name = cli
+                .ask
+                .prompt
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("could not determine alias name"))?;
+            aliases::dispatch_alias(&name, &rest).await
+        }
+        None => {
+            // A bare single word may name a zero-arg alias
+            // (`roba commit-msg`). Otherwise it's a normal prompt.
+            if let Some(name) = aliases::bare_alias_candidate(&cli.ask)? {
+                let trailing = aliases::trailing_args_from_env(&name);
+                aliases::dispatch_alias(&name, &trailing).await
+            } else {
+                run_ask(cli.ask).await
+            }
+        }
     }
 }
 
