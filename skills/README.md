@@ -6,16 +6,15 @@ parent agent) with operational guidance that `roba --help` doesn't
 cover: prompt-template idioms, PR-lifecycle steps, observability for
 when runs go sideways, git workflow defaults.
 
-This is the first half of the three-layer skill library tracked in
+This is **Layer 1** of the three-layer skill library tracked in
 [#47](https://github.com/joshrotenberg/roba/issues/47):
 
 - **Layer 1 (here) -- operational skills.** Markdown knowledge files
   that *extend the parent's context*. Read these once per session;
   apply when relevant.
-- **Layer 2 -- runner subagents.** Not yet shipped. A subagent that
-  codifies the full orchestration loop ("implement issue #N" ->
-  write prompt -> fire roba -> push -> draft PR -> watch CI -> merge
-  on green).
+- **Layer 2 -- runner / orchestrator subagents.** Shipped: see
+  [`../agents/`](../agents/). Procedural workers that *consume* these
+  skills and run the dispatch lifecycle.
 - **Layer 3 -- domain skills.** Bring-your-own. Subagent-format
   markdown (rody's `.claude/agents/` pattern) works straight as
   `roba -f` prompt input; the frontmatter's `tools:` field maps to
