@@ -5,12 +5,14 @@
 //! emit a one-line indicator on stderr (when metadata is enabled).
 //! Tool calls are tallied for the rollup line at the end.
 
-use anyhow::Result;
-use claude_wrapper::streaming::{BlockDelta, PartialMessageEvent, stream_query};
+use anyhow::{Context, Result};
+use claude_wrapper::streaming::{BlockDelta, PartialMessageEvent, StreamEvent, stream_query};
 use claude_wrapper::types::{OutputFormat, QueryResult};
 use claude_wrapper::{Claude, QueryCommand};
 use std::collections::HashMap;
-use std::io::Write;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::Path;
 
 use crate::cli::AskArgs;
 use crate::output::{
@@ -19,10 +21,73 @@ use crate::output::{
 use crate::render::Style;
 use crate::session::{apply_session, derive_session_name};
 
-/// Run a prompt through the streaming pipeline. Text flushes to
-/// stdout as it arrives; tool calls + cost footer + refusal warning
-/// + tool rollup go to stderr at the appropriate moments.
-pub async fn run_streaming(claude: &Claude, prompt: String, args: &AskArgs) -> Result<()> {
+/// How a streaming run presents itself while events arrive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayMode {
+    /// Live token + tool-call streaming to stdout/stderr, plus the
+    /// cost footer at the end. This is the `--stream` experience.
+    Live,
+    /// No live display at all -- only the trace (if any) is written and
+    /// the final [`QueryResult`] is collected for the caller to render
+    /// the way the non-streaming path would. Used when `--trace` is on
+    /// but the user did not ask for `--stream`.
+    Silent,
+}
+
+/// Buffered JSONL trace sink. Each stream event is serialized back to
+/// its raw wire JSON and written as one line, in arrival order. The
+/// trace mirrors the spawned session's NDJSON, not roba's typed view.
+struct TraceWriter {
+    out: BufWriter<File>,
+}
+
+impl TraceWriter {
+    fn write_event(&mut self, event: &StreamEvent) -> Result<()> {
+        serde_json::to_writer(&mut self.out, event).context("serializing stream event")?;
+        self.out.write_all(b"\n").context("writing trace newline")?;
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        self.out.flush().context("flushing trace file")
+    }
+}
+
+/// Open a trace sink when a path is set. Parent directories are
+/// created if missing; an existing file is truncated. Returns `None`
+/// when no `--trace` path was requested.
+fn open_trace(path: Option<&Path>) -> Result<Option<TraceWriter>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating trace parent dir {}", parent.display()))?;
+    }
+    let file =
+        File::create(path).with_context(|| format!("creating trace file {}", path.display()))?;
+    Ok(Some(TraceWriter {
+        out: BufWriter::new(file),
+    }))
+}
+
+/// Run a prompt through the streaming pipeline.
+///
+/// When `args.trace` is set, every event is also written to the trace
+/// file as a JSON line, in arrival order, regardless of `display`.
+///
+/// In [`DisplayMode::Live`] text flushes to stdout as it arrives, tool
+/// calls + cost footer + refusal warning + tool rollup go to stderr at
+/// the appropriate moments, and the call returns `Ok(None)` (it
+/// rendered everything itself). In [`DisplayMode::Silent`] nothing is
+/// displayed and the final [`QueryResult`] is returned for the caller
+/// to render exactly as the non-streaming path would.
+pub async fn run_streaming(
+    claude: &Claude,
+    prompt: String,
+    args: &AskArgs,
+    display: DisplayMode,
+) -> Result<Option<QueryResult>> {
     let name = derive_session_name(&prompt);
     let cmd = apply_session(QueryCommand::new(prompt).name(name), args)
         .output_format(OutputFormat::StreamJson);
@@ -30,12 +95,23 @@ pub async fn run_streaming(claude: &Claude, prompt: String, args: &AskArgs) -> R
     let style = Style::detect(args);
     let mut final_result: Option<QueryResult> = None;
     let mut tool_counts: HashMap<String, usize> = HashMap::new();
+    let mut trace = open_trace(args.trace.as_deref())?;
+    let mut trace_err: Option<anyhow::Error> = None;
 
-    stream_query(claude, &cmd, |event| {
+    let stream_result = stream_query(claude, &cmd, |event| {
+        if let Some(t) = trace.as_mut()
+            && let Err(e) = t.write_event(&event)
+            && trace_err.is_none()
+        {
+            trace_err = Some(e);
+        }
         if event.is_result() {
             if let Ok(qr) = serde_json::from_value::<QueryResult>(event.data.clone()) {
                 final_result = Some(qr);
             }
+            return;
+        }
+        if display == DisplayMode::Silent {
             return;
         }
         if args.show_thinking
@@ -51,9 +127,24 @@ pub async fn run_streaming(claude: &Claude, prompt: String, args: &AskArgs) -> R
             handle_assistant_blocks(&event.data, show_meta, &style, &mut tool_counts);
         }
     })
-    .await?;
-    println!();
+    .await;
 
+    // Flush whatever events made it into the trace before surfacing any
+    // error -- a partial trace is the whole point of an observability
+    // handle when a run dies mid-flight.
+    if let Some(t) = trace.as_mut() {
+        let _ = t.flush();
+    }
+    stream_result?;
+    if let Some(e) = trace_err {
+        return Err(e);
+    }
+
+    if display == DisplayMode::Silent {
+        return Ok(final_result);
+    }
+
+    println!();
     if show_meta && let Some(qr) = &final_result {
         crate::render::print_meta_blank();
         if looks_like_refusal(&qr.result) {
@@ -67,7 +158,7 @@ pub async fn run_streaming(claude: &Claude, prompt: String, args: &AskArgs) -> R
         }
         crate::render::print_meta(&format_footer(qr), &style);
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Render a thinking-block delta to stderr in the dim meta style.
@@ -184,6 +275,62 @@ mod tests {
         handle_assistant_blocks(&event, false, &Style::plain(), &mut counts);
         assert_eq!(counts.get("Read"), Some(&1));
         assert_eq!(counts.len(), 1);
+    }
+
+    #[test]
+    fn open_trace_none_path_is_none() {
+        assert!(open_trace(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn open_trace_creates_parent_dirs_and_writes_jsonl() {
+        let dir = std::env::temp_dir().join(format!("roba-trace-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("nested").join("run.jsonl");
+
+        let mut tw = open_trace(Some(&path)).unwrap().expect("trace writer");
+        let ev: StreamEvent =
+            serde_json::from_value(serde_json::json!({"type": "assistant", "n": 1})).unwrap();
+        tw.write_event(&ev).unwrap();
+        let ev2: StreamEvent =
+            serde_json::from_value(serde_json::json!({"type": "result", "n": 2})).unwrap();
+        tw.write_event(&ev2).unwrap();
+        tw.flush().unwrap();
+        drop(tw);
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 2, "one JSON line per event");
+        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(first["type"], "assistant");
+        assert_eq!(first["n"], 1);
+        let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(second["type"], "result");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_trace_truncates_existing_file() {
+        let path =
+            std::env::temp_dir().join(format!("roba-trace-trunc-{}.jsonl", std::process::id()));
+        std::fs::write(&path, "stale stale stale\nmore stale\n").unwrap();
+
+        let mut tw = open_trace(Some(&path)).unwrap().expect("trace writer");
+        let ev: StreamEvent =
+            serde_json::from_value(serde_json::json!({"type": "system"})).unwrap();
+        tw.write_event(&ev).unwrap();
+        tw.flush().unwrap();
+        drop(tw);
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !body.contains("stale"),
+            "existing content must be truncated"
+        );
+        assert_eq!(body.lines().count(), 1);
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -320,6 +320,53 @@ fn live_stream_emits_to_stdout() {
     );
 }
 
+#[test]
+#[ignore]
+fn live_trace_writes_jsonl() {
+    // --trace PATH forces the streaming pipeline internally (no
+    // --stream needed) and writes every spawned-session event to PATH
+    // as one JSON line, in arrival order. The final answer still
+    // renders to stdout the way the non-streaming path would.
+    let dir = fresh_dir();
+    let trace = dir.path().join("run.jsonl");
+
+    let out = roba_in(dir.path())
+        .args([
+            "respond with the single word: traced",
+            "--trace",
+            trace.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run roba --trace");
+    assert!(out.status.success(), "roba --trace failed: {out:?}");
+
+    // The answer still reaches stdout (non-stream render).
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.to_lowercase().contains("traced"),
+        "expected 'traced' on stdout with --trace, got: {stdout}"
+    );
+
+    // The trace file exists and every line parses as JSON.
+    let body = std::fs::read_to_string(&trace).expect("read trace file");
+    let mut lines = 0usize;
+    let mut saw_assistant = false;
+    let mut saw_result = false;
+    for line in body.lines().filter(|l| !l.trim().is_empty()) {
+        lines += 1;
+        let ev: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("non-JSON trace line {line:?}: {e}"));
+        match ev["type"].as_str() {
+            Some("assistant") => saw_assistant = true,
+            Some("result") => saw_result = true,
+            _ => {}
+        }
+    }
+    assert!(lines >= 1, "expected at least one trace line, got none");
+    assert!(saw_assistant, "expected an assistant event in the trace");
+    assert!(saw_result, "expected a result event in the trace");
+}
+
 // ---------------------------------------------------------------------------
 // permissions
 // ---------------------------------------------------------------------------

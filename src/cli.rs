@@ -286,6 +286,13 @@ pub struct AskArgs {
     #[arg(short = 'o', long, value_name = "PATH", help_heading = "Output")]
     pub out: Option<PathBuf>,
 
+    /// Write the spawned claude session's streaming events to PATH as
+    /// they arrive (JSONL). Stable observability handle for in-flight
+    /// runs; survives roba's exit. Forces the streaming pipeline
+    /// internally even when --stream is not set.
+    #[arg(long, value_name = "PATH", help_heading = "Output")]
+    pub trace: Option<PathBuf>,
+
     /// TTY-only progress indicator: stream tokens + inline tool-call lines as they arrive. Never load-bearing on a pipe; conflicts with --json / --code / --out.
     #[arg(
         long,
@@ -578,6 +585,50 @@ mod tests {
         let cli = Cli::try_parse_from(["roba", "--no-retry", "--json", "prompt"]).unwrap();
         assert!(cli.ask.no_retry);
         assert!(cli.ask.json);
+    }
+
+    #[test]
+    fn trace_flag_parses() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--trace", "/tmp/x.jsonl", "prompt"]).unwrap();
+        assert_eq!(
+            cli.ask.trace.as_deref(),
+            Some(std::path::Path::new("/tmp/x.jsonl"))
+        );
+        assert_eq!(cli.ask.prompt.as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn trace_omitted_is_none() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "prompt"]).unwrap();
+        assert!(cli.ask.trace.is_none());
+    }
+
+    #[test]
+    fn trace_conflicts_with_nothing() {
+        // --trace is observability-orthogonal: it must compose freely
+        // with the output flags (--json, -q, --out) and with --stream.
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--trace", "/tmp/x", "--json", "prompt"]).unwrap();
+        assert_eq!(
+            cli.ask.trace.as_deref(),
+            Some(std::path::Path::new("/tmp/x"))
+        );
+        assert!(cli.ask.json);
+
+        let cli = Cli::try_parse_from(["roba", "--trace", "/tmp/x", "--quiet", "prompt"]).unwrap();
+        assert!(cli.ask.trace.is_some());
+        assert!(cli.ask.quiet);
+
+        let cli =
+            Cli::try_parse_from(["roba", "--trace", "/tmp/x", "--out", "r.txt", "prompt"]).unwrap();
+        assert!(cli.ask.trace.is_some());
+        assert_eq!(cli.ask.out.as_deref(), Some(std::path::Path::new("r.txt")));
+
+        let cli = Cli::try_parse_from(["roba", "--trace", "/tmp/x", "--stream", "prompt"]).unwrap();
+        assert!(cli.ask.trace.is_some());
+        assert!(cli.ask.stream);
     }
 
     #[test]

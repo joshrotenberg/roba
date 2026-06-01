@@ -33,7 +33,7 @@ and authenticated on your PATH.
 | | |
 |---|---|
 | **Prompt sources** | positional, stdin (`-` or piped), `-f FILE`, `-e` ($EDITOR), `--prepend`/`--append` files, `--attach GLOB`, `--git-diff`/`--git-log`/`--git-status`, `--var K=V` template substitution |
-| **Output shaping** | `--json`, `--quiet`, `--code [LANG]`, `-o/--out PATH` (write to file and stdout) |
+| **Output shaping** | `--json`, `--quiet`, `--code [LANG]`, `-o/--out PATH` (write to file and stdout), `--trace PATH` (stream events to a JSONL file -- a stable observability handle for in-flight runs) |
 | **Sessions** | `-c` continue most recent, `-c=ID` resume a specific session, `-c=ID --fork` branch it, `--pick` (interactive fuzzy chooser), `--agent NAME` pin a subagent, `roba history`, `roba last` |
 | **Permissions** | `--readonly`, `--full-auto` presets |
 | **Profiles** | `--profile NAME` from `~/.config/roba.toml`, `roba profile {list,show,init,path}` |
@@ -80,6 +80,10 @@ roba --pick "follow up to whatever I select"
 
 # Save the structured record (also echoes to stdout; redirect to suppress)
 roba "explain quicksort" --out out.json
+
+# Capture the spawned session's event stream for observability
+# (tail it live, or read it after to diagnose a run)
+roba --trace /tmp/run.jsonl "refactor the parser"
 
 # Read-only review against current git diff
 roba --readonly --git-diff "is this safe to merge?"
