@@ -60,6 +60,11 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
 struct SuccessEnvelope<'a> {
     version: u32,
     result: &'a claude_wrapper::types::QueryResult,
+    /// True when [`crate::output::looks_like_refusal`] matched the
+    /// response body. Lets non-TTY consumers (the ones that never see
+    /// the human-facing footer warning) branch on "got an answer" vs
+    /// "got refused" without parsing the body text. Additive v1 field.
+    refusal: bool,
 }
 
 /// Default action: resolve a prompt, send it through claude, render
@@ -120,6 +125,7 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         let envelope = SuccessEnvelope {
             version: 1,
             result: &result,
+            refusal: looks_like_refusal(&result.result),
         };
         serde_json::to_string_pretty(&envelope)?
     } else if let Some(filter) = args.code.as_deref() {
@@ -244,6 +250,7 @@ mod tests {
         let envelope = SuccessEnvelope {
             version: 1,
             result: &result,
+            refusal: looks_like_refusal(&result.result),
         };
         let json = serde_json::to_string_pretty(&envelope).expect("serializes");
         let value: serde_json::Value = serde_json::from_str(&json).expect("round-trips");
@@ -255,5 +262,44 @@ mod tests {
         assert!(value.get("error").is_none(), "error field must be absent");
         assert_eq!(value["result"]["result"], "hello");
         assert_eq!(value["result"]["session_id"], "abc123");
+    }
+
+    fn query_result_with_body(body: &str) -> claude_wrapper::types::QueryResult {
+        claude_wrapper::types::QueryResult {
+            result: body.to_string(),
+            session_id: "abc123".to_string(),
+            cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            is_error: false,
+            extra: std::collections::HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn success_envelope_includes_refusal_field() {
+        // Refusal-shaped body -> refusal: true.
+        let refused = query_result_with_body("I can't help with that request.");
+        let envelope = SuccessEnvelope {
+            version: 1,
+            result: &refused,
+            refusal: looks_like_refusal(&refused.result),
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string_pretty(&envelope).expect("serializes"))
+                .expect("round-trips");
+        assert_eq!(value["refusal"], true, "refusal body must flag refusal");
+
+        // Normal body -> refusal: false.
+        let answered = query_result_with_body("Here is the answer you asked for.");
+        let envelope = SuccessEnvelope {
+            version: 1,
+            result: &answered,
+            refusal: looks_like_refusal(&answered.result),
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string_pretty(&envelope).expect("serializes"))
+                .expect("round-trips");
+        assert_eq!(value["refusal"], false, "normal body must not flag refusal");
     }
 }
