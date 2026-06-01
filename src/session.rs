@@ -1,22 +1,21 @@
 //! Session continuation and permission preset application.
 //!
 //! These are small mutators on a [`QueryCommand`] -- they translate
-//! [`AskArgs`] flags (`-c`, `--resume`, `--fork`, `--readonly`,
+//! [`AskArgs`] flags (`-c` / `-c=ID`, `--fork`, `--readonly`,
 //! `--full-auto`) into the matching builder method calls.
 
 use claude_wrapper::{QueryCommand, RetryPolicy};
 
 use crate::cli::AskArgs;
 
-/// Apply session-related flags (-c, --resume, --fork), the model
+/// Apply session-related flags (-c / -c=ID, --fork), the model
 /// override (--model), and then permission-related flags. Returns
 /// the configured QueryCommand.
 pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
-    if args.continue_session {
-        cmd = cmd.continue_session();
-    }
-    if let Some(id) = &args.resume {
-        cmd = cmd.resume(id.clone());
+    match &args.continue_session {
+        None => {}                                      // fresh session
+        Some(None) => cmd = cmd.continue_session(),     // most recent in cwd
+        Some(Some(id)) => cmd = cmd.resume(id.clone()), // specific id
     }
     if args.fork {
         cmd = cmd.fork_session();

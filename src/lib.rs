@@ -87,13 +87,26 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     // --fresh is the kill switch: it cancels any continuation
     // settings that arrived via env vars or profile defaults.
     if args.fresh {
-        args.continue_session = false;
+        args.continue_session = None;
+    }
+    // --fork branches a *specific* session, so it needs an explicit
+    // id. clap's `requires = "continue_session"` only enforces that
+    // `-c` was passed at all; it can't tell the bare form (`-c`,
+    // "most recent") from the value form (`-c=ID`). Enforce the value
+    // requirement here, after env + profile resolution has settled the
+    // final shape of `continue_session`.
+    if args.fork {
+        match &args.continue_session {
+            Some(Some(_)) => {} // fine: forking a specific session id
+            Some(None) => bail!("--fork requires an explicit session id; use `-c=ID --fork`"),
+            None => bail!("--fork requires `-c=ID`"),
+        }
     }
     ensure_interactive_for_flags(&args)?;
     if args.pick {
         let id = pick_session_interactive()?;
         eprintln!("resuming session {}", id.get(..8).unwrap_or(&id));
-        args.resume = Some(id);
+        args.continue_session = Some(Some(id));
     }
     let main = resolve_main_prompt(
         args.prompt.as_deref(),

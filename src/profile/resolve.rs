@@ -6,7 +6,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 
 use super::home_dir;
-use super::types::{Pool, Profile, WorktreeSetting};
+use super::types::{ContinueSetting, Pool, Profile, WorktreeSetting};
 use crate::cli::AskArgs;
 
 // ---------------------------------------------------------------------------
@@ -154,13 +154,15 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
             args.full_auto_source = Some(source.to_string());
         }
     }
-    // continue_session is silently skipped if the user passed
-    // --resume; the two would conflict and explicit --resume wins.
-    if let Some(v) = profile.continue_session
-        && !args.continue_session
-        && args.resume.is_none()
-    {
-        args.continue_session = v;
+    // continue_session is filled only when the CLI / env layer left
+    // it unset. A profile `continue = true` continues the most recent
+    // session; `continue = "id"` resumes that specific session.
+    if args.continue_session.is_none() {
+        args.continue_session = match profile.continue_session {
+            Some(ContinueSetting::MostRecent(true)) => Some(None),
+            Some(ContinueSetting::Specific(id)) => Some(Some(id)),
+            Some(ContinueSetting::MostRecent(false)) | None => None,
+        };
     }
     if args.allow_tool.is_empty() {
         args.allow_tool = std::mem::take(&mut profile.allow_tool);
@@ -395,25 +397,52 @@ mod tests {
     }
 
     #[test]
-    fn merge_continue_session_applies_when_unset() {
+    fn merge_continue_session_most_recent_when_unset() {
         let mut args = empty_args();
         let profile = Profile {
-            continue_session: Some(true),
+            continue_session: Some(ContinueSetting::MostRecent(true)),
             ..Default::default()
         };
         merge_into_args(&mut args, profile, "profile.test");
-        assert!(args.continue_session);
+        // `continue = true` -> continue most recent (`Some(None)`).
+        assert_eq!(args.continue_session, Some(None));
     }
 
     #[test]
-    fn merge_continue_session_skipped_when_resume_set() {
-        let mut args = args_with(&["--resume", "abc123"]);
+    fn merge_continue_session_specific_id_when_unset() {
+        let mut args = empty_args();
         let profile = Profile {
-            continue_session: Some(true),
+            continue_session: Some(ContinueSetting::Specific("abc12345".to_string())),
             ..Default::default()
         };
         merge_into_args(&mut args, profile, "profile.test");
-        assert!(!args.continue_session);
+        // `continue = "id"` -> resume that id (`Some(Some(id))`).
+        assert_eq!(args.continue_session, Some(Some("abc12345".to_string())));
+    }
+
+    #[test]
+    fn merge_continue_session_false_stays_fresh() {
+        let mut args = empty_args();
+        let profile = Profile {
+            continue_session: Some(ContinueSetting::MostRecent(false)),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.continue_session, None);
+    }
+
+    #[test]
+    fn merge_continue_session_cli_wins_over_profile() {
+        // CLI `-c=cli-id` must survive a profile `continue = true`:
+        // the higher layer's explicit id is not clobbered.
+        let mut args = args_with(&["-c=cli-id"]);
+        assert_eq!(args.continue_session, Some(Some("cli-id".to_string())));
+        let profile = Profile {
+            continue_session: Some(ContinueSetting::MostRecent(true)),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.continue_session, Some(Some("cli-id".to_string())));
     }
 
     #[test]

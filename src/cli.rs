@@ -273,29 +273,28 @@ pub struct AskArgs {
     pub model: Option<String>,
 
     // ----- Sessions ---------------------------------------------------------
-    /// Continue the most recent session in this directory.
+    /// Continue an existing session. Bare `-c` resumes the most
+    /// recent session in this directory; `-c=ID` resumes a specific
+    /// session by id. The `=` is required for the id form to
+    /// disambiguate from the positional prompt.
     #[arg(
         short = 'c',
         long = "continue",
-        conflicts_with = "resume",
+        num_args = 0..=1,
+        value_name = "ID",
+        require_equals = true,
         help_heading = "Sessions"
     )]
-    pub continue_session: bool,
+    pub continue_session: Option<Option<String>>,
 
-    /// Resume a specific session by id.
-    #[arg(long, value_name = "ID", help_heading = "Sessions")]
-    pub resume: Option<String>,
-
-    /// Branch the resumed session instead of appending (requires --resume).
-    #[arg(long, requires = "resume", help_heading = "Sessions")]
+    /// Branch the resumed session instead of appending. Requires an
+    /// explicit session id (`-c=ID --fork`); you can't fork "the most
+    /// recent" without naming it.
+    #[arg(long, requires = "continue_session", help_heading = "Sessions")]
     pub fork: bool,
 
     /// Interactive fuzzy chooser over recent sessions.
-    #[arg(
-        long,
-        conflicts_with_all = ["continue_session", "resume"],
-        help_heading = "Sessions"
-    )]
+    #[arg(long, conflicts_with = "continue_session", help_heading = "Sessions")]
     pub pick: bool,
 
     /// Force a fresh session. Cancels a profile- or env-supplied
@@ -303,7 +302,7 @@ pub struct AskArgs {
     /// auto-continuation.
     #[arg(
         long,
-        conflicts_with_all = ["continue_session", "resume", "pick"],
+        conflicts_with_all = ["continue_session", "pick"],
         help_heading = "Sessions"
     )]
     pub fresh: bool,
@@ -504,6 +503,81 @@ mod tests {
         let cli = Cli::try_parse_from(["roba", "--no-retry", "--json", "prompt"]).unwrap();
         assert!(cli.ask.no_retry);
         assert!(cli.ask.json);
+    }
+
+    #[test]
+    fn continue_parses_bare() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "-c", "prompt"]).unwrap();
+        assert_eq!(cli.ask.continue_session, Some(None));
+        assert_eq!(cli.ask.prompt.as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn continue_parses_with_id() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "-c=abc123", "prompt"]).unwrap();
+        assert_eq!(cli.ask.continue_session, Some(Some("abc123".to_string())));
+        assert_eq!(cli.ask.prompt.as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn continue_long_parses_with_id() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--continue=abc123", "prompt"]).unwrap();
+        assert_eq!(cli.ask.continue_session, Some(Some("abc123".to_string())));
+    }
+
+    #[test]
+    fn continue_without_equals_treats_next_arg_as_prompt() {
+        // require_equals means `-c prompt` does NOT swallow "prompt" as
+        // the session id -- it stays the positional prompt and -c is
+        // the bare "most recent" form.
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "-c", "prompt"]).unwrap();
+        assert_eq!(cli.ask.continue_session, Some(None));
+        assert_eq!(cli.ask.prompt.as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn continue_missing_is_none() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "prompt"]).unwrap();
+        assert!(cli.ask.continue_session.is_none());
+    }
+
+    #[test]
+    fn fork_requires_continue_at_parse_time() {
+        // clap's `requires = "continue_session"` rejects --fork when -c
+        // was never passed. (The bare-vs-id distinction is a runtime
+        // check; this just enforces -c is present at all.)
+        use clap::Parser;
+        let err = Cli::try_parse_from(["roba", "--fork", "prompt"]).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("continue") || msg.contains("required"),
+            "expected a requires error mentioning continue, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn fork_with_specific_id_parses() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "-c=abc123", "--fork", "prompt"]).unwrap();
+        assert_eq!(cli.ask.continue_session, Some(Some("abc123".to_string())));
+        assert!(cli.ask.fork);
+    }
+
+    #[test]
+    fn pick_conflicts_with_continue() {
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["roba", "--pick", "-c", "prompt"]).is_err());
+    }
+
+    #[test]
+    fn fresh_conflicts_with_continue() {
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["roba", "--fresh", "-c", "prompt"]).is_err());
     }
 
     #[test]
