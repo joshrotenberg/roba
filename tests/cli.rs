@@ -216,6 +216,37 @@ fn worktree_named_with_equals_parses() {
         .stderr(predicate::str::contains("reading --prepend"));
 }
 
+// ---------------------------------------------------------------------------
+// --agent
+// ---------------------------------------------------------------------------
+
+#[test]
+fn help_mentions_agent_flag() {
+    roba()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--agent"));
+}
+
+#[test]
+fn agent_with_name_parses() {
+    // --agent NAME + missing prepend file: parse must succeed, the
+    // failure comes from the runtime read error (not clap).
+    roba()
+        .args([
+            "foo",
+            "--agent",
+            "reviewer",
+            "--prepend",
+            "/no/such/agent-test-name",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("reading --prepend"));
+}
+
 #[test]
 fn worktree_long_space_name_is_rejected() {
     // require_equals = true: `--worktree NAME` (space form) is a

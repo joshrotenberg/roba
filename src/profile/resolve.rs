@@ -182,6 +182,11 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     {
         args.model = Some(m);
     }
+    if args.agent.is_none()
+        && let Some(a) = profile.agent.take()
+    {
+        args.agent = Some(a);
+    }
     if let Some(v) = profile.stream
         && !args.stream
     {
@@ -525,6 +530,30 @@ mod tests {
             !args.full_auto,
             "profile full_auto=true is suppressed when CLI passed --writable"
         );
+    }
+
+    #[test]
+    fn merge_agent_applies_when_cli_unset() {
+        let mut args = empty_args();
+        assert!(args.agent.is_none());
+        let profile = Profile {
+            agent: Some("reviewer".to_string()),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.agent.as_deref(), Some("reviewer"));
+    }
+
+    #[test]
+    fn merge_agent_cli_wins_over_profile() {
+        let mut args = empty_args();
+        args.agent = Some("planner".to_string());
+        let profile = Profile {
+            agent: Some("reviewer".to_string()),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.agent.as_deref(), Some("planner"));
     }
 
     #[test]

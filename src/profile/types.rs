@@ -45,6 +45,9 @@ pub struct Profile {
     /// Override the claude model (alias or full id).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Pin a claude-code subagent by name (`--agent`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,6 +113,7 @@ impl Profile {
             && self.deny_tool.is_empty()
             && self.vars.is_empty()
             && self.model.is_none()
+            && self.agent.is_none()
             && self.stream.is_none()
             && self.show_thinking.is_none()
             && self.echo.is_none()
@@ -143,6 +147,7 @@ impl Profile {
             mut deny_tool,
             vars,
             model,
+            agent,
             stream,
             show_thinking,
             echo,
@@ -185,6 +190,9 @@ impl Profile {
         }
         if model.is_some() {
             self.model = model;
+        }
+        if agent.is_some() {
+            self.agent = agent;
         }
         if stream.is_some() {
             self.stream = stream;
