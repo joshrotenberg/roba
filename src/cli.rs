@@ -36,6 +36,58 @@ pub enum SubCommand {
     },
     /// Roll up token usage across session history.
     Cost(CostArgs),
+    /// Manage the bundled skill library.
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
+    },
+    /// Manage the bundled agent library.
+    Agent {
+        #[command(subcommand)]
+        action: AgentAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SkillAction {
+    /// Copy bundled skills to ~/.claude/skills/ (or a custom destination).
+    Install(InstallArgs),
+    /// List bundled skills with descriptions.
+    List,
+    /// Print the SKILL.md body for a named skill.
+    Show {
+        /// Skill name (the directory name, e.g. `draft-pr-first`).
+        name: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AgentAction {
+    /// Copy bundled agents to ~/.claude/agents/ (or a custom destination).
+    Install(InstallArgs),
+    /// List bundled agents with descriptions.
+    List,
+    /// Print the AGENT.md body for a named agent.
+    Show {
+        /// Agent name (the directory name, e.g. `roba-runner`).
+        name: String,
+    },
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct InstallArgs {
+    /// Custom destination directory. Default: ~/.claude/skills (or .../agents).
+    #[arg(long, value_name = "PATH")]
+    pub to: Option<PathBuf>,
+    /// Preview without writing.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Overwrite existing files without prompting.
+    #[arg(long, conflicts_with = "skip")]
+    pub force: bool,
+    /// Leave existing files in place; install the rest.
+    #[arg(long)]
+    pub skip: bool,
 }
 
 #[derive(ClapArgs, Debug)]

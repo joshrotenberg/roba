@@ -37,6 +37,7 @@ and authenticated on your PATH.
 | **Sessions** | `-c` continue most recent, `-c=ID` resume a specific session, `-c=ID --fork` branch it, `--pick` (interactive fuzzy chooser), `--agent NAME` pin a subagent, `roba history`, `roba last` |
 | **Permissions** | `--readonly`, `--full-auto` presets |
 | **Profiles** | `--profile NAME` from `~/.config/roba.toml`, `roba profile {list,show,init,path}` |
+| **Skill library** | `roba skill {install,list,show}` and `roba agent {install,list,show}` install the bundled skills + orchestrator subagents into `~/.claude/` |
 | **TTY UX** | termimad markdown render, indicatif spinner, dim metadata, colored refusal/error markers, `--plain` master kill-switch, `NO_COLOR` honored |
 | **Scripting** | typed exit codes (auth=2, budget=3, timeout=4), clean stdout/stderr split, structured `--json` output, `--no-retry` for deterministic-on-failure runs |
 | **Usage tracking** | `roba cost`, `roba cost --by-project` |
@@ -101,6 +102,33 @@ and worked examples.
 roba profile init             # drops a starter roba.toml
 roba profile list             # names defined
 roba profile show review      # the TOML for one profile
+```
+
+## Skill + agent library
+
+roba ships a starter set of operational skills and orchestrator
+subagents. Install them into `~/.claude/` so any Claude Code session
+auto-discovers them:
+
+```bash
+roba skill install            # -> ~/.claude/skills/
+roba agent install            # -> ~/.claude/agents/
+roba skill list               # what's bundled, with descriptions
+roba skill show draft-pr-first  # print a skill's SKILL.md body
+```
+
+`install` flags: `--to PATH` (custom destination), `--dry-run`
+(preview), `--force` (overwrite existing), `--skip` (leave existing in
+place). The agent commands mirror the skill ones. The bundle is
+embedded in the binary at build time -- no network fetch.
+
+That unlocks the install-and-go path:
+
+```bash
+cargo install roba
+roba skill install && roba agent install
+claude --agent=roba-orchestrator
+# "work the backlog in foo and bar"
 ```
 
 ## Output discipline
