@@ -53,7 +53,9 @@ For a deeper side-by-side -- when to reach for `roba` vs plain
 `claude -p`, with worked examples -- see
 [`docs/vs-claude-p.md`](docs/vs-claude-p.md). For patterns like
 multi-repo orchestration, see
-[`docs/use-cases.md`](docs/use-cases.md).
+[`docs/use-cases.md`](docs/use-cases.md). For CI auto-review
+workflows, see
+[`docs/examples/github-actions/`](docs/examples/github-actions/).
 
 ## Quick examples
 

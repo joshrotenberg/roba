@@ -365,6 +365,45 @@ Usage with a template file:
 roba --profile ticket -f ~/.config/roba/prompts/standup.md
 ```
 
+### `gh-context` -- read-only PR / issue context via the gh CLI
+
+A profile that lets claude pull GitHub context (PR / issue / diff /
+list) through the `gh` CLI without opening the door to mutations:
+
+```toml
+[profile.gh-context]
+description = "Read-only gh access for PR / issue context"
+readonly = true
+allow_tool = [
+    "Bash(gh pr view:*)",
+    "Bash(gh pr diff:*)",
+    "Bash(gh pr list:*)",
+    "Bash(gh issue view:*)",
+    "Bash(gh issue list:*)",
+    "Bash(gh repo view:*)",
+]
+```
+
+Usage:
+
+```bash
+roba --profile gh-context "summarize the open PRs in this repo"
+roba --profile gh-context "what does PR #42 do?"
+```
+
+`readonly = true` seeds the allow list with Read / Glob / Grep; the
+`Bash(gh ...:*)` patterns add the read-only gh commands on top. The
+`:*` suffix is Claude Code's prefix matcher -- it allows the command
+plus any arguments (a PR number, `--json` flags), so `Bash(gh pr
+view:*)` covers `gh pr view 42 --json title`. Claude can pull context
+but can't `gh pr merge`, `gh pr close`, or run any verb you didn't
+list.
+
+For mutations, layer a more permissive profile or add the specific
+patterns explicitly (`--allow-tool "Bash(gh pr comment:*)"`). Keep the
+deny side in mind too: `deny_tool` wins over `allow_tool`, so a broad
+allow plus a targeted deny is a valid shape if you'd rather subtract.
+
 ## Installing the bundled skill + agent library
 
 Alongside config, roba bundles a starter set of operational *skills*
