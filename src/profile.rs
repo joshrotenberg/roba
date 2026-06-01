@@ -1281,7 +1281,7 @@ prepend = ["/closer.md"]
     ///
     /// To get read-only behavior when a profile turns writable on,
     /// the documented workaround is `--no-default-profile`. See
-    /// `docs/positioning.md` for the proposed-but-unimplemented
+    /// issue #52 for the proposed-but-unimplemented
     /// "CLI --readonly suppresses profile writable" semantics.
     #[test]
     fn merge_cli_readonly_does_not_suppress_profile_writable() {

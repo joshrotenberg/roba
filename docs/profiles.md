@@ -174,7 +174,7 @@ cancel out a profile or env override on its own. To enforce
 read-only when a profile sets `writable = true`, pass
 `--no-default-profile` or unset `ROBA_WRITABLE` /
 `ROBA_FULL_AUTO` for that call. This is tracked as a known gap;
-see `docs/positioning.md`.
+see #52.
 
 For `allow_tool` and `deny_tool`, lists **accumulate across
 layers**:

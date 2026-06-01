@@ -12,7 +12,6 @@ specific topics.
 | Doc | What |
 |---|---|
 | [profiles.md](profiles.md) | `roba.toml` config + profiles, schema, worked examples |
-| [design-notes.md](design-notes.md) | Brainstorm / idea log -- design rationale, future directions |
 
 ## Where things live
 

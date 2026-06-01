@@ -174,7 +174,7 @@ on the CLI does not cancel a `writable = true` or
 read-only behavior when a profile turns on writable, pass
 `--no-default-profile` (skips the auto-applied profile) or unset
 `ROBA_WRITABLE` / `ROBA_FULL_AUTO` for the call. (Tracked as a
-known gap; see `docs/positioning.md`.)
+known gap; see #52.)
 
 `allow_tool` and `deny_tool` lists **accumulate across layers**.
 Across `roba.toml` files, closer-to-cwd entries concat on top of
