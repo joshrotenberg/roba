@@ -47,11 +47,21 @@ deterministic substrate; the spawned claude does the actual code work.
 
 ## Installation
 
-Today: clone this repo and copy `agents/` into your `~/.claude/agents/`
-(or symlink). Same with `skills/`.
+These agents are bundled into the roba binary at build time. Install
+them into your Claude config so any Claude Code session can spawn
+them:
 
-Future ([#85](https://github.com/joshrotenberg/roba/issues/85)):
-`roba agent install` and `roba skill install` will handle the copy.
+```bash
+roba agent install            # copy -> ~/.claude/agents/
+roba agent install --to .claude/agents   # or a project-local path
+roba agent list               # what's bundled, with descriptions
+roba agent show roba-runner   # print one agent's AGENT.md body
+```
+
+`install` flags: `--to PATH`, `--dry-run`, `--force` (overwrite),
+`--skip` (leave existing). The `roba skill install` command does the
+same for the Layer 1 skills. No network fetch -- the content ships in
+the binary.
 
 ## Format
 

@@ -34,11 +34,22 @@ This is **Layer 1** of the three-layer skill library tracked in
 
 ## Installation
 
-Today: read directly from this directory.
+These skills are bundled into the roba binary at build time. Install
+them into your Claude config so any Claude Code session
+auto-discovers them:
 
-Future (tracked in #47): `roba skill install` to copy these into
-`~/.claude/skills/` (or `.claude/skills/` in a project) so any
-Claude Code session auto-discovers them.
+```bash
+roba skill install            # copy -> ~/.claude/skills/
+roba skill install --to .claude/skills   # or a project-local path
+roba skill list               # what's bundled, with descriptions
+roba skill show draft-pr-first  # print one skill's SKILL.md body
+```
+
+`install` flags: `--to PATH`, `--dry-run`, `--force` (overwrite),
+`--skip` (leave existing). No network fetch -- the content ships in
+the binary.
+
+You can also read the files directly from this directory.
 
 ## Format
 
