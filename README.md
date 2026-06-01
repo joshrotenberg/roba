@@ -38,7 +38,7 @@ and authenticated on your PATH.
 | **Permissions** | `--readonly`, `--full-auto` presets |
 | **Profiles** | `--profile NAME` from `~/.config/roba.toml`, `roba profile {list,show,init,path}` |
 | **TTY UX** | termimad markdown render, indicatif spinner, dim metadata, colored refusal/error markers, `--plain` master kill-switch, `NO_COLOR` honored |
-| **Scripting** | typed exit codes (auth=2, budget=3, timeout=4), clean stdout/stderr split, structured `--json` output |
+| **Scripting** | typed exit codes (auth=2, budget=3, timeout=4), clean stdout/stderr split, structured `--json` output, `--no-retry` for deterministic-on-failure runs |
 | **Usage tracking** | `roba cost`, `roba cost --by-project` |
 
 Streaming mode (`--stream`) emits tokens live with inline tool-call
@@ -168,6 +168,24 @@ Without `--json`, the error path is unchanged: a styled
 `error: ...` line on stderr. Clap parse errors (mistyped flags,
 missing values) are emitted by clap itself before roba sees them
 and stay as plain stderr regardless of `--json`.
+
+### Failure modes
+
+claude-wrapper can auto-retry some transient failure classes
+(timeouts, certain exit codes) with backoff. That's a reasonable
+default for a human on a TTY, but an orchestrator usually wants
+deterministic semantics: see the failure now, decide whether to
+retry itself. `--no-retry` turns wrapper-level auto-retry off for
+the run so a transient failure surfaces immediately with its
+normal typed exit code instead of being silently re-tried.
+
+```bash
+roba --no-retry "..."            # fail fast, no backoff
+ROBA_NO_RETRY=1 roba "..."       # same, via env
+```
+
+It's also a profile field (`no_retry = true`). No effect on
+success or on non-transient failures.
 
 ## Permissions
 

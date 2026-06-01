@@ -64,6 +64,10 @@ pub struct Profile {
     /// name) or `worktree = "NAME"` (pinned name).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorktreeSetting>,
+    /// Disable wrapper-level auto-retry on transient failures
+    /// (`--no-retry`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_retry: Option<bool>,
 }
 
 /// Profile value for the `worktree` field. Mirrors the CLI's
@@ -101,6 +105,7 @@ impl Profile {
             && self.json.is_none()
             && self.editor_history.is_none()
             && self.worktree.is_none()
+            && self.no_retry.is_none()
     }
 
     /// Merge `other` on top of `self`. Used to layer roba.toml files
@@ -133,6 +138,7 @@ impl Profile {
             json,
             editor_history,
             worktree,
+            no_retry,
         } = other;
 
         self.prepend.append(&mut prepend);
@@ -190,6 +196,9 @@ impl Profile {
         }
         if worktree.is_some() {
             self.worktree = worktree;
+        }
+        if no_retry.is_some() {
+            self.no_retry = no_retry;
         }
     }
 }

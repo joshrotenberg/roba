@@ -255,6 +255,14 @@ pub struct AskArgs {
     #[arg(long, help_heading = "Output")]
     pub plain: bool,
 
+    // ----- Failure modes ----------------------------------------------------
+    /// Disable wrapper-level auto-retry on transient failures. The
+    /// orchestrator gets the failure immediately and decides whether
+    /// to retry, instead of roba quietly re-trying with exponential
+    /// backoff. No effect on success or non-transient failures.
+    #[arg(long, help_heading = "Failure modes")]
+    pub no_retry: bool,
+
     // ----- Model ------------------------------------------------------------
     /// Override the claude model for this call.
     ///
@@ -474,6 +482,28 @@ mod tests {
         use clap::Parser;
         let cli = Cli::try_parse_from(["roba", "--worktree=mybranch", "do thing"]).unwrap();
         assert_eq!(cli.ask.worktree, Some(Some("mybranch".to_string())));
+    }
+
+    #[test]
+    fn no_retry_parses_alone() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--no-retry", "prompt"]).unwrap();
+        assert!(cli.ask.no_retry);
+        assert_eq!(cli.ask.prompt.as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn no_retry_conflicts_with_nothing() {
+        // --no-retry is an orthogonal failure-mode knob; it must compose
+        // freely with output flags like --quiet and --json.
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--no-retry", "--quiet", "prompt"]).unwrap();
+        assert!(cli.ask.no_retry);
+        assert!(cli.ask.quiet);
+
+        let cli = Cli::try_parse_from(["roba", "--no-retry", "--json", "prompt"]).unwrap();
+        assert!(cli.ask.no_retry);
+        assert!(cli.ask.json);
     }
 
     #[test]

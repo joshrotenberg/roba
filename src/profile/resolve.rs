@@ -220,6 +220,11 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
             Some(WorktreeSetting::Enabled(false)) | None => None,
         };
     }
+    if let Some(v) = profile.no_retry
+        && !args.no_retry
+    {
+        args.no_retry = v;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -520,6 +525,47 @@ mod tests {
         let args = empty_args();
         assert!(select_profile_name(&args, &pool).is_none());
         assert_eq!(profile_source_label(&args, &pool), "config");
+    }
+
+    #[test]
+    fn merge_no_retry_applies_when_cli_unset() {
+        let mut args = empty_args();
+        assert!(!args.no_retry);
+        let profile = Profile {
+            no_retry: Some(true),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert!(args.no_retry, "profile no_retry=true should flow through");
+    }
+
+    #[test]
+    fn merge_no_retry_profile_false_leaves_cli_off() {
+        // Profile sets no_retry=false and CLI didn't pass it: stays off.
+        let mut args = empty_args();
+        let profile = Profile {
+            no_retry: Some(false),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert!(!args.no_retry);
+    }
+
+    #[test]
+    fn merge_no_retry_cli_already_set_is_unaffected() {
+        // The CLI override gate: a profile value never *clears* a flag
+        // the user already set on the command line.
+        let mut args = args_with(&["--no-retry"]);
+        assert!(args.no_retry, "CLI --no-retry should set args.no_retry");
+        let profile = Profile {
+            no_retry: Some(false),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert!(
+            args.no_retry,
+            "CLI --no-retry survives a profile no_retry=false"
+        );
     }
 
     #[test]
