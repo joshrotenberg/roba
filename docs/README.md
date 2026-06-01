@@ -12,6 +12,7 @@ specific topics.
 | Doc | What |
 |---|---|
 | [profiles.md](profiles.md) | `roba.toml` config + profiles, schema, worked examples |
+| [vs-claude-p.md](vs-claude-p.md) | When to reach for `roba` vs plain `claude -p`, with side-by-side examples |
 
 ## Where things live
 
