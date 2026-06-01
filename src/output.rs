@@ -182,6 +182,82 @@ pub fn summarize_tool(name: &str, input: &serde_json::Value) -> String {
     }
 }
 
+/// Render the effective permission set for `--show-permissions`.
+///
+/// Reads the resolved [`AskArgs`] (after the full CLI > env > profile
+/// merge) plus the per-entry provenance fields and produces a
+/// machine-readable, human-skimmable block. The always-on safe
+/// defaults (Read, Glob, Grep) are tagged `[default]`; everything
+/// else carries the layer that contributed it (`CLI`, `env`,
+/// `profile.<name>`, or `config`).
+///
+/// In `--full-auto` mode there are no allow/deny lists -- the result
+/// is a single line stating that everything is allowed and from where.
+/// The returned string has no trailing newline.
+pub fn format_permissions(args: &AskArgs) -> String {
+    if args.full_auto {
+        let src = args.full_auto_source.as_deref().unwrap_or("CLI");
+        return format!("all tools allowed (--full-auto from {src})");
+    }
+
+    // (name, source) pairs in display order.
+    let mut allow: Vec<(String, String)> = vec![
+        ("Read".to_string(), "default".to_string()),
+        ("Glob".to_string(), "default".to_string()),
+        ("Grep".to_string(), "default".to_string()),
+    ];
+    if args.writable {
+        let src = args.writable_source.as_deref().unwrap_or("default");
+        allow.push(("Edit".to_string(), src.to_string()));
+        allow.push(("Write".to_string(), src.to_string()));
+    }
+    for (i, tool) in args.allow_tool.iter().enumerate() {
+        let src = args
+            .allow_tool_sources
+            .get(i)
+            .map(String::as_str)
+            .unwrap_or("default");
+        allow.push((tool.clone(), src.to_string()));
+    }
+
+    let deny: Vec<(String, String)> = args
+        .deny_tool
+        .iter()
+        .enumerate()
+        .map(|(i, tool)| {
+            let src = args
+                .deny_tool_sources
+                .get(i)
+                .map(String::as_str)
+                .unwrap_or("default");
+            (tool.clone(), src.to_string())
+        })
+        .collect();
+
+    // Pad names to a uniform column so the [source] tags line up.
+    // Width spans both lists so allow/deny share one column.
+    let width = allow
+        .iter()
+        .chain(deny.iter())
+        .map(|(name, _)| name.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 1;
+
+    let mut out = String::from("allow:\n");
+    for (name, src) in &allow {
+        out.push_str(&format!("  {name:<width$}[{src}]\n"));
+    }
+    if !deny.is_empty() {
+        out.push_str("deny:\n");
+        for (name, src) in &deny {
+            out.push_str(&format!("  {name:<width$}[{src}]\n"));
+        }
+    }
+    out.truncate(out.trim_end().len());
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,5 +508,115 @@ mod tests {
     fn tool_summary_empty_returns_empty_string() {
         let counts: HashMap<String, usize> = HashMap::new();
         assert_eq!(format_tool_summary(&counts), "");
+    }
+
+    // -- format_permissions ------------------------------------------------
+
+    fn bare_args() -> AskArgs {
+        use clap::Parser;
+        crate::cli::Cli::try_parse_from(["roba", "placeholder"])
+            .unwrap()
+            .ask
+    }
+
+    #[test]
+    fn permissions_default_lists_safe_trio_as_default() {
+        let out = format_permissions(&bare_args());
+        assert_eq!(
+            out,
+            "allow:\n  Read [default]\n  Glob [default]\n  Grep [default]"
+        );
+    }
+
+    #[test]
+    fn permissions_writable_from_cli_tags_edit_write() {
+        let mut args = bare_args();
+        args.writable = true;
+        args.writable_source = Some("CLI".to_string());
+        let out = format_permissions(&args);
+        assert!(out.contains("Edit  [CLI]"), "got:\n{out}");
+        assert!(out.contains("Write [CLI]"), "got:\n{out}");
+        // Safe trio still present and still tagged default.
+        assert!(out.contains("Read  [default]"), "got:\n{out}");
+    }
+
+    #[test]
+    fn permissions_writable_from_profile_layer() {
+        let mut args = bare_args();
+        args.writable = true;
+        args.writable_source = Some("profile.review".to_string());
+        let out = format_permissions(&args);
+        assert!(out.contains("Edit  [profile.review]"), "got:\n{out}");
+        assert!(out.contains("Write [profile.review]"), "got:\n{out}");
+    }
+
+    #[test]
+    fn permissions_writable_from_env_layer() {
+        let mut args = bare_args();
+        args.writable = true;
+        args.writable_source = Some("env".to_string());
+        let out = format_permissions(&args);
+        assert!(out.contains("Edit  [env]"), "got:\n{out}");
+    }
+
+    #[test]
+    fn permissions_full_auto_is_single_line() {
+        let mut args = bare_args();
+        args.full_auto = true;
+        args.full_auto_source = Some("profile.yolo".to_string());
+        assert_eq!(
+            format_permissions(&args),
+            "all tools allowed (--full-auto from profile.yolo)"
+        );
+    }
+
+    #[test]
+    fn permissions_full_auto_defaults_source_to_cli() {
+        let mut args = bare_args();
+        args.full_auto = true;
+        assert_eq!(
+            format_permissions(&args),
+            "all tools allowed (--full-auto from CLI)"
+        );
+    }
+
+    #[test]
+    fn permissions_includes_allow_and_deny_with_provenance() {
+        let mut args = bare_args();
+        args.allow_tool = vec!["Bash(git status)".to_string()];
+        args.allow_tool_sources = vec!["profile.review".to_string()];
+        args.deny_tool = vec!["Bash(rm *)".to_string()];
+        args.deny_tool_sources = vec!["profile.review".to_string()];
+        let out = format_permissions(&args);
+        assert!(out.contains("allow:"), "got:\n{out}");
+        assert!(
+            out.contains("Bash(git status) [profile.review]"),
+            "got:\n{out}"
+        );
+        assert!(out.contains("deny:"), "got:\n{out}");
+        assert!(
+            out.contains("Bash(rm *)       [profile.review]"),
+            "got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn permissions_columns_align_across_allow_and_deny() {
+        // The deny entry is the longest name; allow rows pad to match.
+        let mut args = bare_args();
+        args.writable = true;
+        args.writable_source = Some("profile.review".to_string());
+        args.deny_tool = vec!["Bash(rm *)".to_string()];
+        args.deny_tool_sources = vec!["profile.review".to_string()];
+        let out = format_permissions(&args);
+        // "Bash(rm *)" is 10 chars -> column width 11. "Read" + 7 spaces.
+        assert!(out.contains("  Read       [default]"), "got:\n{out}");
+        assert!(out.contains("  Bash(rm *) [profile.review]"), "got:\n{out}");
+    }
+
+    #[test]
+    fn permissions_no_deny_section_when_empty() {
+        let out = format_permissions(&bare_args());
+        assert!(!out.contains("deny:"), "got:\n{out}");
     }
 }
