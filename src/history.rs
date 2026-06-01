@@ -168,7 +168,7 @@ pub fn run_last(args: LastArgs) -> Result<()> {
                 prev_text = true;
             }
             Item::Tool { name, input } => {
-                let summary = crate::stream::summarize_tool(name, input);
+                let summary = crate::output::summarize_tool(name, input);
                 crate::render::print_tool_call(&summary, &style);
                 prev_text = false;
             }
