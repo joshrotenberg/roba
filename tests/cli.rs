@@ -248,16 +248,18 @@ fn agent_with_name_parses() {
 }
 
 #[test]
-fn worktree_long_space_name_is_rejected() {
-    // require_equals = true: `--worktree NAME` (space form) is a
-    // clap parse error, not silently consumed.
+fn worktree_long_space_name_does_not_attach_value() {
+    // require_equals = true: `--worktree NAME` (space form) does not
+    // attach NAME to the flag -- NAME falls through to the positional
+    // prompt (bare `-w` is the presence form). Here `foo` is the
+    // worktree-flag's intended-but-rejected value, which becomes the
+    // prompt; the second word `mybranch` then routes through the alias
+    // external-subcommand path and errors as an unknown alias.
     roba()
-        .args(["foo", "--worktree", "mybranch"])
+        .args(["--worktree", "foo", "mybranch"])
         .assert()
         .failure()
-        .stderr(
-            predicate::str::contains("equal").or(predicate::str::contains("unexpected argument")),
-        );
+        .stderr(predicate::str::contains("no built-in or alias named"));
 }
 
 // ---------------------------------------------------------------------------
@@ -855,4 +857,191 @@ fn agent_show_unknown_errors() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("no bundled agent named"));
+}
+
+// ---------------------------------------------------------------------------
+// user-defined aliases (#88)
+// ---------------------------------------------------------------------------
+
+/// A project dir with a `.git` boundary and a `roba.toml` defining a
+/// handful of aliases for the dispatch / management tests.
+fn alias_project() -> tempfile::TempDir {
+    make_dir_with_files(&[
+        (".git/HEAD", ""),
+        (
+            "roba.toml",
+            r#"
+[alias.review]
+description = "Review a PR by number"
+agent = "reviewer"
+template = "PR #${pr}"
+flags = ["--prepend", "/no/such/alias-prepend-xyz"]
+args = ["pr"]
+
+[alias.perms]
+description = "permission preset"
+flags = ["--show-permissions"]
+
+[alias.boom]
+template = "$(exit 9)"
+"#,
+        ),
+    ])
+}
+
+/// Run roba scoped to `project` with an isolated (empty) user config.
+fn roba_in(project: &tempfile::TempDir, user_home: &tempfile::TempDir) -> Command {
+    let mut cmd = roba();
+    cmd.arg("-C")
+        .arg(project.path())
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env_remove("ROBA_PROFILE");
+    cmd
+}
+
+#[test]
+fn alias_list_outputs_known_aliases() {
+    let project = alias_project();
+    let home = tempfile::tempdir().unwrap();
+    roba_in(&project, &home)
+        .args(["alias", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("review"))
+        .stdout(predicate::str::contains("Review a PR by number"))
+        .stdout(predicate::str::contains("reviewer"));
+}
+
+#[test]
+fn alias_show_prints_definition_and_preview() {
+    let project = alias_project();
+    let home = tempfile::tempdir().unwrap();
+    roba_in(&project, &home)
+        .args(["alias", "show", "review"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[alias.review]"))
+        .stdout(predicate::str::contains("PR #${pr}"))
+        .stdout(predicate::str::contains("--prepend"))
+        .stdout(predicate::str::contains("expansion preview"))
+        .stdout(predicate::str::contains("PR #<pr>"));
+}
+
+#[test]
+fn alias_show_unknown_errors_with_suggestion() {
+    let project = alias_project();
+    let home = tempfile::tempdir().unwrap();
+    roba_in(&project, &home)
+        .args(["alias", "show", "reviewz"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "no built-in or alias named `reviewz`",
+        ))
+        .stderr(predicate::str::contains("review"));
+}
+
+#[test]
+fn alias_path_lists_contributing_files() {
+    let project = alias_project();
+    let home = tempfile::tempdir().unwrap();
+    roba_in(&project, &home)
+        .args(["alias", "path"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("roba.toml"))
+        .stdout(predicate::str::contains("alias(es) defined"));
+}
+
+#[test]
+fn alias_dispatch_expands_and_reaches_run_ask() {
+    // `roba review 42` resolves the alias, merges its flags (a bad
+    // --prepend), and reaches run_ask -- which fails reading the
+    // prepend file. The read error (not an unknown-alias error) proves
+    // the alias expanded and dispatched.
+    let project = alias_project();
+    let home = tempfile::tempdir().unwrap();
+    roba_in(&project, &home)
+        .args(["review", "42"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("reading --prepend"));
+}
+
+#[test]
+fn alias_dispatch_merges_alias_and_cli_flags() {
+    // The `perms` alias carries --show-permissions; the user adds
+    // --writable. Both must land: exit 0 (show-permissions short-
+    // circuits before any claude call) and the preview shows the
+    // user's writable opt-in.
+    let project = alias_project();
+    let home = tempfile::tempdir().unwrap();
+    let out = roba_in(&project, &home)
+        .args(["perms", "--writable"])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("allow:"), "got:\n{stderr}");
+    assert!(stderr.contains("Edit"), "got:\n{stderr}");
+    assert!(stderr.contains("Write"), "got:\n{stderr}");
+}
+
+#[test]
+fn alias_dispatch_runs_shell_substitution() {
+    // The `boom` alias template is `$(exit 9)`; the failing shell
+    // substitution surfaces during expansion, before any claude call.
+    let project = alias_project();
+    let home = tempfile::tempdir().unwrap();
+    roba_in(&project, &home)
+        .args(["boom"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("shell substitution"));
+}
+
+#[test]
+fn alias_dispatch_unknown_multiword_errors_clearly() {
+    let project = alias_project();
+    let home = tempfile::tempdir().unwrap();
+    roba_in(&project, &home)
+        .args(["reviewz", "42"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "no built-in or alias named `reviewz`",
+        ));
+}
+
+#[test]
+fn alias_shadowing_builtin_warns() {
+    let project = make_dir_with_files(&[
+        (".git/HEAD", ""),
+        (
+            "roba.toml",
+            "[alias.cost]\ndescription = \"shadow\"\ntemplate = \"x\"\n",
+        ),
+    ]);
+    let home = tempfile::tempdir().unwrap();
+    roba_in(&project, &home)
+        .args(["alias", "list"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "alias `cost` is shadowed by the built-in",
+        ));
+}
+
+#[test]
+fn help_mentions_alias_subcommand() {
+    roba()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("alias"));
 }

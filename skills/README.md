@@ -76,3 +76,13 @@ The format is structurally compatible with Claude Code's
 The wrapper stays thin. Skills live alongside, not inside. You can
 use roba effectively without loading any of them; they're offered,
 not required.
+
+## Composes with aliases
+
+roba *aliases* (`[alias.NAME]` in `roba.toml`) are `git`-style prompt
+shortcuts that can carry default flags and pin a subagent. A starter
+alias config is a natural companion to `roba skill install` -- the
+install command is the right delivery vehicle for opinionated starter
+aliases (github verbs, agent bindings) rather than baking them into
+the binary. See the Aliases section of
+[`docs/profiles.md`](../docs/profiles.md#aliases).

@@ -283,6 +283,7 @@ mod tests {
         Pool {
             defaults,
             profiles,
+            aliases: HashMap::new(),
             sources: vec![],
         }
     }

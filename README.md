@@ -37,6 +37,7 @@ and authenticated on your PATH.
 | **Sessions** | `-c` continue most recent, `-c=ID` resume a specific session, `-c=ID --fork` branch it, `--pick` (interactive fuzzy chooser), `--agent NAME` pin a subagent, `roba history`, `roba last` |
 | **Permissions** | `--readonly`, `--full-auto` presets |
 | **Profiles** | `--profile NAME` from `~/.config/roba.toml`, `roba profile {list,show,init,path}` |
+| **Aliases** | `git`-style `[alias.NAME]` shortcuts in `roba.toml` -> `roba NAME [args]` expands a prompt template (with variable + shell substitution) plus default flags, `roba alias {list,show,path}` |
 | **Skill library** | `roba skill {install,list,show}` and `roba agent {install,list,show}` install the bundled skills + orchestrator subagents into `~/.claude/` |
 | **TTY UX** | termimad markdown render, indicatif spinner, dim metadata, colored refusal/error markers, `--plain` master kill-switch, `NO_COLOR` honored |
 | **Scripting** | typed exit codes (auth=2, budget=3, timeout=4), clean stdout/stderr split, structured `--json` output, `--no-retry` for deterministic-on-failure runs |
@@ -107,6 +108,52 @@ roba profile init             # drops a starter roba.toml
 roba profile list             # names defined
 roba profile show review      # the TOML for one profile
 ```
+
+## Aliases
+
+Aliases are `git`-style shortcuts defined in `roba.toml`. They keep
+roba's built-in surface generic -- domain shortcuts (github, your
+workflow) live in config, not in the binary. Each `[alias.NAME]`
+expands `roba NAME [args]` into a prompt template plus default flags,
+and can pin a subagent.
+
+```toml
+[alias.review]
+description = "Review a PR by number"
+agent = "reviewer"                 # optional: pins --agent
+template = """
+Review PR #${pr} in this repo.
+
+$(gh pr diff ${pr})
+"""
+flags = ["--readonly"]
+args = ["pr"]                       # positional 1 -> ${pr}
+
+[alias.commit-msg]
+description = "Conventional-commit message from the staged diff"
+template = "Write a conventional-commit message for:\n\n$(git diff --staged)"
+flags = ["--quiet"]
+```
+
+```bash
+roba review 42                 # expand [alias.review] with pr=42, dispatch
+roba commit-msg               # zero-arg alias
+roba review 42 --full-auto    # CLI flags merge with (and override) the alias's
+
+roba alias list               # aliases in the merged pool, with descriptions
+roba alias show review        # the TOML + an expansion preview
+roba alias path               # which files contribute aliases
+```
+
+Templates support positional (`${1}`, `${@}`) and named (`${pr}` via
+the `args` schema) substitution, `$$` for a literal `$`, and
+`$(command)` shell substitution. An alias with no `template` is a
+flag-shortcut: the user's args become the prompt verbatim.
+
+**Security:** `$(...)` runs in your shell with your permissions.
+Aliases are your own config, so this is intentional -- it is not a
+sandbox. See [`docs/profiles.md`](docs/profiles.md#aliases) for the
+full schema, lookup order, and caveats.
 
 ## Skill + agent library
 
