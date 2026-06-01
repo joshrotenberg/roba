@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use std::io::Write;
 
 use crate::cli::AskArgs;
-use crate::output::{format_footer, looks_like_refusal, should_show_footer, truncate_arg};
+use crate::output::{
+    format_footer, format_tool_summary, looks_like_refusal, should_show_footer, summarize_tool,
+};
 use crate::render::Style;
 use crate::session::{apply_session, derive_session_name};
 
@@ -131,81 +133,9 @@ pub fn handle_assistant_blocks(
     }
 }
 
-/// Format the rollup line: `Read x3, Edit x2, Bash x1` sorted by
-/// count descending, then name ascending.
-pub fn format_tool_summary(counts: &HashMap<String, usize>) -> String {
-    let mut sorted: Vec<(&String, &usize)> = counts.iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-    sorted
-        .iter()
-        .map(|(k, v)| format!("{k} x{v}"))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Pick a primary arg from a tool's input and format the inline
-/// indicator line: `Read(file.rs)`, `Bash(git status)`.
-pub fn summarize_tool(name: &str, input: &serde_json::Value) -> String {
-    let primary = ["file_path", "command", "pattern", "path", "url", "query"]
-        .iter()
-        .find_map(|k| input.get(k).and_then(|v| v.as_str()));
-    match primary {
-        Some(arg) => format!("{name}({})", truncate_arg(arg, 60)),
-        None => name.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn summarize_tool_uses_primary_arg() {
-        let input = serde_json::json!({"file_path": "/tmp/foo.rs"});
-        assert_eq!(summarize_tool("Read", &input), "Read(/tmp/foo.rs)");
-    }
-
-    #[test]
-    fn summarize_tool_falls_back_to_name_only() {
-        let input = serde_json::json!({"unknown_field": "value"});
-        assert_eq!(summarize_tool("WeirdTool", &input), "WeirdTool");
-    }
-
-    #[test]
-    fn summarize_tool_truncates_long_args() {
-        let long_cmd = "a".repeat(120);
-        let input = serde_json::json!({"command": long_cmd});
-        let out = summarize_tool("Bash", &input);
-        assert!(out.starts_with("Bash("));
-        assert!(out.ends_with("...)"));
-        assert!(out.len() < 80);
-    }
-
-    #[test]
-    fn tool_summary_sorts_by_count_desc_then_name_asc() {
-        let mut counts = HashMap::new();
-        counts.insert("Read".to_string(), 3);
-        counts.insert("Bash".to_string(), 1);
-        counts.insert("Grep".to_string(), 1);
-        counts.insert("Edit".to_string(), 2);
-        assert_eq!(
-            format_tool_summary(&counts),
-            "Read x3, Edit x2, Bash x1, Grep x1"
-        );
-    }
-
-    #[test]
-    fn tool_summary_single_entry() {
-        let mut counts = HashMap::new();
-        counts.insert("Read".to_string(), 1);
-        assert_eq!(format_tool_summary(&counts), "Read x1");
-    }
-
-    #[test]
-    fn tool_summary_empty_returns_empty_string() {
-        let counts: HashMap<String, usize> = HashMap::new();
-        assert_eq!(format_tool_summary(&counts), "");
-    }
 
     #[test]
     fn handle_assistant_blocks_counts_tool_uses() {
