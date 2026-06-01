@@ -55,6 +55,13 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
         args.model = Some(s);
     }
 
+    // ----- Agent -----
+    if args.agent.is_none()
+        && let Some(s) = read_string(env, "ROBA_AGENT")
+    {
+        args.agent = Some(s);
+    }
+
     // ----- Composition -----
     if args.prepend.is_empty() {
         let paths = read_path_list(env, "ROBA_PREPEND");
@@ -274,6 +281,23 @@ mod tests {
         args.model = Some("opus".into());
         apply_env_overrides_from(&mut args, &env_with(&[("ROBA_MODEL", "sonnet")]));
         assert_eq!(args.model.as_deref(), Some("opus"));
+    }
+
+    // -- agent -------------------------------------------------------------
+
+    #[test]
+    fn env_agent_sets_from_roba_agent_var() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_AGENT", "reviewer")]));
+        assert_eq!(args.agent.as_deref(), Some("reviewer"));
+    }
+
+    #[test]
+    fn env_agent_does_not_override_cli() {
+        let mut args = empty_args();
+        args.agent = Some("planner".into());
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_AGENT", "reviewer")]));
+        assert_eq!(args.agent.as_deref(), Some("planner"));
     }
 
     // -- bools -------------------------------------------------------------
