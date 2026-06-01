@@ -164,20 +164,22 @@ highest layer wins:
 | Top-level `roba.toml` | `writable = true` at the file's top level |
 | Built-in default | read-only: `Read`, `Glob`, `Grep` only |
 
-`--writable` and `--full-auto` are mutually exclusive with the
-default (they're presence flags that flip a bool). The highest
-layer that sets one wins. `--full-auto` beats `--writable`
-because `apply_permissions` short-circuits on `full_auto` before
-inspecting `writable`.
+`--readonly`, `--writable`, and `--full-auto` are mutually
+exclusive across layers (they're presence flags that flip a bool).
+The highest layer that sets one wins, and a higher-priority flag
+**suppresses** the lower-privilege ones from lower layers:
 
-`--readonly` is the explicit name for the built-in default. It is
-a no-op marker, **not** an active suppressor: passing `--readonly`
-on the CLI does not cancel a `writable = true` or
-`full_auto = true` coming from a profile or env var. To enforce
-read-only behavior when a profile turns on writable, pass
-`--no-default-profile` (skips the auto-applied profile) or unset
-`ROBA_WRITABLE` / `ROBA_FULL_AUTO` for the call. (Tracked as a
-known gap; see #52.)
+- `--readonly` suppresses lower-layer `writable = true` and
+  `full_auto = true`.
+- `--writable` suppresses lower-layer `full_auto = true`.
+
+`--full-auto` beats `--writable` because `apply_permissions`
+short-circuits on `full_auto` before inspecting `writable`.
+
+`--readonly` is the explicit name for the built-in default, but it
+is now an **active suppressor**: passing `--readonly` on the CLI
+cancels a `writable = true` or `full_auto = true` coming from a
+profile or env var, so the call stays read-only.
 
 `allow_tool` and `deny_tool` lists **accumulate across layers**.
 Across `roba.toml` files, closer-to-cwd entries concat on top of
@@ -206,7 +208,7 @@ allow_tool = ["Bash(git status)"]
 | `roba "..."` | writable (Edit, Write) + `Bash(git status)` (auto-applied profile) |
 | `roba --full-auto "..."` | full-auto bypasses everything; profile's writable + allow_tool ignored |
 | `roba --no-default-profile "..."` | read-only default (Read, Glob, Grep); profile skipped |
-| `roba --readonly "..."` | **still writable** -- `--readonly` doesn't suppress profile writable; use `--no-default-profile` instead |
+| `roba --readonly "..."` | read-only -- `--readonly` suppresses the profile's `writable = true` (and any lower-layer `full_auto`) |
 | `roba --allow-tool Edit "..."` | read-only base + `Edit` only; profile's `allow_tool` list is replaced, but `writable = true` from the profile still applies (so Edit, Write are also in) |
 
 ## Status

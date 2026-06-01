@@ -100,7 +100,7 @@ override.
 | `git_diff` | `bool` | `--git-diff` | |
 | `git_log` | `int` | `--git-log N` | |
 | `git_status` | `bool` | `--git-status` | |
-| `readonly` | `bool` | `--readonly` | Explicit form of the default; no-op (the default) |
+| `readonly` | `bool` | `--readonly` | Explicit form of the default; suppresses lower-layer `writable` / `full_auto` |
 | `writable` | `bool` | `--writable` | Adds Edit + Write to the allow list |
 | `full_auto` | `bool` | `--full-auto` | Bypass all permission checks |
 | `allow_tool` | `[string]` | `--allow-tool TOOL` (repeatable) | Adds to the allow list |
@@ -153,28 +153,27 @@ and an env var is never overridden by profile.
 
 ### Permissions precedence
 
-For the `writable` / `full_auto` knobs, the highest layer that
-sets one wins, and `full_auto` short-circuits `writable` at
-apply time. So:
+For the `readonly` / `writable` / `full_auto` knobs, the highest
+layer that sets one wins, and a higher-priority flag **suppresses**
+the more-permissive ones from lower layers. `full_auto` also
+short-circuits `writable` at apply time. So:
 
 - profile `writable = true` + no CLI/env override -> writable
   (Edit, Write added)
 - profile `writable = true` + CLI `--full-auto` -> full-auto
   (bypasses everything)
-- profile `full_auto = true` + CLI `--writable` -> full-auto
-  (the env / profile layer set `args.full_auto = true`; CLI
-  --writable doesn't unset it)
+- profile `full_auto = true` + CLI `--writable` -> writable
+  (CLI `--writable` suppresses the lower-layer `full_auto`)
+- profile `writable = true` + CLI `--readonly` -> read-only
+  (CLI `--readonly` suppresses the lower-layer `writable`)
 
-`--readonly` is the explicit name for the default. It does
-**not** actively suppress a `writable = true` or
-`full_auto = true` coming from a lower layer -- it's a no-op
-marker that pairs cleanly with permissive list additions
-(`--readonly --allow-tool "Bash(git status)"`) but cannot
-cancel out a profile or env override on its own. To enforce
-read-only when a profile sets `writable = true`, pass
-`--no-default-profile` or unset `ROBA_WRITABLE` /
-`ROBA_FULL_AUTO` for that call. This is tracked as a known gap;
-see #52.
+`--readonly` is the explicit name for the default, and it is an
+**active suppressor**: passing `--readonly` cancels a
+`writable = true` or `full_auto = true` coming from a lower layer,
+so the call stays read-only. It also pairs cleanly with permissive
+list additions (`--readonly --allow-tool "Bash(git status)"`).
+Symmetrically, `--writable` suppresses a lower-layer
+`full_auto = true`. See #52.
 
 For `allow_tool` and `deny_tool`, lists **accumulate across
 layers**:
