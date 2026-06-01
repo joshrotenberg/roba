@@ -232,6 +232,11 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     {
         args.no_retry = v;
     }
+    if args.trace.is_none()
+        && let Some(p) = profile.trace.take()
+    {
+        args.trace = Some(expand_path(p));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -623,6 +628,52 @@ mod tests {
         assert!(
             args.no_retry,
             "CLI --no-retry survives a profile no_retry=false"
+        );
+    }
+
+    #[test]
+    fn merge_trace_applies_when_cli_unset() {
+        let mut args = empty_args();
+        assert!(args.trace.is_none());
+        let profile = Profile {
+            trace: Some(PathBuf::from("/tmp/run.jsonl")),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(
+            args.trace.as_deref(),
+            Some(std::path::Path::new("/tmp/run.jsonl"))
+        );
+    }
+
+    #[test]
+    fn merge_trace_cli_wins_over_profile() {
+        let mut args = args_with(&["--trace", "/cli/path.jsonl"]);
+        let profile = Profile {
+            trace: Some(PathBuf::from("/tmp/run.jsonl")),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(
+            args.trace.as_deref(),
+            Some(std::path::Path::new("/cli/path.jsonl"))
+        );
+    }
+
+    #[test]
+    fn merge_trace_expands_tilde() {
+        unsafe {
+            std::env::set_var("HOME", "/fake/home");
+        }
+        let mut args = empty_args();
+        let profile = Profile {
+            trace: Some(PathBuf::from("~/run.jsonl")),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(
+            args.trace.as_deref(),
+            Some(std::path::Path::new("/fake/home/run.jsonl"))
         );
     }
 

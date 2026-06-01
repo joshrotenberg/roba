@@ -160,6 +160,11 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     {
         args.editor_history = Some(n);
     }
+    if args.trace.is_none()
+        && let Some(s) = read_string(env, "ROBA_TRACE")
+    {
+        args.trace = Some(PathBuf::from(s));
+    }
     if args.worktree.is_none()
         && let Some(s) = env.get("ROBA_WORKTREE").filter(|s| !s.is_empty())
     {
@@ -517,6 +522,34 @@ mod tests {
     }
 
     // -- output policy flags -----------------------------------------------
+
+    #[test]
+    fn env_trace_sets_from_roba_trace_var() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_TRACE", "/tmp/run.jsonl")]));
+        assert_eq!(
+            args.trace.as_deref(),
+            Some(std::path::Path::new("/tmp/run.jsonl"))
+        );
+    }
+
+    #[test]
+    fn env_trace_does_not_override_cli() {
+        let mut args = empty_args();
+        args.trace = Some(PathBuf::from("/cli/path.jsonl"));
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_TRACE", "/tmp/run.jsonl")]));
+        assert_eq!(
+            args.trace.as_deref(),
+            Some(std::path::Path::new("/cli/path.jsonl"))
+        );
+    }
+
+    #[test]
+    fn env_trace_ignores_empty() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_TRACE", "")]));
+        assert!(args.trace.is_none());
+    }
 
     #[test]
     fn output_flags_each_settable() {

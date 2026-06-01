@@ -18,7 +18,21 @@ and **that file is the ground truth** for what the agent did.
 - You want to confirm what the spawned agent is actually doing
   *while* it runs
 
-## How to find the spawned session
+## Best practice: fire with `--trace`
+
+If you control the dispatch, fire roba with `--trace
+/tmp/<task-id>.jsonl` from the start. roba then mirrors the spawned
+session's streaming events to that path as JSONL, in arrival order,
+and you read PATH directly -- no project-dir ls-sort, no guessing
+which uuid belongs to this run. Tail it live (`tail -f
+/tmp/<task-id>.jsonl`) while the run is in flight, or read it after.
+`--trace` forces the streaming pipeline internally even without
+`--stream`, so the final answer still renders normally.
+
+The ls-sort approach below is the fallback for diagnosing a run that
+*wasn't* fired with `--trace`.
+
+## How to find the spawned session (fallback)
 
 The spawned claude session writes to the SAME project directory as
 the parent (roba inherits cwd via `-C`, claude-code keys session

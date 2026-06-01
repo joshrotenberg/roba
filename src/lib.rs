@@ -133,15 +133,27 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     let claude = Claude::builder().build()?;
 
     if args.stream {
-        return run_streaming(&claude, prompt, &args).await;
+        run_streaming(&claude, prompt, &args, stream::DisplayMode::Live).await?;
+        return Ok(());
     }
 
     let pre_style = render::Style::detect(&args);
     let spinner = pre_style.spinner.then(render::spinner);
-    let name = session::derive_session_name(&prompt);
-    let result = apply_session(QueryCommand::new(prompt).name(name), &args)
-        .execute_json(&claude)
-        .await?;
+    let result = if args.trace.is_some() {
+        // --trace without --stream: drive the streaming pipeline so the
+        // event log can be captured, but suppress all live display and
+        // render the final answer exactly as the non-streaming path
+        // would (JSON envelope / --code / --out / footer below).
+        match run_streaming(&claude, prompt, &args, stream::DisplayMode::Silent).await? {
+            Some(r) => r,
+            None => bail!("streaming completed without a result event"),
+        }
+    } else {
+        let name = session::derive_session_name(&prompt);
+        apply_session(QueryCommand::new(prompt).name(name), &args)
+            .execute_json(&claude)
+            .await?
+    };
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
