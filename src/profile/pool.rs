@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use super::home_dir;
 use super::types::{ConfigFile, Pool, Profile};
+use crate::aliases::{Alias, BUILTIN_SUBCOMMANDS};
 
 // ---------------------------------------------------------------------------
 // Path discovery
@@ -80,6 +81,17 @@ fn load_file(path: &Path) -> Result<ConfigFile> {
         HashMap::new()
     };
 
+    let alias_map: HashMap<String, Alias> = if let toml::Value::Table(table) = &mut value {
+        match table.remove("alias") {
+            Some(v) => v
+                .try_into()
+                .with_context(|| format!("parsing [alias.*] tables in {}", path.display()))?,
+            None => HashMap::new(),
+        }
+    } else {
+        HashMap::new()
+    };
+
     let defaults: Profile = value
         .try_into()
         .with_context(|| format!("parsing top-level keys in {}", path.display()))?;
@@ -87,6 +99,7 @@ fn load_file(path: &Path) -> Result<ConfigFile> {
     Ok(ConfigFile {
         defaults,
         profile: profile_map,
+        alias: alias_map,
     })
 }
 
@@ -117,10 +130,35 @@ pub fn load_pool_from(cwd: &Path) -> Result<Pool> {
                 .or_insert_with(Profile::default)
                 .merge_in(profile);
         }
+        // Aliases don't merge field-by-field; the closest-to-cwd file
+        // wins wholesale. Layers load farther-first, so a later insert
+        // (closer file) overwrites.
+        for (name, alias) in cfg.alias {
+            pool.aliases.insert(name, alias);
+        }
         pool.sources.push(path);
     }
 
+    warn_on_shadowed_aliases(&pool);
     Ok(pool)
+}
+
+/// Warn (loudly, on stderr) when a loaded alias name collides with a
+/// built-in subcommand. The built-in always wins the lookup, so such
+/// an alias is dead -- surface it instead of letting it silently
+/// no-op.
+fn warn_on_shadowed_aliases(pool: &Pool) {
+    let mut shadowed: Vec<&String> = pool
+        .aliases
+        .keys()
+        .filter(|n| BUILTIN_SUBCOMMANDS.contains(&n.as_str()))
+        .collect();
+    shadowed.sort();
+    for name in shadowed {
+        eprintln!(
+            "warning: alias `{name}` is shadowed by the built-in `{name}` subcommand; rename it to use this alias"
+        );
+    }
 }
 
 /// Convenience: load the pool keyed off the current cwd.

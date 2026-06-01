@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::aliases::Alias;
+
 /// A profile = a bundle of optional defaults. Used both for top-level
 /// keys (the unnamed "defaults" baseline) and for named
 /// `[profile.NAME]` overlays.
@@ -240,6 +242,7 @@ impl Profile {
 pub struct ConfigFile {
     pub defaults: Profile,
     pub profile: HashMap<String, Profile>,
+    pub alias: HashMap<String, Alias>,
 }
 
 /// Resolved view across every config source for one roba invocation.
@@ -250,6 +253,10 @@ pub struct Pool {
     /// Merged named profiles. When the same name appears in multiple
     /// files, fields are merged per [`Profile::merge_in`].
     pub profiles: HashMap<String, Profile>,
+    /// Merged aliases. Unlike profiles, an alias definition does not
+    /// merge field-by-field: when the same name appears in multiple
+    /// files, the closest-to-cwd file's definition wins wholesale.
+    pub aliases: HashMap<String, Alias>,
     /// Source files that contributed, in load order. Used by
     /// `roba profile path` for diagnostics.
     pub sources: Vec<PathBuf>,
@@ -278,10 +285,19 @@ mod tests {
         } else {
             HashMap::new()
         };
+        let alias_map: HashMap<String, Alias> = if let toml::Value::Table(t) = &mut value {
+            match t.remove("alias") {
+                Some(v) => v.try_into()?,
+                None => HashMap::new(),
+            }
+        } else {
+            HashMap::new()
+        };
         let defaults: Profile = value.try_into()?;
         Ok(ConfigFile {
             defaults,
             profile: profile_map,
+            alias: alias_map,
         })
     }
 
