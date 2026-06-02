@@ -24,8 +24,13 @@ This is **Layer 1** of the three-layer skill library tracked in
 
 | Skill | When to use |
 |---|---|
-| [`draft-pr-first`](draft-pr-first/SKILL.md) | Starting any work that will become a PR -- open the draft PR with the plan as the body BEFORE the work |
+| [`dispatch-via-bash`](dispatch-via-bash/SKILL.md) | The orchestrator's most important discipline -- dispatch via `Bash` → roba CLI, NOT via the `Task` tool. Honest trade-off table vs Task tool |
+| [`orchestration-patterns`](orchestration-patterns/SKILL.md) | The three orchestration patterns -- in-project (P1), workspace (P2), hierarchical (P3) -- and when to use each |
+| [`orchestrator-parallelization`](orchestrator-parallelization/SKILL.md) | When to fan out dispatches vs sequentially. Default sequential; parallel when different-file, independent-semantics, predictable-pattern |
 | [`dispatch-wait-react`](dispatch-wait-react/SKILL.md) | Coordinating with background tasks (roba runs, CI watches) -- background + harness notification, not poll-and-sleep. Orchestrator-focused; runner discipline cross-referenced |
+| [`runner-issue-authority`](runner-issue-authority/SKILL.md) | The runner's authoritative source for what to do is `gh issue view <N>`, NOT the orchestrator's paraphrase |
+| [`runner-synchronous-lifecycle`](runner-synchronous-lifecycle/SKILL.md) | The runner fires roba synchronously and only returns after the full lifecycle is complete (PR pushed, CI running, ready for review) |
+| [`draft-pr-first`](draft-pr-first/SKILL.md) | Starting any work that will become a PR -- open the draft PR with the plan as the body BEFORE the work |
 | [`roba-orchestration-prompt`](roba-orchestration-prompt/SKILL.md) | Firing roba on the user's behalf and writing the prompt |
 | [`roba-spiral-diagnosis`](roba-spiral-diagnosis/SKILL.md) | A roba run hangs, produces no output, or seems stuck |
 | [`git-branch-pr-workflow`](git-branch-pr-workflow/SKILL.md) | Any non-trivial work in this repo |
