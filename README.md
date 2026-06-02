@@ -86,6 +86,8 @@ echo "summarize this" | roba  # stdin works
 
 The deep references live in dedicated pages, also on the [docs site](https://joshrotenberg.github.io/roba/):
 
+- **Quickstart** -- from install to first answer in two minutes:
+  [`docs/quickstart.md`](docs/quickstart.md).
 - **Profiles** -- TOML bundles of flags you'd otherwise type every
   time. See [`docs/profiles.md`](docs/profiles.md) for the schema and
   worked examples.
@@ -108,6 +110,11 @@ The deep references live in dedicated pages, also on the [docs site](https://jos
 - **Use cases** -- patterns roba enables, seeded with multi-repo
   orchestration: [`docs/use-cases.md`](docs/use-cases.md). CI
   auto-review: [`docs/examples/github-actions/`](docs/examples/github-actions/).
+- **Agents and orchestration** -- the bundled skill + agent library, install,
+  and the orchestrator/runner pattern:
+  [`docs/agents-overview.md`](docs/agents-overview.md).
+- **Reference** -- flags, env vars, exit codes, JSON envelope, and
+  config schema in one place: [`docs/reference.md`](docs/reference.md).
 
 ## Skill + agent library
 

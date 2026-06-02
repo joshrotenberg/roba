@@ -254,3 +254,11 @@ users yet.
   versioned `--json` envelope, typed exit codes, `--no-retry`), and
   `docs/aliases.md` (the `[alias.NAME]` schema, previously duplicated
   in `docs/profiles.md`; that section is now a pointer).
+- **Book restructured into four audience-driven sections**: "Getting
+  started", "Using roba", "Agents & orchestration", "Reference".
+  Section order is now explicit (not alphabetical) in `book/build.sh`.
+  Three new docs pages: `docs/quickstart.md` (install-to-first-answer),
+  `docs/agents-overview.md` (skill + agent library, install, orchestrator/
+  runner pattern), `docs/reference.md` (flags, env vars, exit codes, JSON
+  envelope, config schema). README Topics updated with one-line pointers
+  to all three. (refs #86)
