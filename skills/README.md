@@ -25,6 +25,7 @@ This is **Layer 1** of the three-layer skill library tracked in
 | Skill | When to use |
 |---|---|
 | [`draft-pr-first`](draft-pr-first/SKILL.md) | Starting any work that will become a PR -- open the draft PR with the plan as the body BEFORE the work |
+| [`dispatch-wait-react`](dispatch-wait-react/SKILL.md) | Coordinating with background tasks (roba runs, CI watches) -- background + harness notification, not poll-and-sleep. Orchestrator-focused; runner discipline cross-referenced |
 | [`roba-orchestration-prompt`](roba-orchestration-prompt/SKILL.md) | Firing roba on the user's behalf and writing the prompt |
 | [`roba-spiral-diagnosis`](roba-spiral-diagnosis/SKILL.md) | A roba run hangs, produces no output, or seems stuck |
 | [`git-branch-pr-workflow`](git-branch-pr-workflow/SKILL.md) | Any non-trivial work in this repo |

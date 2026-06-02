@@ -249,6 +249,18 @@ Track each dispatch: PR number, watch-job ID, the
 `<type>: <subject>` identifier. Don't micromanage the runner's
 internal lifecycle -- it follows its own skills.
 
+**When the runner returns to you, the lifecycle is complete** (PR
+pushed, CI run, merged or surfaced). If the runner returns earlier
+than that, treat it as a runner-discipline bug per
+[`../roba-runner/AGENT.md`](../roba-runner/AGENT.md) "Synchronous
+discipline" section -- don't paper over by re-doing the lifecycle
+yourself; surface the regression to the user.
+
+For coordinating with your own background tasks (CI watches you
+fire directly, sub-agent invocations, etc.), see
+[`../../skills/dispatch-wait-react`](../../skills/dispatch-wait-react/SKILL.md)
+-- background + harness notification, not poll-and-sleep.
+
 ### Dispatch format
 
 The orchestrator -> runner handoff is a **minimal structured
