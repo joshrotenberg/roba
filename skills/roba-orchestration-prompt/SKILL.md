@@ -23,6 +23,12 @@ it shouldn't grow PR-lifecycle verbs.
 
 ## Prompt template
 
+For dispatches that will use build tools, `gh`, `git`, or other Bash
+commands, include the pre-flight check pattern from
+[`../sandbox-preflight/SKILL.md`](../sandbox-preflight/SKILL.md) near
+the top of the steps list -- a blocked tool should fail loud, not
+silently degrade into a "run this yourself" artifact.
+
 ```
 ## Setup
 

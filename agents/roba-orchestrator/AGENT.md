@@ -5,6 +5,7 @@ tools: Read, Edit, Write, Bash, Task
 model: sonnet
 skills:
   - dispatch-via-bash
+  - sandbox-preflight
   - orchestration-patterns
   - orchestrator-parallelization
   - dispatch-wait-react
@@ -52,6 +53,15 @@ via the Task tool. See
 [`dispatch-via-bash`](../../skills/dispatch-via-bash/SKILL.md) for
 the two shapes (`--agent roba-runner` for the runner discipline, or
 bare for ad-hoc) and the honest trade-off table vs Task tool.
+
+For **bare dispatches** (Shape B in
+[`dispatch-via-bash`](../../skills/dispatch-via-bash/SKILL.md)) that
+will use build tools, `gh`, `git`, or any Bash beyond
+`Read`/`Glob`/`Grep`, the prompt body should explicitly include the
+pre-flight discipline near the top of its steps -- see
+[`sandbox-preflight`](../../skills/sandbox-preflight/SKILL.md). This
+keeps a blocked tool from silently degrading into a "run this
+yourself" artifact that looks complete but changed nothing.
 
 For multi-task work, see
 [`orchestrator-parallelization`](../../skills/orchestrator-parallelization/SKILL.md)

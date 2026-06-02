@@ -63,6 +63,18 @@ roba agent show roba-runner   # print one agent's AGENT.md body
 same for the Layer 1 skills. No network fetch -- the content ships in
 the binary.
 
+### Required allowlist
+
+Before invoking the orchestrator, the runner needs `gh` and `git` in
+the Claude Code sandbox allowlist (in `.claude/settings.local.json`
+under `permissions.allow`: `"Bash(gh:*)"`, `"Bash(git:*)"`). The
+[`sandbox-preflight`](../skills/sandbox-preflight/SKILL.md) skill the
+runner loads verifies tool availability at step 0 and auto-heals for
+known-safe dev tools (cargo, npm, pip, go, etc.) on first encounter,
+but `gh` and `git` are universal and worth pre-configuring. A blocked
+tool that can't be auto-healed aborts loud rather than degrading into
+a "run this yourself" artifact.
+
 ## Format
 
 Each agent is a directory containing `AGENT.md` with YAML frontmatter:

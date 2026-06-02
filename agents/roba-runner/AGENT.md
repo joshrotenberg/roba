@@ -4,6 +4,7 @@ description: Implements a single GitHub issue end-to-end using roba. Invoke via 
 tools: Read, Edit, Write, Bash
 model: sonnet
 skills:
+  - sandbox-preflight
   - runner-issue-authority
   - runner-synchronous-lifecycle
   - draft-pr-first
@@ -53,6 +54,11 @@ You do not reimplement them; you load them, follow them.
 
 The condensed loop:
 
+0. **Sandbox preflight.** Verify tool availability per
+   [`sandbox-preflight`](../../skills/sandbox-preflight/SKILL.md).
+   Abort or auto-heal as appropriate before proceeding. A blocked
+   tool that can't be auto-healed is a hand-back, not a silent
+   "run this yourself" artifact.
 1. **Read the issue (authoritative).** `gh issue view N`. See
    [`runner-issue-authority`](../../skills/runner-issue-authority/SKILL.md).
 2. **Explore briefly.** Grep for symbols / files the issue
@@ -90,6 +96,12 @@ The condensed loop:
 
 ## Failure handling
 
+- **Sandbox block:** a tool you need is blocked and not in the
+  auto-heal allowlist (see
+  [`sandbox-preflight`](../../skills/sandbox-preflight/SKILL.md)).
+  This is a legitimate hand-back reason -- surface the `ABORTED at
+  sandbox preflight: ...` message to the orchestrator verbatim; do
+  NOT produce a "run this yourself" artifact or proceed degraded.
 - **Roba spirals** (echo-flush spam, repeated cancellations): follow
   [`roba-spiral-diagnosis`](../../skills/roba-spiral-diagnosis/SKILL.md).
   Decide refire-with-harder-prompt vs hand-back.
