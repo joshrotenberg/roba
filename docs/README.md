@@ -11,7 +11,10 @@ specific topics.
 
 | Doc | What |
 |---|---|
-| [profiles.md](profiles.md) | `roba.toml` config + profiles + [aliases](profiles.md#aliases), schema, worked examples |
+| [profiles.md](profiles.md) | `roba.toml` config + profiles, schema, worked examples |
+| [aliases.md](aliases.md) | `git`-style `[alias.NAME]` shortcuts: schema, lookup, substitution |
+| [scripting.md](scripting.md) | Agent ABI: stdout/stderr split, versioned `--json` envelope, typed exit codes, `--no-retry` |
+| [permissions.md](permissions.md) | Safe-by-default model, cross-layer precedence, `--show-permissions` |
 | [vs-claude-p.md](vs-claude-p.md) | When to reach for `roba` vs plain `claude -p`, with side-by-side examples |
 | [use-cases.md](use-cases.md) | Cookbook of patterns roba enables, seeded with multi-repo orchestration |
 | [examples/github-actions/](examples/github-actions/) | Example workflow YAML for running roba in CI (PR auto-review) |
