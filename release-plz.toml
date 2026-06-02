@@ -1,5 +1,16 @@
+# release-plz configuration
+# https://release-plz.dev/docs/config
+#
+# Single-crate release using git-cliff for changelog generation.
+# Conventional commits drive both the version bump (release-plz) and
+# the changelog entries (git-cliff via cliff.toml).
+
 [workspace]
 pr_labels = ["release"]
+changelog_config = "cliff.toml"
+# Trigger a release when feat/fix/perf/refactor land. docs/chore/test/ci
+# alone do not cut a new version.
+release_commits = "^(feat|fix|perf|refactor)"
 
 [[package]]
 name = "roba"
