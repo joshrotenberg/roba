@@ -18,8 +18,10 @@ include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 pub fn run(action: SkillAction) -> Result<()> {
     match action {
         SkillAction::Install(args) => library::run_install(BUNDLED_SKILLS, args, library::SKILLS),
-        SkillAction::List => library::run_list(BUNDLED_SKILLS, library::SKILLS),
-        SkillAction::Show { name } => library::run_show(BUNDLED_SKILLS, &name, library::SKILLS),
+        SkillAction::List { urls } => library::run_list(BUNDLED_SKILLS, library::SKILLS, urls),
+        SkillAction::Show { name, url } => {
+            library::run_show(BUNDLED_SKILLS, &name, library::SKILLS, url)
+        }
     }
 }
 

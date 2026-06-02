@@ -77,6 +77,15 @@ renames, schema renames) are listed under `Removed`.
   (bundled agent library; install to `~/.claude/agents/`),
   `roba alias {list,show,path}` (user-defined aliases from
   `roba.toml`).
+- **Doc URL addressability**: `--url` on `skill show` / `agent show`
+  prints the canonical rendered + raw doc URLs instead of the body;
+  `--urls` on `skill list` / `agent list` swaps the description
+  column for those URLs. Lets an agent `WebFetch` the latest skill /
+  agent source directly.
+- **`see_also` error-envelope field**: additive v1 field on the
+  `--json` error envelope (`error.see_also`, a list of doc URLs).
+  Omitted from the JSON when empty, so the v1 shape is unchanged for
+  errors with no doc pointer.
 
 #### Config
 

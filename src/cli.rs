@@ -77,11 +77,20 @@ pub enum SkillAction {
     /// Copy bundled skills to ~/.claude/skills/ (or a custom destination).
     Install(InstallArgs),
     /// List bundled skills with descriptions.
-    List,
+    List {
+        /// Show the canonical doc URLs (rendered + raw) instead of
+        /// descriptions.
+        #[arg(long)]
+        urls: bool,
+    },
     /// Print the SKILL.md body for a named skill.
     Show {
         /// Skill name (the directory name, e.g. `draft-pr-first`).
         name: String,
+        /// Print only the canonical doc URLs (rendered + raw), not the
+        /// body.
+        #[arg(long)]
+        url: bool,
     },
 }
 
@@ -90,11 +99,20 @@ pub enum AgentAction {
     /// Copy bundled agents to ~/.claude/agents/ (or a custom destination).
     Install(InstallArgs),
     /// List bundled agents with descriptions.
-    List,
+    List {
+        /// Show the canonical doc URLs (rendered + raw) instead of
+        /// descriptions.
+        #[arg(long)]
+        urls: bool,
+    },
     /// Print the AGENT.md body for a named agent.
     Show {
         /// Agent name (the directory name, e.g. `roba-runner`).
         name: String,
+        /// Print only the canonical doc URLs (rendered + raw), not the
+        /// body.
+        #[arg(long)]
+        url: bool,
     },
 }
 

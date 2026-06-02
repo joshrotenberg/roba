@@ -18,8 +18,10 @@ include!(concat!(env!("OUT_DIR"), "/bundled_agents.rs"));
 pub fn run(action: AgentAction) -> Result<()> {
     match action {
         AgentAction::Install(args) => library::run_install(BUNDLED_AGENTS, args, library::AGENTS),
-        AgentAction::List => library::run_list(BUNDLED_AGENTS, library::AGENTS),
-        AgentAction::Show { name } => library::run_show(BUNDLED_AGENTS, &name, library::AGENTS),
+        AgentAction::List { urls } => library::run_list(BUNDLED_AGENTS, library::AGENTS, urls),
+        AgentAction::Show { name, url } => {
+            library::run_show(BUNDLED_AGENTS, &name, library::AGENTS, url)
+        }
     }
 }
 
