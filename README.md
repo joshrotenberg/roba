@@ -190,6 +190,18 @@ Documentation lives with the library:
 - [`agents/README.md`](agents/README.md) -- the Layer 2 runner +
   orchestrator subagent definitions.
 
+Each bundled skill and agent is also addressable by URL. `--url` on
+`show` prints the canonical doc URLs (rendered site + raw markdown)
+instead of the body, and `--urls` on `list` swaps the description
+column for those URLs -- handy when an agent wants to `WebFetch` the
+latest source rather than the embedded copy:
+
+```console
+$ roba skill show draft-pr-first --url
+rendered: https://joshrotenberg.github.io/roba/skills/draft-pr-first.html
+raw:      https://raw.githubusercontent.com/joshrotenberg/roba/main/skills/draft-pr-first/SKILL.md
+```
+
 For the multi-repo orchestration pattern the library is built for,
 see [`docs/use-cases.md`](docs/use-cases.md). The library is one
 way to compose roba with Claude Code -- a shell script, a cron job,

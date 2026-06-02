@@ -13,10 +13,16 @@
 //!     "kind": "auth" | "budget" | "timeout" | "history" | "other",
 //!     "message": "human-readable summary",
 //!     "exit_code": <int>,
-//!     "chain": ["top context", "...", "root cause"]
+//!     "chain": ["top context", "...", "root cause"],
+//!     "see_also": ["https://.../doc"]   // optional; omitted when empty
 //!   }
 //! }
 //! ```
+//!
+//! `see_also` is an additive v1 field: a list of canonical doc URLs an
+//! error wants to point at (e.g. the `--show-permissions` page for a
+//! permission misconfig). It is omitted from the JSON entirely when
+//! empty, so consumers parsing the v1 shape are unaffected.
 //!
 //! The `kind` mirrors the same dispatch [`crate::classify_exit_code`]
 //! uses: it inspects the underlying `claude_wrapper::Error` variant
@@ -64,6 +70,11 @@ pub struct ErrorBody {
     pub message: String,
     pub exit_code: i32,
     pub chain: Vec<String>,
+    /// Optional canonical doc URLs the error points at. Additive v1
+    /// field: serialized only when non-empty, so the default shape is
+    /// unchanged for errors that have no doc pointer.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub see_also: Vec<String>,
 }
 
 /// Classify an [`anyhow::Error`] into the envelope's `kind` string.
@@ -96,6 +107,10 @@ pub fn build_envelope(err: &anyhow::Error, exit_code: i32) -> ErrorEnvelope {
             message,
             exit_code,
             chain,
+            // Nothing maps an error to a doc URL yet; the field is
+            // wired and omitted-when-empty so it can populate later
+            // without a version bump.
+            see_also: Vec::new(),
         },
     }
 }
@@ -205,6 +220,39 @@ mod tests {
         );
         // message is the top of the chain
         assert_eq!(value["error"]["message"], "top context");
+    }
+
+    #[test]
+    fn empty_see_also_is_omitted_from_json() {
+        // The default build_envelope path leaves see_also empty.
+        let err = anyhow::anyhow!("plain error");
+        let value = envelope_value(&err, 1);
+        assert!(
+            value["error"].get("see_also").is_none(),
+            "empty see_also must not appear in the JSON"
+        );
+    }
+
+    #[test]
+    fn populated_see_also_appears_in_json() {
+        let body = ErrorBody {
+            kind: "other",
+            message: "with pointer".to_string(),
+            exit_code: 1,
+            chain: vec!["with pointer".to_string()],
+            see_also: vec!["https://example.test/doc".to_string()],
+        };
+        let env = ErrorEnvelope {
+            version: 1,
+            error: body,
+        };
+        let json = serde_json::to_string(&env).expect("serializes");
+        let value: Value = serde_json::from_str(&json).expect("round-trips");
+        let see_also = value["error"]["see_also"]
+            .as_array()
+            .expect("see_also must be an array when populated");
+        assert_eq!(see_also.len(), 1);
+        assert_eq!(see_also[0], "https://example.test/doc");
     }
 
     #[test]
