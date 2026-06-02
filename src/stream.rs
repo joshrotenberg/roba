@@ -156,7 +156,12 @@ pub async fn run_streaming(
                 &style,
             );
         }
-        crate::render::print_meta(&format_footer(qr), &style);
+        let rates = if args.no_dollars {
+            None
+        } else {
+            crate::rates::Rates::resolve(args.rates_file.as_deref()).ok()
+        };
+        crate::render::print_meta(&format_footer(qr, rates.as_ref(), args.no_dollars), &style);
     }
     Ok(None)
 }

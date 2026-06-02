@@ -79,6 +79,13 @@ pub struct Profile {
     /// JSONL (`--trace`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace: Option<PathBuf>,
+    /// Override the per-model rates table for the footer dollar figure
+    /// (`--rates-file`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rates_file: Option<PathBuf>,
+    /// Omit the dollar figure from the footer (`--no-dollars`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_dollars: Option<bool>,
 }
 
 /// Profile value for the `worktree` field. Mirrors the CLI's
@@ -130,6 +137,8 @@ impl Profile {
             && self.worktree.is_none()
             && self.no_retry.is_none()
             && self.trace.is_none()
+            && self.rates_file.is_none()
+            && self.no_dollars.is_none()
     }
 
     /// Merge `other` on top of `self`. Used to layer roba.toml files
@@ -165,6 +174,8 @@ impl Profile {
             worktree,
             no_retry,
             trace,
+            rates_file,
+            no_dollars,
         } = other;
 
         self.prepend.append(&mut prepend);
@@ -231,6 +242,12 @@ impl Profile {
         }
         if trace.is_some() {
             self.trace = trace;
+        }
+        if rates_file.is_some() {
+            self.rates_file = rates_file;
+        }
+        if no_dollars.is_some() {
+            self.no_dollars = no_dollars;
         }
     }
 }

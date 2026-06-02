@@ -86,7 +86,16 @@ pub fn extract_code_blocks(text: &str, lang_filter: Option<&str>) -> String {
 
 /// Single-line footer summarizing a [`QueryResult`]: tokens, cost,
 /// duration, session id (first 8 chars).
-pub fn format_footer(r: &QueryResult) -> String {
+///
+/// The dollar figure prefers claude's own authoritative `total_cost_usd`
+/// when present; otherwise, if `rates` is supplied and the call's model
+/// is in the table, it is computed from the rate table. `no_dollars`
+/// suppresses the figure entirely.
+pub fn format_footer(
+    r: &QueryResult,
+    rates: Option<&crate::rates::Rates>,
+    no_dollars: bool,
+) -> String {
     let mut parts = Vec::new();
     if let Some((input, output)) = extract_tokens(&r.extra) {
         parts.push(format!(
@@ -95,8 +104,8 @@ pub fn format_footer(r: &QueryResult) -> String {
             format_count(output)
         ));
     }
-    if let Some(cost) = r.cost_usd {
-        parts.push(format!("cost ${cost:.4}"));
+    if !no_dollars && let Some(cost) = footer_cost(r, rates) {
+        parts.push(format!("${cost:.4}"));
     }
     if let Some(ms) = r.duration_ms {
         parts.push(format_duration(ms));
@@ -104,6 +113,46 @@ pub fn format_footer(r: &QueryResult) -> String {
     let id = r.session_id.get(..8).unwrap_or(&r.session_id);
     parts.push(format!("session {id}"));
     parts.join(" . ")
+}
+
+/// Resolve the footer's dollar figure: claude's authoritative
+/// `total_cost_usd` first, then a rate-table computation from the
+/// model + usage breakdown in `extra`. `None` when neither is
+/// available (e.g. a subscription run with no model in the table).
+fn footer_cost(r: &QueryResult, rates: Option<&crate::rates::Rates>) -> Option<f64> {
+    if let Some(c) = r.cost_usd {
+        return Some(c);
+    }
+    let rates = rates?;
+    let model = extract_model(&r.extra)?;
+    let (input, output, cache_read, cache_write) = extract_full_usage(&r.extra)?;
+    rates.cost_usd(&model, input, output, cache_read, cache_write)
+}
+
+/// Best-effort model id from a result's `extra`: a top-level `model`
+/// scalar, else the single key of a `modelUsage` map.
+fn extract_model(extra: &HashMap<String, serde_json::Value>) -> Option<String> {
+    if let Some(m) = extra.get("model").and_then(|v| v.as_str()) {
+        return Some(m.to_string());
+    }
+    extra
+        .get("modelUsage")
+        .and_then(|v| v.as_object())
+        .and_then(|m| m.keys().next().cloned())
+}
+
+/// Pull the full `(input, output, cache_read, cache_write)` token
+/// breakdown out of `extra["usage"]`. Returns `None` only when the
+/// `usage` object itself is missing; individual buckets default to 0.
+fn extract_full_usage(extra: &HashMap<String, serde_json::Value>) -> Option<(u64, u64, u64, u64)> {
+    let usage = extra.get("usage")?;
+    let g = |k: &str| usage.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+    Some((
+        g("input_tokens"),
+        g("output_tokens"),
+        g("cache_read_input_tokens"),
+        g("cache_creation_input_tokens"),
+    ))
 }
 
 /// Pull `(input_tokens, output_tokens)` out of the `usage` field of
@@ -441,11 +490,68 @@ mod tests {
             "usage": {"input_tokens": 6, "output_tokens": 14},
         }))
         .expect("build QueryResult fixture");
-        let footer = format_footer(&result);
+        let footer = format_footer(&result, None, false);
         assert!(footer.contains("tokens 6/14"));
-        assert!(footer.contains("cost $0.0192"));
+        // Authoritative claude cost is shown as a bare `$X` segment.
+        assert!(footer.contains("$0.0192"));
         assert!(footer.contains("1.8s"));
         assert!(footer.contains("session abc12345"));
+    }
+
+    #[test]
+    fn format_footer_no_dollars_suppresses_cost() {
+        let result: QueryResult = serde_json::from_value(serde_json::json!({
+            "result": "ok",
+            "session_id": "abc12345-rest-of-id",
+            "total_cost_usd": 0.0192,
+            "duration_ms": 1834,
+            "is_error": false,
+            "usage": {"input_tokens": 6, "output_tokens": 14},
+        }))
+        .expect("build QueryResult fixture");
+        let footer = format_footer(&result, None, true);
+        assert!(footer.contains("tokens 6/14"));
+        assert!(
+            !footer.contains('$'),
+            "no_dollars must omit the cost: {footer}"
+        );
+    }
+
+    #[test]
+    fn format_footer_computes_cost_from_rates_when_claude_omits_it() {
+        // No total_cost_usd (subscription-style run), but a known model
+        // + usage breakdown in extra lets the rate table fill it in.
+        let result: QueryResult = serde_json::from_value(serde_json::json!({
+            "result": "ok",
+            "session_id": "deadbeef",
+            "is_error": false,
+            "model": "claude-sonnet-4-6",
+            "usage": {"input_tokens": 1_000_000, "output_tokens": 0,
+                      "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+        }))
+        .expect("build QueryResult fixture");
+        let rates = crate::rates::Rates::bundled().unwrap();
+        let footer = format_footer(&result, Some(&rates), false);
+        // 1M sonnet input @ $3/MTok = $3.0000.
+        assert!(footer.contains("$3.0000"), "got: {footer}");
+    }
+
+    #[test]
+    fn format_footer_rates_fallback_unknown_model_omits_cost() {
+        let result: QueryResult = serde_json::from_value(serde_json::json!({
+            "result": "ok",
+            "session_id": "deadbeef",
+            "is_error": false,
+            "model": "some-other-llm",
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        }))
+        .expect("build QueryResult fixture");
+        let rates = crate::rates::Rates::bundled().unwrap();
+        let footer = format_footer(&result, Some(&rates), false);
+        assert!(
+            !footer.contains('$'),
+            "unknown model must omit cost: {footer}"
+        );
     }
 
     #[test]
@@ -456,9 +562,9 @@ mod tests {
             "is_error": false,
         }))
         .expect("build QueryResult fixture");
-        let footer = format_footer(&result);
+        let footer = format_footer(&result, None, false);
         assert!(!footer.contains("tokens"));
-        assert!(!footer.contains("cost"));
+        assert!(!footer.contains('$'));
         assert!(footer.contains("session deadbeef"));
     }
 

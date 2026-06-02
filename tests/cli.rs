@@ -1071,3 +1071,75 @@ fn help_mentions_alias_subcommand() {
         .success()
         .stdout(predicate::str::contains("alias"));
 }
+
+// ---------------------------------------------------------------------------
+// cost -- dollar reporting (no claude call; reads seeded session JSONL)
+// ---------------------------------------------------------------------------
+
+/// Seed a fake `$HOME/.claude/projects/<slug>/<id>.jsonl` with one
+/// user + one assistant entry. The assistant carries `model` + `usage`
+/// so the cost rollup can compute dollars. Returns the home tempdir.
+fn home_with_session(model: &str, input: u64, output: u64) -> tempfile::TempDir {
+    let home = tempfile::tempdir().expect("home");
+    let proj = home.path().join(".claude/projects/-tmp-proj");
+    std::fs::create_dir_all(&proj).expect("mkdir projects");
+    let user =
+        r#"{"type":"user","timestamp":"2026-06-01T10:00:00.000Z","message":{"content":"hi"}}"#;
+    let assistant = format!(
+        r#"{{"type":"assistant","timestamp":"2026-06-01T10:00:01.000Z","message":{{"model":"{model}","usage":{{"input_tokens":{input},"output_tokens":{output},"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#
+    );
+    std::fs::write(proj.join("sess-1.jsonl"), format!("{user}\n{assistant}\n"))
+        .expect("write session");
+    home
+}
+
+#[test]
+fn cost_dollars_default_shows_dollar_column() {
+    // 1M sonnet-4-6 input @ $3/MTok = $3.00.
+    let home = home_with_session("claude-sonnet-4-6", 1_000_000, 0);
+    roba()
+        .arg("cost")
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cost:").and(predicate::str::contains("$3.00")));
+}
+
+#[test]
+fn cost_no_dollars_omits_dollar_column() {
+    let home = home_with_session("claude-sonnet-4-6", 1_000_000, 0);
+    roba()
+        .args(["cost", "--no-dollars"])
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("tokens").and(predicate::str::contains("$").not()));
+}
+
+#[test]
+fn cost_rates_file_uses_override() {
+    // Override sonnet input to $100/MTok -> 1M input = $100.00.
+    let home = home_with_session("claude-sonnet-4-6", 1_000_000, 0);
+    let rates = make_dir_with_files(&[(
+        "rates.toml",
+        "[meta]\nas_of = \"2026-01-01\"\nsource = \"test\"\n\n[models.\"claude-sonnet-4-6\"]\ninput = 100.0\noutput = 200.0\ncache_read = 1.0\ncache_write = 1.0\n",
+    )]);
+    let rates_path = rates.path().join("rates.toml");
+    roba()
+        .args(["cost", "--rates-file", rates_path.to_str().unwrap()])
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("$100.00"));
+}
+
+#[test]
+fn cost_by_project_shows_cost_column() {
+    let home = home_with_session("claude-sonnet-4-6", 1_000_000, 0);
+    roba()
+        .args(["cost", "--by-project"])
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("COST").and(predicate::str::contains("$3.00")));
+}

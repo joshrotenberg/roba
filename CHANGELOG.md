@@ -56,9 +56,21 @@ renames, schema renames) are listed under `Removed`.
   from a different directory), `--model NAME` (override the model
   per call), `--no-retry` (disable wrapper-level auto-retry on
   transient failures; deterministic for orchestrator scripts).
+- **Cost in dollars**: `roba cost` now reports a dollar figure
+  alongside tokens, computed from a bundled per-model rate table
+  (`src/rates.toml`, baked in via `include_str!`). Per-project
+  breakdown (`--by-project`) gains a `COST` column and `--json`
+  gains a `cost_usd` field (rollup + per project) plus an
+  `input`/`output`/cache `usage` breakdown. Dollars also appear in
+  the per-call footer. Override the table with `--rates-file PATH`
+  (or `ROBA_RATES_FILE`), or suppress dollars with `--no-dollars`
+  when the bundled rates are stale; the table carries an `as_of`
+  date surfaced on the report. Models the table doesn't cover are
+  listed as "rates unknown" rather than costed at a misleading $0.
 - **Subcommands**: `roba history` (list recent sessions),
   `roba last` (reprint last run), `roba cost [--by-project]
-  [--project SLUG] [--json]` (token usage rollup),
+  [--project SLUG] [--json] [--rates-file PATH] [--no-dollars]`
+  (token + dollar usage rollup),
   `roba profile {list,show,init,path,active}`,
   `roba skill {install,list,show}` (bundled skill library; install
   to `~/.claude/skills/`), `roba agent {install,list,show}`

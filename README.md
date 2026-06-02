@@ -59,7 +59,7 @@ See [Skill + agent library](#skill--agent-library) for details.
 | **Skill library** | `roba skill {install,list,show}` and `roba agent {install,list,show}` install the bundled skills + orchestrator subagents into `~/.claude/` |
 | **TTY UX** | termimad markdown render, indicatif spinner, dim metadata, colored refusal/error markers, `--plain` master kill-switch, `NO_COLOR` honored |
 | **Scripting** | typed exit codes (auth=2, budget=3, timeout=4), clean stdout/stderr split, structured `--json` output, `--no-retry` for deterministic-on-failure runs |
-| **Usage tracking** | `roba cost`, `roba cost --by-project` |
+| **Usage tracking** | `roba cost`, `roba cost --by-project`; dollar amounts from a bundled per-model rate table (`--rates-file PATH` / `ROBA_RATES_FILE` to override, `--no-dollars` for tokens only) |
 
 Streaming mode (`--stream`) emits tokens live with inline tool-call
 indicators and a `used: Tool xN` rollup at the end. It's a TTY-only

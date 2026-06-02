@@ -132,6 +132,16 @@ pub struct CostArgs {
     /// Emit JSON instead of a human table.
     #[arg(long)]
     pub json: bool,
+
+    /// Override the bundled rates table with a user-supplied TOML file
+    /// (same schema). Also honored via `ROBA_RATES_FILE`.
+    #[arg(long, value_name = "PATH")]
+    pub rates_file: Option<PathBuf>,
+
+    /// Suppress dollar amounts (tokens only). Use when the bundled
+    /// rates are stale and you don't want misleading numbers.
+    #[arg(long)]
+    pub no_dollars: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -354,6 +364,17 @@ pub struct AskArgs {
     /// Disable markdown rendering, color, and spinner. Footer still prints; for answer-only, see --quiet.
     #[arg(long, help_heading = "Output")]
     pub plain: bool,
+
+    /// Override the bundled per-model rates table for the footer dollar
+    /// figure (same TOML schema as `roba cost --rates-file`). Also
+    /// honored via `ROBA_RATES_FILE`.
+    #[arg(long, value_name = "PATH", help_heading = "Output")]
+    pub rates_file: Option<PathBuf>,
+
+    /// Omit the dollar figure from the per-call footer (tokens only).
+    /// Use when the bundled rates are stale.
+    #[arg(long, help_heading = "Output")]
+    pub no_dollars: bool,
 
     // ----- Failure modes ----------------------------------------------------
     /// Disable wrapper-level auto-retry on transient failures. The

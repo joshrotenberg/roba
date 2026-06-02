@@ -237,6 +237,16 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     {
         args.trace = Some(expand_path(p));
     }
+    if args.rates_file.is_none()
+        && let Some(p) = profile.rates_file.take()
+    {
+        args.rates_file = Some(expand_path(p));
+    }
+    if let Some(v) = profile.no_dollars
+        && !args.no_dollars
+    {
+        args.no_dollars = v;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -687,6 +697,42 @@ mod tests {
         };
         merge_into_args(&mut args, profile, "profile.test");
         assert_eq!(args.allow_tool, vec!["Edit".to_string()]);
+    }
+
+    #[test]
+    fn merge_rates_file_applies_and_cli_wins() {
+        let mut args = empty_args();
+        let profile = Profile {
+            rates_file: Some(PathBuf::from("/tmp/rates.toml")),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(
+            args.rates_file.as_deref(),
+            Some(std::path::Path::new("/tmp/rates.toml"))
+        );
+
+        let mut args = args_with(&["--rates-file", "/cli/rates.toml"]);
+        let profile = Profile {
+            rates_file: Some(PathBuf::from("/tmp/rates.toml")),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(
+            args.rates_file.as_deref(),
+            Some(std::path::Path::new("/cli/rates.toml"))
+        );
+    }
+
+    #[test]
+    fn merge_no_dollars_applies_when_cli_unset() {
+        let mut args = empty_args();
+        let profile = Profile {
+            no_dollars: Some(true),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert!(args.no_dollars);
     }
 
     // -- Path expansion ----------------------------------------------------
