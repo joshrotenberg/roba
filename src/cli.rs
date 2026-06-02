@@ -220,9 +220,26 @@ pub struct HistoryArgs {
 #[derive(ClapArgs, Debug)]
 pub struct AskArgs {
     // ----- Prompt sources ---------------------------------------------------
-    /// Prompt text. Use `-` for stdin, or omit when piping.
+    /// The prompt text (positional). Pass `-` for explicit stdin. For
+    /// invocations where the positional form is ambiguous against
+    /// optional-value flags (`-c`, `-w`), use `--prompt VALUE` /
+    /// `-p VALUE` instead.
     #[arg(conflicts_with_all = ["file", "editor"])]
     pub prompt: Option<String>,
+
+    /// Explicit prompt string. Use this when the positional form is
+    /// ambiguous against an optional-value flag (e.g. `roba -c -p
+    /// "..."` to continue most recent with a prompt that would
+    /// otherwise be parsed as the continue ID). Mutually exclusive
+    /// with the positional `[PROMPT]` argument.
+    #[arg(
+        short = 'p',
+        long = "prompt",
+        value_name = "TEXT",
+        conflicts_with = "prompt",
+        help_heading = "Prompt sources"
+    )]
+    pub prompt_flag: Option<String>,
 
     /// Read the prompt from a file.
     #[arg(
@@ -357,15 +374,17 @@ pub struct AskArgs {
 
     // ----- Sessions ---------------------------------------------------------
     /// Continue an existing session. Bare `-c` resumes the most
-    /// recent session in this directory; `-c=ID` resumes a specific
-    /// session by id. The `=` is required for the id form to
-    /// disambiguate from the positional prompt.
+    /// recent session in this directory; `-c ID` (or `-c=ID`) resumes
+    /// a specific session by id. Because the value is optional, a
+    /// space-separated word after `-c` is consumed as the id: `roba -c
+    /// "follow up"` treats "follow up" as the session id, not the
+    /// prompt. To continue the most recent session with a prompt, use
+    /// `roba -c -p "follow up"`.
     #[arg(
         short = 'c',
         long = "continue",
         num_args = 0..=1,
         value_name = "ID",
-        require_equals = true,
         help_heading = "Sessions"
     )]
     pub continue_session: Option<Option<String>>,
@@ -391,18 +410,20 @@ pub struct AskArgs {
     pub fresh: bool,
 
     /// Run in a fresh git worktree. With no value, claude generates
-    /// the name; with `=NAME`, pin the worktree directory/branch
-    /// (e.g. `-w=feature-x`). The `=` is required for the named form
-    /// to disambiguate from the positional prompt. The worktree
-    /// persists after the session; clean up manually with
-    /// `git worktree remove`. Pairs naturally with `--writable` or
-    /// `--full-auto` -- the worktree is your sandbox.
+    /// the name; with a value (`-w NAME` or `-w=NAME`), pin the
+    /// worktree directory/branch (e.g. `-w feature-x`). Because the
+    /// value is optional, a space-separated word after `-w` is
+    /// consumed as the name: `roba -w "do it"` treats "do it" as the
+    /// worktree name, not the prompt. To name a worktree and pass a
+    /// prompt, use `roba -w NAME -p "..."`. The worktree persists
+    /// after the session; clean up manually with `git worktree
+    /// remove`. Pairs naturally with `--writable` or `--full-auto` --
+    /// the worktree is your sandbox.
     #[arg(
         short = 'w',
         long,
         value_name = "NAME",
         num_args(0..=1),
-        require_equals = true,
         help_heading = "Sessions"
     )]
     pub worktree: Option<Option<String>>,
@@ -545,18 +566,20 @@ mod tests {
 
     #[test]
     fn worktree_short_alone_is_presence() {
+        // Bare `-w` (claude generates the name). A following `-p` flag is
+        // not consumed as the worktree value, so the prompt comes through.
         use clap::Parser;
-        let cli = Cli::try_parse_from(["roba", "-w", "do thing"]).unwrap();
+        let cli = Cli::try_parse_from(["roba", "-w", "-p", "do thing"]).unwrap();
         assert_eq!(cli.ask.worktree, Some(None));
-        assert_eq!(cli.ask.prompt.as_deref(), Some("do thing"));
+        assert_eq!(cli.ask.prompt_flag.as_deref(), Some("do thing"));
     }
 
     #[test]
     fn worktree_long_alone_is_presence() {
         use clap::Parser;
-        let cli = Cli::try_parse_from(["roba", "--worktree", "do thing"]).unwrap();
+        let cli = Cli::try_parse_from(["roba", "--worktree", "-p", "do thing"]).unwrap();
         assert_eq!(cli.ask.worktree, Some(None));
-        assert_eq!(cli.ask.prompt.as_deref(), Some("do thing"));
+        assert_eq!(cli.ask.prompt_flag.as_deref(), Some("do thing"));
     }
 
     #[test]
@@ -657,10 +680,12 @@ mod tests {
 
     #[test]
     fn continue_parses_bare() {
+        // Bare `-c` (continue most recent). A following `-p` flag is not
+        // consumed as the session id, so the prompt comes through.
         use clap::Parser;
-        let cli = Cli::try_parse_from(["roba", "-c", "prompt"]).unwrap();
+        let cli = Cli::try_parse_from(["roba", "-c", "-p", "prompt"]).unwrap();
         assert_eq!(cli.ask.continue_session, Some(None));
-        assert_eq!(cli.ask.prompt.as_deref(), Some("prompt"));
+        assert_eq!(cli.ask.prompt_flag.as_deref(), Some("prompt"));
     }
 
     #[test]
@@ -679,14 +704,15 @@ mod tests {
     }
 
     #[test]
-    fn continue_without_equals_treats_next_arg_as_prompt() {
-        // require_equals means `-c prompt` does NOT swallow "prompt" as
-        // the session id -- it stays the positional prompt and -c is
-        // the bare "most recent" form.
+    fn continue_without_equals_consumes_next_arg_as_id() {
+        // BREAKING (pre-0.1.0): with require_equals dropped, `-c prompt`
+        // now swallows "prompt" as the session id. The bare "most
+        // recent" form is `-c` followed by a flag (or end of args); pass
+        // a prompt via `-p` (see continue_bare_then_p_flag_for_prompt).
         use clap::Parser;
         let cli = Cli::try_parse_from(["roba", "-c", "prompt"]).unwrap();
-        assert_eq!(cli.ask.continue_session, Some(None));
-        assert_eq!(cli.ask.prompt.as_deref(), Some("prompt"));
+        assert_eq!(cli.ask.continue_session, Some(Some("prompt".to_string())));
+        assert!(cli.ask.prompt.is_none());
     }
 
     #[test]
@@ -731,19 +757,15 @@ mod tests {
     }
 
     #[test]
-    fn worktree_long_space_name_does_not_attach_value() {
-        // require_equals = true means `--worktree NAME` (space form)
-        // does NOT attach NAME to the worktree flag: the flag stays the
-        // bare presence form (Some(None)) and NAME falls through to the
-        // positional prompt. (Pre-external-subcommand this test used a
-        // second positional to force an "unexpected argument" error;
-        // with the alias external-subcommand variant a trailing word is
-        // now captured as an alias invocation instead, so the invariant
-        // is asserted directly here.)
+    fn worktree_long_space_name_attaches_value() {
+        // BREAKING (pre-0.1.0): with require_equals dropped, `--worktree
+        // NAME` (space form) now attaches NAME to the worktree flag
+        // (Some(Some(NAME))) instead of leaving the flag bare and
+        // letting NAME fall through to the positional prompt.
         use clap::Parser;
         let cli = Cli::try_parse_from(["roba", "--worktree", "mybranch"]).unwrap();
-        assert_eq!(cli.ask.worktree, Some(None));
-        assert_eq!(cli.ask.prompt.as_deref(), Some("mybranch"));
+        assert_eq!(cli.ask.worktree, Some(Some("mybranch".to_string())));
+        assert!(cli.ask.prompt.is_none());
     }
 
     #[test]
@@ -761,6 +783,60 @@ mod tests {
             }
             other => panic!("expected External, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn prompt_flag_parses() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "-p", "hello"]).unwrap();
+        assert_eq!(cli.ask.prompt_flag.as_deref(), Some("hello"));
+        assert!(cli.ask.prompt.is_none());
+    }
+
+    #[test]
+    fn prompt_flag_long_form_parses() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--prompt", "hello"]).unwrap();
+        assert_eq!(cli.ask.prompt_flag.as_deref(), Some("hello"));
+        assert!(cli.ask.prompt.is_none());
+    }
+
+    #[test]
+    fn prompt_flag_conflicts_with_positional() {
+        // clap's `conflicts_with = "prompt"` rejects supplying both the
+        // explicit `-p` flag and the positional argument.
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["roba", "-p", "x", "positional"]).is_err());
+    }
+
+    #[test]
+    fn continue_with_space_value_consumes_id() {
+        // require_equals dropped: a space-separated word after -c is now
+        // consumed as the session id. The breaking semantic change.
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "-c", "abc123"]).unwrap();
+        assert_eq!(cli.ask.continue_session, Some(Some("abc123".to_string())));
+        assert!(cli.ask.prompt.is_none());
+    }
+
+    #[test]
+    fn worktree_with_space_value_and_prompt_flag() {
+        // The escape hatch: name a worktree with a space value AND pass
+        // a prompt via -p so the two don't collide.
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "-w", "mybranch", "-p", "the prompt"]).unwrap();
+        assert_eq!(cli.ask.worktree, Some(Some("mybranch".to_string())));
+        assert_eq!(cli.ask.prompt_flag.as_deref(), Some("the prompt"));
+    }
+
+    #[test]
+    fn continue_bare_then_p_flag_for_prompt() {
+        // Continue most recent (bare -c) while still passing a prompt via
+        // -p -- the documented replacement for the old `-c "prompt"`.
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "-c", "-p", "follow up"]).unwrap();
+        assert_eq!(cli.ask.continue_session, Some(None));
+        assert_eq!(cli.ask.prompt_flag.as_deref(), Some("follow up"));
     }
 
     #[test]
