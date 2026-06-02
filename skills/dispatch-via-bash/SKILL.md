@@ -5,8 +5,32 @@ description: Dispatch code-changing work via `Bash` → roba CLI, NOT via the Cl
 
 # Dispatch via Bash, NOT via the Task tool
 
-**The most important orchestrator discipline.** Getting it wrong
-silently defeats the whole point of having an orchestrator.
+**The most important orchestrator discipline IF you're using the
+bundled `roba-orchestrator` agent.** Getting it wrong silently
+defeats the substrate the orchestrator is built on.
+
+## Where this fits
+
+This skill applies when you've loaded the
+[`roba-orchestrator`](../../agents/roba-orchestrator/AGENT.md)
+agent and want the in-Claude-Code multi-task orchestration pattern.
+
+It does NOT apply if:
+
+- You're using roba directly from a shell or script (no orchestrator
+  in the loop -- just `roba "..."`).
+- You're using Claude Code's built-in background agents or agent
+  teams for multi-session work (those have their own mechanics and
+  their own trade-offs; roba's substrate isn't in the picture).
+- You're using `Task(subagent_type: "Explore" / "Plan" / ...)` for
+  read-only delegation that doesn't need code changes or
+  observability outside Claude Code's session model.
+
+roba and Claude Code's native agent mechanisms (Task, background
+agents, agent teams) are different shapes -- not strictly better or
+worse than each other. The trade-off table below assumes you've
+already chosen "use the roba-orchestrator pattern"; what it actually
+spells out is "given that choice, here's how dispatch flows."
 
 ## The substrate boundary is the value
 
