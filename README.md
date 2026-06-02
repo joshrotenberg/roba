@@ -3,9 +3,9 @@
 A single-prompt CLI runner for [Claude Code](https://github.com/anthropics/claude-code).
 Built on [`claude-wrapper`](https://crates.io/crates/claude-wrapper).
 
-`roba` is what `claude -p` could be: opinionated defaults, composable
-flags, rich on a TTY, scriptable on a pipe. One invocation, one
-answer, done.
+A wrapper around `claude -p` with opinionated defaults, composable
+input, structured output, a bundled skill / subagent library, and
+user-defined aliases. One invocation, one answer, done.
 
 ```bash
 $ roba "summarize the rust ownership model in 3 bullets"
@@ -15,18 +15,36 @@ $ roba "summarize the rust ownership model in 3 bullets"
      • When the owner goes out of scope, the value is dropped.
      • Borrows are either many immutable or one mutable.
 
-tokens 1.2k/450 . cost $0.0192 . 2.0s . session abc12345
+tokens 1.2k/450 . 2.0s . session abc12345
 ```
 
 ## Install
 
 ```bash
-cargo install --path .   # from this repo, for now
+cargo install roba
 ```
 
 `roba` shells out to the `claude` binary, so you need
 [claude-code](https://github.com/anthropics/claude-code) installed
 and authenticated on your PATH.
+
+To get the bundled skill + subagent library set up under
+`~/.claude/`:
+
+```bash
+roba skill install
+roba agent install
+```
+
+After that, an interactive Claude Code session can drive multi-task
+work via the orchestrator agent:
+
+```bash
+claude --agent=roba-orchestrator
+# "work the backlog in foo and bar"
+```
+
+See [Skill + agent library](#skill--agent-library) for details.
 
 ## What it does that `claude -p` doesn't
 
@@ -174,15 +192,6 @@ roba skill show draft-pr-first  # print a skill's SKILL.md body
 (preview), `--force` (overwrite existing), `--skip` (leave existing in
 place). The agent commands mirror the skill ones. The bundle is
 embedded in the binary at build time -- no network fetch.
-
-That unlocks the install-and-go path:
-
-```bash
-cargo install roba
-roba skill install && roba agent install
-claude --agent=roba-orchestrator
-# "work the backlog in foo and bar"
-```
 
 ## Output discipline
 
@@ -385,10 +394,10 @@ allow_tool = ["Bash(git status)"]
 
 ## Status
 
-Early. The CLI surface (flag names, exit codes, config schema) is
-the part we'd like to keep stable across 0.1.x. The library API
-(everything under `roba::*` for integration testing) may shift
-freely.
+0.1.x. The CLI surface (flag names, exit codes, config schema,
+`--json` envelope) is intended to be stable across 0.1.x. The
+library API (everything under `roba::*` for integration testing)
+may shift between minor versions.
 
 ## License
 
