@@ -1,0 +1,18 @@
+[book]
+title = "roba"
+description = "A binary convenience wrapper around claude -p, with an optional library of orchestrator skills and subagents."
+authors = ["Josh Rotenberg"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/joshrotenberg/roba"
+edit-url-template = "https://github.com/joshrotenberg/roba/edit/main/{path}"
+site-url = "/roba/"
+default-theme = "light"
+preferred-dark-theme = "navy"
+no-section-label = false
+
+[output.html.fold]
+enable = true
+level = 1

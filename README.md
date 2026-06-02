@@ -11,6 +11,8 @@ patterns for multi-task, multi-repo orchestration. See
 
 Built on [`claude-wrapper`](https://crates.io/crates/claude-wrapper).
 
+**Docs:** [joshrotenberg.github.io/roba](https://joshrotenberg.github.io/roba/)
+
 ```bash
 $ roba "summarize the rust ownership model in 3 bullets"
    Rust's ownership model rests on three rules:
