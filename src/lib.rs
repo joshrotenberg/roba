@@ -21,6 +21,7 @@ pub mod library;
 pub mod output;
 pub mod profile;
 pub mod prompt;
+pub mod rates;
 pub mod render;
 pub mod session;
 pub mod skills;
@@ -217,7 +218,18 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         if looks_like_refusal(&result.result) {
             render::print_warning("response looks like a refusal", &style);
         }
-        render::print_meta(&format_footer(&result), &style);
+        // Load the rate table only when the footer might show dollars.
+        // A bad --rates-file shouldn't sink an otherwise-good answer, so
+        // fall back to no dollars on a load error rather than bailing.
+        let rates = if args.no_dollars {
+            None
+        } else {
+            rates::Rates::resolve(args.rates_file.as_deref()).ok()
+        };
+        render::print_meta(
+            &format_footer(&result, rates.as_ref(), args.no_dollars),
+            &style,
+        );
     }
     Ok(())
 }

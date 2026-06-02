@@ -120,6 +120,8 @@ override.
 | `worktree` | `bool` or `string` | `-w` / `--worktree[=NAME]` | `true` runs every session in a fresh git worktree (claude generates the name); a string pins the worktree directory/branch (e.g. `worktree = "feature-x"`) |
 | `no_retry` | `bool` | `--no-retry` | Disable wrapper-level auto-retry on transient failures; the failure surfaces immediately with its normal exit code |
 | `trace` | `string` | `--trace PATH` | Write the spawned session's streaming events to PATH as JSONL (a stable observability handle); `~/` is expanded. Forces the streaming pipeline internally even without `--stream` |
+| `rates_file` | `string` | `--rates-file PATH` | Override the bundled per-model rates table used for the footer dollar figure (same schema as `roba cost --rates-file`); `~/` is expanded. Also honored via `ROBA_RATES_FILE` |
+| `no_dollars` | `bool` | `--no-dollars` | Omit the dollar figure from the per-call footer (tokens only); useful when the bundled rates are stale |
 
 Unknown keys are rejected at parse time -- a typo errors fast instead
 of being silently ignored.

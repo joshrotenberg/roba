@@ -165,6 +165,14 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     {
         args.trace = Some(PathBuf::from(s));
     }
+    if args.rates_file.is_none()
+        && let Some(s) = read_string(env, "ROBA_RATES_FILE")
+    {
+        args.rates_file = Some(PathBuf::from(s));
+    }
+    if !args.no_dollars && read_truthy(env, "ROBA_NO_DOLLARS") {
+        args.no_dollars = true;
+    }
     if args.worktree.is_none()
         && let Some(s) = env.get("ROBA_WORKTREE").filter(|s| !s.is_empty())
     {
@@ -549,6 +557,45 @@ mod tests {
         let mut args = empty_args();
         apply_env_overrides_from(&mut args, &env_with(&[("ROBA_TRACE", "")]));
         assert!(args.trace.is_none());
+    }
+
+    #[test]
+    fn env_rates_file_sets_and_respects_cli() {
+        let mut args = empty_args();
+        apply_env_overrides_from(
+            &mut args,
+            &env_with(&[("ROBA_RATES_FILE", "/tmp/rates.toml")]),
+        );
+        assert_eq!(
+            args.rates_file.as_deref(),
+            Some(std::path::Path::new("/tmp/rates.toml"))
+        );
+
+        let mut args = empty_args();
+        args.rates_file = Some(PathBuf::from("/cli/rates.toml"));
+        apply_env_overrides_from(
+            &mut args,
+            &env_with(&[("ROBA_RATES_FILE", "/tmp/rates.toml")]),
+        );
+        assert_eq!(
+            args.rates_file.as_deref(),
+            Some(std::path::Path::new("/cli/rates.toml"))
+        );
+    }
+
+    #[test]
+    fn env_no_dollars_truthy_enables() {
+        for val in ["1", "true", "yes", "on"] {
+            let mut args = empty_args();
+            apply_env_overrides_from(&mut args, &env_with(&[("ROBA_NO_DOLLARS", val)]));
+            assert!(
+                args.no_dollars,
+                "env value {val:?} should enable no_dollars"
+            );
+        }
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_NO_DOLLARS", "0")]));
+        assert!(!args.no_dollars);
     }
 
     #[test]
