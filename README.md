@@ -44,6 +44,15 @@ claude --agent=roba-orchestrator
 # "work the backlog in foo and bar"
 ```
 
+Before invoking the orchestrator, the runner needs `gh` and `git` in
+the Claude Code sandbox allowlist. The pre-flight skill will auto-heal
+for known-safe dev tools (cargo, npm, pip, go, etc.) on first
+encounter, but `gh` and `git` are universal and worth pre-configuring
+(in `.claude/settings.local.json` under `permissions.allow`:
+`"Bash(gh:*)"`, `"Bash(git:*)"`). See
+[`skills/sandbox-preflight/SKILL.md`](skills/sandbox-preflight/SKILL.md)
+for the policy.
+
 See [Skill + agent library](#skill--agent-library) for details.
 
 ## What it does that `claude -p` doesn't
