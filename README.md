@@ -1,11 +1,15 @@
 # roba
 
-A single-prompt CLI runner for [Claude Code](https://github.com/anthropics/claude-code).
-Built on [`claude-wrapper`](https://crates.io/crates/claude-wrapper).
+**For humans** -- a binary convenience wrapper around `claude -p`:
+composable input, structured output, profiles, history, cost
+tracking. One invocation, one answer, done.
 
-A wrapper around `claude -p` with opinionated defaults, composable
-input, structured output, a bundled skill / subagent library, and
-user-defined aliases. One invocation, one answer, done.
+**For agents** in [Claude Code](https://github.com/anthropics/claude-code)
+-- an optional bundled library of skills and subagents encodes
+patterns for multi-task, multi-repo orchestration. See
+[Skill + agent library](#skill--agent-library) below.
+
+Built on [`claude-wrapper`](https://crates.io/crates/claude-wrapper).
 
 ```bash
 $ roba "summarize the rust ownership model in 3 bullets"
@@ -27,33 +31,6 @@ cargo install roba
 `roba` shells out to the `claude` binary, so you need
 [claude-code](https://github.com/anthropics/claude-code) installed
 and authenticated on your PATH.
-
-To get the bundled skill + subagent library set up under
-`~/.claude/`:
-
-```bash
-roba skill install
-roba agent install
-```
-
-After that, an interactive Claude Code session can drive multi-task
-work via the orchestrator agent:
-
-```bash
-claude --agent=roba-orchestrator
-# "work the backlog in foo and bar"
-```
-
-Before invoking the orchestrator, the runner needs `gh` and `git` in
-the Claude Code sandbox allowlist. The pre-flight skill will auto-heal
-for known-safe dev tools (cargo, npm, pip, go, etc.) on first
-encounter, but `gh` and `git` are universal and worth pre-configuring
-(in `.claude/settings.local.json` under `permissions.allow`:
-`"Bash(gh:*)"`, `"Bash(git:*)"`). See
-[`skills/sandbox-preflight/SKILL.md`](skills/sandbox-preflight/SKILL.md)
-for the policy.
-
-See [Skill + agent library](#skill--agent-library) for details.
 
 ## What it does that `claude -p` doesn't
 
@@ -197,21 +174,25 @@ full schema, lookup order, and caveats.
 
 ## Skill + agent library
 
-roba ships a starter set of operational skills and orchestrator
-subagents. Install them into `~/.claude/` so any Claude Code session
-auto-discovers them:
+roba bundles an optional library of operational skills and
+orchestrator subagents that codify one curated convention for
+driving multi-task, multi-repo work from inside Claude Code. The
+binary works fine without it. Install via `roba skill install` /
+`roba agent install` if the patterns match your work.
 
-```bash
-roba skill install            # -> ~/.claude/skills/
-roba agent install            # -> ~/.claude/agents/
-roba skill list               # what's bundled, with descriptions
-roba skill show draft-pr-first  # print a skill's SKILL.md body
-```
+Documentation lives with the library:
 
-`install` flags: `--to PATH` (custom destination), `--dry-run`
-(preview), `--force` (overwrite existing), `--skip` (leave existing in
-place). The agent commands mirror the skill ones. The bundle is
-embedded in the binary at build time -- no network fetch.
+- [`skills/README.md`](skills/README.md) -- the Layer 1 operational
+  skills (`draft-pr-first`, `dispatch-via-bash`,
+  `dispatch-wait-react`, `sandbox-preflight`, etc.).
+- [`agents/README.md`](agents/README.md) -- the Layer 2 runner +
+  orchestrator subagent definitions.
+
+For the multi-repo orchestration pattern the library is built for,
+see [`docs/use-cases.md`](docs/use-cases.md). The library is one
+way to compose roba with Claude Code -- a shell script, a cron job,
+or CI can drive roba just as well via its `--json` envelope,
+typed exit codes, and `--trace` observability handle.
 
 ## Output discipline
 

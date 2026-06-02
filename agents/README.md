@@ -1,9 +1,13 @@
 # roba agents (Layer 2)
 
-Spawnable subagent definitions for orchestrating work with roba. Each
-agent is a markdown file with YAML frontmatter (`name`, `description`,
-`tools`, `model`) plus a system-prompt body, structurally compatible
-with Claude Code's `.claude/agents/` convention.
+One curated set of spawnable subagent definitions for orchestrating
+work with roba from inside Claude Code. This library is optional --
+roba the binary stands on its own; these agents codify patterns we
+found useful when driving multi-task, multi-repo work via the
+orchestrator-and-runner shape. Each agent is a markdown file with
+YAML frontmatter (`name`, `description`, `tools`, `model`) plus a
+system-prompt body, structurally compatible with Claude Code's
+`.claude/agents/` convention.
 
 This is Layer 2 of the three-layer skill library tracked in
 [#47](https://github.com/joshrotenberg/roba/issues/47):
