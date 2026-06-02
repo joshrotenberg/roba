@@ -50,9 +50,9 @@ See [Skill + agent library](#skill--agent-library) for details.
 
 | | |
 |---|---|
-| **Prompt sources** | positional, stdin (`-` or piped), `-f FILE`, `-e` ($EDITOR), `--prepend`/`--append` files, `--attach GLOB`, `--git-diff`/`--git-log`/`--git-status`, `--var K=V` template substitution |
+| **Prompt sources** | positional, `-p/--prompt TEXT` (explicit prompt -- escapes ambiguity against `-c`/`-w`), stdin (`-` or piped), `-f FILE`, `-e` ($EDITOR), `--prepend`/`--append` files, `--attach GLOB`, `--git-diff`/`--git-log`/`--git-status`, `--var K=V` template substitution |
 | **Output shaping** | `--json`, `--quiet`, `--code [LANG]`, `-o/--out PATH` (write to file and stdout), `--trace PATH` (stream events to a JSONL file -- a stable observability handle for in-flight runs) |
-| **Sessions** | `-c` continue most recent, `-c=ID` resume a specific session, `-c=ID --fork` branch it, `--pick` (interactive fuzzy chooser), `--agent NAME` pin a subagent, `roba history`, `roba last` |
+| **Sessions** | `-c` continue most recent, `-c ID` (or `-c=ID`) resume a specific session, `-c ID --fork` branch it, `--pick` (interactive fuzzy chooser), `--agent NAME` pin a subagent, `roba history`, `roba last` |
 | **Permissions** | `--readonly`, `--full-auto` presets |
 | **Profiles** | `--profile NAME` from `~/.config/roba.toml`, `roba profile {list,show,init,path}` |
 | **Aliases** | `git`-style `[alias.NAME]` shortcuts in `roba.toml` -> `roba NAME [args]` expands a prompt template (with variable + shell substitution) plus default flags, `roba alias {list,show,path}` |
@@ -90,11 +90,13 @@ roba "write a python one-liner that reverses a string" --code python
 # Look at files
 roba --attach 'src/**/*.rs' "is the error handling consistent?"
 
-# Continue the most recent session in this directory
-roba -c "now show me how to test the unsafe variant"
+# Continue the most recent session in this directory.
+# -c takes an optional id, so a bare word after it is read as the id;
+# use -p to pass the prompt explicitly.
+roba -c -p "now show me how to test the unsafe variant"
 
-# Resume a specific session by id (the `=` is required)
-roba -c=7c3f9a21 "and the safe variant?"
+# Resume a specific session by id (space or `=` both work)
+roba -c 7c3f9a21 "and the safe variant?"
 
 # Fuzzy-pick a recent session to resume
 roba --pick "follow up to whatever I select"
@@ -116,6 +118,15 @@ roba --profile review "look at this change"
 roba "what's 2+2" -q          # prints "4"
 echo "summarize this" | roba  # stdin works
 ```
+
+> [!NOTE]
+> `-c` (continue) and `-w` (worktree) both take an *optional* value, so
+> a space-separated word right after them is consumed as that value:
+> `roba -c "follow up"` treats `follow up` as the session id, and
+> `roba -w "do it"` treats `do it` as the worktree name. For
+> invocations where the positional prompt is ambiguous against one of
+> these flags, pass the prompt explicitly with `-p` / `--prompt`
+> (e.g. `roba -c -p "follow up"`, `roba -w mybranch -p "do it"`).
 
 ## Profiles
 

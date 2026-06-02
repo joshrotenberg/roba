@@ -135,8 +135,14 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         eprintln!("resuming session {}", id.get(..8).unwrap_or(&id));
         args.continue_session = Some(Some(id));
     }
+    // `-p / --prompt` is an explicit alternative to the positional
+    // prompt (clap enforces the mutual exclusion via conflicts_with).
+    // Whichever was supplied is the explicit prompt string; the rest of
+    // the precedence (stdin > editor > explicit > file > none) is
+    // unchanged.
+    let explicit_prompt = args.prompt_flag.as_deref().or(args.prompt.as_deref());
     let main = resolve_main_prompt(
-        args.prompt.as_deref(),
+        explicit_prompt,
         args.file.as_deref(),
         args.editor,
         args.editor_history,

@@ -136,13 +136,16 @@ claude -p "now show me how to test the unsafe variant"
 ```
 
 ```bash
-roba -c "now show me how to test the unsafe variant"
-roba -c=7c3f9a21 "and the safe variant?"   # resume a specific session
+roba -c -p "now show me how to test the unsafe variant"
+roba -c 7c3f9a21 "and the safe variant?"   # resume a specific session
 ```
 
 `claude -p` has no session re-entry. `roba -c` continues the most
-recent session in the directory; `-c=ID` resumes a specific one (the
-`=` is required).
+recent session in the directory; `-c ID` (or `-c=ID`) resumes a
+specific one. Because `-c` takes an optional value, a bare word right
+after it is read as the session id -- pass the prompt explicitly with
+`-p` to continue the most recent session with a prompt
+(`roba -c -p "..."`).
 
 ### Code review on a diff
 

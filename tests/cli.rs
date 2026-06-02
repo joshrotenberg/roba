@@ -143,10 +143,30 @@ fn conflict_fresh_and_pick() {
 }
 
 #[test]
+fn conflict_prompt_flag_and_positional() {
+    // -p and the positional prompt are mutually exclusive (clap-level
+    // conflicts_with). Supplying both errors at parse time.
+    assert_conflict(&["-p", "x", "positional"]);
+}
+
+#[test]
+fn prompt_flag_parses_and_fails_at_runtime_not_clap() {
+    // -p VALUE + missing prepend file: parse must succeed (the explicit
+    // prompt flag is accepted), the failure is the runtime read error.
+    roba()
+        .args(["-p", "hello", "--prepend", "/no/such/prompt-flag-test"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("reading --prepend"));
+}
+
+#[test]
 fn continue_bare_parses() {
-    // `-c "prompt"` (bare, no `=ID`) must not swallow the prompt as a
-    // session id. It parses; the failure here is the missing prepend
-    // file, proving parse succeeded.
+    // Bare `-c` followed by a flag (`--prepend`) stays the presence
+    // form (Some(None)) -- clap does not consume a flag token as the
+    // optional id value. `foo` is the positional prompt. It parses; the
+    // failure here is the missing prepend file, proving parse succeeded.
     roba()
         .args(["foo", "-c", "--prepend", "/no/such/continue-bare-test"])
         .assert()
@@ -248,18 +268,24 @@ fn agent_with_name_parses() {
 }
 
 #[test]
-fn worktree_long_space_name_does_not_attach_value() {
-    // require_equals = true: `--worktree NAME` (space form) does not
-    // attach NAME to the flag -- NAME falls through to the positional
-    // prompt (bare `-w` is the presence form). Here `foo` is the
-    // worktree-flag's intended-but-rejected value, which becomes the
-    // prompt; the second word `mybranch` then routes through the alias
-    // external-subcommand path and errors as an unknown alias.
+fn worktree_long_space_name_attaches_value() {
+    // BREAKING (pre-0.1.0): with require_equals dropped, `--worktree
+    // NAME` (space form) now attaches NAME to the flag. Here `foo` is
+    // the positional prompt, `mybranch` is the worktree name, and the
+    // missing prepend file proves the parse succeeded before the
+    // runtime read error.
     roba()
-        .args(["--worktree", "foo", "mybranch"])
+        .args([
+            "foo",
+            "--worktree",
+            "mybranch",
+            "--prepend",
+            "/no/such/worktree-space-name",
+        ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("no built-in or alias named"));
+        .code(1)
+        .stderr(predicate::str::contains("reading --prepend"));
 }
 
 // ---------------------------------------------------------------------------
