@@ -33,7 +33,10 @@ fn version_prints_crate_version_and_exits_zero() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("roba 0.1.0"));
+        .stdout(predicate::str::contains(concat!(
+            "roba ",
+            env!("CARGO_PKG_VERSION")
+        )));
 }
 
 #[test]
