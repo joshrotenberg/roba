@@ -10,135 +10,196 @@ when published the entries below become version sections.
 
 ## [Unreleased]
 
-### Fixed
-
-- Fail fast when an interactive-only flag is set without a TTY on
-  stdin. `-e` / `--editor` and `--pick` both block on human input;
-  in a head-less context (script, CI step, orchestrator) the
-  process would hang waiting for keystrokes that can't arrive. Now
-  both flags pre-check `stdin.is_terminal()` at the top of
-  `run_ask` (right after env + profile resolution) and exit 1 with
-  a canonical message: `--editor requires an interactive terminal
-  (stdin not a TTY)` / `--pick requires an interactive terminal
-  (stdin not a TTY)`. Closes #36.
+Initial public release. The CLI surface, exit codes, config schema,
+and `--json` envelope are intended to be stable across 0.1.x;
+breaking changes that landed before this release (e.g. flag
+renames, schema renames) are listed under `Removed`.
 
 ### Added
 
-- Structured JSON error envelope when `--json` is set. Runtime
-  failures now print a parseable `{"error": {...}}` object on
-  stderr (stdout stays clean) instead of the plain anyhow chain.
-  Shape: `kind` (`"auth"` | `"budget"` | `"timeout"` | `"history"`
-  | `"other"`, mirroring the existing typed exit codes), `message`
-  (top of the anyhow context chain), `exit_code` (the same int
-  roba exits with), and `chain` (the full anyhow chain, top to
-  root). Without `--json`, the error path is unchanged -- the
-  styled `error: ...` prefix still goes to stderr. Clap parse
-  errors (exit 2 from the deriver) stay as clap's stderr output
-  since they predate flag resolution. Closes #34.
-- `--show-thinking` flag: render extended-thinking blocks live on
-  stderr in the dim meta-channel style during `--stream`. Uses
-  `StreamEvent::partial_message` from claude-wrapper 0.10.1 to
-  decode `content_block_delta` events with a `thinking_delta`
-  payload. Only takes effect alongside `--stream`; without it the
-  flag is a silent no-op (profiles may legitimately set both). Also
-  configurable via profile (`show_thinking = true`) and env
-  (`ROBA_SHOW_THINKING=1`). Closes #10.
-- `-w` / `--worktree[=NAME]` flag: passthrough to claude's
-  `--worktree`, runs the session in a fresh git worktree. With no
-  value, claude generates the name; with `=NAME` (e.g.
-  `-w=feature-x`) the worktree directory/branch is pinned. The `=`
-  is required for the named form to disambiguate from the positional
-  prompt. The worktree persists after the session; clean up manually
-  with `git worktree remove`. Pairs naturally with `--writable` or
-  `--full-auto` -- the worktree is your sandbox. Also configurable
-  via profile (`worktree = true` for presence, `worktree = "NAME"`
-  for pinned name) and env (`ROBA_WORKTREE=1` for presence, any
-  other non-truthy non-empty value treated as the name). Closes #28.
-- `--editor-history N` (default 1): when composing with `-e`, the
-  editor opens in `git commit`-style layout -- empty cursor area at
-  the top for your prompt, then a `// ----- >8 -----` scissors
-  line, then the last N responses below as a `//`-prefixed
-  reference block. Strip removes everything from the scissors line
-  down on save, so the response is for your eyes only (use `-c` to
-  give claude the conversation context). `// ` prefix on reference
-  lines avoids `#`-vs-markdown-header conflicts. `--editor-history
-  0` reverts to the empty-editor behavior. Also configurable via
-  profile (`editor_history = N`) and env (`ROBA_EDITOR_HISTORY=N`).
-  Closes #5.
-- Auto-named sessions: every roba call now passes `--name "roba: <preview>"`
-  to claude so sessions surface in the `claude --resume` picker
-  (which only lists named sessions). Prefix makes them
-  distinguishable from interactive Claude Code sessions in the same
-  project. Closes #3.
-- `-C` / `--cwd PATH` global flag to run as if invoked from a
-  different directory. Applies before any other resolution (session
-  scoping, config walk-up, `--attach` globs, `--prepend` / `--append`
-  relative paths, `--git-*` context). Pairs especially well with
-  scripts and tests that want roba to operate in a tmp dir.
-- `--fresh` CLI flag to force a fresh session. Cancels any
-  profile- or env-supplied `continue = true`; the kill switch for
-  accidental auto-continuation. Conflicts with `-c` / `--resume` /
-  `--pick`.
-- `--model MODEL` CLI flag to override the claude model per call
-  (alias or full id).
-- `ROBA_<PARAM>` env-var override layer. Every config knob is
-  settable via an env var matching the CLI long-form (uppercased,
-  `-` -> `_`, prefixed `ROBA_`). Lists comma-separated; vars via
-  per-key `ROBA_VAR_<KEY>=value`. Sits between CLI and the file
-  pool in precedence.
-- Output-policy fields in `roba.toml` / profiles: `model`, `stream`,
-  `echo`, `plain`, `quiet`, `json`.
+#### Surface
+
+- **Prompt sources**: positional argument, stdin (`-` or piped),
+  `-f FILE`, `-e` (compose in `$EDITOR` / `$VISUAL`),
+  `--editor-history N` (last N responses included as reference
+  block in the editor).
+- **Composition**: `--prepend FILE` and `--append FILE`
+  (repeatable), `--attach GLOB` (repeatable, embeds files with
+  `File: PATH` framing), `--git-diff`, `--git-log [N]`,
+  `--git-status`, `--var K=V` template substitution.
+- **Output**: `--json` (versioned envelope on stdout), `--quiet`
+  (answer only, no metadata), `--code [LANG]` (extract fenced
+  blocks), `-o, --out PATH` (write to file AND stdout, extension
+  drives format), `--stream` (TTY-only progress indicator),
+  `--show-thinking` (extended-thinking blocks live on stderr,
+  requires `--stream`), `--trace PATH` (writes spawned claude
+  streaming events to PATH as JSONL; observability handle for
+  in-flight runs), `--echo` (print resolved prompt), `--plain`
+  (master kill-switch: no markdown render, no color, no spinner).
+- **Sessions**: `-c [ID]` (bare = continue most recent in cwd;
+  `-c=ID` = resume specific session by id), `--fork` (branch a
+  resumed session; requires `-c=ID`), `--pick` (interactive fuzzy
+  chooser), `--fresh` (force new session, cancels env/profile
+  continue), `--agent NAME` (pin a specific Claude Code subagent
+  for the run), `-w, --worktree [=NAME]` (run in a fresh git
+  worktree; named or auto-generated).
+- **Permissions**: `--readonly` (Read/Glob/Grep only -- the
+  default), `--writable` (adds Edit/Write), `--allow-tool TOOL`
+  (repeatable), `--deny-tool TOOL` (repeatable), `--full-auto`
+  (bypass everything), `--show-permissions` (preview the
+  effective allow/deny set with per-entry provenance and exit 0
+  without calling claude).
+- **Other dispatch flags**: `-C, --cwd PATH` (run as if invoked
+  from a different directory), `--model NAME` (override the model
+  per call), `--no-retry` (disable wrapper-level auto-retry on
+  transient failures; deterministic for orchestrator scripts).
+- **Subcommands**: `roba history` (list recent sessions),
+  `roba last` (reprint last run), `roba cost [--by-project]
+  [--project SLUG] [--json]` (token usage rollup),
+  `roba profile {list,show,init,path,active}`,
+  `roba skill {install,list,show}` (bundled skill library; install
+  to `~/.claude/skills/`), `roba agent {install,list,show}`
+  (bundled agent library; install to `~/.claude/agents/`),
+  `roba alias {list,show,path}` (user-defined aliases from
+  `roba.toml`).
+
+#### Config
+
+- **`roba.toml` config file** with layered resolution:
+  CLI > env (`ROBA_<PARAM>`) > active profile overlay >
+  top-level keys > built-in default > claude default. Project
+  files walk up to the git root; closer-to-cwd wins per key;
+  lists concat across files; vars merge per key.
+- **Profiles**: `[profile.NAME]` overlays in any `roba.toml`;
+  `default` profile auto-applies when none is named (suppressed
+  via `--no-default-profile` or `ROBA_PROFILE=`).
+- **User-defined aliases**: `[alias.NAME]` shortcuts. Each alias
+  is invoked as `roba NAME [args]` and expands to a prompt
+  template (with positional `${1}` / `${@}`, named `${pr}` via the
+  `args` schema, `$$` for literal `$`, and `$(command)` shell
+  substitution) plus default `flags`. Aliases can pin a subagent
+  (`agent = "NAME"`) and override CLI flags. Lookup order:
+  built-in subcommand first, then alias, then unknown-alias
+  suggestions (Levenshtein top-3).
+- **Env-var override layer**: every CLI knob is settable via
+  `ROBA_<PARAM>` (uppercased, `-` -> `_`, prefixed `ROBA_`).
+  Lists comma-separated; vars per-key via `ROBA_VAR_<KEY>`.
+
+#### Output discipline
+
+- stdout = the answer; stderr = metadata (cost footer, tool calls,
+  refusal warnings, spinner, errors).
+- Auto-detect: rich on a TTY, plain on a pipe. `NO_COLOR=1`
+  honored.
+- **Versioned JSON envelope** (`--json`):
+  - Success: `{ "version": 1, "result": { QueryResult }, "refusal": bool }`
+  - Error: `{ "version": 1, "error": { kind, message, exit_code, chain } }`
+  - V1 contract: top-level `version` always present; `result` xor
+    `error`; inner fields preserved across additive changes;
+    breaking shape changes bump the version.
+- **Refusal signal** (`refusal: bool` in the success envelope) for
+  non-TTY consumers; exit code stays 0 on refusal (the call
+  succeeded, the heuristic labels the body).
+- **Structured JSON error envelope**: runtime failures emit a
+  parseable `{ "error": {...} }` object on stderr instead of plain
+  anyhow text. `kind` mirrors the typed exit code.
+
+#### Permissions precedence + cross-layer suppression
+
+- CLI `--readonly` actively suppresses lower-layer `writable =
+  true` and `full_auto = true`. CLI `--writable` suppresses
+  lower-layer `full_auto = true`. Mutual-exclusion holds across
+  layers, not just within the CLI parse.
+- `allow_tool` / `deny_tool` lists accumulate across files;
+  closer-to-cwd entries concat on top of farther-from-cwd.
+  CLI / env replace the resolved list; profile concats.
+- Deny wins when the same tool appears in both lists.
+
+#### Failure modes
+
+- Typed exit codes: 0 ok, 1 generic, 2 auth (re-login needed), 3
+  budget exceeded, 4 timeout.
+- Fail-fast on interactive flags without a TTY: `-e`, `--pick`,
+  and `--editor-history N > 0` exit 1 with a clear message
+  instead of hanging on input that can't arrive.
+- `--no-retry` flag and `ROBA_NO_RETRY=1` env var disable
+  wrapper-level auto-retry for the run.
+
+#### Skill + agent library
+
+- **Layer 1 skills** bundled in the binary: `draft-pr-first`,
+  `roba-orchestration-prompt`, `roba-spiral-diagnosis`,
+  `git-branch-pr-workflow`, `git-fix-pr-branching`,
+  `git-delete-merged-branches`, `heredoc-backticks`.
+- **Layer 2 agents** bundled in the binary: `roba-runner`
+  (per-task worker that runs the draft-PR-first lifecycle for a
+  single issue), `roba-orchestrator` (multi-task manager that
+  plans, sequences, and dispatches to the runner, with
+  parallelization heuristics).
+- `roba skill install` and `roba agent install` copy the bundle
+  into `~/.claude/skills/` and `~/.claude/agents/` so any Claude
+  Code session auto-discovers them.
 
 ### Changed
 
-- Documented the permissions precedence model explicitly in
-  README.md (new "Precedence" subsection in `## Permissions`) and
-  `docs/profiles.md` (new "Precedence (full layer list)" section
-  with a permissions-specific subsection). Spells out the
-  CLI > env > profile overlay > top-level > built-in default
-  layering, the `writable` / `full_auto` interaction, the
-  `allow_tool` / `deny_tool` concat-vs-replace behavior, and the
-  deny-wins rule. Also documents the known gap that CLI
-  `--readonly` does not actively suppress a profile / env
-  `writable = true` (workaround: `--no-default-profile`). Pinned
-  by a new unit test in `src/profile.rs`. Closes #44.
-
-- **Config schema** (breaking; no published users yet):
-  - File renamed: `~/.config/roba/profiles.toml` -> `~/.config/roba.toml`;
-    `.roba/profiles.toml` -> `roba.toml` (no more `.roba/` directory).
-  - Fields renamed: `continue_session` -> `continue`,
-    `allow_tools` -> `allow_tool`, `deny_tools` -> `deny_tool`.
-  - Top-level keys in `roba.toml` are now project-wide defaults
-    that apply to every call (previously only `[profile.NAME]`
-    tables were honored).
-  - Project chain walks all the way up to the git root collecting
-    every `roba.toml`; closer-to-cwd files override farther ones
-    per-key, lists concat, vars merge per-key (previously only
-    the closest file was loaded).
+- **Permissions precedence model documented** in `README.md`
+  (`## Permissions` -> `### Precedence`) and `docs/profiles.md`.
+  Spells out the CLI > env > profile overlay > top-level >
+  built-in default layering, the `writable` / `full_auto`
+  interaction, the concat-vs-replace behavior for tool lists, and
+  the deny-wins rule.
+- **`--quiet` vs `--plain` help text** disambiguated. They're
+  orthogonal: `--quiet` is the metadata kill-switch (suppress
+  footer, spinner, tool markers); `--plain` is the decoration
+  kill-switch (no markdown render, no color, no spinner).
+- **`--readonly` is now an active suppressor** rather than a
+  no-op marker. Passing `--readonly` on the CLI cancels a
+  `writable = true` or `full_auto = true` coming from a profile
+  or env var.
+- **`--stream` documented as a TTY-only nicety**, never
+  load-bearing on a pipe; the agent-ABI surface (`--json`, typed
+  exit codes, error envelope) is the contract for non-TTY
+  consumers.
+- **Security audit moved off the PR critical path** to a daily
+  scheduled job (`.github/workflows/security-audit.yml`) + manual
+  `workflow_dispatch`. PR CI feedback no longer waits on the
+  audit's full dep-tree scan.
 
 ### Removed
 
-- `ROBA_PROFILES_FILE` env var (point-at-an-extra-file). Subsumed
-  by the per-knob `ROBA_<PARAM>` override layer.
+These are pre-publish breaking surface changes; no published
+users yet.
 
-### Added
+- **`--head N`** and **`--tail N`** flags. Pipe mode already has
+  `| head`/`| tail`; TTY scrollback covers the TTY case;
+  source-vs-rendered semantics were never pinned.
+- **`--save PATH`** and **`--tee PATH`** flags. Collapsed into
+  the new `-o, --out PATH` (writes to file AND stdout; extension
+  drives format; `--json` forces JSON regardless). File-only is
+  the Unix idiom `-o foo.json > /dev/null`.
+- **`--resume ID`** flag. Unified into `-c [ID]` (`-c` bare =
+  continue most recent; `-c=ID` = resume specific). `--fork` now
+  requires `-c=ID`.
+- **`ROBA_PROFILES_FILE`** env var (point-at-an-extra-file).
+  Subsumed by the general `ROBA_<PARAM>` override layer + file
+  walk-up discovery.
 
-- Initial cut of `roba`: single-prompt CLI runner over `claude-wrapper`.
-- Input sources: positional, stdin (`-` or piped), `-f`, `-e`,
-  `--prepend`, `--append`, `--attach` (glob), `--git-diff`,
-  `--git-log`, `--git-status`, `--var K=V`.
-- Output: plain default, `--json`, `--quiet`, `--code [LANG]`,
-  `--head N` / `--tail N`, `--save`, `--tee`, `--stream`.
-- Sessions: `-c` / `--resume ID`, `--fork`, `--pick` fuzzy chooser,
-  `roba history`, `roba last`.
-- Permissions: `--readonly`, `--full-auto` presets.
-- Profiles: `--profile NAME` from `~/.config/roba.toml`,
-  `roba profile {list,show,init,path}` subcommands.
-- Cost: `roba cost` token rollup, `--by-project`, `--project`,
-  `--json`.
-- TTY UX: termimad markdown render, indicatif spinner, dim
-  metadata, colored refusal/error markers, `--plain` master
-  kill-switch, `NO_COLOR` env honored.
-- Typed exit codes: 0 ok, 1 generic, 2 auth, 3 budget, 4 timeout.
-- 86 unit tests, 22 mechanical CLI tests, 12 live-claude tests
-  (`#[ignore]` by default).
+### Fixed
+
+- Fail fast when an interactive-only flag is set without a TTY
+  on stdin. `-e` / `--editor` and `--pick` pre-check
+  `stdin.is_terminal()` and exit 1 with a canonical message
+  instead of hanging on input that can't arrive.
+
+### Docs
+
+- **`docs/vs-claude-p.md`**: side-by-side comparison between
+  `roba` and `claude -p`, with worked examples for common cases.
+- **`docs/use-cases.md`**: cookbook-style use cases, seeded with
+  the multi-repo orchestration pattern (orchestration bus =
+  headless `roba` calls; cockpit = optional tmux for
+  observation).
+- **`docs/examples/github-actions/pr-review.yml`**: example
+  workflow YAML for running roba as a PR auto-reviewer.
+- **`docs/profiles.md`**: gh allow-list worked example under
+  `## Worked examples`.
