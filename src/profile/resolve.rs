@@ -247,6 +247,11 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     {
         args.no_dollars = v;
     }
+    if let Some(v) = profile.no_agent_check
+        && !args.no_agent_check
+    {
+        args.no_agent_check = v;
+    }
 }
 
 // ---------------------------------------------------------------------------

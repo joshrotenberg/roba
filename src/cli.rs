@@ -434,6 +434,13 @@ pub struct AskArgs {
     #[arg(long, help_heading = "Permissions")]
     pub show_permissions: bool,
 
+    /// Skip the agent frontmatter permission check. When `--agent NAME`
+    /// is set, roba normally parses the agent's `tools:` field and warns
+    /// if any declared tools are not in the resolved allowlist. This flag
+    /// (or `--quiet` / `--full-auto`) suppresses that warning.
+    #[arg(long, help_heading = "Permissions")]
+    pub no_agent_check: bool,
+
     // ----- Permission provenance (internal; not a CLI surface) --------------
     // Populated as each layer contributes a value, so --show-permissions
     // can report where the effective permission set came from. The layer

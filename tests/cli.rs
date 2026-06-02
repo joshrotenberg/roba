@@ -977,3 +977,163 @@ fn cost_by_project_shows_cost_column() {
         .success()
         .stdout(predicate::str::contains("COST").and(predicate::str::contains("$3.00")));
 }
+
+// ---------------------------------------------------------------------------
+// --no-agent-check / agent frontmatter permission check (#123)
+// ---------------------------------------------------------------------------
+
+/// A project dir whose `.claude/agents/test-agent/AGENT.md` declares
+/// Bash (which is NOT in roba's default read-only allowlist).
+fn project_with_bash_agent() -> tempfile::TempDir {
+    make_dir_with_files(&[
+        (".git/HEAD", ""),
+        (
+            ".claude/agents/test-agent/AGENT.md",
+            "---\nname: Test Agent\ntools:\n  - Bash\n---\n# body\n",
+        ),
+    ])
+}
+
+#[test]
+fn agent_check_warning_on_missing_tool() {
+    // The agent declares Bash but the default allowlist only has
+    // Read/Glob/Grep. roba should emit a warning to stderr before
+    // failing on the (deliberately) missing prepend file.
+    let project = project_with_bash_agent();
+    let user_home = tempfile::tempdir().expect("user home");
+
+    let out = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "--agent",
+            "test-agent",
+            "--prepend",
+            "/no/such/agent-check-warn-test",
+            "some prompt",
+        ])
+        .env("HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .output()
+        .expect("run");
+
+    // The run fails because the prepend file is missing, but the
+    // warning must have already been emitted before that.
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("[roba] warning:"),
+        "expected agent check warning, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("test-agent"),
+        "expected agent name in warning, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Bash"),
+        "expected missing tool in warning, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("reading --prepend"),
+        "expected prepend error after the warning, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn agent_check_suppressed_by_no_agent_check_flag() {
+    let project = project_with_bash_agent();
+    let user_home = tempfile::tempdir().expect("user home");
+
+    let out = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "--agent",
+            "test-agent",
+            "--no-agent-check",
+            "--prepend",
+            "/no/such/agent-check-suppressed-test",
+            "some prompt",
+        ])
+        .env("HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .output()
+        .expect("run");
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("[roba] warning:"),
+        "expected no warning with --no-agent-check, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("reading --prepend"),
+        "expected prepend error, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn agent_check_suppressed_by_quiet() {
+    let project = project_with_bash_agent();
+    let user_home = tempfile::tempdir().expect("user home");
+
+    let out = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "--agent",
+            "test-agent",
+            "--quiet",
+            "--prepend",
+            "/no/such/agent-check-quiet-test",
+            "some prompt",
+        ])
+        .env("HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .output()
+        .expect("run");
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("[roba] warning:"),
+        "expected no warning with --quiet, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("reading --prepend"),
+        "expected prepend error, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn agent_check_suppressed_by_full_auto() {
+    let project = project_with_bash_agent();
+    let user_home = tempfile::tempdir().expect("user home");
+
+    let out = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "--agent",
+            "test-agent",
+            "--full-auto",
+            "--prepend",
+            "/no/such/agent-check-fullauto-test",
+            "some prompt",
+        ])
+        .env("HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .output()
+        .expect("run");
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("[roba] warning:"),
+        "expected no warning with --full-auto, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("reading --prepend"),
+        "expected prepend error, got:\n{stderr}"
+    );
+}

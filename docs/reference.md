@@ -56,6 +56,7 @@ The default action. Sends a prompt to claude and renders the answer.
 | `--allow-tool TOOL` | | Add a tool/pattern to the allow list (repeatable) |
 | `--deny-tool TOOL` | | Deny a tool/pattern (repeatable; deny beats allow) |
 | `--show-permissions` | | Preview resolved allow/deny set with provenance; exit 0 |
+| `--no-agent-check` | | Skip the agent frontmatter tool-coverage check |
 | `--profile NAME` | | Apply a named profile |
 | `--no-default-profile` | | Skip auto-applying `default` and `ROBA_PROFILE` |
 | `-C PATH` | | Change working directory before all resolution |

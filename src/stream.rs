@@ -112,7 +112,8 @@ pub async fn run_streaming(
         // find the session JSONL without needing --trace. Not gated by TTY
         // (orchestrators running without a TTY still need it); gated by
         // --quiet because it is metadata.
-        if !session_id_printed && !args.quiet
+        if !session_id_printed
+            && !args.quiet
             && let Some(id) = event.session_id()
         {
             eprintln!("[roba] session: {id}");
