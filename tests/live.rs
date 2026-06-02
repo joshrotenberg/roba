@@ -3,9 +3,9 @@
 //! you opt in:
 //!
 //!   cargo test --test live -- --ignored --nocapture
-//!   just live              # equivalent
-//!   just live-smoke        # ~3 tests, ~$0.05, ~10s
-//!   just live-perms        # one category
+//!   just live                  # equivalent (full suite)
+//!   just live-smoke            # the cheap subset, a few tests
+//!   just live-category perms   # one category by prefix
 //!
 //! Each test runs in a fresh tempdir via `-C PATH` so sessions don't
 //! bleed between tests (claude scopes sessions by cwd / project, and
@@ -18,8 +18,14 @@
 //! Budget: at haiku rates the full suite is well under $1.
 //! Keep prompts short and answers terse to minimize spend.
 //!
-//! Naming convention: `live_<category>_<descriptor>` so `cargo test`
-//! filters work: `live_perms`, `live_output`, `live_session`, etc.
+//! Naming convention: every test is named `live_<category>_<descriptor>`
+//! so `cargo test ... live_<category>_` filters a single category and
+//! the `just live-category <cat>` target works. Current categories:
+//! `smoke`, `output`, `session`, `stream`, `trace`, `perms`, `compose`,
+//! `profile`, `env`. New categories from #22 (e.g. `cost`, `subcmd`)
+//! follow the same shape. When adding a test, pick the category prefix
+//! first; co-locate the helpers (`roba_in`, `fresh_dir`,
+//! `fixture_with_config`, `empty_user_home`) at the top of this file.
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -64,12 +70,12 @@ fn empty_user_home() -> tempfile::TempDir {
 }
 
 // ---------------------------------------------------------------------------
-// basic round-trip
+// smoke: basic round-trip
 // ---------------------------------------------------------------------------
 
 #[test]
 #[ignore]
-fn live_basic_prompt() {
+fn live_smoke_prompt() {
     let dir = fresh_dir();
     roba_in(dir.path())
         .arg("respond with the single word: pong")
@@ -80,7 +86,7 @@ fn live_basic_prompt() {
 
 #[test]
 #[ignore]
-fn live_basic_cwd_scopes_session_to_path() {
+fn live_smoke_cwd_scopes_session_to_path() {
     // Verify -C scopes claude's session to the given path: a seeded
     // session in dir A is reachable from -c when we point -C at A again,
     // even though the test process's cwd never changed.
