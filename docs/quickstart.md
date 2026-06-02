@@ -110,8 +110,7 @@ roba --full-auto "implement the stub in src/lib.rs"   # sandbox only
 expand a prompt template plus flags. See [`profiles.md`](profiles.md)
 and [`aliases.md`](aliases.md).
 
-**Skill and agent library.** roba bundles operational skills and two
-orchestrator subagents (`roba-orchestrator`, `roba-runner`) for
-multi-task, multi-repo work from inside Claude Code. See
-[Agents and orchestration](agents-overview.md) for the overview and
-install instructions.
+**Skills and agents.** Drop skills into `~/.claude/skills/` and
+agents into `~/.claude/agents/`; Claude Code auto-discovers them.
+[joshrotenberg/agent-tools](https://github.com/joshrotenberg/agent-tools)
+is one curated set.

@@ -5,9 +5,10 @@ composable input, structured output, profiles, history, cost
 tracking. One invocation, one answer, done.
 
 **For agents** in [Claude Code](https://github.com/anthropics/claude-code)
--- an optional bundled library of skills and subagents encodes
-patterns for multi-task, multi-repo orchestration. See
-[Skill + agent library](#skill--agent-library) below.
+-- a stable scripting ABI: typed exit codes, versioned `--json`
+envelope, `--trace` observability handle, `--no-retry` for
+deterministic-on-failure runs. Bring your own skills and agents via
+`~/.claude/`.
 
 Built on [`claude-wrapper`](https://crates.io/crates/claude-wrapper).
 
@@ -45,7 +46,6 @@ and authenticated on your PATH.
 | **Permissions** | `--readonly`, `--writable`, `--allow-tool`/`--deny-tool`, `--full-auto`, `--show-permissions` |
 | **Profiles** | `--profile NAME` from `~/.config/roba.toml`, `roba profile {list,show,init,path}` |
 | **Aliases** | `git`-style `[alias.NAME]` shortcuts in `roba.toml` -> `roba NAME [args]` expands a prompt template (with variable + shell substitution) plus default flags, `roba alias {list,show,path}` |
-| **Skill library** | `roba skill {install,list,show}` and `roba agent {install,list,show}` install the bundled skills + orchestrator subagents into `~/.claude/` |
 | **TTY UX** | termimad markdown render, indicatif spinner, dim metadata, colored refusal/error markers, `--plain` master kill-switch, `NO_COLOR` honored |
 | **Scripting** | typed exit codes (auth=2, budget=3, timeout=4), clean stdout/stderr split, structured `--json` output, `--no-retry` for deterministic-on-failure runs |
 | **Usage tracking** | `roba cost`, `roba cost --by-project`; dollar amounts from a bundled per-model rate table (`--rates-file PATH` / `ROBA_RATES_FILE` to override, `--no-dollars` for tokens only) |
@@ -110,32 +110,18 @@ The deep references live in dedicated pages, also on the [docs site](https://jos
 - **Use cases** -- patterns roba enables, seeded with multi-repo
   orchestration: [`docs/use-cases.md`](docs/use-cases.md). CI
   auto-review: [`docs/examples/github-actions/`](docs/examples/github-actions/).
-- **Agents and orchestration** -- the bundled skill + agent library, install,
-  and the orchestrator/runner pattern:
-  [`docs/agents-overview.md`](docs/agents-overview.md).
 - **Reference** -- flags, env vars, exit codes, JSON envelope, and
   config schema in one place: [`docs/reference.md`](docs/reference.md).
 
-## Skill + agent library
+## Bring your own skills and agents
 
-roba bundles an optional library of operational skills and
-orchestrator subagents that codify one curated convention for
-driving multi-task, multi-repo work from inside Claude Code. The
-binary works fine without it. Install via `roba skill install` /
-`roba agent install` if the patterns match your work.
-
-Documentation lives with the library:
-[`skills/README.md`](skills/README.md) (Layer 1 operational skills)
-and [`agents/README.md`](agents/README.md) (Layer 2 runner +
-orchestrator subagents). Each bundled item is also addressable by
-URL -- `--url` on `show` prints the canonical doc URLs (rendered site
-+ raw markdown), and `--urls` on `list` swaps the description column
-for them, handy when an agent wants to `WebFetch` the latest source.
-
-For the multi-repo orchestration pattern the library is built for,
-see [`docs/use-cases.md`](docs/use-cases.md). A shell script, a cron
-job, or CI can drive roba just as well via its `--json` envelope,
-typed exit codes, and `--trace` observability handle.
+roba is a pure mechanical wrapper -- it has no bundled skill or agent
+library. Drop skills into `~/.claude/skills/` and agents into
+`~/.claude/agents/`; Claude Code auto-discovers them from those
+locations. [joshrotenberg/agent-tools](https://github.com/joshrotenberg/agent-tools)
+is one curated set if you want a starting point. A shell script, a
+cron job, or CI can drive roba via its `--json` envelope, typed exit
+codes, and `--trace` observability handle.
 
 ## Streaming mode
 

@@ -10,21 +10,18 @@ use anyhow::{Context, Result, bail};
 use claude_wrapper::{Claude, QueryCommand};
 use std::io::IsTerminal;
 
-pub mod agents;
 pub mod aliases;
 pub mod cli;
 pub mod cost;
 pub mod env;
 pub mod error;
 pub mod history;
-pub mod library;
 pub mod output;
 pub mod profile;
 pub mod prompt;
 pub mod rates;
 pub mod render;
 pub mod session;
-pub mod skills;
 pub mod stream;
 
 use crate::cli::{AskArgs, Cli, SubCommand};
@@ -52,8 +49,6 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Some(SubCommand::Last(args)) => run_last(args),
         Some(SubCommand::Profile { action }) => profile::run(action),
         Some(SubCommand::Cost(args)) => cost::run(args),
-        Some(SubCommand::Skill { action }) => skills::run(action),
-        Some(SubCommand::Agent { action }) => agents::run(action),
         Some(SubCommand::Alias { action }) => aliases::run(action),
         // An unrecognized leading word: clap routes it here. The alias
         // name landed in `ask.prompt`; the remaining tokens are the
