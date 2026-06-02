@@ -19,10 +19,13 @@ renames, schema renames) are listed under `Removed`.
 
 #### Surface
 
-- **Prompt sources**: positional argument, stdin (`-` or piped),
-  `-f FILE`, `-e` (compose in `$EDITOR` / `$VISUAL`),
-  `--editor-history N` (last N responses included as reference
-  block in the editor).
+- **Prompt sources**: positional argument, `-p, --prompt TEXT`
+  (explicit prompt string; mutually exclusive with the positional
+  argument -- the escape hatch when the positional form would be
+  ambiguous against an optional-value flag like `-c` or `-w`, e.g.
+  `roba -c -p "follow up"`), stdin (`-` or piped), `-f FILE`,
+  `-e` (compose in `$EDITOR` / `$VISUAL`), `--editor-history N`
+  (last N responses included as reference block in the editor).
 - **Composition**: `--prepend FILE` and `--append FILE`
   (repeatable), `--attach GLOB` (repeatable, embeds files with
   `File: PATH` framing), `--git-diff`, `--git-log [N]`,
@@ -37,12 +40,12 @@ renames, schema renames) are listed under `Removed`.
   in-flight runs), `--echo` (print resolved prompt), `--plain`
   (master kill-switch: no markdown render, no color, no spinner).
 - **Sessions**: `-c [ID]` (bare = continue most recent in cwd;
-  `-c=ID` = resume specific session by id), `--fork` (branch a
-  resumed session; requires `-c=ID`), `--pick` (interactive fuzzy
-  chooser), `--fresh` (force new session, cancels env/profile
-  continue), `--agent NAME` (pin a specific Claude Code subagent
-  for the run), `-w, --worktree [=NAME]` (run in a fresh git
-  worktree; named or auto-generated).
+  `-c ID` or `-c=ID` = resume specific session by id), `--fork`
+  (branch a resumed session; requires an explicit id, `-c ID
+  --fork`), `--pick` (interactive fuzzy chooser), `--fresh` (force
+  new session, cancels env/profile continue), `--agent NAME` (pin a
+  specific Claude Code subagent for the run), `-w, --worktree
+  [NAME]` (run in a fresh git worktree; named or auto-generated).
 - **Permissions**: `--readonly` (Read/Glob/Grep only -- the
   default), `--writable` (adds Edit/Write), `--allow-tool TOOL`
   (repeatable), `--deny-tool TOOL` (repeatable), `--full-auto`
@@ -164,6 +167,18 @@ renames, schema renames) are listed under `Removed`.
   scheduled job (`.github/workflows/security-audit.yml`) + manual
   `workflow_dispatch`. PR CI feedback no longer waits on the
   audit's full dep-tree scan.
+- **BREAKING (pre-publish): `-c` / `--continue` and `-w` /
+  `--worktree` no longer require `=` for their values.** The
+  `require_equals` constraint was dropped, so the natural
+  space-separated form now works (`roba -c 7c3f9a21`,
+  `roba -w mybranch`). The trade-off: because the value is
+  optional, a bare word right after the flag is consumed as that
+  value, so `roba -c "follow up"` now treats `follow up` as the
+  session id and `roba -w "do it"` treats `do it` as the worktree
+  name (previously these were parsed as the prompt). The documented
+  escape is the new `-p` / `--prompt` flag:
+  `roba -c -p "follow up"`, `roba -w mybranch -p "do it"`. The
+  `=` form (`-c=ID`, `-w=NAME`) still works unchanged.
 
 ### Removed
 
@@ -178,8 +193,8 @@ users yet.
   drives format; `--json` forces JSON regardless). File-only is
   the Unix idiom `-o foo.json > /dev/null`.
 - **`--resume ID`** flag. Unified into `-c [ID]` (`-c` bare =
-  continue most recent; `-c=ID` = resume specific). `--fork` now
-  requires `-c=ID`.
+  continue most recent; `-c ID` or `-c=ID` = resume specific).
+  `--fork` now requires an explicit id (`-c ID --fork`).
 - **`ROBA_PROFILES_FILE`** env var (point-at-an-extra-file).
   Subsumed by the general `ROBA_<PARAM>` override layer + file
   walk-up discovery.
