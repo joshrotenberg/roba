@@ -39,6 +39,12 @@ renames, schema renames) are listed under `Removed`.
   streaming events to PATH as JSONL; observability handle for
   in-flight runs), `--echo` (print resolved prompt), `--plain`
   (master kill-switch: no markdown render, no color, no spinner).
+- **Dispatch session id on stderr**: when the streaming pipeline
+  is active (`--stream` or `--trace`), roba prints `[roba]
+  session: <id>` to stderr as soon as the spawned session id
+  becomes known (first event). Gives orchestrators a stable handle
+  to the session JSONL without requiring `--trace` to be set
+  upfront. Suppressed by `--quiet`.
 - **Sessions**: `-c [ID]` (bare = continue most recent in cwd;
   `-c ID` or `-c=ID` = resume specific session by id), `--fork`
   (branch a resumed session; requires an explicit id, `-c ID

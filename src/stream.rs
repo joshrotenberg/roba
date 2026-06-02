@@ -98,12 +98,25 @@ pub async fn run_streaming(
     let mut trace = open_trace(args.trace.as_deref())?;
     let mut trace_err: Option<anyhow::Error> = None;
 
+    let mut session_id_printed = false;
+
     let stream_result = stream_query(claude, &cmd, |event| {
         if let Some(t) = trace.as_mut()
             && let Err(e) = t.write_event(&event)
             && trace_err.is_none()
         {
             trace_err = Some(e);
+        }
+        // Print the spawned session id to stderr on the first event that
+        // carries it. One line per dispatch so orchestrators and humans can
+        // find the session JSONL without needing --trace. Not gated by TTY
+        // (orchestrators running without a TTY still need it); gated by
+        // --quiet because it is metadata.
+        if !session_id_printed && !args.quiet
+            && let Some(id) = event.session_id()
+        {
+            eprintln!("[roba] session: {id}");
+            session_id_printed = true;
         }
         if event.is_result() {
             if let Ok(qr) = serde_json::from_value::<QueryResult>(event.data.clone()) {
@@ -336,6 +349,25 @@ mod tests {
         assert_eq!(body.lines().count(), 1);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    // The `session_id_printed` guard in `run_streaming` uses
+    // `StreamEvent::session_id()`. Verify the accessor returns the field
+    // from the event data so the guard behaves as documented.
+    #[test]
+    fn stream_event_session_id_accessor() {
+        let ev: StreamEvent = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "session_id": "abc-123"
+        }))
+        .unwrap();
+        assert_eq!(ev.session_id(), Some("abc-123"));
+
+        let no_id: StreamEvent = serde_json::from_value(serde_json::json!({
+            "type": "system"
+        }))
+        .unwrap();
+        assert_eq!(no_id.session_id(), None);
     }
 
     #[test]
