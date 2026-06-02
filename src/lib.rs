@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use claude_wrapper::{Claude, QueryCommand};
 use std::io::IsTerminal;
 
+pub mod agent_check;
 pub mod aliases;
 pub mod cli;
 pub mod cost;
@@ -131,6 +132,12 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         eprintln!("resuming session {}", id.get(..8).unwrap_or(&id));
         args.continue_session = Some(Some(id));
     }
+    // Agent frontmatter permission check: warn if the agent declares
+    // tools that are not in the resolved allowlist. Best-effort and
+    // non-blocking -- dispatch still proceeds.
+    let cwd = std::env::current_dir().unwrap_or_default();
+    agent_check::maybe_warn(&args, &cwd);
+
     // `-p / --prompt` is an explicit alternative to the positional
     // prompt (clap enforces the mutual exclusion via conflicts_with).
     // Whichever was supplied is the explicit prompt string; the rest of

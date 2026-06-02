@@ -184,6 +184,10 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
         }
     }
 
+    if !args.no_agent_check && read_truthy(env, "ROBA_NO_AGENT_CHECK") {
+        args.no_agent_check = true;
+    }
+
     // ----- Failure modes -----
     if !args.no_retry && read_truthy(env, "ROBA_NO_RETRY") {
         args.no_retry = true;
