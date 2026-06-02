@@ -57,7 +57,18 @@ renames, schema renames) are listed under `Removed`.
   (repeatable), `--deny-tool TOOL` (repeatable), `--full-auto`
   (bypass everything), `--show-permissions` (preview the
   effective allow/deny set with per-entry provenance and exit 0
-  without calling claude).
+  without calling claude), `--no-agent-check` (suppress the
+  agent frontmatter permission check).
+- **Agent frontmatter permission check**: when `--agent NAME` is
+  set, roba parses the agent's `tools:` field from its YAML
+  frontmatter and warns on stderr if any declared tools are not
+  covered by the resolved allowlist. Granular `Bash(git:*)` allows
+  count as covering bare `Bash`. The check is best-effort and
+  non-blocking -- dispatch proceeds regardless. Suppressed by
+  `--full-auto`, `--quiet`, and `--no-agent-check`; also
+  honoured via `ROBA_NO_AGENT_CHECK` env var and `no_agent_check
+  = true` in a profile. Closes the silent partial-capability trap
+  when a lower-layer profile doesn't grant what the agent needs.
 - **Other dispatch flags**: `-C, --cwd PATH` (run as if invoked
   from a different directory), `--model NAME` (override the model
   per call), `--no-retry` (disable wrapper-level auto-retry on

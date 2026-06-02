@@ -86,6 +86,9 @@ pub struct Profile {
     /// Omit the dollar figure from the footer (`--no-dollars`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub no_dollars: Option<bool>,
+    /// Skip the agent frontmatter permission check (`--no-agent-check`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_agent_check: Option<bool>,
 }
 
 /// Profile value for the `worktree` field. Mirrors the CLI's
@@ -139,6 +142,7 @@ impl Profile {
             && self.trace.is_none()
             && self.rates_file.is_none()
             && self.no_dollars.is_none()
+            && self.no_agent_check.is_none()
     }
 
     /// Merge `other` on top of `self`. Used to layer roba.toml files
@@ -176,6 +180,7 @@ impl Profile {
             trace,
             rates_file,
             no_dollars,
+            no_agent_check,
         } = other;
 
         self.prepend.append(&mut prepend);
@@ -248,6 +253,9 @@ impl Profile {
         }
         if no_dollars.is_some() {
             self.no_dollars = no_dollars;
+        }
+        if no_agent_check.is_some() {
+            self.no_agent_check = no_agent_check;
         }
     }
 }

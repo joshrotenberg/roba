@@ -98,6 +98,47 @@ final allow set after settings merge -- it doesn't read project
 settings. Treat it as a roba-side preview, not a claude-side
 truth.
 
+## Agent permission checks
+
+When you pass `--agent NAME`, roba looks up the agent's `AGENT.md`
+in Claude Code's standard paths (first in the project's
+`.claude/agents/`, then in `~/.claude/agents/`), parses the `tools:`
+field from its YAML frontmatter, and warns on stderr if any declared
+tools are not covered by the resolved allowlist:
+
+```text
+[roba] warning: agent 'my-agent' declares tools not in the resolved allowlist: [Bash]
+  hint: pass --full-auto, --allow-tool 'Bash(...)', or --no-agent-check to suppress
+```
+
+The check is **best-effort and non-blocking** -- dispatch always
+proceeds. It closes the "silent partial-capability trap" where a
+lower-layer profile doesn't grant the tools the agent needs, and
+the run quietly succeeds (or partially succeeds) with wrong permissions.
+
+**Coverage rules:**
+
+- Exact match: `Bash` in the allowlist covers `Bash` declared by
+  the agent.
+- Granular covers bare: `Bash(git:*)` in the allowlist counts as
+  covering a declared `Bash` (any `TOOL(...)` entry satisfies a bare
+  `TOOL` declaration).
+- `--full-auto` covers everything; the check is skipped entirely.
+- The built-in safe trio (`Read`, `Glob`, `Grep`) is always covered.
+
+**Suppression:**
+
+| Method | Effect |
+|---|---|
+| `--full-auto` | All tools covered; check is skipped |
+| `--quiet` | Metadata suppressed; warning is not emitted |
+| `--no-agent-check` | Explicitly opt out of the check for this run |
+| `ROBA_NO_AGENT_CHECK=1` | Env-layer equivalent of `--no-agent-check` |
+| `no_agent_check = true` in a profile | Profile-layer equivalent |
+
+If the agent file is not found, **no warning is emitted** -- that is
+a misconfiguration the user already knows about.
+
 ## Previewing the resolved set
 
 Because a lower-layer profile can quietly add `writable = true` or
