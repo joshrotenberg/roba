@@ -340,6 +340,42 @@ fn live_stream_emits_to_stdout() {
 
 #[test]
 #[ignore]
+fn live_stream_session_id_on_stderr() {
+    // When --stream is active the spawned session id is printed to stderr
+    // as `[roba] session: <id>` on the first event that carries it.
+    // --quiet suppresses the line (it is metadata).
+    let dir = fresh_dir();
+
+    // With --stream the line must appear on stderr.
+    let out = roba_in(dir.path())
+        .args(["--stream", "respond with the single word: ping"])
+        .output()
+        .expect("run roba --stream");
+    assert!(out.status.success(), "roba --stream failed: {out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("[roba] session:"),
+        "expected [roba] session: on stderr with --stream, got stderr: {stderr}"
+    );
+
+    // With --quiet the line must be suppressed.
+    let quiet_out = roba_in(dir.path())
+        .args(["--stream", "--quiet", "respond with the single word: ping"])
+        .output()
+        .expect("run roba --stream --quiet");
+    assert!(
+        quiet_out.status.success(),
+        "roba --stream --quiet failed: {quiet_out:?}"
+    );
+    let quiet_stderr = String::from_utf8_lossy(&quiet_out.stderr);
+    assert!(
+        !quiet_stderr.contains("[roba] session:"),
+        "expected no [roba] session: on stderr with --quiet, got stderr: {quiet_stderr}"
+    );
+}
+
+#[test]
+#[ignore]
 fn live_trace_writes_jsonl() {
     // --trace PATH forces the streaming pipeline internally (no
     // --stream needed) and writes every spawned-session event to PATH

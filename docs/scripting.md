@@ -17,6 +17,11 @@ agent surface) lives in [`permissions.md`](permissions.md).
   capture it.
 - Auto-detect: rich on a TTY, plain on a pipe. `--plain` is the
   manual override. `NO_COLOR=1` honored.
+- **Dispatch session id**: when the streaming pipeline is active
+  (`--stream` or `--trace`), roba prints `[roba] session: <id>`
+  to stderr on the first event that carries the id. Gives
+  orchestrators a stable handle to `~/.claude/projects/<dir>/<id>.jsonl`
+  without requiring `--trace` upfront. Suppressed by `--quiet`.
 
 So `roba "foo" | jq` always sees clean stdout, even with the
 spinner / footer / tool calls humming on stderr.
