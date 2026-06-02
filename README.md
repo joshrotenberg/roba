@@ -33,7 +33,7 @@ cargo install roba
 [claude-code](https://github.com/anthropics/claude-code) installed
 and authenticated on your PATH.
 
-**Docs:** full reference, topic guides, and the skill/agent library at
+**Docs:** full reference and topic guides at
 [joshrotenberg.github.io/roba](https://joshrotenberg.github.io/roba/).
 
 ## What it does that `claude -p` doesn't
