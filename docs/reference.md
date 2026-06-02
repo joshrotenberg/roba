@@ -119,26 +119,6 @@ Inspect user-defined aliases.
 | `show NAME` | One alias's definition + expansion preview |
 | `path` | Which files contribute aliases |
 
-### `roba skill`
-
-Manage the bundled skill library.
-
-| Verb | Notes |
-|---|---|
-| `install [--to PATH] [--dry-run] [--force] [--skip]` | Copy to `~/.claude/skills/` |
-| `list [--urls]` | Bundled skills; `--urls` swaps description for URL columns |
-| `show NAME [--url]` | Print SKILL.md body; `--url` prints URLs and suppresses body |
-
-### `roba agent`
-
-Manage the bundled agent library.
-
-| Verb | Notes |
-|---|---|
-| `install [--to PATH] [--dry-run] [--force] [--skip]` | Copy to `~/.claude/agents/` |
-| `list [--urls]` | Bundled agents; `--urls` swaps description for URL columns |
-| `show NAME [--url]` | Print AGENT.md body; `--url` prints URLs and suppresses body |
-
 ---
 
 ## Environment variables
