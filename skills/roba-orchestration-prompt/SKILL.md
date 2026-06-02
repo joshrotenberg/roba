@@ -29,6 +29,13 @@ commands, include the pre-flight check pattern from
 the top of the steps list -- a blocked tool should fail loud, not
 silently degrade into a "run this yourself" artifact.
 
+For tasks involving "release readiness" / "release audit" / version
+analysis, include
+[`../release-audit-anchoring/SKILL.md`](../release-audit-anchoring/SKILL.md)
+in the prompt's discipline section -- anchor the analysis on
+`origin/main`, not the working branch tip, or the audit can report
+false blocking findings on a stale branch.
+
 ```
 ## Setup
 
