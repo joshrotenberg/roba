@@ -113,5 +113,4 @@ A roba *alias* (`[alias.NAME]` in `roba.toml`) can pin one of these
 agents via its `agent` field, turning the agent into a discoverable
 verb -- e.g. `roba implement 42` binding to `roba-runner`. A starter
 alias config that binds these agents is a natural companion to
-`roba agent install`; see the Aliases section of
-[`docs/profiles.md`](../docs/profiles.md#aliases).
+`roba agent install`; see [`docs/aliases.md`](../docs/aliases.md).

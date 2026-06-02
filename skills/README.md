@@ -94,5 +94,4 @@ shortcuts that can carry default flags and pin a subagent. A starter
 alias config is a natural companion to `roba skill install` -- the
 install command is the right delivery vehicle for opinionated starter
 aliases (github verbs, agent bindings) rather than baking them into
-the binary. See the Aliases section of
-[`docs/profiles.md`](../docs/profiles.md#aliases).
+the binary. See [`docs/aliases.md`](../docs/aliases.md).

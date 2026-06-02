@@ -94,7 +94,7 @@ and keeps going even when individual repos fail. No tmux is involved.
 The `--json` shape is the versioned envelope: on success the answer is
 at `.result.result` under `version: 1`; on failure the envelope carries
 an `.error` object with `.error.message` and a typed `.error.exit_code`
-(see the [JSON output contract](../README.md#versioned-json-output)).
+(see the [JSON output contract](scripting.md#versioned-json-envelope)).
 
 ### Why this is roba-specific
 
