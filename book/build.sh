@@ -127,37 +127,87 @@ rm -f "$SRC/skills/README.md.bak"
 sed -i.bak -E 's#\]\(\.\./skills/\)#](../skills/README.md)#g' "$SRC/agents/README.md"
 rm -f "$SRC/agents/README.md.bak"
 
-# 8. Generate SUMMARY.md from the filesystem walk (alphabetical).
+# 8. Generate SUMMARY.md with explicit four-section audience-driven layout.
+#
+# Section order: Getting started, Using roba, Agents & orchestration, Reference.
+# Within each section, page order is hard-coded (not alphabetical) to match
+# the audience-driven framing. mdbook treats top-level `# Title` lines as
+# part separators, rendering them as section headers in the sidebar.
 SUMMARY="$SRC/SUMMARY.md"
 {
   printf '# Summary\n\n'
   printf '[Introduction](README.md)\n\n'
 
-  printf '## Skills\n\n'
-  printf -- '- [Overview](skills/README.md)\n'
+  # -------------------------------------------------------------------------
+  # Getting started
+  # -------------------------------------------------------------------------
+  printf '# Getting started\n\n'
+  if [ -f "$SRC/docs/quickstart.md" ]; then
+    printf -- '- [Quickstart](docs/quickstart.md)\n'
+  fi
+  printf '\n'
+
+  # -------------------------------------------------------------------------
+  # Using roba
+  # -------------------------------------------------------------------------
+  printf '# Using roba\n\n'
+  for page in vs-claude-p use-cases profiles aliases permissions scripting; do
+    if [ -f "$SRC/docs/$page.md" ]; then
+      # Map page filenames to human-readable titles.
+      case "$page" in
+        vs-claude-p)  title="Why not just claude -p" ;;
+        use-cases)    title="Use cases" ;;
+        profiles)     title="Profiles" ;;
+        aliases)      title="Aliases" ;;
+        permissions)  title="Permissions" ;;
+        scripting)    title="Scripting / agent ABI" ;;
+        *)            title="$page" ;;
+      esac
+      printf -- '- [%s](docs/%s.md)\n' "$title" "$page"
+    fi
+  done
+  if [ -f "$SRC/docs/examples/github-actions/README.md" ]; then
+    printf -- '- [Examples](docs/examples/github-actions/README.md)\n'
+  fi
+  printf '\n'
+
+  # -------------------------------------------------------------------------
+  # Agents & orchestration
+  # -------------------------------------------------------------------------
+  printf '# Agents & orchestration\n\n'
+  if [ -f "$SRC/docs/agents-overview.md" ]; then
+    printf -- '- [Overview](docs/agents-overview.md)\n'
+  fi
+  # Skills: intro page + all skill pages alphabetical.
+  printf -- '- [Skills](skills/README.md)\n'
   for f in $(ls "$SRC"/skills/*.md | sort); do
     base="$(basename "$f" .md)"
     [ "$base" = "README" ] && continue
-    printf -- '- [%s](skills/%s.md)\n' "$base" "$base"
+    printf -- '  - [%s](skills/%s.md)\n' "$base" "$base"
   done
-  printf '\n'
-
-  printf '## Agents\n\n'
-  printf -- '- [Overview](agents/README.md)\n'
+  # Agents: intro page + named agents in preferred order.
+  printf -- '- [Agents](agents/README.md)\n'
+  for agent in roba-orchestrator roba-runner; do
+    if [ -f "$SRC/agents/$agent.md" ]; then
+      printf -- '  - [%s](agents/%s.md)\n' "$agent" "$agent"
+    fi
+  done
+  # Any additional agents not in the preferred list (alphabetical fallback).
   for f in $(ls "$SRC"/agents/*.md | sort); do
     base="$(basename "$f" .md)"
     [ "$base" = "README" ] && continue
-    printf -- '- [%s](agents/%s.md)\n' "$base" "$base"
+    [ "$base" = "roba-orchestrator" ] && continue
+    [ "$base" = "roba-runner" ] && continue
+    printf -- '  - [%s](agents/%s.md)\n' "$base" "$base"
   done
   printf '\n'
 
-  printf '## Docs\n\n'
-  for f in $(ls "$SRC"/docs/*.md | sort); do
-    base="$(basename "$f" .md)"
-    printf -- '- [%s](docs/%s.md)\n' "$base" "$base"
-  done
-  if [ -f "$SRC/docs/examples/github-actions/README.md" ]; then
-    printf -- '- [GitHub Actions example](docs/examples/github-actions/README.md)\n'
+  # -------------------------------------------------------------------------
+  # Reference
+  # -------------------------------------------------------------------------
+  printf '# Reference\n\n'
+  if [ -f "$SRC/docs/reference.md" ]; then
+    printf -- '- [Reference](docs/reference.md)\n'
   fi
 } > "$SUMMARY"
 
