@@ -68,6 +68,36 @@ When the same tool ends up in both the allow list and the deny
 list, **deny wins**. roba passes both lists through to claude
 unchanged; claude is the final arbiter.
 
+### Note: project `settings.local.json` is additive
+
+Claude Code reads `.claude/settings.local.json` from the project
+directory on every dispatch. Its `permissions.allow` entries
+(e.g. `"Bash(git:*)"`, `"Bash(gh:*)"`) are added on top of
+whatever roba passes through `--allowed-tools`. This means
+`--readonly` only restricts the `--allowed-tools` set roba
+sends; it does NOT remove permissions a project's local
+settings have already granted.
+
+Practical consequence: if `settings.local.json` allows
+`Bash(git:*)`, then `roba --readonly` will still let the
+dispatched session run git commands, while Edit / Write remain
+blocked. This produces a **partial-capability state** that can
+silently let a runner partially complete a lifecycle (e.g.
+open a PR but not stage code changes).
+
+If you need strict "nothing beyond Read/Glob/Grep," either:
+
+- Use a project without a `settings.local.json` allow list,
+- Pass `--deny-tool Bash` explicitly (roba forwards deny entries
+  to claude, and deny beats allow), or
+- Inspect `.claude/settings.local.json` before dispatching and
+  understand what's already granted.
+
+`--show-permissions` reflects roba's resolved view, NOT claude's
+final allow set after settings merge -- it doesn't read project
+settings. Treat it as a roba-side preview, not a claude-side
+truth.
+
 ## Previewing the resolved set
 
 Because a lower-layer profile can quietly add `writable = true` or
