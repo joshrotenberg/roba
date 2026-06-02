@@ -72,7 +72,7 @@ roba review 42 --full-auto   # extra flags go after the positional args
 Lookup order for `roba <word> [args]`:
 
 1. **Built-in subcommand** (`cost`, `history`, `last`, `profile`,
-   `skill`, `agent`, `alias`) -> dispatched as the built-in.
+   `alias`) -> dispatched as the built-in.
 2. **Alias** in the merged pool -> expanded and dispatched.
 3. **Otherwise** -> error listing the closest matches (built-ins +
    aliases) by edit distance.
@@ -152,6 +152,6 @@ config-load time so you can rename it; it does not fail hard.
 - **No sandbox** for `$(...)` -- see the security note above.
 
 A starter alias config (github verbs like `review` / `issue` /
-`commit-msg`) is a natural companion to `roba skill install`; shipping
-one via the install command is tracked as a follow-up rather than
-built into the binary.
+`commit-msg`) makes a natural companion to a curated skill+agent
+library like [joshrotenberg/agent-tools](https://github.com/joshrotenberg/agent-tools);
+roba itself ships no opinionated alias defaults.
