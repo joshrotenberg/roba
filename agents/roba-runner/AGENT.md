@@ -110,23 +110,35 @@ The condensed loop:
        --title "<type>: <subject> (closes #<N>)" \
        --body "$(cat /tmp/roba-task-<N>.md)"
    ```
-6. **Fire roba.**
+6. **Fire roba SYNCHRONOUSLY.** Block on the call; do NOT use
+   `run_in_background=true` for this. Your invocation must hold
+   open until the full lifecycle is done. (See "Synchronous
+   discipline" below.)
    ```bash
    roba --fresh --full-auto -C <repo-path> -f /tmp/roba-task-<N>.md
    ```
-   Run with `run_in_background=true`. Wait for the notification.
-7. **On roba completion: push + ready.**
+   Set a generous timeout (`timeout: 600000` ms / 10 min is the
+   harness max; pick what fits the task size).
+7. **On roba completion: push + ready.** Do these immediately in
+   your own session, NOT in a "the orchestrator will pick it up"
+   handoff.
    ```bash
    git push
    gh pr ready <PR>
    ```
-8. **CI watch + merge.**
+8. **CI watch + merge -- ALSO synchronously.** This one can use
+   `run_in_background=true` because YOU still wait for its
+   notification before returning. The skill
+   [`../../skills/dispatch-wait-react`](../../skills/dispatch-wait-react/SKILL.md)
+   describes the pattern.
    ```bash
    sleep 15
    gh pr checks <PR> --watch --interval 15
    # on exit 0: gh pr merge <PR> --squash --delete-branch
    # on exit non-zero: surface the failing job; see "Failure handling"
    ```
+   Wait for the watch notification, then act on the exit code,
+   then proceed to step 9.
 9. **Update CLAUDE.md if relevant.** Per the read-first-update-last
    discipline: a decisions-log entry, a dogfood-log row, or a
    brainstorm sketch -- only if the work actually produced something
@@ -134,6 +146,46 @@ The condensed loop:
 10. **Report back to the orchestrator** with: the PR number, the
     merge commit hash (or failure surface), any caller-actionable
     notes (e.g. "agent flagged a follow-up: live tests need a sweep").
+
+## Synchronous discipline (closes #104)
+
+Your invocation must hold open until the full lifecycle is done.
+**Returning to the orchestrator signals "task complete: PR is
+pushed, CI is running (or done), ready for review."** Returning
+earlier orphans the work.
+
+Anti-pattern (the #104 failure mode):
+
+1. Runner fires roba with `run_in_background=true`
+2. Runner reports a summary and returns
+3. Orchestrator gets a "completed" notification for the runner
+4. roba is still running locally; the commit never gets pushed; CI
+   never starts; the orchestrator thinks the task is done when it
+   isn't.
+
+Discipline that prevents this:
+
+- **Roba is fired synchronously** (no `run_in_background` on the
+  roba call). Your session blocks until roba exits. This is what
+  step 6 above mandates.
+- **CI watch CAN use `run_in_background=true`** because the watch
+  is part of your runner's lifecycle and YOU wait for the
+  notification yourself before returning. The
+  [`dispatch-wait-react`](../../skills/dispatch-wait-react/SKILL.md)
+  skill is the operational guide.
+- **Push, mark ready, merge are all within your session.** Don't
+  hand them off to "the orchestrator will pick this up." The
+  orchestrator's expectation is that when your invocation returns,
+  the lifecycle is done.
+
+When you DO return to the orchestrator:
+
+- **Success case:** report PR number, merge commit hash, any
+  caller-actionable notes (live-test follow-up, surfaced gaps in
+  the issue spec, etc.).
+- **Failure case:** report what failed, where (roba run? CI? push
+  conflict?), the failing job's URL if applicable, and your read
+  on whether this is refireable vs needs human decision.
 
 ## Failure handling
 
