@@ -29,6 +29,7 @@ This is **Layer 1** of the three-layer skill library tracked in
 | [`orchestrator-parallelization`](orchestrator-parallelization/SKILL.md) | When to fan out dispatches vs sequentially. Default sequential; parallel when different-file, independent-semantics, predictable-pattern |
 | [`dispatch-wait-react`](dispatch-wait-react/SKILL.md) | Coordinating with background tasks (roba runs, CI watches) -- background + harness notification, not poll-and-sleep. Orchestrator-focused; runner discipline cross-referenced |
 | [`sandbox-preflight`](sandbox-preflight/SKILL.md) | Start of a runner / bare dispatch -- verify needed tools are in the sandbox allowlist; fail loud (not a "run this yourself" artifact) on a block, auto-heal known-safe dev tools, ask before adding anything else |
+| [`release-audit-anchoring`](release-audit-anchoring/SKILL.md) | Release-readiness / release-audit tasks -- anchor analysis on `origin/main` not the working tip, surface branch divergence in the first paragraph, cross-check published versions externally |
 | [`runner-issue-authority`](runner-issue-authority/SKILL.md) | The runner's authoritative source for what to do is `gh issue view <N>`, NOT the orchestrator's paraphrase |
 | [`runner-synchronous-lifecycle`](runner-synchronous-lifecycle/SKILL.md) | The runner fires roba synchronously and only returns after the full lifecycle is complete (PR pushed, CI running, ready for review) |
 | [`draft-pr-first`](draft-pr-first/SKILL.md) | Starting any work that will become a PR -- open the draft PR with the plan as the body BEFORE the work |
