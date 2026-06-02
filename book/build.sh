@@ -22,7 +22,7 @@ cd "$REPO_ROOT"
 
 # 1. Clean + recreate the generated source tree.
 rm -rf "$SRC"
-mkdir -p "$SRC/skills" "$SRC/agents" "$SRC/docs"
+mkdir -p "$SRC/docs"
 
 # render_page <srcfile> <gh-relative-path> <destfile>
 #
@@ -54,28 +54,14 @@ render_page "README.md" "README.md" "$SRC/README.md"
 sed -i.bak -E 's#\]\(docs/examples/github-actions/\)#](docs/examples/github-actions/README.md)#g' "$SRC/README.md"
 rm -f "$SRC/README.md.bak"
 
-# 3. Skills: each skills/<name>/SKILL.md -> book/src/skills/<name>.md
-for d in skills/*/; do
-  name="$(basename "$d")"
-  [ -f "$d/SKILL.md" ] || continue
-  render_page "$d/SKILL.md" "skills/$name/SKILL.md" "$SRC/skills/$name.md"
-done
-
-# 4. Agents: each agents/<name>/AGENT.md -> book/src/agents/<name>.md
-for d in agents/*/; do
-  name="$(basename "$d")"
-  [ -f "$d/AGENT.md" ] || continue
-  render_page "$d/AGENT.md" "agents/$name/AGENT.md" "$SRC/agents/$name.md"
-done
-
-# 5. Top-level docs (exclude docs/README.md, the index).
+# 3. Top-level docs (exclude docs/README.md, the index).
 for f in docs/*.md; do
   base="$(basename "$f")"
   [ "$base" = "README.md" ] && continue
   render_page "$f" "$f" "$SRC/docs/$base"
 done
 
-# 5b. The examples subtree is referenced from SUMMARY + the README;
+# 3b. The examples subtree is referenced from SUMMARY + the README;
 # copy it verbatim (README + the .yml it links to) so links resolve.
 if [ -d docs/examples ]; then
   mkdir -p "$SRC/docs/examples/github-actions"
@@ -86,50 +72,9 @@ if [ -d docs/examples ]; then
     "$SRC/docs/examples/github-actions/pr-review.yml"
 fi
 
-# 6. Section intros (no frontmatter; render_page handles that).
-render_page "skills/README.md" "skills/README.md" "$SRC/skills/README.md"
-render_page "agents/README.md" "agents/README.md" "$SRC/agents/README.md"
-
-# 7. Rewrite cross-reference links for the flattened tree.
+# 4. Generate SUMMARY.md with explicit three-section audience-driven layout.
 #
-# The source files use directory-shaped relative links
-# (../<name>/SKILL.md, ../../agents/<name>/AGENT.md, etc.). In the
-# flattened book each skill/agent is a single file, so:
-#   - a link to a SKILL.md becomes <name>.md   (from a skill page)
-#                              or ../skills/<name>.md (from an agent page)
-#   - a link to an AGENT.md becomes ../agents/<name>.md (from a skill)
-#                              or <name>.md   (from an agent page)
-# We apply skill-page rules to everything under skills/ and agent-page
-# rules to everything under agents/, which is correct regardless of the
-# original prefix because the rules key off the link *target* type.
-
-# Skill pages: SKILL.md targets -> sibling; AGENT.md targets -> ../agents/
-for f in "$SRC"/skills/*.md; do
-  sed -i.bak -E \
-    -e 's#\]\(((\.\./)*(skills/)?)([a-z0-9_-]+)/SKILL\.md([)#])#](\4.md\5#g' \
-    -e 's#\]\(((\.\./)*(agents/)?)([a-z0-9_-]+)/AGENT\.md([)#])#](../agents/\4.md\5#g' \
-    "$f"
-  rm -f "$f.bak"
-done
-
-# Agent pages: SKILL.md targets -> ../skills/; AGENT.md targets -> sibling
-for f in "$SRC"/agents/*.md; do
-  sed -i.bak -E \
-    -e 's#\]\(((\.\./)*(skills/)?)([a-z0-9_-]+)/SKILL\.md([)#])#](../skills/\4.md\5#g' \
-    -e 's#\]\(((\.\./)*(agents/)?)([a-z0-9_-]+)/AGENT\.md([)#])#](\4.md\5#g' \
-    "$f"
-  rm -f "$f.bak"
-done
-
-# Bare-directory pointers in the section intros -> their overview pages.
-sed -i.bak -E 's#\]\(\.\./agents/\)#](../agents/README.md)#g' "$SRC/skills/README.md"
-rm -f "$SRC/skills/README.md.bak"
-sed -i.bak -E 's#\]\(\.\./skills/\)#](../skills/README.md)#g' "$SRC/agents/README.md"
-rm -f "$SRC/agents/README.md.bak"
-
-# 8. Generate SUMMARY.md with explicit four-section audience-driven layout.
-#
-# Section order: Getting started, Using roba, Agents & orchestration, Reference.
+# Section order: Getting started, Using roba, Reference.
 # Within each section, page order is hard-coded (not alphabetical) to match
 # the audience-driven framing. mdbook treats top-level `# Title` lines as
 # part separators, rendering them as section headers in the sidebar.
@@ -169,37 +114,6 @@ SUMMARY="$SRC/SUMMARY.md"
   if [ -f "$SRC/docs/examples/github-actions/README.md" ]; then
     printf -- '- [Examples](docs/examples/github-actions/README.md)\n'
   fi
-  printf '\n'
-
-  # -------------------------------------------------------------------------
-  # Agents & orchestration
-  # -------------------------------------------------------------------------
-  printf '# Agents & orchestration\n\n'
-  if [ -f "$SRC/docs/agents-overview.md" ]; then
-    printf -- '- [Overview](docs/agents-overview.md)\n'
-  fi
-  # Skills: intro page + all skill pages alphabetical.
-  printf -- '- [Skills](skills/README.md)\n'
-  for f in $(ls "$SRC"/skills/*.md | sort); do
-    base="$(basename "$f" .md)"
-    [ "$base" = "README" ] && continue
-    printf -- '  - [%s](skills/%s.md)\n' "$base" "$base"
-  done
-  # Agents: intro page + named agents in preferred order.
-  printf -- '- [Agents](agents/README.md)\n'
-  for agent in roba-orchestrator roba-runner; do
-    if [ -f "$SRC/agents/$agent.md" ]; then
-      printf -- '  - [%s](agents/%s.md)\n' "$agent" "$agent"
-    fi
-  done
-  # Any additional agents not in the preferred list (alphabetical fallback).
-  for f in $(ls "$SRC"/agents/*.md | sort); do
-    base="$(basename "$f" .md)"
-    [ "$base" = "README" ] && continue
-    [ "$base" = "roba-orchestrator" ] && continue
-    [ "$base" = "roba-runner" ] && continue
-    printf -- '  - [%s](agents/%s.md)\n' "$base" "$base"
-  done
   printf '\n'
 
   # -------------------------------------------------------------------------
