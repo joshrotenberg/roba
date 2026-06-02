@@ -1,10 +1,12 @@
 # roba skills (Layer 1)
 
-Knowledge skills for agents that *use* roba. These extend whatever
-agent loads them (Claude Code in-session, or a roba-orchestrating
-parent agent) with operational guidance that `roba --help` doesn't
-cover: prompt-template idioms, PR-lifecycle steps, observability for
-when runs go sideways, git workflow defaults.
+One curated set of knowledge skills for agents that *use* roba from
+inside Claude Code. This library is optional -- roba the binary
+stands on its own; these skills codify operational guidance that
+`roba --help` doesn't cover (prompt-template idioms, PR-lifecycle
+steps, observability for when runs go sideways, git workflow
+defaults) for the agent-driven multi-task orchestration shape we
+found useful. They extend whatever agent loads them.
 
 This is **Layer 1** of the three-layer skill library tracked in
 [#47](https://github.com/joshrotenberg/roba/issues/47):
