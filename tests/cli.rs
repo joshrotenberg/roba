@@ -885,6 +885,66 @@ fn agent_show_unknown_errors() {
         .stderr(predicate::str::contains("no bundled agent named"));
 }
 
+// --url / --urls doc addressability (#86 Phase 2)
+
+#[test]
+fn skill_show_url_prints_urls() {
+    roba()
+        .args(["skill", "show", "draft-pr-first", "--url"])
+        .assert()
+        .success()
+        // Rendered + raw URLs, body suppressed.
+        .stdout(predicate::str::contains(
+            "https://joshrotenberg.github.io/roba/skills/draft-pr-first.html",
+        ))
+        .stdout(predicate::str::contains(
+            "https://raw.githubusercontent.com/joshrotenberg/roba/main/skills/draft-pr-first/SKILL.md",
+        ))
+        .stdout(predicate::str::contains("# Draft PR first").not());
+}
+
+#[test]
+fn skill_list_urls_includes_url_columns() {
+    roba()
+        .args(["skill", "list", "--urls"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "https://joshrotenberg.github.io/roba/skills/draft-pr-first.html",
+        ))
+        .stdout(predicate::str::contains(
+            "https://raw.githubusercontent.com/joshrotenberg/roba/main/skills/draft-pr-first/SKILL.md",
+        ));
+}
+
+#[test]
+fn agent_show_url_prints_urls() {
+    roba()
+        .args(["agent", "show", "roba-runner", "--url"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "https://joshrotenberg.github.io/roba/agents/roba-runner.html",
+        ))
+        .stdout(predicate::str::contains(
+            "https://raw.githubusercontent.com/joshrotenberg/roba/main/agents/roba-runner/AGENT.md",
+        ));
+}
+
+#[test]
+fn agent_list_urls_includes_url_columns() {
+    roba()
+        .args(["agent", "list", "--urls"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "https://joshrotenberg.github.io/roba/agents/roba-runner.html",
+        ))
+        .stdout(predicate::str::contains(
+            "https://raw.githubusercontent.com/joshrotenberg/roba/main/agents/roba-runner/AGENT.md",
+        ));
+}
+
 // ---------------------------------------------------------------------------
 // user-defined aliases (#88)
 // ---------------------------------------------------------------------------

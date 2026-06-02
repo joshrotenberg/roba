@@ -13,6 +13,48 @@ use anyhow::{Context, Result, bail};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
+/// Canonical base for the rendered mdbook site (humans). The GitHub
+/// Pages URL 301-redirects to any configured custom domain, so this
+/// stays the stable, repo-pinned canonical form.
+pub const DOCS_RENDERED_BASE: &str = "https://joshrotenberg.github.io/roba";
+
+/// Canonical base for the raw markdown source on GitHub. Agents can
+/// `WebFetch` this directly -- no HTML parsing needed.
+pub const DOCS_RAW_BASE: &str = "https://raw.githubusercontent.com/joshrotenberg/roba/main";
+
+/// Rendered (mdbook) doc URL for one bundled item. The aggregator
+/// flattens `<dir>/<name>/<doc>` to a single `<dir>/<name>.md` source
+/// page, which mdbook serves at `<dir>/<name>.html`.
+pub fn rendered_url(kind: Kind, name: &str) -> String {
+    format!("{DOCS_RENDERED_BASE}/{}/{name}.html", kind.dir)
+}
+
+/// Raw markdown source URL for one bundled item: the in-repo
+/// `<dir>/<name>/<doc>` path under the raw-content base.
+pub fn raw_url(kind: Kind, name: &str) -> String {
+    format!("{DOCS_RAW_BASE}/{}/{name}/{}", kind.dir, kind.doc)
+}
+
+/// Rendered doc URL for a skill by name.
+pub fn skill_rendered_url(name: &str) -> String {
+    rendered_url(SKILLS, name)
+}
+
+/// Raw `SKILL.md` source URL for a skill by name.
+pub fn skill_raw_url(name: &str) -> String {
+    raw_url(SKILLS, name)
+}
+
+/// Rendered doc URL for an agent by name.
+pub fn agent_rendered_url(name: &str) -> String {
+    rendered_url(AGENTS, name)
+}
+
+/// Raw `AGENT.md` source URL for an agent by name.
+pub fn agent_raw_url(name: &str) -> String {
+    raw_url(AGENTS, name)
+}
+
 /// One bundled file: `(name, relative_path, body)`.
 ///
 /// - `name` -- the item's directory name (e.g. `"draft-pr-first"`), or
@@ -145,9 +187,13 @@ fn prompt_overwrite(target: &Path, interactive: bool) -> Result<bool> {
 }
 
 /// `roba {skill,agent} list` runner: one row per item with its
-/// frontmatter `description`.
-pub fn run_list(bundle: &[Entry], kind: Kind) -> Result<()> {
-    let mut rows: Vec<(String, String)> = Vec::new();
+/// frontmatter `description`. When `urls` is set, the description is
+/// replaced by the rendered + raw doc URLs (the canonical URLs are
+/// keyed off the item's directory name, not its frontmatter `name`).
+pub fn run_list(bundle: &[Entry], kind: Kind, urls: bool) -> Result<()> {
+    // Each row: (display_name, description, dir_name). The dir name is
+    // the URL key; the display name (frontmatter `name`) is cosmetic.
+    let mut rows: Vec<(String, String, String)> = Vec::new();
     for (name, rel, body) in bundle.iter().filter(|e| is_installable(e)) {
         if !rel.ends_with(kind.doc) {
             continue;
@@ -155,16 +201,23 @@ pub fn run_list(bundle: &[Entry], kind: Kind) -> Result<()> {
         let fm = parse_frontmatter(body);
         let display_name = fm.get("name").cloned().unwrap_or_else(|| name.to_string());
         let description = fm.get("description").cloned().unwrap_or_default();
-        rows.push((display_name, description));
+        rows.push((display_name, description, name.to_string()));
     }
     rows.sort();
     if rows.is_empty() {
         eprintln!("no bundled {}s", kind.noun);
         return Ok(());
     }
-    let width = rows.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
-    for (name, desc) in rows {
-        if desc.is_empty() {
+    let width = rows.iter().map(|(n, _, _)| n.len()).max().unwrap_or(0);
+    for (name, desc, dir_name) in rows {
+        if urls {
+            // URL columns instead of the description: name, rendered, raw.
+            println!(
+                "{name:<width$}  {}  {}",
+                rendered_url(kind, &dir_name),
+                raw_url(kind, &dir_name)
+            );
+        } else if desc.is_empty() {
             println!("{name}");
         } else {
             println!("{name:<width$}  {desc}");
@@ -175,7 +228,12 @@ pub fn run_list(bundle: &[Entry], kind: Kind) -> Result<()> {
 
 /// `roba {skill,agent} show NAME` runner: print the primary doc body
 /// verbatim (frontmatter included). Errors if no item matches.
-pub fn run_show(bundle: &[Entry], name: &str, kind: Kind) -> Result<()> {
+///
+/// When `url` is set, print only the canonical doc URLs (rendered +
+/// raw), one per line, and skip the body -- the caller wanted the
+/// URLs, not the content. URLs are keyed off the item's directory
+/// name (the URL path component), not the matched query string.
+pub fn run_show(bundle: &[Entry], name: &str, kind: Kind, url: bool) -> Result<()> {
     for (item_name, rel, body) in bundle.iter().filter(|e| is_installable(e)) {
         if !rel.ends_with(kind.doc) {
             continue;
@@ -183,7 +241,12 @@ pub fn run_show(bundle: &[Entry], name: &str, kind: Kind) -> Result<()> {
         // Match either the directory name or the frontmatter `name`.
         let fm_name = parse_frontmatter(body).get("name").cloned();
         if *item_name == name || fm_name.as_deref() == Some(name) {
-            print!("{body}");
+            if url {
+                println!("rendered: {}", rendered_url(kind, item_name));
+                println!("raw:      {}", raw_url(kind, item_name));
+            } else {
+                print!("{body}");
+            }
             return Ok(());
         }
     }
@@ -252,6 +315,38 @@ mod tests {
     fn frontmatter_absent_returns_empty() {
         let fm = parse_frontmatter("# No frontmatter here\n");
         assert!(fm.is_empty());
+    }
+
+    #[test]
+    fn skill_urls_match_expected_shape() {
+        assert_eq!(
+            skill_rendered_url("draft-pr-first"),
+            "https://joshrotenberg.github.io/roba/skills/draft-pr-first.html"
+        );
+        assert_eq!(
+            skill_raw_url("draft-pr-first"),
+            "https://raw.githubusercontent.com/joshrotenberg/roba/main/skills/draft-pr-first/SKILL.md"
+        );
+    }
+
+    #[test]
+    fn agent_urls_match_expected_shape() {
+        assert_eq!(
+            agent_rendered_url("roba-runner"),
+            "https://joshrotenberg.github.io/roba/agents/roba-runner.html"
+        );
+        assert_eq!(
+            agent_raw_url("roba-runner"),
+            "https://raw.githubusercontent.com/joshrotenberg/roba/main/agents/roba-runner/AGENT.md"
+        );
+    }
+
+    #[test]
+    fn kind_based_urls_delegate_to_named_helpers() {
+        assert_eq!(rendered_url(SKILLS, "foo"), skill_rendered_url("foo"));
+        assert_eq!(raw_url(SKILLS, "foo"), skill_raw_url("foo"));
+        assert_eq!(rendered_url(AGENTS, "bar"), agent_rendered_url("bar"));
+        assert_eq!(raw_url(AGENTS, "bar"), agent_raw_url("bar"));
     }
 
     #[test]
