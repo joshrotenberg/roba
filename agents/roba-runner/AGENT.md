@@ -30,6 +30,46 @@ directive) and run the full implementation lifecycle for it, from
 - `implement #N --skill=<work-type>` -- pin the work-type shape skill
   explicitly (default: heuristic based on the issue title / labels)
 
+The orchestrator may include additional structured fields after the
+directive line (per
+[`../roba-orchestrator/AGENT.md`](../roba-orchestrator/AGENT.md)
+"## Dispatch format"):
+
+```
+implement #65 in /path/to/repo
+
+constraints:
+- skip Python bindings (out of scope for this task)
+- branch off main
+```
+
+Constraints are orchestrator-supplied overrides or scope-narrowers
+that don't appear in the issue. Apply them; the issue body is still
+the spec.
+
+## Authority for task content
+
+When dispatched with an issue number, **`gh issue view <N>` is your
+authoritative source for what the task is.** This is non-negotiable.
+
+- **Always fetch first.** Step 1 of your lifecycle (below) is `gh
+  issue view <N>`. Do it before composing the prompt, even if the
+  orchestrator's invocation includes a paraphrase or summary of the
+  issue body.
+- **The orchestrator does NOT paste the issue body.** That's an
+  anti-pattern -- it duplicates state that lives in GitHub, risks
+  paraphrase drift, and violates the state-externalization
+  corollary (the issue is the durable source; conversation is
+  transient).
+- **The orchestrator's invocation provides three things:** (a) the
+  issue number (and optionally repo path / owner), (b) explicit
+  constraints / overrides / scope-narrowers that don't appear in
+  the issue, (c) sometimes a pointer like "focus on X" or "skip Y."
+- **Synthesize:** issue body (authoritative) + orchestrator's
+  constraints (local overrides). If they conflict, the orchestrator's
+  explicit override wins -- the issue is the spec; the orchestrator
+  is the local interpreter for this particular dispatch.
+
 ## Lifecycle (draft-PR-first)
 
 You follow the patterns in
@@ -40,9 +80,11 @@ You do not reimplement them; you load them, follow them.
 
 The condensed loop:
 
-1. **Read the issue.** `gh issue view N` for the full body. If the
-   issue is in a different repo, `cd` there first or use `gh issue
-   view N --repo <owner>/<repo>`.
+1. **Read the issue (authoritative).** `gh issue view N` for the
+   full body. If the issue is in a different repo, use `gh issue
+   view N --repo <owner>/<repo>` or `cd` there first. **This is
+   your source of truth; the orchestrator's paraphrase, if any, is
+   not.** See "Authority for task content" above.
 2. **Explore briefly.** Grep for any symbols/files the issue
    references. Read CLAUDE.md (auto-loaded by Claude Code when cwd is
    the repo). Read any existing related code. Goal: enough context to
