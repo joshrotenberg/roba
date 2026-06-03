@@ -126,3 +126,10 @@ SUMMARY="$SRC/SUMMARY.md"
 } > "$SUMMARY"
 
 echo "Aggregated book source into $SRC"
+
+# 5. Post-process: rewrite relative .md links to .html for mdbook.
+#    External URLs (containing ://) are skipped because [^):] excludes ':'.
+find "$SRC" -name "*.md" | while read -r file; do
+  sed -i.bak -E 's|\]\(([^):]*)\.md(#[^)]+)?\)|\](\1.html\2)|g' "$file" && rm -f "$file.bak"
+done
+echo "Rewrote .md links to .html in $SRC"
