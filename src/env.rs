@@ -29,7 +29,7 @@
 //! The env layer fills only fields the CLI did NOT set. It does not
 //! override an explicit CLI flag.
 
-use crate::cli::AskArgs;
+use crate::cli::{AskArgs, EffortLevel};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -53,6 +53,20 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
         && let Some(s) = read_string(env, "ROBA_MODEL")
     {
         args.model = Some(s);
+    }
+
+    // ----- Effort -----
+    if args.effort.is_none()
+        && let Some(s) = read_string(env, "ROBA_EFFORT")
+    {
+        args.effort = match s.to_ascii_lowercase().as_str() {
+            "low" => Some(EffortLevel::Low),
+            "medium" => Some(EffortLevel::Medium),
+            "high" => Some(EffortLevel::High),
+            "xhigh" => Some(EffortLevel::Xhigh),
+            "max" => Some(EffortLevel::Max),
+            _ => None, // ignore unrecognized values
+        };
     }
 
     // ----- Agent -----
@@ -620,5 +634,44 @@ mod tests {
         assert!(args.plain);
         assert!(args.quiet);
         assert!(args.json);
+    }
+
+    // -- effort ---------------------------------------------------------------
+
+    #[test]
+    fn env_effort_sets_from_roba_effort_var() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_EFFORT", "high")]));
+        assert_eq!(args.effort, Some(EffortLevel::High));
+    }
+
+    #[test]
+    fn env_effort_does_not_override_cli() {
+        let mut args = empty_args();
+        args.effort = Some(EffortLevel::Max);
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_EFFORT", "low")]));
+        assert_eq!(args.effort, Some(EffortLevel::Max));
+    }
+
+    #[test]
+    fn env_effort_ignores_invalid_value() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_EFFORT", "ultra")]));
+        assert!(args.effort.is_none());
+    }
+
+    #[test]
+    fn env_effort_parses_all_variants() {
+        for (s, expected) in [
+            ("low", EffortLevel::Low),
+            ("medium", EffortLevel::Medium),
+            ("high", EffortLevel::High),
+            ("xhigh", EffortLevel::Xhigh),
+            ("max", EffortLevel::Max),
+        ] {
+            let mut args = empty_args();
+            apply_env_overrides_from(&mut args, &env_with(&[("ROBA_EFFORT", s)]));
+            assert_eq!(args.effort, Some(expected), "variant {s:?}");
+        }
     }
 }

@@ -44,6 +44,7 @@ The default action. Sends a prompt to claude and renders the answer.
 | `--no-dollars` | | Omit dollar figure from footer (tokens only) |
 | `--no-retry` | | Disable wrapper-level auto-retry; surface failures immediately |
 | `--model MODEL` | | Override model (alias or full id) |
+| `--effort LEVEL` | | Effort level: `low`, `medium`, `high`, `xhigh`, `max` |
 | `--continue [ID]` | `-c` | Continue most recent session (bare `-c`) or a specific id |
 | `--fork` | | Branch the resumed session (requires `-c ID`) |
 | `--pick` | | Interactive fuzzy session chooser |
@@ -134,6 +135,7 @@ Source: `src/env.rs`.
 | Variable | Type | Matches |
 |---|---|---|
 | `ROBA_MODEL` | string | `--model` |
+| `ROBA_EFFORT` | string | `--effort` |
 | `ROBA_AGENT` | string | `--agent` |
 | `ROBA_PREPEND` | path list | `--prepend` |
 | `ROBA_APPEND` | path list | `--append` |
@@ -267,6 +269,7 @@ Both use the same field set. Every field is optional.
 | `deny_tool` | `[string]` | `--deny-tool` (repeatable) |
 | `vars` | `{ key = "value" }` | `--var KEY=VALUE` |
 | `model` | string | `--model` |
+| `effort` | string | `--effort` |
 | `agent` | string | `--agent` |
 | `stream` | bool | `--stream` |
 | `show_thinking` | bool | `--show-thinking` |
