@@ -109,6 +109,7 @@ override.
 | `continue` | `bool` or `string` | `-c` / `-c=ID` | `true` continues the most recent session in the directory; a string resumes that specific session id (e.g. `continue = "7c3f9a21"`); `false` stays fresh. CLI `-c` / `-c=ID` overrides it |
 | `vars` | `{ key = "value" }` | `--var KEY=VALUE` (repeatable) | CLI keys override profile keys |
 | `model` | `string` | `--model MODEL` | Alias (`sonnet`/`opus`/`haiku`) or full id (`claude-sonnet-4-6`) |
+| `effort` | `string` | `--effort LEVEL` | Effort level: `low`, `medium`, `high`, `xhigh`, `max`. Controls cost/quality tradeoff. Profile payoff: `[profile.thorough]` with `effort = "max"`, `[profile.quick]` with `effort = "low"` |
 | `agent` | `string` | `--agent NAME` | Pin a claude-code subagent by name; must exist in `.claude/agents/NAME.md` (or be auto-discovered per claude's lookup) |
 | `stream` | `bool` | `--stream` | Stream tokens as they arrive |
 | `show_thinking` | `bool` | `--show-thinking` | Render extended-thinking blocks live on stderr. Only takes effect with `--stream`; ignored otherwise |
