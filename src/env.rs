@@ -29,7 +29,7 @@
 //! The env layer fills only fields the CLI did NOT set. It does not
 //! override an explicit CLI flag.
 
-use crate::cli::AskArgs;
+use crate::cli::{AskArgs, PermMode};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -109,6 +109,13 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     }
 
     // ----- Permissions -----
+    if args.permission_mode.is_none()
+        && let Some(s) = read_string(env, "ROBA_PERMISSION_MODE")
+        && let Some(mode) = parse_permission_mode(&s)
+    {
+        args.permission_mode = Some(mode);
+        args.permission_mode_source = Some("env".to_string());
+    }
     if !args.readonly && read_truthy(env, "ROBA_READONLY") {
         args.readonly = true;
         args.readonly_source = Some("env".to_string());
@@ -224,6 +231,9 @@ fn tag_cli_sources(args: &mut AskArgs) {
     if !args.deny_tool.is_empty() && args.deny_tool_sources.is_empty() {
         args.deny_tool_sources = vec!["CLI".to_string(); args.deny_tool.len()];
     }
+    if args.permission_mode.is_some() && args.permission_mode_source.is_none() {
+        args.permission_mode_source = Some("CLI".to_string());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +274,21 @@ fn read_list(env: &HashMap<String, String>, key: &str) -> Vec<String> {
 
 fn read_path_list(env: &HashMap<String, String>, key: &str) -> Vec<PathBuf> {
     read_list(env, key).into_iter().map(PathBuf::from).collect()
+}
+
+/// Parse `ROBA_PERMISSION_MODE` value (case-insensitive, camelCase or
+/// snake_case) into a `PermMode`. Unknown values are silently
+/// ignored so a mistyped env var never blocks a run.
+fn parse_permission_mode(s: &str) -> Option<PermMode> {
+    match s.to_ascii_lowercase().as_str() {
+        "acceptedits" | "accept_edits" => Some(PermMode::AcceptEdits),
+        "auto" => Some(PermMode::Auto),
+        "bypasspermissions" | "bypass_permissions" => Some(PermMode::BypassPermissions),
+        "default" => Some(PermMode::Default),
+        "dontask" | "dont_ask" => Some(PermMode::DontAsk),
+        "plan" => Some(PermMode::Plan),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

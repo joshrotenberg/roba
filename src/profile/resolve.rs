@@ -6,8 +6,8 @@ use anyhow::Result;
 use std::path::PathBuf;
 
 use super::home_dir;
-use super::types::{ContinueSetting, Pool, Profile, WorktreeSetting};
-use crate::cli::AskArgs;
+use super::types::{ContinueSetting, PermissionModeConfig, Pool, Profile, WorktreeSetting};
+use crate::cli::{AskArgs, PermMode};
 
 // ---------------------------------------------------------------------------
 // Resolution: which profile should this invocation apply?
@@ -251,6 +251,26 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
         && !args.no_agent_check
     {
         args.no_agent_check = v;
+    }
+    if args.permission_mode.is_none()
+        && let Some(mode) = profile.permission_mode.take()
+    {
+        args.permission_mode = Some(permission_mode_config_to_setting(mode));
+        args.permission_mode_source = Some(source.to_string());
+    }
+}
+
+/// Convert a profile-layer `PermissionModeConfig` to the CLI's
+/// `PermMode` so both types stay independent of each other.
+fn permission_mode_config_to_setting(mode: PermissionModeConfig) -> PermMode {
+    match mode {
+        PermissionModeConfig::Default => PermMode::Default,
+        PermissionModeConfig::AcceptEdits => PermMode::AcceptEdits,
+        PermissionModeConfig::DontAsk => PermMode::DontAsk,
+        PermissionModeConfig::Plan => PermMode::Plan,
+        PermissionModeConfig::Auto => PermMode::Auto,
+        #[allow(deprecated)]
+        PermissionModeConfig::BypassPermissions => PermMode::BypassPermissions,
     }
 }
 

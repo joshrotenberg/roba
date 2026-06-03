@@ -249,6 +249,23 @@ pub fn format_permissions(args: &AskArgs) -> String {
         return format!("all tools allowed (--full-auto from {src})");
     }
 
+    let mut out = String::new();
+
+    // Show --permission-mode when explicitly set (not the implicit default).
+    if let Some(mode) = args.permission_mode {
+        #[allow(deprecated)]
+        let mode_str = match mode {
+            crate::cli::PermMode::Default => "default",
+            crate::cli::PermMode::AcceptEdits => "acceptEdits",
+            crate::cli::PermMode::DontAsk => "dontAsk",
+            crate::cli::PermMode::Plan => "plan",
+            crate::cli::PermMode::Auto => "auto",
+            crate::cli::PermMode::BypassPermissions => "bypassPermissions",
+        };
+        let src = args.permission_mode_source.as_deref().unwrap_or("CLI");
+        out.push_str(&format!("permission-mode: {mode_str} [{src}]\n"));
+    }
+
     // (name, source) pairs in display order.
     let mut allow: Vec<(String, String)> = vec![
         ("Read".to_string(), "default".to_string()),
@@ -293,7 +310,7 @@ pub fn format_permissions(args: &AskArgs) -> String {
         .unwrap_or(0)
         + 1;
 
-    let mut out = String::from("allow:\n");
+    out.push_str("allow:\n");
     for (name, src) in &allow {
         out.push_str(&format!("  {name:<width$}[{src}]\n"));
     }

@@ -560,6 +560,161 @@ fn conflict_readonly_and_full_auto() {
     assert_conflict(&["foo", "--readonly", "--full-auto"]);
 }
 
+// --permission-mode conflict/parse tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn permission_mode_plan_parses() {
+    // --permission-mode plan must parse at the clap layer and fail later
+    // (no claude call), not at the parse layer.
+    roba()
+        .args([
+            "foo",
+            "--permission-mode",
+            "plan",
+            "--prepend",
+            "/no/such/file-pm",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("reading --prepend"));
+}
+
+#[test]
+fn permission_mode_dont_ask_parses() {
+    roba()
+        .args([
+            "foo",
+            "--permission-mode",
+            "dont-ask",
+            "--prepend",
+            "/no/such/file-pm",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("reading --prepend"));
+}
+
+#[test]
+fn permission_mode_auto_parses() {
+    roba()
+        .args([
+            "foo",
+            "--permission-mode",
+            "auto",
+            "--prepend",
+            "/no/such/file-pm",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("reading --prepend"));
+}
+
+#[test]
+fn permission_mode_coexists_with_readonly() {
+    // --permission-mode and --readonly operate at different levels:
+    // --permission-mode passes --permission-mode to claude directly;
+    // --readonly restricts --allowedTools. Both are valid together
+    // (e.g. plan mode with the standard read-only allowlist).
+    roba()
+        .args([
+            "foo",
+            "--permission-mode",
+            "plan",
+            "--readonly",
+            "--prepend",
+            "/no/such/file-pm",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("reading --prepend"));
+}
+
+#[test]
+fn permission_mode_coexists_with_writable() {
+    // Both can be combined: e.g. write access with plan review step.
+    roba()
+        .args([
+            "foo",
+            "--permission-mode",
+            "plan",
+            "--writable",
+            "--prepend",
+            "/no/such/file-pm",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("reading --prepend"));
+}
+
+#[test]
+fn permission_mode_coexists_with_full_auto() {
+    // full-auto bypasses allowedTools; --permission-mode sets the mode.
+    roba()
+        .args([
+            "foo",
+            "--permission-mode",
+            "dont-ask",
+            "--full-auto",
+            "--prepend",
+            "/no/such/file-pm",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("reading --prepend"));
+}
+
+#[test]
+fn permission_mode_invalid_value_errors() {
+    // An unrecognized mode value should produce a clap error.
+    roba()
+        .args(["foo", "--permission-mode", "totally-wrong"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("totally-wrong").or(predicate::str::contains("invalid")));
+}
+
+#[test]
+fn show_permissions_with_permission_mode_plan() {
+    // --permission-mode plan + --show-permissions should show the mode
+    // in the stderr output and exit 0 without calling claude.
+    let project = empty_project();
+    let user_home = tempfile::tempdir().expect("user home");
+    let out = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "--permission-mode",
+            "plan",
+            "--show-permissions",
+            "ignored",
+        ])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("plan"),
+        "expected 'plan' in show-permissions output, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("[CLI]"),
+        "expected '[CLI]' provenance tag, got:\n{stderr}"
+    );
+}
+
 #[test]
 fn conflict_stream_and_json() {
     assert_conflict(&["foo", "--stream", "--json"]);

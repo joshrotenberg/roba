@@ -43,6 +43,7 @@ The default action. Sends a prompt to claude and renders the answer.
 | `--rates-file PATH` | | Override bundled rates table for footer dollar figure |
 | `--no-dollars` | | Omit dollar figure from footer (tokens only) |
 | `--no-retry` | | Disable wrapper-level auto-retry; surface failures immediately |
+| `--bare` | | Minimal-overhead mode: skip hooks, LSP, plugin sync, CLAUDE.md auto-discovery, auto-memory, keychain reads (agent-tier) |
 | `--model MODEL` | | Override model (alias or full id) |
 | `--continue [ID]` | `-c` | Continue most recent session (bare `-c`) or a specific id |
 | `--fork` | | Branch the resumed session (requires `-c ID`) |
@@ -53,6 +54,7 @@ The default action. Sends a prompt to claude and renders the answer.
 | `--readonly` | | Explicit default: Read, Glob, Grep only. Active suppressor |
 | `--writable` | | Add Edit + Write |
 | `--full-auto` | | Bypass all permission checks (sandbox only) |
+| `--permission-mode MODE` | | Set claude's own permission mode (`default`, `accept-edits`, `dont-ask`, `plan`, `auto`, `bypass-permissions`). Coexists with shortcut flags |
 | `--allow-tool TOOL` | | Add a tool/pattern to the allow list (repeatable) |
 | `--deny-tool TOOL` | | Deny a tool/pattern (repeatable; deny beats allow) |
 | `--show-permissions` | | Preview resolved allow/deny set with provenance; exit 0 |
@@ -145,6 +147,7 @@ Source: `src/env.rs`.
 | `ROBA_READONLY` | bool | `--readonly` |
 | `ROBA_WRITABLE` | bool | `--writable` |
 | `ROBA_FULL_AUTO` | bool | `--full-auto` |
+| `ROBA_PERMISSION_MODE` | string | `--permission-mode` (accepts camelCase or kebab-case: `acceptEdits`, `dontAsk`, etc.) |
 | `ROBA_ALLOW_TOOL` | string list | `--allow-tool` |
 | `ROBA_DENY_TOOL` | string list | `--deny-tool` |
 | `ROBA_STREAM` | bool | `--stream` |
@@ -159,6 +162,7 @@ Source: `src/env.rs`.
 | `ROBA_NO_DOLLARS` | bool | `--no-dollars` |
 | `ROBA_WORKTREE` | bool or string | `-w` (truthy = unnamed; any other non-falsy string = name) |
 | `ROBA_NO_RETRY` | bool | `--no-retry` |
+| `ROBA_BARE` | bool | `--bare` |
 | `ROBA_PROFILE` | string | `--profile` |
 | `ROBA_VAR_<KEY>` | string | `--var KEY=VALUE` (one env var per key) |
 
@@ -262,6 +266,7 @@ Both use the same field set. Every field is optional.
 | `readonly` | bool | `--readonly` |
 | `writable` | bool | `--writable` |
 | `full_auto` | bool | `--full-auto` |
+| `permission_mode` | string | `--permission-mode` (`"default"`, `"acceptEdits"`, `"dontAsk"`, `"plan"`, `"auto"`, `"bypassPermissions"`) |
 | `continue` | bool or string | `-c` (`true` = most recent; string = specific id) |
 | `allow_tool` | `[string]` | `--allow-tool` (repeatable) |
 | `deny_tool` | `[string]` | `--deny-tool` (repeatable) |
@@ -277,6 +282,7 @@ Both use the same field set. Every field is optional.
 | `editor_history` | int | `--editor-history N` |
 | `worktree` | bool or string | `-w` (`true` = unnamed; string = pinned name) |
 | `no_retry` | bool | `--no-retry` |
+| `bare` | bool | `--bare` |
 | `trace` | string (path) | `--trace` |
 | `rates_file` | string (path) | `--rates-file` |
 | `no_dollars` | bool | `--no-dollars` |
