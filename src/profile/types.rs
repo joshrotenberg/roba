@@ -75,6 +75,10 @@ pub struct Profile {
     /// (`--no-retry`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub no_retry: Option<bool>,
+    /// Minimal-overhead mode: skip hooks, LSP, plugin sync, CLAUDE.md
+    /// auto-discovery, auto-memory, and keychain reads (`--bare`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bare: Option<bool>,
     /// Write the spawned session's streaming events to this path as
     /// JSONL (`--trace`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -89,6 +93,33 @@ pub struct Profile {
     /// Skip the agent frontmatter permission check (`--no-agent-check`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub no_agent_check: Option<bool>,
+    /// Set claude's `--permission-mode` (`--permission-mode MODE`).
+    /// Accepts: `default`, `acceptEdits`, `dontAsk`, `plan`, `auto`.
+    /// The shortcut flags (`readonly`, `writable`, `full_auto`) take
+    /// precedence at the CLI layer; this key applies when none of the
+    /// shortcuts are set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<PermissionModeConfig>,
+}
+
+/// Profile value for the `permission_mode` field. Serializes as a
+/// string matching the `--permission-mode` CLI values.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PermissionModeConfig {
+    /// Auto-accept file edits (`acceptEdits`).
+    AcceptEdits,
+    /// Model-driven permission decisions (`auto`).
+    Auto,
+    /// Bypass all permission checks (`bypassPermissions`). Deprecated
+    /// upstream; prefer `full_auto = true` for this effect.
+    BypassPermissions,
+    /// Default interactive permissions (`default`).
+    Default,
+    /// Accept all allowed tools without prompting (`dontAsk`).
+    DontAsk,
+    /// Plan mode: show a plan before executing (`plan`).
+    Plan,
 }
 
 /// Profile value for the `worktree` field. Mirrors the CLI's
@@ -139,10 +170,12 @@ impl Profile {
             && self.editor_history.is_none()
             && self.worktree.is_none()
             && self.no_retry.is_none()
+            && self.bare.is_none()
             && self.trace.is_none()
             && self.rates_file.is_none()
             && self.no_dollars.is_none()
             && self.no_agent_check.is_none()
+            && self.permission_mode.is_none()
     }
 
     /// Merge `other` on top of `self`. Used to layer roba.toml files
@@ -177,10 +210,12 @@ impl Profile {
             editor_history,
             worktree,
             no_retry,
+            bare,
             trace,
             rates_file,
             no_dollars,
             no_agent_check,
+            permission_mode,
         } = other;
 
         self.prepend.append(&mut prepend);
@@ -245,6 +280,9 @@ impl Profile {
         if no_retry.is_some() {
             self.no_retry = no_retry;
         }
+        if bare.is_some() {
+            self.bare = bare;
+        }
         if trace.is_some() {
             self.trace = trace;
         }
@@ -256,6 +294,9 @@ impl Profile {
         }
         if no_agent_check.is_some() {
             self.no_agent_check = no_agent_check;
+        }
+        if permission_mode.is_some() {
+            self.permission_mode = permission_mode;
         }
     }
 }

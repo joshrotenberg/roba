@@ -106,3 +106,22 @@ ROBA_NO_RETRY=1 roba "..."       # same, via env
 
 It's also a profile field (`no_retry = true`). No effect on
 success or on non-transient failures.
+
+## Mode
+
+`--bare` runs claude in minimal-overhead mode: it skips hooks, LSP,
+plugin sync, auto-memory, background prefetches, keychain reads, and
+CLAUDE.md auto-discovery, and sets `CLAUDE_CODE_SIMPLE=1`. Auth is
+strictly `ANTHROPIC_API_KEY` (or `apiKeyHelper`). This is primarily an
+agent-tier flag: when an orchestrator supplies all the context it wants
+explicitly (via `--system-prompt`, `--append-system-prompt`,
+`--add-dir`, `--settings`), `--bare` strips the ambient discovery layers
+for lower overhead and maximum reproducibility.
+
+```bash
+roba --bare "..."                # minimal-overhead, explicit context only
+ROBA_BARE=1 roba "..."           # same, via env
+```
+
+It's also a profile field (`bare = true`). Reach for it on agent-tier
+calls; leave it off for interactive use where auto-discovery is helpful.

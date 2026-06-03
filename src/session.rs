@@ -4,9 +4,9 @@
 //! [`AskArgs`] flags (`-c` / `-c=ID`, `--fork`, `--readonly`,
 //! `--full-auto`) into the matching builder method calls.
 
-use claude_wrapper::{QueryCommand, RetryPolicy};
+use claude_wrapper::{PermissionMode, QueryCommand, RetryPolicy};
 
-use crate::cli::AskArgs;
+use crate::cli::{AskArgs, PermMode};
 
 /// Apply session-related flags (-c / -c=ID, --fork), the model
 /// override (--model), the subagent override (--agent), and then
@@ -53,6 +53,10 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
 ///
 /// - `--readonly` -- explicit form of the default; no-op.
 /// - `--writable` -- preset that adds Edit + Write.
+/// - `--permission-mode MODE` -- pass a specific permission mode to
+///   claude (`plan`, `dontAsk`, `auto`, `acceptEdits`, `default`).
+///   Overrides the shortcut flags for the mode itself, but the
+///   allowlist (`--allow-tool` / `--writable` preset) still applies.
 /// - `--allow-tool` / profile `allow_tool` -- add specific tools or
 ///   patterns (e.g. `"Bash(git status)"`).
 /// - `--deny-tool` / profile `deny_tool` -- block patterns. Applied
@@ -61,6 +65,13 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
 pub fn apply_permissions(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     if args.full_auto {
         return cmd.dangerously_skip_permissions();
+    }
+
+    // Apply --permission-mode if set (and no shortcut flag overrides it;
+    // clap's conflicts_with_all ensures only one of the three is set).
+    if let Some(mode) = args.permission_mode {
+        let cw_mode = permission_mode_to_cw(mode);
+        cmd = cmd.permission_mode(cw_mode);
     }
 
     // Always-on safe defaults. --readonly is the explicit form;
@@ -78,7 +89,21 @@ pub fn apply_permissions(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand 
     if !args.deny_tool.is_empty() {
         cmd = cmd.disallowed_tools(args.deny_tool.clone());
     }
+
     cmd
+}
+
+/// Convert roba's `PermMode` to claude-wrapper's `PermissionMode`.
+fn permission_mode_to_cw(mode: PermMode) -> PermissionMode {
+    match mode {
+        PermMode::AcceptEdits => PermissionMode::AcceptEdits,
+        PermMode::Auto => PermissionMode::Auto,
+        #[allow(deprecated)]
+        PermMode::BypassPermissions => PermissionMode::BypassPermissions,
+        PermMode::Default => PermissionMode::Default,
+        PermMode::DontAsk => PermissionMode::DontAsk,
+        PermMode::Plan => PermissionMode::Plan,
+    }
 }
 
 fn push_unique(list: &mut Vec<String>, item: &str) {

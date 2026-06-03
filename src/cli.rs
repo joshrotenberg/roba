@@ -152,6 +152,34 @@ impl LastKind {
     }
 }
 
+/// `--permission-mode` choices for the CLI flag. Mirrors the modes
+/// accepted by `claude -p --permission-mode`. Full layer support:
+/// CLI > `ROBA_PERMISSION_MODE` env > profile `permission_mode` key.
+///
+/// Coexists with `--readonly` / `--writable` / `--full-auto`: those
+/// flags control the `--allowedTools` list; `--permission-mode` is a
+/// separate, additional claude mechanism.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermMode {
+    /// Auto-accept file edits (`acceptEdits`).
+    AcceptEdits,
+    /// Model-driven permission decisions (`auto`).
+    Auto,
+    /// Bypass all permission checks (`bypassPermissions`). Deprecated
+    /// upstream; prefer `--full-auto` for this effect.
+    BypassPermissions,
+    /// Default interactive permissions (`default`).
+    Default,
+    /// Accept all allowed tools without prompting (`dontAsk`). Useful
+    /// in non-interactive pipelines where tools are pre-approved via
+    /// `--allow-tool` or a profile.
+    DontAsk,
+    /// Read-only plan mode: show what claude intends before executing
+    /// (`plan`). Useful with `--writable` for a review step before
+    /// write access is exercised.
+    Plan,
+}
+
 #[derive(ClapArgs, Debug)]
 pub struct HistoryArgs {
     /// Maximum number of sessions to show (default 10).
@@ -332,6 +360,15 @@ pub struct AskArgs {
     #[arg(long, help_heading = "Failure modes")]
     pub no_retry: bool,
 
+    // ----- Mode -------------------------------------------------------------
+    /// Minimal-overhead mode: skip hooks, LSP, plugin sync, CLAUDE.md
+    /// auto-discovery, auto-memory, and keychain reads. Auth uses
+    /// ANTHROPIC_API_KEY only. Useful for agent-tier calls where context
+    /// is supplied explicitly via --system-prompt / --add-dir / --settings.
+    /// Profile key: `bare`. Env: `ROBA_BARE`.
+    #[arg(long, help_heading = "Mode")]
+    pub bare: bool,
+
     // ----- Model ------------------------------------------------------------
     /// Override the claude model for this call.
     ///
@@ -406,6 +443,17 @@ pub struct AskArgs {
     pub agent: Option<String>,
 
     // ----- Permissions ------------------------------------------------------
+    /// Set claude's `--permission-mode` directly. Accepts: `acceptEdits`,
+    /// `auto`, `bypassPermissions`, `default`, `dontAsk`, `plan`.
+    /// Coexists with `--readonly`, `--writable`, and `--full-auto`: those
+    /// flags control the `--allowedTools` list passed to claude;
+    /// `--permission-mode` is the separate `--permission-mode` flag.
+    /// Setting both is valid -- e.g. `--writable --permission-mode plan`
+    /// gives write access but requires a plan review first. Profile key:
+    /// `permission_mode`. Env: `ROBA_PERMISSION_MODE`.
+    #[arg(long, value_name = "MODE", value_enum, help_heading = "Permissions")]
+    pub permission_mode: Option<PermMode>,
+
     /// Explicit form of the default: Read, Glob, Grep only. No-op (the default).
     #[arg(long, conflicts_with = "full_auto", help_heading = "Permissions")]
     pub readonly: bool,
@@ -460,6 +508,9 @@ pub struct AskArgs {
     /// Layer per `deny_tool` entry (parallel-indexed to `deny_tool`).
     #[clap(skip)]
     pub deny_tool_sources: Vec<String>,
+    /// Layer that set `permission_mode`.
+    #[clap(skip)]
+    pub permission_mode_source: Option<String>,
 
     // ----- Profiles ---------------------------------------------------------
     /// Apply a named profile (user, project, or env source).
@@ -608,6 +659,64 @@ mod tests {
         let cli = Cli::try_parse_from(["roba", "--no-retry", "--json", "prompt"]).unwrap();
         assert!(cli.ask.no_retry);
         assert!(cli.ask.json);
+    }
+
+    #[test]
+    fn permission_mode_parses_all_variants() {
+        // clap's ValueEnum derives kebab-case names by default.
+        use clap::Parser;
+        for mode in &[
+            "accept-edits",
+            "auto",
+            "bypass-permissions",
+            "default",
+            "dont-ask",
+            "plan",
+        ] {
+            let cli = Cli::try_parse_from(["roba", "--permission-mode", mode, "prompt"])
+                .unwrap_or_else(|e| panic!("--permission-mode {mode} should parse: {e}"));
+            assert!(
+                cli.ask.permission_mode.is_some(),
+                "--permission-mode {mode} should be Some"
+            );
+        }
+    }
+
+    #[test]
+    fn permission_mode_coexists_with_writable() {
+        // --permission-mode and --writable operate at different levels;
+        // they must compose without a clap conflict error.
+        use clap::Parser;
+        let cli =
+            Cli::try_parse_from(["roba", "--writable", "--permission-mode", "plan", "prompt"])
+                .unwrap();
+        assert!(cli.ask.writable);
+        assert!(cli.ask.permission_mode.is_some());
+    }
+
+    #[test]
+    fn permission_mode_coexists_with_readonly() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "roba",
+            "--readonly",
+            "--permission-mode",
+            "dont-ask",
+            "prompt",
+        ])
+        .unwrap();
+        assert!(cli.ask.readonly);
+        assert!(cli.ask.permission_mode.is_some());
+    }
+
+    #[test]
+    fn permission_mode_coexists_with_full_auto() {
+        use clap::Parser;
+        let cli =
+            Cli::try_parse_from(["roba", "--full-auto", "--permission-mode", "plan", "prompt"])
+                .unwrap();
+        assert!(cli.ask.full_auto);
+        assert!(cli.ask.permission_mode.is_some());
     }
 
     #[test]
