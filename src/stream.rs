@@ -89,6 +89,9 @@ pub async fn run_streaming(
     display: DisplayMode,
 ) -> Result<Option<QueryResult>> {
     let name = derive_session_name(&prompt);
+    // TODO: `prompt_via_stdin(true)` cannot be used here because
+    // `stream_query` sets the child's stdin to null. Prompt hiding for
+    // the streaming path requires a change in claude-wrapper itself.
     let cmd = apply_session(QueryCommand::new(prompt).name(name), args)
         .output_format(OutputFormat::StreamJson);
     let show_meta = should_show_footer(args);
