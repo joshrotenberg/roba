@@ -181,9 +181,12 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         }
     } else {
         let name = session::derive_session_name(&prompt);
-        apply_session(QueryCommand::new(prompt).name(name), &args)
-            .execute_json(&claude)
-            .await?
+        apply_session(
+            QueryCommand::new(prompt).name(name).prompt_via_stdin(true),
+            &args,
+        )
+        .execute_json(&claude)
+        .await?
     };
     if let Some(pb) = spinner {
         pb.finish_and_clear();

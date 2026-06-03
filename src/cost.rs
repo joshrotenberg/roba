@@ -5,12 +5,15 @@
 //! or by project.
 //!
 //! Dollar amounts come from a bundled per-model rate table (see
-//! [`crate::rates`]). Claude Code persists token counts to the session
-//! JSONL but never a per-session dollar figure, so roba multiplies the
-//! recorded per-model token breakdown by the rate table itself. The
-//! rates carry an `as_of` date surfaced in the report; `--no-dollars`
-//! (or a stale-table override via `--rates-file`) covers the case
-//! where the bundled numbers can't be trusted.
+//! [`crate::rates`]). `SessionSummary` (claude-wrapper 0.10+) exposes a
+//! `total_cost_usd: Option<f64>` field, but roba still does a second
+//! JSONL pass to recover the per-model and per-bucket (input / output /
+//! cache-read / cache-write) breakdown needed for `Rollup.usage`,
+//! `unknown_models`, and per-project dollar figures. The summary total
+//! alone cannot replace that pass. The rates carry an `as_of` date
+//! surfaced in the report; `--no-dollars` (or a stale-table override
+//! via `--rates-file`) covers the case where the bundled numbers can't
+//! be trusted.
 
 use anyhow::{Context, Result};
 use claude_wrapper::history::{HistoryRoot, SessionSummary};
@@ -185,6 +188,13 @@ pub fn aggregate(sessions: &[SessionSummary]) -> Rollup {
 /// per-model token breakdown Claude Code records (`message.usage` +
 /// `message.model`), cost it against `rates`, and fill the dollar
 /// fields on the rollup and its projects.
+///
+/// Note: `SessionSummary.total_cost_usd` (available since
+/// claude-wrapper 0.10 / bumped to 0.11 in this version) provides a
+/// total USD figure per session, but it does not give per-model or
+/// per-bucket (input/output/cache) detail. This JSONL pass is still
+/// required to populate `Rollup.usage`, `unknown_models`, and
+/// per-project cost; `total_cost_usd` does not replace it.
 ///
 /// File reads are best-effort: an unreadable session is skipped (its
 /// tokens already counted in [`aggregate`] from the cheap summary).
