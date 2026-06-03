@@ -3,6 +3,7 @@
 //! the flattened [`AskArgs`].
 
 use clap::{Args as ClapArgs, Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Single-prompt CLI runner built on claude-wrapper.
@@ -140,6 +141,23 @@ pub enum LastKind {
     Tools,
     /// Everything in order -- text answers interleaved with tool calls.
     All,
+}
+
+/// Effort level for `--effort`. Controls the cost/quality tradeoff for
+/// a call. Maps directly to `claude_wrapper::Effort`.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EffortLevel {
+    /// Low effort: fast, cheap.
+    Low,
+    /// Medium effort.
+    Medium,
+    /// High effort (default when unset).
+    High,
+    /// Extra-high effort.
+    Xhigh,
+    /// Maximum effort: most thorough.
+    Max,
 }
 
 impl LastKind {
@@ -377,6 +395,13 @@ pub struct AskArgs {
     /// through to `claude -p --model`.
     #[arg(long, value_name = "MODEL", help_heading = "Model")]
     pub model: Option<String>,
+
+    /// Effort level for this call: controls the cost/quality tradeoff.
+    /// `low` is fast and cheap; `max` is most thorough.
+    ///
+    /// Profile key: `effort`. Env: `ROBA_EFFORT`.
+    #[arg(long, value_name = "LEVEL", value_enum, help_heading = "Model")]
+    pub effort: Option<EffortLevel>,
 
     // ----- Sessions ---------------------------------------------------------
     /// Continue an existing session. Bare `-c` resumes the most

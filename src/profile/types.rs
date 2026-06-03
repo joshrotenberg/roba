@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::aliases::Alias;
+use crate::cli::EffortLevel;
 
 /// A profile = a bundle of optional defaults. Used both for top-level
 /// keys (the unnamed "defaults" baseline) and for named
@@ -47,6 +48,9 @@ pub struct Profile {
     /// Override the claude model (alias or full id).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Effort level (`--effort`). Controls the cost/quality tradeoff.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<EffortLevel>,
     /// Pin a claude-code subagent by name (`--agent`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
@@ -160,6 +164,7 @@ impl Profile {
             && self.deny_tool.is_empty()
             && self.vars.is_empty()
             && self.model.is_none()
+            && self.effort.is_none()
             && self.agent.is_none()
             && self.stream.is_none()
             && self.show_thinking.is_none()
@@ -200,6 +205,7 @@ impl Profile {
             mut deny_tool,
             vars,
             model,
+            effort,
             agent,
             stream,
             show_thinking,
@@ -249,6 +255,9 @@ impl Profile {
         }
         if model.is_some() {
             self.model = model;
+        }
+        if effort.is_some() {
+            self.effort = effort;
         }
         if agent.is_some() {
             self.agent = agent;

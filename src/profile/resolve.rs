@@ -182,6 +182,9 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     {
         args.model = Some(m);
     }
+    if args.effort.is_none() && profile.effort.is_some() {
+        args.effort = profile.effort;
+    }
     if args.agent.is_none()
         && let Some(a) = profile.agent.take()
     {
