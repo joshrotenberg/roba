@@ -72,6 +72,17 @@ if [ -d docs/examples ]; then
     "$SRC/docs/examples/github-actions/pr-review.yml"
 fi
 
+# 3c. Skills (skills/*/SKILL.md).
+if [ -d skills ]; then
+  mkdir -p "$SRC/skills"
+  for skill_dir in skills/*/; do
+    skill_file="${skill_dir}SKILL.md"
+    [ -f "$skill_file" ] || continue
+    dirname="$(basename "$skill_dir")"
+    render_page "$skill_file" "$skill_file" "$SRC/skills/$dirname.md"
+  done
+fi
+
 # 4. Generate SUMMARY.md with explicit three-section audience-driven layout.
 #
 # Section order: Getting started, Using roba, Reference.
@@ -122,6 +133,23 @@ SUMMARY="$SRC/SUMMARY.md"
   printf '# Reference\n\n'
   if [ -f "$SRC/docs/reference.md" ]; then
     printf -- '- [Reference](docs/reference.md)\n'
+  fi
+  printf '\n'
+
+  # -------------------------------------------------------------------------
+  # Skills
+  # -------------------------------------------------------------------------
+  if [ -d "$SRC/skills" ] && ls "$SRC/skills/"*.md >/dev/null 2>&1; then
+    printf '# Skills\n\n'
+    for skill_page in "$SRC/skills/"*.md; do
+      [ -f "$skill_page" ] || continue
+      # Extract the name from frontmatter (name: value), fall back to basename.
+      skill_name=$(awk '/^name:/{print $2; exit}' "$skill_page")
+      [ -n "$skill_name" ] || skill_name="$(basename "$skill_page" .md)"
+      basename_noext="$(basename "$skill_page" .md)"
+      printf -- '- [%s](skills/%s.md)\n' "$skill_name" "$basename_noext"
+    done
+    printf '\n'
   fi
 } > "$SUMMARY"
 

@@ -121,7 +121,10 @@ library. Drop skills into `~/.claude/skills/` and agents into
 locations. [joshrotenberg/agent-tools](https://github.com/joshrotenberg/agent-tools)
 is one curated set if you want a starting point. A shell script, a
 cron job, or CI can drive roba via its `--json` envelope, typed exit
-codes, and `--trace` observability handle.
+codes, and `--trace` observability handle. For agents that invoke roba:
+`skills/use-roba/SKILL.md` in this repo documents roba's ABI in
+agent-readable form; copy it to `~/.claude/skills/use-roba/SKILL.md`
+to give your agent context on roba's contract.
 
 ## Streaming mode
 
