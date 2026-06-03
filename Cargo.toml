@@ -20,7 +20,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-claude-wrapper = "0.10"
+claude-wrapper = "0.11"
 dialoguer = { version = "0.11", default-features = false, features = ["fuzzy-select"] }
 glob = "0.3"
 indicatif = "0.17"
