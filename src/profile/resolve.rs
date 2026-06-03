@@ -232,6 +232,11 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     {
         args.no_retry = v;
     }
+    if let Some(v) = profile.bare
+        && !args.bare
+    {
+        args.bare = v;
+    }
     if args.trace.is_none()
         && let Some(p) = profile.trace.take()
     {

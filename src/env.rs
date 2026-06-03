@@ -200,6 +200,11 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
         args.no_retry = true;
     }
 
+    // ----- Mode -----
+    if !args.bare && read_truthy(env, "ROBA_BARE") {
+        args.bare = true;
+    }
+
     // ----- Vars (ROBA_VAR_<KEY>=<value>) -----
     for (key, value) in env {
         if let Some(var_key) = key.strip_prefix("ROBA_VAR_")
