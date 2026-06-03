@@ -132,39 +132,6 @@ final allow set after settings merge -- it doesn't read project
 settings. Treat it as a roba-side preview, not a claude-side
 truth.
 
-## Permission mode
-
-The `--permission-mode MODE` flag sets claude's permission mode directly.
-This is a separate, additional mechanism from the allowed-tools list that
-`--readonly` / `--writable` / `--full-auto` control. Both mechanisms can
-be active at the same time.
-
-```bash
-roba "..." --permission-mode plan        # show plan before executing
-roba "..." --permission-mode dont-ask    # accept all allowed tools silently
-roba "..." --writable --permission-mode plan   # writable + plan review
-```
-
-Available modes:
-
-| Mode | What it does |
-|---|---|
-| `default` | Default interactive permissions (the built-in baseline) |
-| `accept-edits` | Auto-accept file edits |
-| `auto` | Model-driven permission decisions |
-| `dont-ask` | Accept all allowed tools without prompting -- useful in non-interactive pipelines where the tools are pre-approved via `--allow-tool` / `--writable` |
-| `plan` | Read-only plan mode: claude shows what it intends to do before executing. Useful for a sanity-check before opening up `--writable`. |
-| `bypass-permissions` | Bypass all permission checks. Prefer `--full-auto` for this -- it is the ergonomic shortcut for the same effect. |
-
-The flag coexists with `--readonly`, `--writable`, and `--full-auto`.
-Those control the `--allowedTools` list passed to claude; `--permission-mode`
-is the separate `--permission-mode` flag. Setting both is valid: for example,
-`--writable --permission-mode plan` gives write access but requires a plan
-review before each action.
-
-Full layer support: `ROBA_PERMISSION_MODE=plan` (env var) or
-`permission_mode = "plan"` in `roba.toml` (profile key).
-
 ## Agent permission checks
 
 When you pass `--agent NAME`, roba looks up the agent's `AGENT.md`
