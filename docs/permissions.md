@@ -18,13 +18,47 @@ roba "..." --writable            # add Edit + Write
 roba "..." --allow-tool "Bash(git status)"   # add one specific pattern
 roba "..." --deny-tool WebFetch  # block a specific tool
 roba "..." --full-auto           # bypass every check (sandbox only)
+roba "..." --permission-mode plan   # set claude's own permission mode
 roba --profile review --show-permissions   # preview the resolved set, then exit
 ```
 
 Same knobs work as profile fields (`writable = true`,
-`allow_tool = [...]`, etc.) so you can codify a project's policy
-in `roba.toml` once and not think about it again. See
-[`profiles.md`](profiles.md) for the full schema.
+`allow_tool = [...]`, `permission_mode = "plan"`, etc.) so you can
+codify a project's policy in `roba.toml` once and not think about it
+again. See [`profiles.md`](profiles.md) for the full schema.
+
+## `--permission-mode`
+
+`--permission-mode MODE` sets claude's own interactive permission mode.
+This is a different axis from roba's `--allowed-tools` / `--denied-tools`
+list: the shortcut flags (`--readonly`, `--writable`, `--full-auto`)
+control *which tools claude is allowed to call*; `--permission-mode`
+controls *how claude asks for human approval* when a tool call comes up.
+
+The two operate independently and can be combined:
+
+```bash
+# Let claude call any Edit/Write tool, but make it ask before each one:
+roba "..." --writable --permission-mode accept-edits
+
+# Full tool access, no approval prompts (sandbox/CI use):
+roba "..." --full-auto --permission-mode dont-ask
+```
+
+Accepted values (kebab-case on the CLI, camelCase in `roba.toml` and `ROBA_PERMISSION_MODE`):
+
+| CLI value | `roba.toml` value | Meaning |
+|---|---|---|
+| `default` | `"default"` | claude's own default behavior |
+| `accept-edits` | `"acceptEdits"` | Auto-accept file edits; prompt for other tools |
+| `dont-ask` | `"dontAsk"` | Don't prompt; auto-approve tool calls |
+| `plan` | `"plan"` | Plan-only mode: describe actions but don't execute |
+| `auto` | `"auto"` | Fully automatic |
+| `bypass-permissions` | `"bypassPermissions"` | Bypass claude's own permission layer (deprecated upstream) |
+
+Full layer support: CLI (`--permission-mode MODE`) > env (`ROBA_PERMISSION_MODE=dontAsk`) > profile (`permission_mode = "dontAsk"`) > built-in default (none set, claude decides).
+
+`--show-permissions` includes the resolved `permission-mode` line with its provenance tag when one is set.
 
 ## Precedence
 
@@ -97,6 +131,39 @@ If you need strict "nothing beyond Read/Glob/Grep," either:
 final allow set after settings merge -- it doesn't read project
 settings. Treat it as a roba-side preview, not a claude-side
 truth.
+
+## Permission mode
+
+The `--permission-mode MODE` flag sets claude's permission mode directly.
+This is a separate, additional mechanism from the allowed-tools list that
+`--readonly` / `--writable` / `--full-auto` control. Both mechanisms can
+be active at the same time.
+
+```bash
+roba "..." --permission-mode plan        # show plan before executing
+roba "..." --permission-mode dont-ask    # accept all allowed tools silently
+roba "..." --writable --permission-mode plan   # writable + plan review
+```
+
+Available modes:
+
+| Mode | What it does |
+|---|---|
+| `default` | Default interactive permissions (the built-in baseline) |
+| `accept-edits` | Auto-accept file edits |
+| `auto` | Model-driven permission decisions |
+| `dont-ask` | Accept all allowed tools without prompting -- useful in non-interactive pipelines where the tools are pre-approved via `--allow-tool` / `--writable` |
+| `plan` | Read-only plan mode: claude shows what it intends to do before executing. Useful for a sanity-check before opening up `--writable`. |
+| `bypass-permissions` | Bypass all permission checks. Prefer `--full-auto` for this -- it is the ergonomic shortcut for the same effect. |
+
+The flag coexists with `--readonly`, `--writable`, and `--full-auto`.
+Those control the `--allowedTools` list passed to claude; `--permission-mode`
+is the separate `--permission-mode` flag. Setting both is valid: for example,
+`--writable --permission-mode plan` gives write access but requires a plan
+review before each action.
+
+Full layer support: `ROBA_PERMISSION_MODE=plan` (env var) or
+`permission_mode = "plan"` in `roba.toml` (profile key).
 
 ## Agent permission checks
 
