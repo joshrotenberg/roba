@@ -1295,3 +1295,38 @@ fn agent_check_suppressed_by_full_auto() {
         "expected prepend error, got:\n{stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// --effort flag
+// ---------------------------------------------------------------------------
+
+#[test]
+fn effort_parses_all_variants() {
+    use clap::Parser;
+    use roba::cli::{Cli, EffortLevel};
+    for (s, expected) in [
+        ("low", EffortLevel::Low),
+        ("medium", EffortLevel::Medium),
+        ("high", EffortLevel::High),
+        ("xhigh", EffortLevel::Xhigh),
+        ("max", EffortLevel::Max),
+    ] {
+        let cli = Cli::try_parse_from(["roba", "--effort", s, "prompt"]).unwrap();
+        assert_eq!(cli.ask.effort, Some(expected), "variant {s:?}");
+    }
+}
+
+#[test]
+fn effort_invalid_value_errors() {
+    use clap::Parser;
+    use roba::cli::Cli;
+    assert!(Cli::try_parse_from(["roba", "--effort", "ultra", "prompt"]).is_err());
+}
+
+#[test]
+fn effort_unset_is_none() {
+    use clap::Parser;
+    use roba::cli::Cli;
+    let cli = Cli::try_parse_from(["roba", "prompt"]).unwrap();
+    assert!(cli.ask.effort.is_none());
+}

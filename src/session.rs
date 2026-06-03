@@ -4,9 +4,9 @@
 //! [`AskArgs`] flags (`-c` / `-c=ID`, `--fork`, `--readonly`,
 //! `--full-auto`) into the matching builder method calls.
 
-use claude_wrapper::{PermissionMode, QueryCommand, RetryPolicy};
+use claude_wrapper::{Effort, PermissionMode, QueryCommand, RetryPolicy};
 
-use crate::cli::{AskArgs, PermMode};
+use crate::cli::{AskArgs, EffortLevel, PermMode};
 
 /// Apply session-related flags (-c / -c=ID, --fork), the model
 /// override (--model), the subagent override (--agent), and then
@@ -22,6 +22,15 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     }
     if let Some(m) = &args.model {
         cmd = cmd.model(m.clone());
+    }
+    if let Some(e) = args.effort {
+        cmd = cmd.effort(match e {
+            EffortLevel::Low => Effort::Low,
+            EffortLevel::Medium => Effort::Medium,
+            EffortLevel::High => Effort::High,
+            EffortLevel::Xhigh => Effort::Xhigh,
+            EffortLevel::Max => Effort::Max,
+        });
     }
     if let Some(name) = &args.agent {
         cmd = cmd.agent(name.clone());
