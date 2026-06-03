@@ -261,6 +261,16 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
         args.permission_mode = Some(permission_mode_config_to_setting(mode));
         args.permission_mode_source = Some(source.to_string());
     }
+    if args.system_prompt.is_none()
+        && let Some(s) = profile.system_prompt.take()
+    {
+        args.system_prompt = Some(s);
+    }
+    if args.append_system_prompt.is_none()
+        && let Some(s) = profile.append_system_prompt.take()
+    {
+        args.append_system_prompt = Some(s);
+    }
 }
 
 /// Convert a profile-layer `PermissionModeConfig` to the CLI's

@@ -403,6 +403,19 @@ pub struct AskArgs {
     #[arg(long, value_name = "LEVEL", value_enum, help_heading = "Model")]
     pub effort: Option<EffortLevel>,
 
+    // ----- System prompt ----------------------------------------------------
+    /// Replace the default system prompt entirely for this call. When
+    /// both `--system-prompt` and `--append-system-prompt` are set,
+    /// the replace runs first and the append adds on top.
+    #[arg(long, value_name = "TEXT", help_heading = "System prompt")]
+    pub system_prompt: Option<String>,
+
+    /// Append TEXT to the default system prompt for this call. When
+    /// both flags are set, `--system-prompt` replaces first and this
+    /// appends on top.
+    #[arg(long, value_name = "TEXT", help_heading = "System prompt")]
+    pub append_system_prompt: Option<String>,
+
     // ----- Sessions ---------------------------------------------------------
     /// Continue an existing session. Bare `-c` resumes the most
     /// recent session in this directory; `-c ID` (or `-c=ID`) resumes
