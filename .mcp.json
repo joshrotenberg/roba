@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "roba": {
+      "command": "roba",
+      "args": ["serve", "--stdio"],
+      "type": "stdio"
+    }
+  }
+}
