@@ -42,6 +42,9 @@ pub enum SubCommand {
         #[command(subcommand)]
         action: AliasAction,
     },
+    /// Start an MCP server backed by roba's dispatch core.
+    /// SPIKE: shape-validation only; not production-ready.
+    Serve(ServeArgs),
     /// Captures a user-defined alias invocation (`roba NAME [args]`).
     /// Not a real subcommand -- clap routes any unrecognized leading
     /// word here, and [`crate::dispatch`] expands it against the alias
@@ -61,6 +64,20 @@ pub enum AliasAction {
     },
     /// Print which files contribute aliases, in walk-up order.
     Path,
+}
+
+/// Arguments for `roba serve`. SPIKE: shape-validation only.
+#[derive(ClapArgs, Debug)]
+pub struct ServeArgs {
+    /// Listen on a Unix socket at PATH instead of the default
+    /// (`~/.local/state/roba/server.sock` or `$ROBA_SERVER`).
+    #[arg(long, value_name = "PATH")]
+    pub socket: Option<std::path::PathBuf>,
+
+    /// Use stdio transport instead of a Unix socket. Useful for
+    /// connecting directly to Claude Code / Claude Desktop.
+    #[arg(long, conflicts_with = "socket")]
+    pub stdio: bool,
 }
 
 #[derive(ClapArgs, Debug)]

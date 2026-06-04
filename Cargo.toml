@@ -30,6 +30,8 @@ tempfile = "3"
 termimad = "0.33"
 toml = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tower-mcp = "0.12"
+schemars = "1"
 
 [dev-dependencies]
 assert_cmd = "2"

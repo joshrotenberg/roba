@@ -22,6 +22,7 @@ pub mod profile;
 pub mod prompt;
 pub mod rates;
 pub mod render;
+pub mod serve;
 pub mod session;
 pub mod stream;
 
@@ -51,6 +52,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Some(SubCommand::Profile { action }) => profile::run(action),
         Some(SubCommand::Cost(args)) => cost::run(args),
         Some(SubCommand::Alias { action }) => aliases::run(action),
+        Some(SubCommand::Serve(args)) => serve::run_serve(args).await,
         // An unrecognized leading word: clap routes it here. The alias
         // name landed in `ask.prompt`; the remaining tokens are the
         // alias args (positional + any trailing flags).
