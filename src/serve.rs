@@ -6,10 +6,11 @@
 //    compose cleanly. The extractor-based handler pattern (input type that
 //    derives JsonSchema) maps directly onto DispatchArgs. No friction.
 //
-// 2. send_prompt tool -- accepts {prompt, session_id?} JSON, stubbed response
-//    returns {result, session_id}. The real dispatch path (run_ask) is async
-//    and needs Tokio; tower-mcp handlers ARE async, so this will wire up
-//    without impedance mismatch.
+// 2. send_prompt tool -- VALIDATED. Real dispatch via execute_json wired.
+//    session_id timing confirmed: session_id is returned in QueryResult after
+//    execute_json completes -- fine for synchronous use. Orphanable jobs
+//    (fire-and-forget) require a different pattern (streaming or a channel);
+//    deferred to the real impl.
 //
 // 3. roba://status resource -- static read-only resource; ResourceBuilder
 //    wires with one call. Works exactly as expected.
@@ -20,13 +21,6 @@
 //    + hyper); deferred to a follow-up spike or the real impl.
 //
 // Open questions / friction points:
-//
-// - session_id timing: the real run_ask dispatches to `claude -p` and the
-//   session id is only known AFTER the call returns (or early in the stream
-//   for --stream). The send_prompt response therefore can't include a real
-//   session_id without either (a) streaming or (b) post-call enrichment.
-//   For the spike this returns an empty string; for the real impl we'll
-//   need to either stream the response or enrich after the fact.
 //
 // - State sharing: passing the result of run_ask back through a tower-mcp
 //   tool handler requires State<T> injection or a channel. tower-mcp's
@@ -42,6 +36,8 @@
 //   dispatch failures; the anyhow::Error -> string coercion is one line.
 
 use anyhow::Result;
+use claude_wrapper::history::{HistoryRoot, ListOptions, ListSort};
+use claude_wrapper::{Claude, QueryCommand};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tower_mcp::{CallToolResult, McpRouter, ResourceBuilder, StdioTransport, ToolBuilder};
@@ -55,8 +51,8 @@ use crate::cli::ServeArgs;
 /// Input type for the `send_prompt` tool.
 ///
 /// `session_id` is optional: omit to start a new session, supply to continue
-/// an existing one. For the spike the field is accepted but not yet acted on
-/// (the underlying run_ask wiring is stubbed).
+/// an existing one. `model` overrides the default claude model. `system_prompt`
+/// replaces the default system prompt for this call.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SendPromptInput {
     /// The prompt text to send to claude.
@@ -65,16 +61,79 @@ struct SendPromptInput {
     /// An existing roba/claude session id to continue. Optional.
     #[serde(default)]
     session_id: Option<String>,
+
+    /// Override the claude model for this call. Optional.
+    #[serde(default)]
+    model: Option<String>,
+
+    /// Replace the default system prompt for this call. Optional.
+    #[serde(default)]
+    system_prompt: Option<String>,
 }
 
 /// Response shape for the `send_prompt` tool.
-///
-/// `session_id` will be populated by the real impl once session tracking is
-/// wired through run_ask. For the spike it is always an empty string.
 #[derive(Debug, Serialize)]
 struct SendPromptOutput {
     result: String,
     session_id: String,
+    /// The model that responded to this prompt.
+    model: String,
+}
+
+// ============================================================================
+// Dispatch
+// ============================================================================
+
+/// Call claude via execute_json and return the result, bypassing run_ask's
+/// stdout-writing output path.
+async fn dispatch_for_mcp(input: &SendPromptInput) -> anyhow::Result<SendPromptOutput> {
+    let claude = Claude::builder().build()?;
+    let name = crate::session::derive_session_name(&input.prompt);
+    let mut cmd = QueryCommand::new(input.prompt.clone())
+        .name(name)
+        .prompt_via_stdin(true);
+
+    if let Some(id) = &input.session_id
+        && !id.is_empty()
+    {
+        cmd = cmd.resume(id.clone());
+    }
+
+    if let Some(m) = &input.model
+        && !m.is_empty()
+    {
+        cmd = cmd.model(m.clone());
+    }
+
+    if let Some(s) = &input.system_prompt
+        && !s.is_empty()
+    {
+        cmd = cmd.system_prompt(s.clone());
+    }
+
+    // Safe readonly defaults: only allow read-only tools.
+    cmd = cmd.allowed_tools(vec![
+        "Read".to_string(),
+        "Glob".to_string(),
+        "Grep".to_string(),
+    ]);
+
+    let result = cmd.execute_json(&claude).await?;
+
+    // The model field is not a typed QueryResult field; it arrives in the
+    // extra map from the CLI's JSON output.
+    let model = result
+        .extra
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    Ok(SendPromptOutput {
+        result: result.result,
+        session_id: result.session_id,
+        model,
+    })
 }
 
 // ============================================================================
@@ -85,36 +144,21 @@ struct SendPromptOutput {
 /// subcommand is matched.
 pub async fn run_serve(args: ServeArgs) -> Result<()> {
     // -- send_prompt tool ------------------------------------------------------
-    //
-    // SPIKE: the handler is stubbed. A real implementation would:
-    //   1. Map SendPromptInput fields onto an AskArgs
-    //   2. Call run_ask (or a lower-level dispatch function) and capture the
-    //      result
-    //   3. Extract the session id from the result and return it alongside the
-    //      answer text
-    //
-    // The stubbed response exercises the full tool registration + transport
-    // path without needing a live ANTHROPIC_API_KEY.
     let send_prompt = ToolBuilder::new("send_prompt")
         .title("Send Prompt")
         .description(
             "Send a prompt to claude via roba and return the answer. \
-             Supply session_id to continue an existing session.",
+             Supply session_id to continue an existing session. \
+             Supply model to override the default claude model. \
+             Supply system_prompt to replace the default system prompt.",
         )
         .handler(|input: SendPromptInput| async move {
-            // SPIKE: stub response. Replace with real run_ask dispatch.
-            let output = SendPromptOutput {
-                result: format!(
-                    "[spike stub] roba would dispatch: {:?} (session: {:?})",
-                    input.prompt, input.session_id
-                ),
-                // SPIKE: session_id is only known after run_ask returns.
-                // For the real impl, extract from QueryResult.session_id.
-                session_id: String::new(),
-            };
-            match serde_json::to_string(&output) {
-                Ok(json) => Ok(CallToolResult::text(json)),
-                Err(e) => Ok(CallToolResult::error(format!("serialization error: {e}"))),
+            match dispatch_for_mcp(&input).await {
+                Ok(output) => match serde_json::to_string(&output) {
+                    Ok(json) => Ok(CallToolResult::text(json)),
+                    Err(e) => Ok(CallToolResult::error(format!("serialization error: {e}"))),
+                },
+                Err(e) => Ok(CallToolResult::error(format!("dispatch error: {e}"))),
             }
         })
         .build();
@@ -135,6 +179,55 @@ pub async fn run_serve(args: ServeArgs) -> Result<()> {
         .mime_type("application/json")
         .text(status_json);
 
+    // -- roba://sessions resource -----------------------------------------------
+    //
+    // Dynamic resource: reads up to 10 most recent sessions from history.
+    // Content is snapshotted at server startup (static text resource).
+    let sessions_json = {
+        match HistoryRoot::home() {
+            Err(e) => {
+                serde_json::json!({"error": format!("could not locate history: {e}")}).to_string()
+            }
+            Ok(root) => {
+                let opts = ListOptions {
+                    limit: Some(10),
+                    offset: 0,
+                    include_empty: false,
+                    sort: ListSort::RecencyDesc,
+                };
+                match root.list_sessions_with(None, &opts) {
+                    Err(e) => serde_json::json!({"error": format!("could not list sessions: {e}")})
+                        .to_string(),
+                    Ok(sessions) => {
+                        let items: Vec<serde_json::Value> = sessions
+                            .iter()
+                            .map(|s| {
+                                serde_json::json!({
+                                    "session_id": s.session_id,
+                                    "project_slug": s.project_slug,
+                                    "title": s.title,
+                                })
+                            })
+                            .collect();
+                        serde_json::to_string_pretty(&items).unwrap_or_else(|e| {
+                            serde_json::json!({"error": format!("serialization error: {e}")})
+                                .to_string()
+                        })
+                    }
+                }
+            }
+        }
+    };
+
+    let sessions_resource = ResourceBuilder::new("roba://sessions")
+        .name("roba recent sessions")
+        .description(
+            "Returns up to 10 most recent roba/claude sessions across all projects, \
+             snapshotted at server startup.",
+        )
+        .mime_type("application/json")
+        .text(sessions_json);
+
     // -- Router ----------------------------------------------------------------
     let router = McpRouter::new()
         .server_info("roba", env!("CARGO_PKG_VERSION"))
@@ -143,7 +236,8 @@ pub async fn run_serve(args: ServeArgs) -> Result<()> {
              and read server status.",
         )
         .tool(send_prompt)
-        .resource(status);
+        .resource(status)
+        .resource(sessions_resource);
 
     // -- Transport selection ---------------------------------------------------
     //
