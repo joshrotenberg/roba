@@ -527,6 +527,15 @@ pub struct AskArgs {
     #[arg(long, help_heading = "Permissions")]
     pub no_agent_check: bool,
 
+    // ----- Dispatch ---------------------------------------------------------
+    /// Preset for unattended file-mutating dispatch: implies --full-auto,
+    /// --worktree, and --fresh. Individual flags override the preset.
+    /// Use when firing a worker agent that needs to edit files without
+    /// human supervision. Without --agent, a warning is emitted to stderr.
+    /// Profile key: `dispatch`. Env: `ROBA_DISPATCH`.
+    #[arg(long, help_heading = "Dispatch")]
+    pub dispatch: bool,
+
     // ----- Permission provenance (internal; not a CLI surface) --------------
     // Populated as each layer contributes a value, so --show-permissions
     // can report where the effective permission set came from. The layer
@@ -991,5 +1000,32 @@ mod tests {
         let cli = Cli::try_parse_from(["roba", "commit-msg"]).unwrap();
         assert!(cli.command.is_none());
         assert_eq!(cli.ask.prompt.as_deref(), Some("commit-msg"));
+    }
+
+    #[test]
+    fn dispatch_flag_parsed() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--dispatch", "do thing"]).unwrap();
+        assert!(cli.ask.dispatch);
+        assert_eq!(cli.ask.prompt.as_deref(), Some("do thing"));
+    }
+
+    #[test]
+    fn dispatch_no_agent_parses() {
+        // --dispatch without --agent parses cleanly at the clap layer;
+        // the missing-agent warning is a runtime concern, not a parse error.
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--dispatch", "task"]).unwrap();
+        assert!(cli.ask.dispatch);
+        assert!(cli.ask.agent.is_none());
+    }
+
+    #[test]
+    fn dispatch_with_agent_parses() {
+        use clap::Parser;
+        let cli =
+            Cli::try_parse_from(["roba", "--dispatch", "--agent", "worker.md", "task"]).unwrap();
+        assert!(cli.ask.dispatch);
+        assert_eq!(cli.ask.agent.as_deref(), Some("worker.md"));
     }
 }
