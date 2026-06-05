@@ -1330,3 +1330,66 @@ fn effort_unset_is_none() {
     let cli = Cli::try_parse_from(["roba", "prompt"]).unwrap();
     assert!(cli.ask.effort.is_none());
 }
+
+// ---------------------------------------------------------------------------
+// --system-prompt / --append-system-prompt (parse-level, no claude call)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn system_prompt_flag_parses() {
+    // The flag must be recognized by clap; --show-permissions exits 0 without
+    // calling claude so this never needs a real API key.
+    let project = empty_project();
+    let user_home = tempfile::tempdir().expect("user home");
+    roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "--system-prompt",
+            "You are a helpful assistant",
+            "--show-permissions",
+        ])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .assert()
+        .success();
+}
+
+#[test]
+fn append_system_prompt_flag_parses() {
+    let project = empty_project();
+    let user_home = tempfile::tempdir().expect("user home");
+    roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "--append-system-prompt",
+            "Be concise.",
+            "--show-permissions",
+        ])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .assert()
+        .success();
+}
+
+#[test]
+fn both_system_prompt_flags_coexist() {
+    // Both flags set together must not cause a clap conflict error.
+    let project = empty_project();
+    let user_home = tempfile::tempdir().expect("user home");
+    roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "--system-prompt",
+            "Role: reviewer",
+            "--append-system-prompt",
+            "Be concise.",
+            "--show-permissions",
+        ])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .assert()
+        .success();
+}

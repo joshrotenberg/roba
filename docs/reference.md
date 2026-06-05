@@ -46,6 +46,8 @@ The default action. Sends a prompt to claude and renders the answer.
 | `--bare` | | Minimal-overhead mode: skip hooks, LSP, plugin sync, CLAUDE.md auto-discovery, auto-memory, keychain reads (agent-tier) |
 | `--model MODEL` | | Override model (alias or full id) |
 | `--effort LEVEL` | | Effort level: `low`, `medium`, `high`, `xhigh`, `max` |
+| `--system-prompt TEXT` | | Replace the default system prompt for this call |
+| `--append-system-prompt TEXT` | | Append TEXT to the default system prompt |
 | `--continue [ID]` | `-c` | Continue most recent session (bare `-c`) or a specific id |
 | `--fork` | | Branch the resumed session (requires `-c ID`) |
 | `--pick` | | Interactive fuzzy session chooser |
@@ -139,6 +141,8 @@ Source: `src/env.rs`.
 | `ROBA_MODEL` | string | `--model` |
 | `ROBA_EFFORT` | string | `--effort` |
 | `ROBA_AGENT` | string | `--agent` |
+| `ROBA_SYSTEM_PROMPT` | string | `--system-prompt` |
+| `ROBA_APPEND_SYSTEM_PROMPT` | string | `--append-system-prompt` |
 | `ROBA_PREPEND` | path list | `--prepend` |
 | `ROBA_APPEND` | path list | `--append` |
 | `ROBA_ATTACH` | string list | `--attach` |

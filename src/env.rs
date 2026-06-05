@@ -76,6 +76,18 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
         args.agent = Some(s);
     }
 
+    // ----- System prompt -----
+    if args.system_prompt.is_none()
+        && let Some(s) = read_string(env, "ROBA_SYSTEM_PROMPT")
+    {
+        args.system_prompt = Some(s);
+    }
+    if args.append_system_prompt.is_none()
+        && let Some(s) = read_string(env, "ROBA_APPEND_SYSTEM_PROMPT")
+    {
+        args.append_system_prompt = Some(s);
+    }
+
     // ----- Composition -----
     if args.prepend.is_empty() {
         let paths = read_path_list(env, "ROBA_PREPEND");
