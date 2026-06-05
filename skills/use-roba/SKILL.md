@@ -95,7 +95,13 @@ bumping the version.
 | `--full-auto` | Bypass all permission checks (sandbox use only) |
 | `--allow-tool TOOL` | Add a specific tool pattern (repeatable) |
 | `--deny-tool TOOL` | Block a specific tool pattern (repeatable) |
+| `--permission-mode MODE` | Pass a permission mode directly to claude: `dontAsk` (auto-approve allowed tools), `acceptEdits` (auto-accept file edits), `plan` (show plan before executing), `auto`, `default`. Coexists with `--writable` / `--allow-tool`: those set the allowlist, this sets the interaction mode. |
+| `--system-prompt TEXT` | Replace the default system prompt for this call. When combined with `--append-system-prompt`, replace runs first. |
+| `--append-system-prompt TEXT` | Append TEXT to the default system prompt. Use to add agent-specific instructions without losing the default context. |
 | `--agent NAME` | Pin a Claude Code subagent (e.g. a project-specific agent under `.claude/agents/`) |
+| `--bare` | Minimal-overhead mode: skip hooks, LSP, plugin sync, CLAUDE.md auto-discovery, auto-memory, keychain reads. Use for non-interactive agent dispatches where those features add latency but no value. |
+| `--effort LEVEL` | Cost/quality tradeoff: `low`, `medium`, `high`, `xhigh`, `max`. Default is haiku-level behavior; `max` gets the most thorough response at higher cost. |
+| `--model MODEL` | Override the model for this call. Accepts aliases (`haiku`, `sonnet`, `opus`) or full ids. |
 
 ## Permission precedence
 
@@ -104,6 +110,12 @@ One rule: CLI > `ROBA_<PARAM>` env > active profile > config file > built-in def
 
 Default permission set is read-only: Read, Glob, Grep only. Opt in
 explicitly with `--writable`, `--allow-tool`, or `--full-auto`.
+
+`--permission-mode MODE` is orthogonal to the allowlist flags. The shortcut
+flags (`--writable`, `--full-auto`) control *which tools* are allowed;
+`--permission-mode` controls *how claude behaves* when using those tools (e.g.
+`dontAsk` to skip interactive approval prompts, `plan` to show a plan first).
+Both can be set in the same call.
 
 ## Common agent patterns
 
@@ -153,3 +165,14 @@ roba --no-retry --json "summarize this file" || {
   esac
 }
 ```
+
+**Fast non-interactive dispatch (agent-tier)**
+
+```bash
+roba --bare --effort low --quiet --json \
+  -p "summarize the last 5 commits" --git-log 5
+```
+
+`--bare` skips all hooks and auto-discovery overhead; `--effort low` uses the
+cheapest compute level. Together they are the recommended flags for high-volume
+or latency-sensitive agent pipelines.
