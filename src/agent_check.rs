@@ -13,6 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::cli::AskArgs;
+use crate::cli::PermMode;
 
 // ---------------------------------------------------------------------------
 // Agent file lookup
@@ -185,6 +186,36 @@ pub fn find_missing_tools(declared: &[String], args: &AskArgs) -> Vec<String> {
         .collect()
 }
 
+/// Return true when any declared tool implies file mutation:
+/// `Edit`, `Write`, `MultiEdit`, or `Bash` (bare or granular `Bash(...)`).
+pub fn declares_write_tools(declared: &[String]) -> bool {
+    declared.iter().any(|t| {
+        matches!(t.as_str(), "Edit" | "Write" | "MultiEdit" | "Bash") || t.starts_with("Bash(")
+    })
+}
+
+/// Return true when the resolved args represent "default" permission mode --
+/// no explicit permissive flag: no `--full-auto`, no `--writable`, and no
+/// `--permission-mode` with a permissive value.
+///
+/// Permissive `--permission-mode` values (returns false):
+///   AcceptEdits, Auto, BypassPermissions, DontAsk
+///
+/// Non-permissive (returns true, same as None):
+///   Default, Plan
+pub fn is_default_permission_mode(args: &AskArgs) -> bool {
+    if args.full_auto || args.writable {
+        return false;
+    }
+    match args.permission_mode {
+        None | Some(PermMode::Default) | Some(PermMode::Plan) => true,
+        Some(PermMode::AcceptEdits)
+        | Some(PermMode::Auto)
+        | Some(PermMode::BypassPermissions)
+        | Some(PermMode::DontAsk) => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Warning emission
 // ---------------------------------------------------------------------------
@@ -229,6 +260,16 @@ pub fn maybe_warn(args: &AskArgs, cwd: &Path) {
         eprintln!(
             "  hint: pass --full-auto, --allow-tool 'Bash(...)', or --no-agent-check to suppress"
         );
+    }
+
+    // Permission-mode check: warn when agent declares write tools but the
+    // permission mode is default (dispatch will stall at first write).
+    if declares_write_tools(&declared) && is_default_permission_mode(args) {
+        eprintln!(
+            "[roba] warning: agent '{agent_name}' declares write tools (Edit/Write) but permission mode is default"
+        );
+        eprintln!("         -- dispatch will stall at first write attempt");
+        eprintln!("         hint: add --full-auto or --permission-mode acceptEdits");
     }
 }
 
@@ -388,6 +429,75 @@ mod tests {
         assert!(
             missing.is_empty(),
             "exact Bash in allow_tool should cover declared Bash"
+        );
+    }
+
+    // -- permission-mode check -----------------------------------------------
+
+    #[test]
+    fn agent_check_warns_on_write_tools_in_default_mode() {
+        let declared = vec!["Edit".to_string(), "Write".to_string()];
+        assert!(
+            declares_write_tools(&declared),
+            "Edit/Write should be detected as write tools"
+        );
+        let args = args_from(&[]);
+        assert!(is_default_permission_mode(&args), "no flags = default mode");
+    }
+
+    #[test]
+    fn agent_check_no_warn_when_full_auto() {
+        let declared = vec!["Edit".to_string(), "Write".to_string()];
+        assert!(declares_write_tools(&declared));
+        let args = args_from(&["--full-auto"]);
+        assert!(
+            !is_default_permission_mode(&args),
+            "--full-auto should not be default mode"
+        );
+    }
+
+    #[test]
+    fn agent_check_no_warn_when_writable() {
+        let declared = vec!["Edit".to_string()];
+        assert!(declares_write_tools(&declared));
+        let args = args_from(&["--writable"]);
+        assert!(
+            !is_default_permission_mode(&args),
+            "--writable should not be default mode"
+        );
+    }
+
+    #[test]
+    fn agent_check_no_warn_when_permission_mode_set() {
+        let declared = vec!["Write".to_string()];
+        assert!(declares_write_tools(&declared));
+        // accept-edits is permissive (clap ValueEnum is kebab-case)
+        let args = args_from(&["--permission-mode", "accept-edits"]);
+        assert!(
+            !is_default_permission_mode(&args),
+            "--permission-mode accept-edits should not be default mode"
+        );
+        // auto is permissive
+        let args2 = args_from(&["--permission-mode", "auto"]);
+        assert!(!is_default_permission_mode(&args2));
+        // dont-ask is permissive
+        let args3 = args_from(&["--permission-mode", "dont-ask"]);
+        assert!(!is_default_permission_mode(&args3));
+    }
+
+    #[test]
+    fn agent_check_no_warn_for_readonly_agent() {
+        let declared = vec!["Read".to_string(), "Glob".to_string()];
+        assert!(
+            !declares_write_tools(&declared),
+            "Read/Glob are not write tools"
+        );
+        let args = args_from(&[]);
+        assert!(is_default_permission_mode(&args));
+        // Both conditions must be true to warn; readonly agent should not warn.
+        assert!(
+            !(declares_write_tools(&declared) && is_default_permission_mode(&args)),
+            "readonly agent in default mode should not trigger the warning"
         );
     }
 }
