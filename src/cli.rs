@@ -745,6 +745,26 @@ mod tests {
     }
 
     #[test]
+    fn bare_parses_alone() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--bare", "prompt"]).unwrap();
+        assert!(cli.ask.bare);
+    }
+
+    #[test]
+    fn bare_is_orthogonal() {
+        // --bare must compose freely with output flags
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--bare", "--quiet", "prompt"]).unwrap();
+        assert!(cli.ask.bare);
+        assert!(cli.ask.quiet);
+
+        let cli = Cli::try_parse_from(["roba", "--bare", "--json", "prompt"]).unwrap();
+        assert!(cli.ask.bare);
+        assert!(cli.ask.json);
+    }
+
+    #[test]
     fn trace_flag_parses() {
         use clap::Parser;
         let cli = Cli::try_parse_from(["roba", "--trace", "/tmp/x.jsonl", "prompt"]).unwrap();

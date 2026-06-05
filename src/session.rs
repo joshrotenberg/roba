@@ -52,6 +52,9 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
         // `max_attempts(1)` means "no retries."
         cmd = cmd.retry(RetryPolicy::new().max_attempts(1));
     }
+    if args.bare {
+        cmd = cmd.bare();
+    }
     apply_permissions(cmd, args)
 }
 
