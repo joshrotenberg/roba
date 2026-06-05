@@ -14,6 +14,25 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+### Added
+
+- `--permission-mode MODE` -- pass a specific permission mode to claude (`plan`,
+  `dontAsk`, `auto`, `acceptEdits`, `default`, `bypassPermissions`). Coexists
+  with the shortcut flags (`--readonly`, `--writable`, `--full-auto`); those
+  set the allowlist, this sets the mode. Profile key: `permission_mode`. Env:
+  `ROBA_PERMISSION_MODE`.
+- `--effort LEVEL` -- controls the cost/quality tradeoff (`low`, `medium`,
+  `high`, `xhigh`, `max`). Profile key: `effort`. Env: `ROBA_EFFORT`.
+- `--bare` -- minimal-overhead mode: skip hooks, LSP, plugin sync, CLAUDE.md
+  auto-discovery, auto-memory, and keychain reads. Agent-tier flag for
+  non-interactive dispatches. Profile key: `bare`. Env: `ROBA_BARE`.
+- `--system-prompt TEXT` -- replace the default system prompt for this call.
+  When combined with `--append-system-prompt`, replace runs first. Profile key:
+  `system_prompt`. Env: `ROBA_SYSTEM_PROMPT`.
+- `--append-system-prompt TEXT` -- append TEXT to the default system prompt.
+  When combined with `--system-prompt`, appends on top of the replacement.
+  Profile key: `append_system_prompt`. Env: `ROBA_APPEND_SYSTEM_PROMPT`.
+
 ## [0.2.0] - 2026-06-02
 
 Initial public release. The CLI surface, exit codes, config schema,

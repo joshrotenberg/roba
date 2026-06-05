@@ -716,4 +716,118 @@ mod tests {
             assert_eq!(args.effort, Some(expected), "variant {s:?}");
         }
     }
+
+    // -- permission_mode ---------------------------------------------------
+
+    #[test]
+    fn env_permission_mode_sets_from_roba_permission_mode_var() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_PERMISSION_MODE", "plan")]));
+        assert!(args.permission_mode.is_some());
+    }
+
+    #[test]
+    fn env_permission_mode_does_not_override_cli() {
+        use crate::cli::PermMode;
+        let mut args = empty_args();
+        args.permission_mode = Some(PermMode::Auto);
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_PERMISSION_MODE", "plan")]));
+        assert_eq!(args.permission_mode, Some(PermMode::Auto));
+    }
+
+    #[test]
+    fn env_permission_mode_ignores_invalid_value() {
+        let mut args = empty_args();
+        apply_env_overrides_from(
+            &mut args,
+            &env_with(&[("ROBA_PERMISSION_MODE", "notamode")]),
+        );
+        assert!(args.permission_mode.is_none());
+    }
+
+    #[test]
+    fn env_permission_mode_parses_known_variants() {
+        use crate::cli::PermMode;
+        for (s, expected) in [
+            ("plan", PermMode::Plan),
+            ("auto", PermMode::Auto),
+            ("dontAsk", PermMode::DontAsk),
+            ("acceptEdits", PermMode::AcceptEdits),
+            ("default", PermMode::Default),
+        ] {
+            let mut args = empty_args();
+            apply_env_overrides_from(&mut args, &env_with(&[("ROBA_PERMISSION_MODE", s)]));
+            assert_eq!(args.permission_mode, Some(expected), "variant {s:?}");
+        }
+    }
+
+    // -- bare --------------------------------------------------------------
+
+    #[test]
+    fn env_bare_sets_from_roba_bare_var() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_BARE", "1")]));
+        assert!(args.bare);
+    }
+
+    #[test]
+    fn env_bare_does_not_override_cli() {
+        // `--bare` is a bool; once true, the env layer must not clear it
+        let mut args = empty_args();
+        args.bare = true;
+        // env says "false-ish" -- truthy logic means the flag can only enable, not disable
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_BARE", "0")]));
+        assert!(args.bare);
+    }
+
+    #[test]
+    fn env_bare_ignores_false_value() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_BARE", "false")]));
+        assert!(!args.bare);
+    }
+
+    // -- system_prompt / append_system_prompt ------------------------------
+
+    #[test]
+    fn env_system_prompt_sets_from_roba_system_prompt_var() {
+        let mut args = empty_args();
+        apply_env_overrides_from(
+            &mut args,
+            &env_with(&[("ROBA_SYSTEM_PROMPT", "You are helpful.")]),
+        );
+        assert_eq!(args.system_prompt.as_deref(), Some("You are helpful."));
+    }
+
+    #[test]
+    fn env_system_prompt_does_not_override_cli() {
+        let mut args = empty_args();
+        args.system_prompt = Some("cli-prompt".to_string());
+        apply_env_overrides_from(
+            &mut args,
+            &env_with(&[("ROBA_SYSTEM_PROMPT", "env-prompt")]),
+        );
+        assert_eq!(args.system_prompt.as_deref(), Some("cli-prompt"));
+    }
+
+    #[test]
+    fn env_append_system_prompt_sets_from_roba_var() {
+        let mut args = empty_args();
+        apply_env_overrides_from(
+            &mut args,
+            &env_with(&[("ROBA_APPEND_SYSTEM_PROMPT", "Be concise.")]),
+        );
+        assert_eq!(args.append_system_prompt.as_deref(), Some("Be concise."));
+    }
+
+    #[test]
+    fn env_append_system_prompt_does_not_override_cli() {
+        let mut args = empty_args();
+        args.append_system_prompt = Some("cli-append".to_string());
+        apply_env_overrides_from(
+            &mut args,
+            &env_with(&[("ROBA_APPEND_SYSTEM_PROMPT", "env-append")]),
+        );
+        assert_eq!(args.append_system_prompt.as_deref(), Some("cli-append"));
+    }
 }

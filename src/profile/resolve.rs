@@ -778,6 +778,92 @@ mod tests {
         assert!(args.no_dollars);
     }
 
+    #[test]
+    fn merge_effort_applies_when_cli_unset() {
+        use crate::cli::EffortLevel;
+        let mut args = empty_args();
+        let profile = Profile {
+            effort: Some(EffortLevel::High),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.effort, Some(EffortLevel::High));
+    }
+
+    #[test]
+    fn merge_effort_cli_wins_over_profile() {
+        use crate::cli::EffortLevel;
+        let mut args = empty_args();
+        args.effort = Some(EffortLevel::Low);
+        let profile = Profile {
+            effort: Some(EffortLevel::Max),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.effort, Some(EffortLevel::Low));
+    }
+
+    #[test]
+    fn merge_bare_applies_when_cli_unset() {
+        let mut args = empty_args();
+        let profile = Profile {
+            bare: Some(true),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert!(args.bare);
+    }
+
+    #[test]
+    fn merge_system_prompt_applies_when_cli_unset() {
+        let mut args = empty_args();
+        let profile = Profile {
+            system_prompt: Some("You are a reviewer.".to_string()),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.system_prompt.as_deref(), Some("You are a reviewer."));
+    }
+
+    #[test]
+    fn merge_system_prompt_cli_wins_over_profile() {
+        let mut args = empty_args();
+        args.system_prompt = Some("cli".to_string());
+        let profile = Profile {
+            system_prompt: Some("profile".to_string()),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.system_prompt.as_deref(), Some("cli"));
+    }
+
+    #[test]
+    fn merge_permission_mode_applies_when_cli_unset() {
+        use crate::cli::PermMode;
+        use crate::profile::types::PermissionModeConfig;
+        let mut args = empty_args();
+        let profile = Profile {
+            permission_mode: Some(PermissionModeConfig::Plan),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.permission_mode, Some(PermMode::Plan));
+    }
+
+    #[test]
+    fn merge_permission_mode_cli_wins_over_profile() {
+        use crate::cli::PermMode;
+        use crate::profile::types::PermissionModeConfig;
+        let mut args = empty_args();
+        args.permission_mode = Some(PermMode::Auto);
+        let profile = Profile {
+            permission_mode: Some(PermissionModeConfig::Plan),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.permission_mode, Some(PermMode::Auto));
+    }
+
     // -- Path expansion ----------------------------------------------------
 
     #[test]
