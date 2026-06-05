@@ -223,6 +223,19 @@ fn worktree_alone_parses_and_fails_at_runtime_not_clap() {
 }
 
 #[test]
+fn dispatch_flag_is_wired() {
+    // --dispatch + missing prepend file: parse must succeed (clap
+    // recognizes the flag), failure comes from the runtime read error
+    // -- confirming the preset expansion does not block at the CLI layer.
+    roba()
+        .args(["task", "--dispatch", "--prepend", "/no/such/dispatch-test"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("reading --prepend"));
+}
+
+#[test]
 fn worktree_named_with_equals_parses() {
     // -w=NAME + missing prepend file: parse must succeed (clap
     // accepts the `=` form), failure is the runtime read error.
