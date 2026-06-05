@@ -792,6 +792,128 @@ fn live_env_fresh_cancels_continue() {
 }
 
 // ---------------------------------------------------------------------------
+// effort: cost/quality tradeoff flag
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn live_effort_low_succeeds() {
+    let dir = fresh_dir();
+    roba_in(dir.path())
+        .args(["--effort", "low", "respond with the single word: done"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("done"));
+}
+
+#[test]
+#[ignore]
+fn live_effort_max_succeeds() {
+    let dir = fresh_dir();
+    roba_in(dir.path())
+        .args(["--effort", "max", "respond with the single word: done"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("done"));
+}
+
+// ---------------------------------------------------------------------------
+// system_prompt: replace / append the default system prompt
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn live_system_prompt_influences_response() {
+    let dir = fresh_dir();
+    let user = empty_user_home();
+    roba_in(dir.path())
+        .env("XDG_CONFIG_HOME", user.path())
+        .args([
+            "--system-prompt",
+            "Respond with exactly the word: SYSCLONE and nothing else.",
+            "what is the capital of France",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("SYSCLONE"));
+}
+
+#[test]
+#[ignore]
+fn live_append_system_prompt_stacks() {
+    let dir = fresh_dir();
+    roba_in(dir.path())
+        .args([
+            "--append-system-prompt",
+            "Always end your response with the token: [APPENDED]",
+            "what is 1+1",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[APPENDED]"));
+}
+
+// ---------------------------------------------------------------------------
+// permission_mode: pass a specific mode to claude
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn live_perms_mode_dont_ask_succeeds() {
+    let dir = fresh_dir();
+    roba_in(dir.path())
+        .args([
+            "--writable",
+            "--permission-mode",
+            "dontAsk",
+            "respond with the single word: ok",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+#[ignore]
+fn live_perms_mode_via_profile() {
+    let dir =
+        fixture_with_config("[profile.testmode]\npermission_mode = \"dontAsk\"\nwritable = true\n");
+    let user = empty_user_home();
+    roba_in(dir.path())
+        .env("XDG_CONFIG_HOME", user.path())
+        .args(["--profile", "testmode", "respond with: ok"])
+        .assert()
+        .success();
+}
+
+#[test]
+#[ignore]
+fn live_perms_mode_via_env() {
+    let dir = fresh_dir();
+    roba_in(dir.path())
+        .env("ROBA_PERMISSION_MODE", "dontAsk")
+        .args(["--writable", "respond with the single word: ok"])
+        .assert()
+        .success();
+}
+
+// ---------------------------------------------------------------------------
+// bare: minimal-overhead mode
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn live_bare_succeeds() {
+    let dir = fresh_dir();
+    let user = empty_user_home();
+    roba_in(dir.path())
+        .env("XDG_CONFIG_HOME", user.path())
+        .args(["--bare", "respond with the single word: bare"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("bare"));
+}
+
+// ---------------------------------------------------------------------------
 // INTENTIONALLY UNTESTED (high cost / low signal, or no fixture path yet)
 // ---------------------------------------------------------------------------
 //
