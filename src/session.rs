@@ -41,6 +41,12 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
             None => cmd.worktree(),
         };
     }
+    if let Some(ref text) = args.system_prompt {
+        cmd = cmd.system_prompt(text.clone());
+    }
+    if let Some(ref text) = args.append_system_prompt {
+        cmd = cmd.append_system_prompt(text.clone());
+    }
     if args.show_thinking {
         cmd = cmd.include_partial_messages();
     }

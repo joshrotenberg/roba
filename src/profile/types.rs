@@ -104,6 +104,12 @@ pub struct Profile {
     /// shortcuts are set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<PermissionModeConfig>,
+    /// Replace the default system prompt entirely (`--system-prompt`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Append to the default system prompt (`--append-system-prompt`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub append_system_prompt: Option<String>,
 }
 
 /// Profile value for the `permission_mode` field. Serializes as a
@@ -181,6 +187,8 @@ impl Profile {
             && self.no_dollars.is_none()
             && self.no_agent_check.is_none()
             && self.permission_mode.is_none()
+            && self.system_prompt.is_none()
+            && self.append_system_prompt.is_none()
     }
 
     /// Merge `other` on top of `self`. Used to layer roba.toml files
@@ -222,6 +230,8 @@ impl Profile {
             no_dollars,
             no_agent_check,
             permission_mode,
+            system_prompt,
+            append_system_prompt,
         } = other;
 
         self.prepend.append(&mut prepend);
@@ -306,6 +316,12 @@ impl Profile {
         }
         if permission_mode.is_some() {
             self.permission_mode = permission_mode;
+        }
+        if system_prompt.is_some() {
+            self.system_prompt = system_prompt;
+        }
+        if append_system_prompt.is_some() {
+            self.append_system_prompt = append_system_prompt;
         }
     }
 }

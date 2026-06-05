@@ -123,6 +123,8 @@ override.
 | `trace` | `string` | `--trace PATH` | Write the spawned session's streaming events to PATH as JSONL (a stable observability handle); `~/` is expanded. Forces the streaming pipeline internally even without `--stream` |
 | `rates_file` | `string` | `--rates-file PATH` | Override the bundled per-model rates table used for the footer dollar figure (same schema as `roba cost --rates-file`); `~/` is expanded. Also honored via `ROBA_RATES_FILE` |
 | `no_dollars` | `bool` | `--no-dollars` | Omit the dollar figure from the per-call footer (tokens only); useful when the bundled rates are stale |
+| `system_prompt` | `string` | `--system-prompt TEXT` | Replace the default system prompt entirely for this call |
+| `append_system_prompt` | `string` | `--append-system-prompt TEXT` | Append to the default system prompt; useful for per-profile role framing (e.g. `"You are a senior code reviewer"`) |
 
 Unknown keys are rejected at parse time -- a typo errors fast instead
 of being silently ignored.
