@@ -14,6 +14,29 @@ pub fn run_history(args: HistoryArgs) -> Result<()> {
     use claude_wrapper::history::{HistoryRoot, ListOptions, ListSort};
 
     let root = HistoryRoot::home().context("locating ~/.claude/projects")?;
+
+    // --paths: emit one absolute JSONL path per line, then return.
+    if let Some(paths_n) = args.paths {
+        let paths_opts = ListOptions {
+            limit: paths_n,
+            offset: 0,
+            include_empty: false,
+            sort: ListSort::RecencyDesc,
+        };
+        let (paths_scope, _) = resolve_project_scope(args.project.clone(), args.all_projects);
+        let sessions = root
+            .list_sessions_with(paths_scope.as_deref(), &paths_opts)
+            .context("reading session history")?;
+        for s in &sessions {
+            let path = root
+                .path()
+                .join(&s.project_slug)
+                .join(format!("{}.jsonl", s.session_id));
+            println!("{}", path.display());
+        }
+        return Ok(());
+    }
+
     let limit = if args.all {
         None
     } else {
@@ -396,5 +419,24 @@ mod tests {
     fn extract_message_text_returns_none_for_content_not_array() {
         let msg = serde_json::json!({"content": "should be an array"});
         assert_eq!(extract_message_text(&msg), None);
+    }
+
+    #[test]
+    fn paths_output_construction() {
+        // Verify the path construction logic: root_path / project_slug / session_id.jsonl
+        // Use a relative root to keep the assertion OS-agnostic (avoids path-separator
+        // differences between Unix and Windows).
+        let root_path = std::path::Path::new("projects");
+        let project_slug = "-Users-alice-myproject";
+        let session_id = "abc12345";
+        let path = root_path
+            .join(project_slug)
+            .join(format!("{}.jsonl", session_id));
+        // Verify structural components, not the full OS-specific string.
+        assert_eq!(path.parent().unwrap().file_name().unwrap(), project_slug);
+        assert_eq!(
+            path.file_name().unwrap().to_str().unwrap(),
+            "abc12345.jsonl"
+        );
     }
 }

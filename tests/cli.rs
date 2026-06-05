@@ -50,6 +50,19 @@ fn history_help_describes_subcommand() {
         .stdout(predicate::str::contains("--project"));
 }
 
+#[test]
+fn history_paths_flag_no_arg() {
+    // --paths with no value should parse and run without panicking.
+    // No real sessions may exist in CI; exit 0 is the contract.
+    roba().args(["history", "--paths"]).assert().success();
+}
+
+#[test]
+fn history_paths_flag_with_n() {
+    // --paths 5 should parse correctly and run without panicking.
+    roba().args(["history", "--paths", "5"]).assert().success();
+}
+
 // ---------------------------------------------------------------------------
 // no-prompt / missing-source error paths (exit 1, no claude call)
 // ---------------------------------------------------------------------------
@@ -216,6 +229,19 @@ fn worktree_alone_parses_and_fails_at_runtime_not_clap() {
     // presence form still works.
     roba()
         .args(["foo", "-w", "--prepend", "/no/such/worktree-test-noname"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("reading --prepend"));
+}
+
+#[test]
+fn dispatch_flag_is_wired() {
+    // --dispatch + missing prepend file: parse must succeed (clap
+    // recognizes the flag), failure comes from the runtime read error
+    // -- confirming the preset expansion does not block at the CLI layer.
+    roba()
+        .args(["task", "--dispatch", "--prepend", "/no/such/dispatch-test"])
         .assert()
         .failure()
         .code(1)

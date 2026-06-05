@@ -32,6 +32,11 @@ release, it is renamed to the new version and a fresh
 - `--append-system-prompt TEXT` -- append TEXT to the default system prompt.
   When combined with `--system-prompt`, appends on top of the replacement.
   Profile key: `append_system_prompt`. Env: `ROBA_APPEND_SYSTEM_PROMPT`.
+- `--dispatch` -- preset for unattended file-mutating workers; implies
+  `--full-auto`, `--worktree`, and `--fresh` (with per-flag overrides
+  respected). `ROBA_DISPATCH` env var and profile `dispatch = true`
+  enable the same preset. Emits a warning when `--agent` is not set.
+- `roba history --paths [N]`: emit JSONL session file paths (most-recent first), suitable for shell composition and corpus mining workflows
 
 ## [0.2.0] - 2026-06-02
 
