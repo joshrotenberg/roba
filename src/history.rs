@@ -424,15 +424,19 @@ mod tests {
     #[test]
     fn paths_output_construction() {
         // Verify the path construction logic: root_path / project_slug / session_id.jsonl
-        let root_path = std::path::Path::new("/home/user/.claude/projects");
+        // Use a relative root to keep the assertion OS-agnostic (avoids path-separator
+        // differences between Unix and Windows).
+        let root_path = std::path::Path::new("projects");
         let project_slug = "-Users-alice-myproject";
         let session_id = "abc12345";
         let path = root_path
             .join(project_slug)
             .join(format!("{}.jsonl", session_id));
+        // Verify structural components, not the full OS-specific string.
+        assert_eq!(path.parent().unwrap().file_name().unwrap(), project_slug);
         assert_eq!(
-            path.to_str().unwrap(),
-            "/home/user/.claude/projects/-Users-alice-myproject/abc12345.jsonl"
+            path.file_name().unwrap().to_str().unwrap(),
+            "abc12345.jsonl"
         );
     }
 }
