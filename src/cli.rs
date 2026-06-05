@@ -219,6 +219,11 @@ pub struct HistoryArgs {
     /// Emit JSON instead of a human table.
     #[arg(long)]
     pub json: bool,
+
+    /// Output JSONL file paths only (one per line), suitable for shell composition.
+    /// Optional N limits to the N most recent sessions. Implies --quiet.
+    #[arg(long, value_name = "N", num_args = 0..=1, require_equals = false)]
+    pub paths: Option<Option<usize>>,
 }
 
 #[derive(ClapArgs, Debug)]

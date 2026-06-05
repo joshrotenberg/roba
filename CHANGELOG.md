@@ -36,6 +36,7 @@ release, it is renamed to the new version and a fresh
   `--full-auto`, `--worktree`, and `--fresh` (with per-flag overrides
   respected). `ROBA_DISPATCH` env var and profile `dispatch = true`
   enable the same preset. Emits a warning when `--agent` is not set.
+- `roba history --paths [N]`: emit JSONL session file paths (most-recent first), suitable for shell composition and corpus mining workflows
 
 ## [0.2.0] - 2026-06-02
 
