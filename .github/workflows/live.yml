@@ -1,0 +1,93 @@
+name: Live tests
+
+# Runs the #[ignore]d live tests in tests/live.rs, which make real
+# `claude -p` calls and cost money (haiku default keeps the full suite
+# to roughly $0.30-0.60 per run).
+#
+# Requires the `ANTHROPIC_API_KEY` repo secret: in CI there is no OAuth
+# keychain, so claude authenticates via the API key (which is also why
+# the --bare test can actually run here instead of skipping).
+#
+# CADENCE: currently daily. To crank down once the suite is stable,
+# edit the cron below:
+#   daily    -> '0 9 * * *'
+#   weekly   -> '0 9 * * 1'   (Mondays)
+#   off      -> comment out the `schedule:` block (workflow_dispatch stays)
+
+on:
+  schedule:
+    - cron: "0 9 * * *" # daily at 09:00 UTC
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "Which live tests to run"
+        type: choice
+        options: [full, smoke]
+        default: full
+
+permissions:
+  contents: read
+
+# Never run two live jobs at once (rate limits + cost); let an in-flight
+# run finish rather than cancelling it.
+concurrency:
+  group: live-tests
+  cancel-in-progress: false
+
+jobs:
+  live:
+    name: Live tests (real claude)
+    runs-on: ubuntu-latest
+    # Only on the canonical repo: forks have no secret, and a scheduled
+    # run on a fork would just fail the guard below.
+    if: ${{ github.repository == 'joshrotenberg/roba' }}
+    timeout-minutes: 20
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard -- API key present
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "::error::ANTHROPIC_API_KEY secret is not set. Add it under" \
+                 "Settings -> Secrets and variables -> Actions before this workflow can run."
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install claude CLI
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          # GitHub Actions runs each step in a fresh non-login shell, so the
+          # installer's PATH edit to the shell profile doesn't carry over.
+          # Add the known install locations explicitly.
+          for d in "$HOME/.local/bin" "$HOME/.claude/bin"; do
+            [ -d "$d" ] && echo "$d" >> "$GITHUB_PATH"
+          done
+
+      - name: Preflight -- claude reachable + auth works
+        run: |
+          claude --version
+          # Minimal headless call: fails fast and clearly if the API key or
+          # a first-run onboarding step blocks claude, instead of a confusing
+          # hang deep in the test suite.
+          timeout 90 claude -p "reply with the single word: ok" \
+            --model haiku --output-format json | head -c 600
+          echo
+          echo "preflight ok"
+
+      - name: Run live tests
+        run: |
+          # --test-threads=2: real API calls; keep concurrency low to avoid
+          # rate-limit flakes (a 4-way run showed intermittent failures).
+          if [ "${{ github.event.inputs.scope }}" = "smoke" ]; then
+            echo "Running smoke subset"
+            cargo test --test live --all-features -- --ignored --test-threads=2 \
+              live_smoke live_session_continue live_output_json
+          else
+            echo "Running full live suite"
+            cargo test --test live --all-features -- --ignored --test-threads=2
+          fi
