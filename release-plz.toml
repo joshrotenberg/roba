@@ -17,7 +17,13 @@ name = "roba"
 semver_check = true
 release = true
 publish = true
-git_release_enable = true
+# release-plz creates the git tag only; cargo-dist owns the GitHub
+# release. The tag push (via COMMITTER_TOKEN, a PAT) triggers
+# .github/workflows/release.yml, which builds the cross-platform
+# binaries and runs `gh release create` with the artifacts attached.
+# If release-plz also created the release, dist's `gh release create`
+# for the same tag would collide.
+git_release_enable = false
 git_tag_enable = true
 git_tag_name = "v{{ version }}"
 changelog_update = true

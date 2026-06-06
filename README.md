@@ -1,5 +1,11 @@
 # roba
 
+[![Crates.io](https://img.shields.io/crates/v/roba.svg)](https://crates.io/crates/roba)
+[![Documentation](https://docs.rs/roba/badge.svg)](https://docs.rs/roba)
+[![CI](https://github.com/joshrotenberg/roba/actions/workflows/ci.yml/badge.svg)](https://github.com/joshrotenberg/roba/actions/workflows/ci.yml)
+[![Downloads](https://img.shields.io/crates/d/roba.svg)](https://crates.io/crates/roba)
+[![License](https://img.shields.io/crates/l/roba.svg)](#license)
+
 **For humans** -- a binary convenience wrapper around `claude -p`:
 composable input, structured output, profiles, history, cost
 tracking. One invocation, one answer, done.
