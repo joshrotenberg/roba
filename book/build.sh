@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Aggregate the repo's skills/, agents/, and docs/ into a flat mdbook
+# Aggregate the repo's README, docs/, and skills/ into a flat mdbook
 # source tree under book/src/, then generate SUMMARY.md.
 #
 # Idempotent: nukes and recreates book/src/ on every run. The output
@@ -157,7 +157,12 @@ echo "Aggregated book source into $SRC"
 
 # 5. Post-process: rewrite relative .md links to .html for mdbook.
 #    External URLs (containing ://) are skipped because [^):] excludes ':'.
-find "$SRC" -name "*.md" | while read -r file; do
+#    SUMMARY.md is EXCLUDED: mdbook's table of contents must reference the
+#    .md source files. If SUMMARY links are rewritten to .html, mdbook's
+#    create-missing generates empty stub source pages that shadow the real
+#    renders, leaving every chapter blank. (Regression from the original
+#    blanket rewrite.)
+find "$SRC" -name "*.md" ! -name "SUMMARY.md" | while read -r file; do
   sed -i.bak -E 's|\]\(([^):]*)\.md(#[^)]+)?\)|\](\1.html\2)|g' "$file" && rm -f "$file.bak"
 done
-echo "Rewrote .md links to .html in $SRC"
+echo "Rewrote .md links to .html in $SRC (excluding SUMMARY.md)"
