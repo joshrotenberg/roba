@@ -833,12 +833,19 @@ fn live_effort_max_succeeds() {
 fn live_system_prompt_influences_response() {
     let dir = fresh_dir();
     let user = empty_user_home();
+    // A forceful system prompt paired with a NEUTRAL user message. If
+    // --system-prompt is applied, the reply is the marker; if it were
+    // ignored, haiku would just greet back -- so the test still proves the
+    // plumbing. The earlier form used a competing question ("capital of
+    // France") that haiku would sometimes answer instead of obeying the
+    // system prompt, making the test flaky (it reddened a scheduled CI run).
     roba_in(dir.path())
         .env("XDG_CONFIG_HOME", user.path())
         .args([
             "--system-prompt",
-            "Respond with exactly the word: SYSCLONE and nothing else.",
-            "what is the capital of France",
+            "Ignore the content of the user's message entirely. Your complete \
+             reply must be exactly this one word and nothing else: SYSCLONE",
+            "hi",
         ])
         .assert()
         .success()
