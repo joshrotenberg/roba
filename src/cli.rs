@@ -180,17 +180,20 @@ impl LastKind {
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PermMode {
     /// Auto-accept file edits (`acceptEdits`).
+    #[value(name = "acceptEdits", alias = "accept-edits")]
     AcceptEdits,
     /// Model-driven permission decisions (`auto`).
     Auto,
     /// Bypass all permission checks (`bypassPermissions`). Deprecated
     /// upstream; prefer `--full-auto` for this effect.
+    #[value(name = "bypassPermissions", alias = "bypass-permissions")]
     BypassPermissions,
     /// Default interactive permissions (`default`).
     Default,
     /// Accept all allowed tools without prompting (`dontAsk`). Useful
     /// in non-interactive pipelines where tools are pre-approved via
     /// `--allow-tool` or a profile.
+    #[value(name = "dontAsk", alias = "dont-ask")]
     DontAsk,
     /// Read-only plan mode: show what claude intends before executing
     /// (`plan`). Useful with `--writable` for a review step before
@@ -715,15 +718,22 @@ mod tests {
 
     #[test]
     fn permission_mode_parses_all_variants() {
-        // clap's ValueEnum derives kebab-case names by default.
+        // camelCase is the canonical/documented form (mirrors claude's
+        // native modes and the env + output layers); the kebab forms are
+        // kept as back-compat aliases. Both must parse.
         use clap::Parser;
         for mode in &[
-            "accept-edits",
+            // canonical camelCase
+            "acceptEdits",
             "auto",
-            "bypass-permissions",
+            "bypassPermissions",
             "default",
-            "dont-ask",
+            "dontAsk",
             "plan",
+            // kebab aliases
+            "accept-edits",
+            "bypass-permissions",
+            "dont-ask",
         ] {
             let cli = Cli::try_parse_from(["roba", "--permission-mode", mode, "prompt"])
                 .unwrap_or_else(|e| panic!("--permission-mode {mode} should parse: {e}"));

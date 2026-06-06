@@ -57,7 +57,7 @@ The default action. Sends a prompt to claude and renders the answer.
 | `--readonly` | | Explicit default: Read, Glob, Grep only. Active suppressor |
 | `--writable` | | Add Edit + Write |
 | `--full-auto` | | Bypass all permission checks (sandbox only) |
-| `--permission-mode MODE` | | Set claude's own permission mode (`default`, `accept-edits`, `dont-ask`, `plan`, `auto`, `bypass-permissions`). Coexists with shortcut flags |
+| `--permission-mode MODE` | | Set claude's own permission mode (`default`, `acceptEdits`, `dontAsk`, `plan`, `auto`, `bypassPermissions`). Coexists with shortcut flags |
 | `--allow-tool TOOL` | | Add a tool/pattern to the allow list (repeatable) |
 | `--deny-tool TOOL` | | Deny a tool/pattern (repeatable; deny beats allow) |
 | `--show-permissions` | | Preview resolved allow/deny set with provenance; exit 0 |
@@ -153,7 +153,7 @@ Source: `src/env.rs`.
 | `ROBA_READONLY` | bool | `--readonly` |
 | `ROBA_WRITABLE` | bool | `--writable` |
 | `ROBA_FULL_AUTO` | bool | `--full-auto` |
-| `ROBA_PERMISSION_MODE` | string | `--permission-mode` (accepts camelCase or kebab-case: `acceptEdits`, `dontAsk`, etc.) |
+| `ROBA_PERMISSION_MODE` | string | `--permission-mode` (`acceptEdits`, `dontAsk`, etc.) |
 | `ROBA_ALLOW_TOOL` | string list | `--allow-tool` |
 | `ROBA_DENY_TOOL` | string list | `--deny-tool` |
 | `ROBA_STREAM` | bool | `--stream` |
