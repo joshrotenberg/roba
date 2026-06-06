@@ -1,6 +1,6 @@
 [book]
 title = "roba"
-description = "A binary convenience wrapper around claude -p, with an optional library of orchestrator skills and subagents."
+description = "A binary convenience wrapper around claude -p: composable input, structured output, profiles, history, and cost tracking."
 authors = ["Josh Rotenberg"]
 language = "en"
 src = "src"
