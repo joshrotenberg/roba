@@ -39,22 +39,23 @@ The two operate independently and can be combined:
 
 ```bash
 # Let claude call any Edit/Write tool, but make it ask before each one:
-roba "..." --writable --permission-mode accept-edits
+roba "..." --writable --permission-mode acceptEdits
 
 # Full tool access, no approval prompts (sandbox/CI use):
-roba "..." --full-auto --permission-mode dont-ask
+roba "..." --full-auto --permission-mode dontAsk
 ```
 
-Accepted values (kebab-case on the CLI, camelCase in `roba.toml` and `ROBA_PERMISSION_MODE`):
+Accepted values -- camelCase everywhere (CLI, `roba.toml`, and
+`ROBA_PERMISSION_MODE`), matching claude's native mode names:
 
-| CLI value | `roba.toml` value | Meaning |
-|---|---|---|
-| `default` | `"default"` | claude's own default behavior |
-| `accept-edits` | `"acceptEdits"` | Auto-accept file edits; prompt for other tools |
-| `dont-ask` | `"dontAsk"` | Don't prompt; auto-approve tool calls |
-| `plan` | `"plan"` | Plan-only mode: describe actions but don't execute |
-| `auto` | `"auto"` | Fully automatic |
-| `bypass-permissions` | `"bypassPermissions"` | Bypass claude's own permission layer (deprecated upstream) |
+| Value | Meaning |
+|---|---|
+| `default` | claude's own default behavior |
+| `acceptEdits` | Auto-accept file edits; prompt for other tools |
+| `dontAsk` | Don't prompt; auto-approve tool calls |
+| `plan` | Plan-only mode: describe actions but don't execute |
+| `auto` | Fully automatic |
+| `bypassPermissions` | Bypass claude's own permission layer (deprecated upstream) |
 
 Full layer support: CLI (`--permission-mode MODE`) > env (`ROBA_PERMISSION_MODE=dontAsk`) > profile (`permission_mode = "dontAsk"`) > built-in default (none set, claude decides).
 
