@@ -97,7 +97,7 @@ fn live_smoke_cwd_scopes_session_to_path() {
         .success();
 
     let out = roba_in(dir.path())
-        .args(["-c", "what word did I ask you to remember"])
+        .args(["-c", "-p", "what word did I ask you to remember"])
         .output()
         .expect("run roba -c");
     assert!(out.status.success());
@@ -165,7 +165,14 @@ fn live_output_refusal_in_json_envelope() {
         .args([
             "--json",
             "--quiet",
-            "Reply with exactly this and nothing else: I can't help with that.",
+            // Force a verbatim echo whose first characters are a refusal
+            // marker. Phrased strongly so the model does not prepend a
+            // greeting/preamble (which would break the `starts_with`
+            // heuristic). A weaker "reply with exactly this" form let
+            // haiku open with "I'm ready to help!" instead.
+            "Output the following line as your complete response. Do not add \
+             any words, greeting, quotation marks, or explanation before or \
+             after it. The line is: I can't help with that.",
         ])
         .output()
         .expect("run roba --json");
@@ -268,7 +275,7 @@ fn live_session_continue_carries_context() {
         .success();
 
     let out = roba_in(dir.path())
-        .args(["-c", "what word did I ask you to remember"])
+        .args(["-c", "-p", "what word did I ask you to remember"])
         .output()
         .expect("run roba -c");
     assert!(out.status.success());
@@ -903,6 +910,18 @@ fn live_perms_mode_via_env() {
 #[test]
 #[ignore]
 fn live_bare_succeeds() {
+    // --bare skips keychain reads by design (see src/cli.rs: "Auth uses
+    // ANTHROPIC_API_KEY only"). Under OAuth/keychain-only auth with no
+    // ANTHROPIC_API_KEY in the environment, --bare cannot authenticate
+    // ("Not logged in"), so the test can only run when an API key is
+    // present. Skip cleanly otherwise rather than report a false failure.
+    if std::env::var_os("ANTHROPIC_API_KEY").is_none() {
+        eprintln!(
+            "skipping live_bare_succeeds: --bare authenticates via ANTHROPIC_API_KEY only, \
+             which is not set in this environment"
+        );
+        return;
+    }
     let dir = fresh_dir();
     let user = empty_user_home();
     roba_in(dir.path())
