@@ -14,6 +14,8 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+
+
 ## [0.2.0] - 2026-06-06
 
 Initial public release. The CLI surface, exit codes, config schema,
