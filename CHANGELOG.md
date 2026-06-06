@@ -14,31 +14,7 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
-### Added
-
-- `--permission-mode MODE` -- pass a specific permission mode to claude (`plan`,
-  `dontAsk`, `auto`, `acceptEdits`, `default`, `bypassPermissions`). Coexists
-  with the shortcut flags (`--readonly`, `--writable`, `--full-auto`); those
-  set the allowlist, this sets the mode. Profile key: `permission_mode`. Env:
-  `ROBA_PERMISSION_MODE`.
-- `--effort LEVEL` -- controls the cost/quality tradeoff (`low`, `medium`,
-  `high`, `xhigh`, `max`). Profile key: `effort`. Env: `ROBA_EFFORT`.
-- `--bare` -- minimal-overhead mode: skip hooks, LSP, plugin sync, CLAUDE.md
-  auto-discovery, auto-memory, and keychain reads. Agent-tier flag for
-  non-interactive dispatches. Profile key: `bare`. Env: `ROBA_BARE`.
-- `--system-prompt TEXT` -- replace the default system prompt for this call.
-  When combined with `--append-system-prompt`, replace runs first. Profile key:
-  `system_prompt`. Env: `ROBA_SYSTEM_PROMPT`.
-- `--append-system-prompt TEXT` -- append TEXT to the default system prompt.
-  When combined with `--system-prompt`, appends on top of the replacement.
-  Profile key: `append_system_prompt`. Env: `ROBA_APPEND_SYSTEM_PROMPT`.
-- `--dispatch` -- preset for unattended file-mutating workers; implies
-  `--full-auto`, `--worktree`, and `--fresh` (with per-flag overrides
-  respected). `ROBA_DISPATCH` env var and profile `dispatch = true`
-  enable the same preset. Emits a warning when `--agent` is not set.
-- `roba history --paths [N]`: emit JSONL session file paths (most-recent first), suitable for shell composition and corpus mining workflows
-
-## [0.2.0] - 2026-06-02
+## [0.2.0] - 2026-06-06
 
 Initial public release. The CLI surface, exit codes, config schema,
 and `--json` envelope are intended to be stable across 0.2.x;
@@ -85,7 +61,11 @@ renames, schema renames) are listed under `Removed`.
 - **Permissions**: `--readonly` (Read/Glob/Grep only -- the
   default), `--writable` (adds Edit/Write), `--allow-tool TOOL`
   (repeatable), `--deny-tool TOOL` (repeatable), `--full-auto`
-  (bypass everything), `--show-permissions` (preview the
+  (bypass everything), `--permission-mode MODE` (pass a specific
+  claude permission mode -- `plan`, `dontAsk`, `auto`,
+  `acceptEdits`, `default`, `bypassPermissions` -- orthogonal to
+  the allowlist shortcuts; the shortcuts set the allowlist, this
+  sets the mode), `--show-permissions` (preview the
   effective allow/deny set with per-entry provenance and exit 0
   without calling claude), `--no-agent-check` (suppress the
   agent frontmatter permission check).
@@ -102,7 +82,17 @@ renames, schema renames) are listed under `Removed`.
 - **Other dispatch flags**: `-C, --cwd PATH` (run as if invoked
   from a different directory), `--model NAME` (override the model
   per call), `--no-retry` (disable wrapper-level auto-retry on
-  transient failures; deterministic for orchestrator scripts).
+  transient failures; deterministic for orchestrator scripts),
+  `--effort LEVEL` (cost/quality tradeoff -- `low`, `medium`,
+  `high`, `xhigh`, `max`), `--bare` (minimal-overhead mode: skip
+  hooks, LSP, plugin sync, CLAUDE.md auto-discovery, auto-memory,
+  and keychain reads -- for non-interactive dispatches),
+  `--system-prompt TEXT` (replace the default system prompt) and
+  `--append-system-prompt TEXT` (append to it; when both are set,
+  replace runs first), `--dispatch` (preset for unattended
+  file-mutating workers -- implies `--full-auto`, `--worktree`,
+  and `--fresh`, each individually overridable; warns when
+  `--agent` is unset).
 - **Cost in dollars**: `roba cost` now reports a dollar figure
   alongside tokens, computed from a bundled per-model rate table
   (`src/rates.toml`, baked in via `include_str!`). Per-project
@@ -114,7 +104,9 @@ renames, schema renames) are listed under `Removed`.
   when the bundled rates are stale; the table carries an `as_of`
   date surfaced on the report. Models the table doesn't cover are
   listed as "rates unknown" rather than costed at a misleading $0.
-- **Subcommands**: `roba history` (list recent sessions),
+- **Subcommands**: `roba history [--paths [N]]` (list recent
+  sessions; `--paths` emits the JSONL session file paths,
+  most-recent first, for shell composition and corpus mining),
   `roba last` (reprint last run), `roba cost [--by-project]
   [--project SLUG] [--json] [--rates-file PATH] [--no-dollars]`
   (token + dollar usage rollup),
