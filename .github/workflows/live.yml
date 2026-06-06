@@ -63,9 +63,11 @@ jobs:
           curl -fsSL https://claude.ai/install.sh | bash
           # GitHub Actions runs each step in a fresh non-login shell, so the
           # installer's PATH edit to the shell profile doesn't carry over.
-          # Add the known install locations explicitly.
+          # Add the known install locations explicitly. Use `if` (not
+          # `[ -d ] && echo`): under `bash -e`, a false `[ -d ]` on a
+          # non-existent dir returns non-zero and fails the whole step.
           for d in "$HOME/.local/bin" "$HOME/.claude/bin"; do
-            [ -d "$d" ] && echo "$d" >> "$GITHUB_PATH"
+            if [ -d "$d" ]; then echo "$d" >> "$GITHUB_PATH"; fi
           done
 
       - name: Preflight -- claude reachable + auth works
