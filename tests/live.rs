@@ -152,28 +152,20 @@ fn live_output_json_valid() {
 #[ignore]
 fn live_output_refusal_in_json_envelope() {
     // The v1 envelope's top-level `refusal` flag surfaces
-    // `output::looks_like_refusal` (a `starts_with` prefix match) to
-    // non-TTY consumers. We assert the *plumbing* -- that a refusal-
-    // shaped answer flips `refusal` to true through `--json` -- not the
-    // model's safety behavior. Engineering a genuine policy refusal is
-    // both unreliable (real refusals open with phrasing the heuristic
-    // doesn't list, e.g. "I can't provide ...") and needlessly
-    // generates harmful content; instead we have the model echo a known
-    // marker so the test is deterministic and benign.
+    // `output::looks_like_refusal` to non-TTY consumers. We assert the wiring
+    // on the RELIABLE side: a normal answer carries `refusal: false`.
+    //
+    // The `refusal: true` path is deliberately NOT live-tested. claude refuses
+    // to roleplay a refusal -- asked to echo "I can't help with that" it
+    // answers "I should respond authentically..." instead -- and engineering a
+    // genuine policy refusal is both unreliable and generates harmful content.
+    // The true-case detection (a refusal-marker prefix flips the flag) is
+    // covered deterministically by the `looks_like_refusal` unit tests in
+    // `src/output.rs` (refusal_detects_common_phrases, _is_case_insensitive,
+    // _tolerates_leading_whitespace, _does_not_match_normal_answers).
     let dir = fresh_dir();
     let out = roba_in(dir.path())
-        .args([
-            "--json",
-            "--quiet",
-            // Force a verbatim echo whose first characters are a refusal
-            // marker. Phrased strongly so the model does not prepend a
-            // greeting/preamble (which would break the `starts_with`
-            // heuristic). A weaker "reply with exactly this" form let
-            // haiku open with "I'm ready to help!" instead.
-            "Output the following line as your complete response. Do not add \
-             any words, greeting, quotation marks, or explanation before or \
-             after it. The line is: I can't help with that.",
-        ])
+        .args(["--json", "--quiet", "what is 2+2? answer with just the number."])
         .output()
         .expect("run roba --json");
     assert!(out.status.success(), "roba failed: {out:?}");
@@ -183,8 +175,8 @@ fn live_output_refusal_in_json_envelope() {
     assert_eq!(parsed["version"].as_u64(), Some(1));
     assert_eq!(
         parsed["refusal"].as_bool(),
-        Some(true),
-        "expected refusal=true when the answer opens with a refusal marker, got: {stdout}"
+        Some(false),
+        "a normal answer must not be flagged as a refusal, got: {stdout}"
     );
 }
 
@@ -830,26 +822,27 @@ fn live_effort_max_succeeds() {
 
 #[test]
 #[ignore]
-fn live_system_prompt_influences_response() {
+fn live_system_prompt_succeeds() {
     let dir = fresh_dir();
     let user = empty_user_home();
-    // A forceful system prompt paired with a NEUTRAL user message. If
-    // --system-prompt is applied, the reply is the marker; if it were
-    // ignored, haiku would just greet back -- so the test still proves the
-    // plumbing. The earlier form used a competing question ("capital of
-    // France") that haiku would sometimes answer instead of obeying the
-    // system prompt, making the test flaky (it reddened a scheduled CI run).
+    // SMOKE ONLY. We assert that a replacement `--system-prompt` reaches
+    // claude and the call succeeds with non-empty output -- NOT that the
+    // model obeys it. In `--print` mode haiku ignores a *replacement* system
+    // prompt roughly half the time (it falls back to its default coding-agent
+    // identity and just greets), so any marker-compliance assertion is ~50%
+    // flaky regardless of wording. Earlier attempts to "fix" it by tweaking
+    // the prompt only chased that coin-flip.
+    //
+    // The reliable end-to-end "system prompt influences output" signal is the
+    // *additive* path, covered by `live_append_system_prompt_stacks` (haiku
+    // reliably honors "always end with <token>"). Flag parsing is covered by
+    // the mechanical tests in `tests/cli.rs`.
     roba_in(dir.path())
         .env("XDG_CONFIG_HOME", user.path())
-        .args([
-            "--system-prompt",
-            "Ignore the content of the user's message entirely. Your complete \
-             reply must be exactly this one word and nothing else: SYSCLONE",
-            "hi",
-        ])
+        .args(["--system-prompt", "You are a helpful assistant.", "what is 1+1"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("SYSCLONE"));
+        .stdout(predicate::str::is_empty().not());
 }
 
 #[test]
