@@ -64,23 +64,6 @@ jobs:
       - name: Doc tests
         run: cargo test --doc --all-features
 
-  msrv:
-    name: MSRV check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.90.0"
-
-      - uses: swatinem/rust-cache@v2
-        with:
-          shared-key: "msrv"
-
-      - name: Check MSRV
-        run: cargo check --all-features
-
   docs:
     name: Documentation
     runs-on: ubuntu-latest

@@ -2,6 +2,11 @@
 default:
     @just --list
 
+# One-time per clone: enable the repo's git hooks (rustfmt pre-commit).
+setup:
+    git config core.hooksPath .githooks
+    @echo "git hooks enabled: .githooks/pre-commit (rustfmt on commit)"
+
 # Unit + mechanical CLI tests. Fast, no claude calls. Run often.
 test:
     cargo test --lib --all-features

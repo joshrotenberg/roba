@@ -2,7 +2,10 @@
 name = "roba"
 version = "0.2.1"
 edition = "2024"
-rust-version = "1.90.0"
+# No rust-version floor: roba is a binary (nobody depends on it as a
+# library), so it tracks recent stable rather than carrying an MSRV.
+# `cargo install` from source needs a current toolchain; brew/release
+# binaries are unaffected.
 authors = ["Josh Rotenberg <joshrotenberg@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/joshrotenberg/roba"
