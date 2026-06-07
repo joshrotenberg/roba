@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# roba pre-commit hook -- keep every commit rustfmt-canonical so CI's
+# `cargo fmt --check` can't fail after the fact. Running at commit time
+# catches any editor/background-formatter reformat that slipped in after
+# a manual `cargo fmt`.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+#                  (or:)  just setup
+set -euo pipefail
+
+if ! cargo fmt --all -- --check; then
+  echo
+  echo "pre-commit: rustfmt found unformatted code." >&2
+  echo "  fix:  cargo fmt --all   (then re-stage and commit)" >&2
+  exit 1
+fi
