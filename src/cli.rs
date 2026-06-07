@@ -2,27 +2,71 @@
 //! invocation (no subcommand) dispatches to [`crate::run_ask`] with
 //! the flattened [`AskArgs`].
 
+use clap::builder::styling::{AnsiColor, Styles};
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Footer shown under `--help` / `-h`: a few examples and a pointer to
-/// the full env-var / profile-key reference (kept out of per-flag help
-/// to keep the listing scannable).
+/// Help color palette: green-bold section headers + usage, cyan flag
+/// names, dim value placeholders. clap auto-disables color on a non-TTY
+/// and honors `NO_COLOR` / `CLICOLOR`, so piped or scripted output stays
+/// byte-clean -- color is a pure TTY nicety, never on the agent-ABI path.
+const STYLES: Styles = Styles::styled()
+    .header(AnsiColor::Green.on_default().bold())
+    .usage(AnsiColor::Green.on_default().bold())
+    .literal(AnsiColor::Cyan.on_default())
+    .placeholder(AnsiColor::BrightBlack.on_default());
+
+/// Shown under `-h`: a few worked examples plus a pointer to `--help`
+/// for the full reference. Kept short so `-h` stays scannable.
 const AFTER_HELP: &str = "\
 Examples:
-  roba \"explain the rust borrow checker in 3 bullets\"   one-shot question
-  cat err.log | roba \"what's failing and how do I fix it?\"   pipe stdin
-  roba --attach 'src/**/*.rs' \"is the error handling consistent?\"   attach files
-  roba -c -p \"now add a test for that\"   continue the last session
-  roba --writable \"rename foo to bar across src/\"   let claude edit files
+  roba \"explain the borrow checker in 3 bullets\"       one-shot question
+  cat err.log | roba \"what's wrong here?\"              pipe stdin
+  roba --attach 'src/**/*.rs' \"audit error handling\"   attach files
+  roba -c -p \"now add a test for that\"                 continue the last session
+  roba --writable \"rename foo to bar in src/\"          let claude edit files
 
-Every flag also has a ROBA_* env var and a roba.toml profile key.
-Full mapping: https://joshrotenberg.com/roba/docs/reference.html";
+Full flag detail, env vars, and roba.toml config: roba --help";
+
+/// Shown under `--help`: examples plus a self-contained reference for the
+/// env-var and roba.toml config layers, so the binary documents itself
+/// for humans and agents without depending on an external docs site.
+const AFTER_LONG_HELP: &str = "\
+Examples:
+  roba \"explain the borrow checker in 3 bullets\"       one-shot question
+  cat err.log | roba \"what's wrong here?\"              pipe stdin
+  roba --attach 'src/**/*.rs' \"audit error handling\"   attach files
+  roba -c -p \"now add a test for that\"                 continue the last session
+  roba --writable \"rename foo to bar in src/\"          let claude edit files
+
+Environment variables:
+  Every long flag has a ROBA_<FLAG> override (uppercased, '-' -> '_'):
+  --model -> ROBA_MODEL; bool flags take a truthy value (--writable ->
+  ROBA_WRITABLE=1). Special cases:
+    ROBA_PROFILE=NAME      apply a profile (like --profile NAME)
+    ROBA_VAR_<KEY>=VALUE   set a template var (like --var KEY=VALUE)
+    ROBA_RATES_FILE=PATH   override the footer rates table
+    NO_COLOR=1             disable color (help and answer rendering)
+  Precedence: CLI flag > ROBA_* env > active profile > built-in default.
+
+Configuration (roba.toml):
+  Every flag is also a key under [profile.NAME] or at the top level of a
+  roba.toml -- discovered by walking up from the cwd, plus
+  ~/.config/roba.toml. Closer-to-cwd files win; a `default` profile
+  auto-applies. Define [alias.NAME] shortcuts too. See the `roba profile`
+  and `roba alias` subcommands.";
 
 /// Single-prompt CLI runner built on claude-wrapper.
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None, after_help = AFTER_HELP)]
+#[command(
+    version,
+    about,
+    long_about = None,
+    after_help = AFTER_HELP,
+    after_long_help = AFTER_LONG_HELP,
+    styles = STYLES,
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<SubCommand>,
