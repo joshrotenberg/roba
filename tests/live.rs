@@ -165,7 +165,11 @@ fn live_output_refusal_in_json_envelope() {
     // _tolerates_leading_whitespace, _does_not_match_normal_answers).
     let dir = fresh_dir();
     let out = roba_in(dir.path())
-        .args(["--json", "--quiet", "what is 2+2? answer with just the number."])
+        .args([
+            "--json",
+            "--quiet",
+            "what is 2+2? answer with just the number.",
+        ])
         .output()
         .expect("run roba --json");
     assert!(out.status.success(), "roba failed: {out:?}");
@@ -839,7 +843,11 @@ fn live_system_prompt_succeeds() {
     // the mechanical tests in `tests/cli.rs`.
     roba_in(dir.path())
         .env("XDG_CONFIG_HOME", user.path())
-        .args(["--system-prompt", "You are a helpful assistant.", "what is 1+1"])
+        .args([
+            "--system-prompt",
+            "You are a helpful assistant.",
+            "what is 1+1",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::is_empty().not());
