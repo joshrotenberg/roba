@@ -482,6 +482,38 @@ continue = "abc12345"
     }
 
     #[test]
+    fn sample_config_parses_and_documents_the_schema() {
+        // Drift guard: the embedded roba-config.sample.toml is the canonical
+        // config reference (its comments document every key). It must parse
+        // through the same path as a real roba.toml -- with deny_unknown_fields
+        // on Profile, any renamed/removed key fails here until the sample is
+        // updated. Config docs that literally cannot go stale.
+        let cfg = load_file_from_str(crate::profile::cmd::STARTER_CONFIG_TOML)
+            .expect("roba-config.sample.toml must parse as a valid config");
+        for name in ["review", "explain", "commit-msg", "fix-build"] {
+            assert!(
+                cfg.profile.contains_key(name),
+                "sample is missing [profile.{name}]"
+            );
+        }
+        for name in ["review", "commit-msg", "r"] {
+            assert!(
+                cfg.alias.contains_key(name),
+                "sample is missing [alias.{name}]"
+            );
+        }
+        // A profile-scoped var and an alias arg schema round-trip.
+        assert_eq!(
+            cfg.profile["commit-msg"]
+                .vars
+                .get("STYLE")
+                .map(String::as_str),
+            Some("imperative, concise, no marketing")
+        );
+        assert_eq!(cfg.alias["review"].args, vec!["pr".to_string()]);
+    }
+
+    #[test]
     fn parse_allow_tool_singular() {
         let toml = r#"
 [profile.x]
