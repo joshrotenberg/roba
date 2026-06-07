@@ -6,9 +6,23 @@ use clap::{Args as ClapArgs, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Footer shown under `--help` / `-h`: a few examples and a pointer to
+/// the full env-var / profile-key reference (kept out of per-flag help
+/// to keep the listing scannable).
+const AFTER_HELP: &str = "\
+Examples:
+  roba \"explain the rust borrow checker in 3 bullets\"   one-shot question
+  cat err.log | roba \"what's failing and how do I fix it?\"   pipe stdin
+  roba --attach 'src/**/*.rs' \"is the error handling consistent?\"   attach files
+  roba -c -p \"now add a test for that\"   continue the last session
+  roba --writable \"rename foo to bar across src/\"   let claude edit files
+
+Every flag also has a ROBA_* env var and a roba.toml profile key.
+Full mapping: https://joshrotenberg.com/roba/docs/reference.html";
+
 /// Single-prompt CLI runner built on claude-wrapper.
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(version, about, long_about = None, after_help = AFTER_HELP)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<SubCommand>,
@@ -16,10 +30,11 @@ pub struct Cli {
     #[command(flatten)]
     pub ask: AskArgs,
 
-    /// Run as if invoked from PATH (changes the working directory
-    /// before any other resolution: session scoping, config walk-up,
-    /// `--attach` globs, `--prepend` / `--append` relative paths,
-    /// `--git-*` context).
+    /// Run as if invoked from PATH (`git -C` style).
+    ///
+    /// Changes the working directory before any other resolution:
+    /// session scoping, config walk-up, `--attach` globs, `--prepend` /
+    /// `--append` relative paths, `--git-*` context.
     #[arg(short = 'C', long, value_name = "PATH", global = true)]
     pub cwd: Option<PathBuf>,
 }
@@ -232,18 +247,18 @@ pub struct HistoryArgs {
 #[derive(ClapArgs, Debug)]
 pub struct AskArgs {
     // ----- Prompt sources ---------------------------------------------------
-    /// The prompt text (positional). Pass `-` for explicit stdin. For
-    /// invocations where the positional form is ambiguous against
-    /// optional-value flags (`-c`, `-w`), use `--prompt VALUE` /
-    /// `-p VALUE` instead.
+    /// Prompt text (positional). Pass `-` for explicit stdin.
+    ///
+    /// When the positional form is ambiguous against an optional-value
+    /// flag (`-c`, `-w`), use `--prompt` / `-p` instead.
     #[arg(conflicts_with_all = ["file", "editor"])]
     pub prompt: Option<String>,
 
-    /// Explicit prompt string. Use this when the positional form is
-    /// ambiguous against an optional-value flag (e.g. `roba -c -p
-    /// "..."` to continue most recent with a prompt that would
-    /// otherwise be parsed as the continue ID). Mutually exclusive
-    /// with the positional `[PROMPT]` argument.
+    /// Explicit prompt string (escape hatch for the ambiguous positional).
+    ///
+    /// Use when the positional form would be swallowed by an
+    /// optional-value flag, e.g. `roba -c -p "..."` to continue the most
+    /// recent session. Mutually exclusive with the positional `[PROMPT]`.
     #[arg(
         short = 'p',
         long = "prompt",
@@ -267,10 +282,11 @@ pub struct AskArgs {
     #[arg(short = 'e', long = "editor", help_heading = "Prompt sources")]
     pub editor: bool,
 
-    /// With `-e`, pre-fill the editor with the last N assistant
-    /// responses from the most recent session in this dir, separated
-    /// from your prompt by a scissors line. Default 1; pass 0 to
-    /// disable. Only meaningful with `-e`.
+    /// Pre-fill the editor with the last N responses (with `-e`).
+    ///
+    /// Pulls the last N assistant responses from the most recent session
+    /// in this dir, separated from your prompt by a scissors line.
+    /// Default 1; pass 0 to disable. Only meaningful with `-e`.
     #[arg(long, value_name = "N", help_heading = "Prompt sources")]
     pub editor_history: Option<usize>,
 
@@ -339,14 +355,18 @@ pub struct AskArgs {
     #[arg(short = 'o', long, value_name = "PATH", help_heading = "Output")]
     pub out: Option<PathBuf>,
 
-    /// Write the spawned claude session's streaming events to PATH as
-    /// they arrive (JSONL). Stable observability handle for in-flight
-    /// runs; survives roba's exit. Forces the streaming pipeline
-    /// internally even when --stream is not set.
+    /// Write the spawned claude session's events to PATH as JSONL.
+    ///
+    /// A stable observability handle for in-flight runs that survives
+    /// roba's exit. Forces the streaming pipeline internally even when
+    /// `--stream` is not set.
     #[arg(long, value_name = "PATH", help_heading = "Output")]
     pub trace: Option<PathBuf>,
 
-    /// TTY-only progress indicator: stream tokens + inline tool-call lines as they arrive. Never load-bearing on a pipe; conflicts with --json / --code / --out.
+    /// Live TTY progress: stream tokens + inline tool-call lines.
+    ///
+    /// TTY-only; never load-bearing on a pipe. Conflicts with `--json`,
+    /// `--code`, and `--out`.
     #[arg(
         long,
         conflicts_with_all = ["json", "code", "out"],
@@ -367,9 +387,10 @@ pub struct AskArgs {
     #[arg(long, help_heading = "Output")]
     pub plain: bool,
 
-    /// Override the bundled per-model rates table for the footer dollar
-    /// figure (same TOML schema as `roba cost --rates-file`). Also
-    /// honored via `ROBA_RATES_FILE`.
+    /// Override the bundled per-model rates table for the footer.
+    ///
+    /// Same TOML schema as `roba cost --rates-file`. Affects the per-call
+    /// footer's dollar figure.
     #[arg(long, value_name = "PATH", help_heading = "Output")]
     pub rates_file: Option<PathBuf>,
 
@@ -379,19 +400,20 @@ pub struct AskArgs {
     pub no_dollars: bool,
 
     // ----- Failure modes ----------------------------------------------------
-    /// Disable wrapper-level auto-retry on transient failures. The
-    /// orchestrator gets the failure immediately and decides whether
-    /// to retry, instead of roba quietly re-trying with exponential
-    /// backoff. No effect on success or non-transient failures.
+    /// Disable wrapper-level auto-retry on transient failures.
+    ///
+    /// The caller gets the failure immediately and decides whether to
+    /// retry, instead of roba re-trying with exponential backoff. No
+    /// effect on success or non-transient failures.
     #[arg(long, help_heading = "Failure modes")]
     pub no_retry: bool,
 
     // ----- Mode -------------------------------------------------------------
-    /// Minimal-overhead mode: skip hooks, LSP, plugin sync, CLAUDE.md
-    /// auto-discovery, auto-memory, and keychain reads. Auth uses
-    /// ANTHROPIC_API_KEY only. Useful for agent-tier calls where context
-    /// is supplied explicitly via --system-prompt / --add-dir / --settings.
-    /// Profile key: `bare`. Env: `ROBA_BARE`.
+    /// Minimal-overhead mode (skip hooks, LSP, memory, keychain, etc.).
+    ///
+    /// Skips hooks, LSP, plugin sync, CLAUDE.md auto-discovery,
+    /// auto-memory, and keychain reads; auth then uses ANTHROPIC_API_KEY
+    /// only. For agent-tier calls where context is supplied explicitly.
     #[arg(long, help_heading = "Mode")]
     pub bare: bool,
 
@@ -404,34 +426,34 @@ pub struct AskArgs {
     #[arg(long, value_name = "MODEL", help_heading = "Model")]
     pub model: Option<String>,
 
-    /// Effort level for this call: controls the cost/quality tradeoff.
-    /// `low` is fast and cheap; `max` is most thorough.
+    /// Effort level: the cost/quality tradeoff for this call.
     ///
-    /// Profile key: `effort`. Env: `ROBA_EFFORT`.
+    /// `low` is fast and cheap; `max` is most thorough.
     #[arg(long, value_name = "LEVEL", value_enum, help_heading = "Model")]
     pub effort: Option<EffortLevel>,
 
     // ----- System prompt ----------------------------------------------------
-    /// Replace the default system prompt entirely for this call. When
-    /// both `--system-prompt` and `--append-system-prompt` are set,
-    /// the replace runs first and the append adds on top.
+    /// Replace the default system prompt for this call.
+    ///
+    /// When combined with `--append-system-prompt`, the replace runs
+    /// first and the append adds on top.
     #[arg(long, value_name = "TEXT", help_heading = "System prompt")]
     pub system_prompt: Option<String>,
 
-    /// Append TEXT to the default system prompt for this call. When
-    /// both flags are set, `--system-prompt` replaces first and this
-    /// appends on top.
+    /// Append TEXT to the default system prompt for this call.
+    ///
+    /// When combined with `--system-prompt`, the replace runs first and
+    /// this appends on top.
     #[arg(long, value_name = "TEXT", help_heading = "System prompt")]
     pub append_system_prompt: Option<String>,
 
     // ----- Sessions ---------------------------------------------------------
-    /// Continue an existing session. Bare `-c` resumes the most
-    /// recent session in this directory; `-c ID` (or `-c=ID`) resumes
-    /// a specific session by id. Because the value is optional, a
-    /// space-separated word after `-c` is consumed as the id: `roba -c
-    /// "follow up"` treats "follow up" as the session id, not the
-    /// prompt. To continue the most recent session with a prompt, use
-    /// `roba -c -p "follow up"`.
+    /// Continue a session: bare `-c` = most recent here, `-c ID` = specific.
+    ///
+    /// The value is optional, so a space-separated word after `-c` is
+    /// consumed as the id -- `roba -c "follow up"` treats "follow up" as
+    /// the session id, not the prompt. To continue the most recent
+    /// session with a prompt, use `roba -c -p "follow up"`.
     #[arg(
         short = 'c',
         long = "continue",
@@ -441,9 +463,10 @@ pub struct AskArgs {
     )]
     pub continue_session: Option<Option<String>>,
 
-    /// Branch the resumed session instead of appending. Requires an
-    /// explicit session id (`-c=ID --fork`); you can't fork "the most
-    /// recent" without naming it.
+    /// Branch the resumed session instead of appending to it.
+    ///
+    /// Requires an explicit session id (`-c=ID --fork`); you can't fork
+    /// "the most recent" without naming it.
     #[arg(long, requires = "continue_session", help_heading = "Sessions")]
     pub fork: bool,
 
@@ -451,9 +474,10 @@ pub struct AskArgs {
     #[arg(long, conflicts_with = "continue_session", help_heading = "Sessions")]
     pub pick: bool,
 
-    /// Force a fresh session. Cancels a profile- or env-supplied
-    /// `continue = true`. The kill switch for accidental
-    /// auto-continuation.
+    /// Force a fresh session (cancel any auto-continue).
+    ///
+    /// Cancels a profile- or env-supplied `continue = true` -- the kill
+    /// switch for accidental auto-continuation.
     #[arg(
         long,
         conflicts_with_all = ["continue_session", "pick"],
@@ -461,16 +485,14 @@ pub struct AskArgs {
     )]
     pub fresh: bool,
 
-    /// Run in a fresh git worktree. With no value, claude generates
-    /// the name; with a value (`-w NAME` or `-w=NAME`), pin the
-    /// worktree directory/branch (e.g. `-w feature-x`). Because the
-    /// value is optional, a space-separated word after `-w` is
-    /// consumed as the name: `roba -w "do it"` treats "do it" as the
-    /// worktree name, not the prompt. To name a worktree and pass a
-    /// prompt, use `roba -w NAME -p "..."`. The worktree persists
-    /// after the session; clean up manually with `git worktree
-    /// remove`. Pairs naturally with `--writable` or `--full-auto` --
-    /// the worktree is your sandbox.
+    /// Run in a fresh git worktree (optionally named: `-w NAME`).
+    ///
+    /// With no value claude generates the name; `-w NAME` (or `-w=NAME`)
+    /// pins it. The value is optional, so a space-separated word after
+    /// `-w` is consumed as the name -- to name a worktree and pass a
+    /// prompt, use `roba -w NAME -p "..."`. The worktree persists after
+    /// the session (clean up with `git worktree remove`); it pairs
+    /// naturally with `--writable` / `--full-auto` as a sandbox.
     #[arg(
         short = 'w',
         long,
@@ -480,23 +502,21 @@ pub struct AskArgs {
     )]
     pub worktree: Option<Option<String>>,
 
-    /// Pin a specific claude-code subagent for this run. The named
-    /// subagent must exist in `.claude/agents/NAME.md` within the cwd
-    /// (or be auto-discovered per claude's standard lookup). Lets an
-    /// orchestrator dispatch a run as a known agent instead of an
-    /// unscoped default claude.
+    /// Pin a specific claude-code subagent for this run.
+    ///
+    /// The named subagent must exist in `.claude/agents/NAME.md` in the
+    /// cwd (or be auto-discovered per claude's lookup). Lets an
+    /// orchestrator dispatch as a known agent instead of default claude.
     #[arg(long, value_name = "NAME", help_heading = "Sessions")]
     pub agent: Option<String>,
 
     // ----- Permissions ------------------------------------------------------
-    /// Set claude's `--permission-mode` directly. Accepts: `acceptEdits`,
-    /// `auto`, `bypassPermissions`, `default`, `dontAsk`, `plan`.
-    /// Coexists with `--readonly`, `--writable`, and `--full-auto`: those
-    /// flags control the `--allowedTools` list passed to claude;
-    /// `--permission-mode` is the separate `--permission-mode` flag.
-    /// Setting both is valid -- e.g. `--writable --permission-mode plan`
-    /// gives write access but requires a plan review first. Profile key:
-    /// `permission_mode`. Env: `ROBA_PERMISSION_MODE`.
+    /// Set claude's own `--permission-mode`.
+    ///
+    /// A separate axis from `--readonly` / `--writable` / `--full-auto`
+    /// (which set the allowed-tools list); setting both is valid -- e.g.
+    /// `--writable --permission-mode plan` grants write access but
+    /// requires a plan review first.
     #[arg(long, value_name = "MODE", value_enum, help_heading = "Permissions")]
     pub permission_mode: Option<PermMode>,
 
@@ -520,27 +540,28 @@ pub struct AskArgs {
     #[arg(long = "deny-tool", value_name = "TOOL", help_heading = "Permissions")]
     pub deny_tool: Vec<String>,
 
-    /// Resolve permissions across all layers (CLI > env > profile >
-    /// built-in default), print the effective allow/deny lists with
-    /// per-entry provenance, and exit 0 without calling claude. Useful
-    /// for verifying what a profile actually opens up before you rely
-    /// on it.
+    /// Preview the resolved allow/deny set and exit (no claude call).
+    ///
+    /// Resolves permissions across all layers (CLI > env > profile >
+    /// default) and prints the effective lists with per-entry
+    /// provenance. Useful for verifying what a profile actually opens up.
     #[arg(long, help_heading = "Permissions")]
     pub show_permissions: bool,
 
-    /// Skip the agent frontmatter permission check. When `--agent NAME`
-    /// is set, roba normally parses the agent's `tools:` field and warns
-    /// if any declared tools are not in the resolved allowlist. This flag
-    /// (or `--quiet` / `--full-auto`) suppresses that warning.
+    /// Skip the agent frontmatter permission check.
+    ///
+    /// With `--agent NAME`, roba parses the agent's `tools:` field and
+    /// warns if any declared tool isn't in the resolved allowlist. This
+    /// flag (or `--quiet` / `--full-auto`) suppresses that warning.
     #[arg(long, help_heading = "Permissions")]
     pub no_agent_check: bool,
 
     // ----- Dispatch ---------------------------------------------------------
-    /// Preset for unattended file-mutating dispatch: implies --full-auto,
-    /// --worktree, and --fresh. Individual flags override the preset.
-    /// Use when firing a worker agent that needs to edit files without
-    /// human supervision. Without --agent, a warning is emitted to stderr.
-    /// Profile key: `dispatch`. Env: `ROBA_DISPATCH`.
+    /// Preset for unattended file-mutating dispatch.
+    ///
+    /// Implies `--full-auto`, `--worktree`, and `--fresh` (individual
+    /// flags override). For firing a worker agent that edits files
+    /// without supervision. Warns to stderr if `--agent` is unset.
     #[arg(long, help_heading = "Dispatch")]
     pub dispatch: bool,
 
