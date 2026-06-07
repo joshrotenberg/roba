@@ -1,7 +1,1 @@
 /target
-
-# mdbook: both the generated source tree and the built output are
-# produced by book/build.sh + mdbook; only book.toml + build.sh are
-# committed.
-/book/src/
-/book/book/

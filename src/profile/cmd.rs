@@ -12,9 +12,12 @@ use super::types::Profile;
 // Starter template + subcommand
 // ---------------------------------------------------------------------------
 
-/// Starter `roba.toml` content used by `roba profile init`. Kept
-/// minimal -- the user is expected to edit and extend.
-pub const STARTER_CONFIG_TOML: &str = include_str!("../starter_roba.toml");
+/// The documented sample config, embedded from the repo-root
+/// `roba-config.sample.toml`. Written verbatim by `roba profile init`,
+/// and the canonical reference for the roba.toml schema (its comments
+/// document every profile/alias key). A unit test parses it, so it
+/// cannot drift from the actual `Profile`/`Alias` shapes.
+pub const STARTER_CONFIG_TOML: &str = include_str!("../../roba-config.sample.toml");
 
 /// Run a `roba profile <action>` subcommand.
 pub fn run(action: crate::cli::ProfileAction) -> Result<()> {
