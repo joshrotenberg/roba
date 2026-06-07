@@ -504,7 +504,10 @@ continue = "abc12345"
         }
         // A profile-scoped var and an alias arg schema round-trip.
         assert_eq!(
-            cfg.profile["commit-msg"].vars.get("STYLE").map(String::as_str),
+            cfg.profile["commit-msg"]
+                .vars
+                .get("STYLE")
+                .map(String::as_str),
             Some("imperative, concise, no marketing")
         );
         assert_eq!(cfg.alias["review"].args, vec!["pr".to_string()]);
