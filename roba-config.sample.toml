@@ -1,0 +1,146 @@
+# roba-config.sample.toml
+# =========================
+# A documented example roba.toml. Copy it to `roba.toml` (project root) or
+# `~/.config/roba.toml` (user-wide) and uncomment/edit. `roba profile init`
+# drops this file for you.
+#
+# DISCOVERY  roba reads ~/.config/roba.toml, then every roba.toml from the
+#            git root down to the cwd. Closer-to-cwd files win per key; list
+#            keys (prepend/append/attach/allow_tool/deny_tool) concatenate.
+# PRECEDENCE highest wins: CLI flag > ROBA_<KEY> env var > active
+#            [profile.NAME] > top-level keys below > roba's built-in defaults.
+# MIRRORS    every key here is also a CLI flag (--key) and an env var
+#            (ROBA_KEY). See `roba --help` for the flag/env reference.
+
+# ===========================================================================
+# Top-level defaults -- apply to every roba call in this file's scope.
+# All commented out; uncomment what you want as a project/user-wide default.
+# ===========================================================================
+
+# --- Prompt composition ---
+# prepend = ["CLAUDE.md"]         # files prepended to every prompt
+# append  = ["CONVENTIONS.md"]    # files appended
+# attach  = ["src/**/*.rs"]       # globbed files embedded with `File: PATH`
+# git_diff   = true               # embed the working-tree diff
+# git_log    = 5                  # embed the last N commits
+# git_status = true               # embed `git status --short`
+
+# --- Permissions (safe by default: Read, Glob, Grep only) ---
+# readonly   = true               # explicit default (no-op marker)
+# writable   = true               # add Edit + Write
+# full_auto  = true               # bypass ALL tool checks (sandbox only)
+# allow_tool = ["Bash(git:*)"]    # add specific tool patterns (repeatable)
+# deny_tool  = ["WebFetch"]       # block patterns (deny wins over allow)
+# permission_mode = "plan"        # claude's own mode: plan | acceptEdits
+#                                 #   | dontAsk | auto | bypassPermissions | default
+
+# --- Model / effort / system prompt ---
+# model  = "haiku"                # alias (sonnet/opus/haiku) or full id
+# effort = "high"                 # low | medium | high | xhigh | max
+# system_prompt = "..."           # replace the system prompt for the call
+# append_system_prompt = "..."    # add to the default system prompt
+
+# --- Sessions ---
+# continue = true                 # auto-continue the most recent session here
+#                                 #   (or continue = "session-id" for a specific one)
+# worktree = true                 # run in a fresh git worktree
+# agent    = "reviewer"           # pin a claude-code subagent for the call
+
+# --- Output / rendering ---
+# json  = true                    # structured --json envelope on stdout
+# quiet = true                    # suppress metadata (footer/spinner/markers)
+# plain = true                    # no markdown render / color / spinner
+# stream = true                   # live TTY progress (TTY only)
+# echo  = true                    # print the resolved prompt before the answer
+# show_thinking = true            # render extended-thinking blocks (needs stream)
+# no_dollars = true               # footer shows tokens only, no dollar figure
+
+# --- Failure / agent-tier ---
+# no_retry  = true                # surface transient failures immediately
+# bare      = true                # minimal-overhead mode (ANTHROPIC_API_KEY auth)
+# dispatch  = true                # unattended preset (full_auto + worktree + fresh)
+# no_agent_check = true           # skip the --agent frontmatter permission check
+
+# --- Template variables ---  substituted as {{KEY}} in prompts/prepends
+# [vars]
+# TEAM = "platform"
+# STYLE = "imperative, concise"
+
+# ===========================================================================
+# Profiles -- named bundles of the keys above, activated with --profile NAME.
+# A profile named `default` auto-applies when no --profile is given.
+# Inspect with `roba profile {list,show,active,path}`.
+# ===========================================================================
+
+# Read-only review against the working-tree diff.
+#   roba --profile review "is this safe to merge?"
+[profile.review]
+readonly = true
+git_diff = true
+
+# Read-only walkthrough; pair with --attach to focus on specific files.
+#   roba --profile explain --attach 'src/foo.rs' "what does this do?"
+[profile.explain]
+readonly = true
+
+# Commit message from staged work, with a profile-scoped template var.
+#   roba --profile commit-msg "write a commit message"
+[profile.commit-msg]
+readonly = true
+git_diff = true
+
+[profile.commit-msg.vars]
+STYLE = "imperative, concise, no marketing"
+
+# Diagnose a failed build from piped output.
+#   cargo build 2>&1 | roba --profile fix-build "what's broken?"
+[profile.fix-build]
+readonly = true
+git_status = true
+
+# ===========================================================================
+# Aliases -- new verbs. `roba NAME [args]` expands a prompt template + flags
+# and dispatches like a normal call. Inspect with `roba alias {list,show,path}`.
+#
+# Substitution inside `template`:
+#   ${1} ${2} ...   positional args after NAME (1-based)
+#   ${@}            all positional args, space-joined
+#   ${name}         named arg, resolved via the `args` schema below
+#   $$              a literal '$' (so dollar amounts / shell vars survive)
+#   $(command)      shell substitution -- runs in YOUR shell (sh -c), stdout
+#                   interpolated. This is NOT sandboxed; don't put a command
+#                   you wouldn't run yourself. (Orthogonal to claude's perms.)
+#
+# `flags` merge BEFORE your CLI flags, so CLI wins (put extra flags after the
+# positional args: `roba review 42 --full-auto`). A template-less alias is a
+# flag-shortcut: your args become the prompt verbatim. Built-in names
+# (cost/history/last/profile/alias) cannot be shadowed.
+# ===========================================================================
+
+# Pull a PR into a review prompt.  ->  roba review 42
+[alias.review]
+description = "Review a PR by number"
+agent = "reviewer"
+args = ["pr"]                     # positional 1 -> ${pr}
+flags = ["--readonly"]
+template = """
+Review PR #${pr} in this repo.
+
+$(gh pr view ${pr} --json title -q '.title')
+
+Diff:
+$(gh pr diff ${pr})
+"""
+
+# Conventional-commit message from the staged diff.  ->  roba commit-msg
+[alias.commit-msg]
+description = "Conventional-commit message from the staged diff"
+flags = ["--quiet"]
+template = "Write a conventional-commit message for:\n\n$(git diff --staged)"
+
+# Flag-shortcut (no template): args become the prompt verbatim.
+#   roba r "look at the auth module"  ->  --readonly --agent reviewer "look at the auth module"
+[alias.r]
+description = "Quick read-only review preset"
+agent = "reviewer"
+flags = ["--readonly"]

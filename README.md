@@ -6,19 +6,22 @@
 [![Downloads](https://img.shields.io/crates/d/roba.svg)](https://crates.io/crates/roba)
 [![License](https://img.shields.io/crates/l/roba.svg)](#license)
 
-**For humans** -- a binary convenience wrapper around `claude -p`:
-composable input, structured output, profiles, history, cost
-tracking. One invocation, one answer, done.
+A single-prompt CLI runner built on top of `claude -p`. One invocation,
+one answer, done -- but with composable input, pipe-clean output,
+sessions you can re-enter without living in them, and a stable scripting
+ABI for agents and scripts.
 
-**For agents** in [Claude Code](https://github.com/anthropics/claude-code)
--- a stable scripting ABI: typed exit codes, versioned `--json`
-envelope, `--trace` observability handle, `--no-retry` for
-deterministic-on-failure runs. Bring your own skills and agents via
-`~/.claude/`.
+- **For humans** -- what `claude -p` could be: build the prompt from
+  files / stdin / git context, get rendered markdown on a TTY, save
+  flag bundles as profiles, browse history, track cost.
+- **For agents** in [Claude Code](https://github.com/anthropics/claude-code)
+  -- a stable contract: stdout is the answer, stderr is metadata, a
+  versioned `--json` envelope, typed exit codes, and `--trace` for
+  observing a run in flight.
 
 Built on [`claude-wrapper`](https://crates.io/crates/claude-wrapper).
 
-```bash
+```console
 $ roba "summarize the rust ownership model in 3 bullets"
    Rust's ownership model rests on three rules:
 
@@ -26,35 +29,56 @@ $ roba "summarize the rust ownership model in 3 bullets"
      • When the owner goes out of scope, the value is dropped.
      • Borrows are either many immutable or one mutable.
 
-tokens 1.2k/450 . 2.0s . session abc12345
+tokens 1.2k/450 · 2.0s · session abc12345
 ```
 
 ## Install
 
 ```bash
 cargo install roba
+# or: brew install joshrotenberg/brew/roba
 ```
 
 `roba` shells out to the `claude` binary, so you need
-[claude-code](https://github.com/anthropics/claude-code) installed
-and authenticated on your PATH.
+[claude-code](https://github.com/anthropics/claude-code) installed and
+authenticated (or `ANTHROPIC_API_KEY` set) on your `PATH`.
 
-**Docs:** full reference and topic guides at
-[joshrotenberg.github.io/roba](https://joshrotenberg.github.io/roba/).
+**The full flag, env-var, and config reference lives in the binary:
+`roba --help`.** This README is the conceptual tour.
 
-## What it does that `claude -p` doesn't
+## Why not just `claude -p`?
 
-| | |
-|---|---|
-| **Prompt sources** | positional, `-p/--prompt TEXT` (explicit prompt -- escapes ambiguity against `-c`/`-w`), stdin (`-` or piped), `-f FILE`, `-e` ($EDITOR), `--prepend`/`--append` files, `--attach GLOB`, `--git-diff`/`--git-log`/`--git-status`, `--var K=V` template substitution |
-| **Output shaping** | `--json`, `--quiet`, `--code [LANG]`, `-o/--out PATH` (write to file and stdout), `--trace PATH` (stream events to a JSONL file -- a stable observability handle for in-flight runs) |
-| **Sessions** | `-c` continue most recent, `-c ID` (or `-c=ID`) resume a specific session, `-c ID --fork` branch it, `--pick` (interactive fuzzy chooser), `--agent NAME` pin a subagent, `roba history`, `roba last` |
-| **Permissions** | `--readonly`, `--writable`, `--allow-tool`/`--deny-tool`, `--full-auto`, `--show-permissions` |
-| **Profiles** | `--profile NAME` from `~/.config/roba.toml`, `roba profile {list,show,init,path}` |
-| **Aliases** | `git`-style `[alias.NAME]` shortcuts in `roba.toml` -> `roba NAME [args]` expands a prompt template (with variable + shell substitution) plus default flags, `roba alias {list,show,path}` |
-| **TTY UX** | termimad markdown render, indicatif spinner, dim metadata, colored refusal/error markers, `--plain` master kill-switch, `NO_COLOR` honored |
-| **Scripting** | typed exit codes (auth=2, budget=3, timeout=4), clean stdout/stderr split, structured `--json` output, `--no-retry` for deterministic-on-failure runs |
-| **Usage tracking** | `roba cost`, `roba cost --by-project`; dollar amounts from a bundled per-model rate table (`--rates-file PATH` / `ROBA_RATES_FILE` to override, `--no-dollars` for tokens only) |
+`claude -p` is the one-shot primitive: one prompt in, the response to
+stdout, exit. It's perfect for a quick "just answer this string" with no
+piping, no file context, no continuity. roba doesn't replace it -- it
+gives that same one-invocation-one-answer model a richer surface, for
+when you want any of:
+
+- **Composable input.** Build the prompt from more than a string: a
+  file (`-f`), piped stdin, an editor buffer (`-e`), `--prepend` /
+  `--append` files, glob-embedded files (`--attach`), git context
+  (`--git-diff` / `--git-log` / `--git-status`), and `{{KEY}}` template
+  vars (`--var`).
+- **Pipe-clean output.** stdout is the answer and *only* the answer;
+  every bit of metadata (cost footer, spinner, tool-call lines, refusal
+  warnings) goes to stderr. `roba "..." | jq` always sees a clean pipe.
+- **Rich on a TTY.** Rendered markdown, a spinner, dim metadata, colored
+  markers -- a transient UI that exists while roba works and evaporates
+  when the answer lands. `--plain` (or `NO_COLOR`) turns it all off.
+- **Session re-entry without living in a session.** `-c` continues the
+  most recent session in the directory, `-c ID` resumes a specific one,
+  `--fork` branches it, `--pick` is a fuzzy chooser; `roba history` /
+  `roba last` browse past runs. You dip back into a thread without
+  opening the TUI.
+- **A real ABI.** Typed exit codes, a versioned `--json` envelope, and a
+  clean stream split -- so a script or agent can pin a contract instead
+  of scraping prose. (See [For agents & scripts](#for-agents--scripts).)
+
+Same one-shot model, a citizen of the pipe. For *interactive,
+multi-turn* work, reach for `claude` itself; for *multiple providers*,
+a tool like [`llm`](https://llm.datasette.com/). roba is Claude-only by
+design -- the Claude-Code-native integration (sessions, permissions,
+history) is the point.
 
 ## Quick examples
 
@@ -62,90 +86,106 @@ and authenticated on your PATH.
 # Just ask
 roba "what's the difference between Arc and Rc?"
 
-# Compose: system preamble + question + appendix
+# Compose: preamble + question + appendix
 roba --prepend system.md "review this design" --append context.md
 
-# Look at files
+# Pull in files by glob
 roba --attach 'src/**/*.rs' "is the error handling consistent?"
 
-# Continue the most recent session in this directory (-c takes an
-# optional id, so pass the prompt explicitly with -p)
-roba -c -p "now show me how to test the unsafe variant"
-
-# Read-only review against the current git diff
+# Read-only review against the working-tree diff
 roba --readonly --git-diff "is this safe to merge?"
 
-# Pipe-friendly (no decoration, just the answer)
-roba "what's 2+2" -q          # prints "4"
-echo "summarize this" | roba  # stdin works
+# Continue the most recent session here (pass the prompt with -p, since
+# -c takes an optional session id)
+roba -c -p "now show me how to test the unsafe variant"
+
+# Pipe-friendly: answer only, stdin in
+roba "what's 2+2" -q            # prints "4"
+echo "summarize this" | roba    # stdin works, no flag needed
 ```
 
 > [!NOTE]
-> `-c` (continue) and `-w` (worktree) both take an *optional* value, so
-> a space-separated word right after them is consumed as that value:
-> `roba -c "follow up"` treats `follow up` as the session id, and
-> `roba -w "do it"` treats `do it` as the worktree name. Pass the prompt
-> explicitly with `-p` / `--prompt` to disambiguate (e.g.
-> `roba -c -p "follow up"`, `roba -w mybranch -p "do it"`).
+> `-c` (continue) and `-w` (worktree) take an *optional* value, so a
+> space-separated word right after them is read as that value:
+> `roba -c "follow up"` treats `follow up` as the session id. Pass the
+> prompt explicitly with `-p` to disambiguate: `roba -c -p "follow up"`.
 
-## Topics
+## Safe by default
 
-The deep references live in dedicated pages, also on the [docs site](https://joshrotenberg.github.io/roba/):
+roba starts read-only: claude may use `Read`, `Glob`, and `Grep` and
+nothing else. You opt into more, explicitly:
 
-- **Quickstart** -- from install to first answer in two minutes:
-  [`docs/quickstart.md`](docs/quickstart.md).
-- **Profiles** -- TOML bundles of flags you'd otherwise type every
-  time. See [`docs/profiles.md`](docs/profiles.md) for the schema and
-  worked examples.
-- **Aliases** -- `git`-style `[alias.NAME]` shortcuts in `roba.toml`
-  that expand to a prompt template plus default flags. See
-  [`docs/aliases.md`](docs/aliases.md).
-- **Scripting / agent ABI** -- pipe-clean output (stdout = answer,
-  stderr = metadata), versioned `--json` envelope (`{"version": 1,
-  "result": {...}}`), typed exit codes (auth=2, budget=3, timeout=4),
-  `--no-retry` for deterministic-on-failure runs. See
-  [`docs/scripting.md`](docs/scripting.md) for the full contract.
-- **Permissions** -- safe by default (Read, Glob, Grep only).
-  `--writable` adds Edit + Write; `--allow-tool`/`--deny-tool` narrow
-  scope; `--full-auto` bypasses (sandbox use only).
-  `--show-permissions` previews the resolved set with per-entry
-  provenance. See [`docs/permissions.md`](docs/permissions.md) for the
-  precedence model + worked examples.
-- **roba vs `claude -p`** -- when to reach for each, with side-by-side
-  examples: [`docs/vs-claude-p.md`](docs/vs-claude-p.md).
-- **Use cases** -- patterns roba enables, seeded with multi-repo
-  orchestration: [`docs/use-cases.md`](docs/use-cases.md). CI
-  auto-review: [`docs/examples/github-actions/`](docs/examples/github-actions/).
-- **Reference** -- flags, env vars, exit codes, JSON envelope, and
-  config schema in one place: [`docs/reference.md`](docs/reference.md).
+```bash
+roba "explain this"                      # read-only (default)
+roba --writable "rename foo to bar"      # add Edit + Write
+roba --allow-tool "Bash(git:*)" "..."    # add one specific pattern
+roba --deny-tool WebFetch "..."          # block one (deny wins)
+roba --full-auto "..."                   # bypass every check (sandbox only)
+roba --show-permissions --profile review # preview the resolved set, then exit
+```
+
+This came from a real "oops" -- a streaming run quietly let claude
+create a git branch when the user just wanted a chat. The default
+doesn't regress. `--permission-mode` additionally sets claude's own
+approval mode (`plan`, `acceptEdits`, ...), orthogonal to the
+allow-list. Precedence across all layers: **CLI flag > `ROBA_*` env >
+profile > built-in default**, and deny always wins over allow.
+
+## Configuration: profiles & aliases
+
+A `roba.toml` lets you stop retyping flags and define your own verbs.
+Files are discovered by walking up from the cwd (plus
+`~/.config/roba.toml`); closer-to-cwd wins per key.
+
+- **Profiles** are named bundles of flag defaults: `--profile review`
+  applies `[profile.review]`. A `default` profile auto-applies.
+- **Aliases** are new verbs: `roba review 42` expands an
+  `[alias.review]` prompt template (with `${1}` / `${pr}` / `$(...)`
+  shell substitution) plus default flags, and dispatches like a normal
+  call. This is how you keep roba's built-in surface generic -- your
+  domain knowledge lives in *your* aliases, not the binary.
+
+The fully-commented [`roba-config.sample.toml`](roba-config.sample.toml)
+documents every key with worked examples; `roba profile init` drops it
+in your project. Inspect with `roba profile {list,show,active}` and
+`roba alias {list,show}`.
+
+## For agents & scripts
+
+When something other than a human is calling, roba is a much cleaner ABI
+than `claude -p`:
+
+- **stdout = the answer, stderr = everything else.** `roba "..." | jq`
+  never sees decoration.
+- **Versioned `--json` envelope.** Success:
+  `{ "version": 1, "result": { ... }, "refusal": bool }`. Failure:
+  `{ "version": 1, "error": { kind, message, exit_code, chain } }`.
+  Pin `version` and you've pinned the shape.
+- **Typed exit codes:** `0` ok, `1` generic, `2` auth, `3` budget,
+  `4` timeout.
+- **`--no-retry`** surfaces transient failures immediately (the caller
+  decides whether to retry), and **`--trace PATH`** writes the spawned
+  session's events as JSONL so you can observe a run in flight.
+- **`--dispatch`** is the unattended preset (`--full-auto --worktree
+  --fresh`) for firing a worker that edits files in its own sandbox.
+
+For an agent that *invokes* roba, [`skills/use-roba/SKILL.md`](skills/use-roba/SKILL.md)
+documents this contract in agent-readable form -- copy it to
+`~/.claude/skills/use-roba/SKILL.md`.
 
 ## Bring your own skills and agents
 
-roba is a pure mechanical wrapper -- it has no bundled skill or agent
-library. Drop skills into `~/.claude/skills/` and agents into
-`~/.claude/agents/`; Claude Code auto-discovers them from those
-locations. [joshrotenberg/agent-tools](https://github.com/joshrotenberg/agent-tools)
-is one curated set if you want a starting point. A shell script, a
-cron job, or CI can drive roba via its `--json` envelope, typed exit
-codes, and `--trace` observability handle. For agents that invoke roba:
-`skills/use-roba/SKILL.md` in this repo documents roba's ABI in
-agent-readable form; copy it to `~/.claude/skills/use-roba/SKILL.md`
-to give your agent context on roba's contract.
-
-## Streaming mode
-
-`--stream` emits tokens live with inline tool-call indicators and a
-`used: Tool xN` rollup at the end. It's a TTY-only progress indicator
--- never load-bearing on a pipe; the [scripting
-surface](docs/scripting.md) (`--json`, exit codes, structured errors)
-is the contract for non-TTY consumers.
+roba is a pure mechanical wrapper -- no bundled skill or agent library.
+Drop skills into `~/.claude/skills/` and agents into `~/.claude/agents/`;
+Claude Code auto-discovers them. [joshrotenberg/agent-tools](https://github.com/joshrotenberg/agent-tools)
+is one curated set if you want a starting point.
 
 ## Status
 
-0.1.x. The CLI surface (flag names, exit codes, config schema,
-`--json` envelope) is intended to be stable across 0.1.x. The
-library API (everything under `roba::*` for integration testing)
-may shift between minor versions.
+Published on crates.io. The CLI surface (flag names, exit codes, config
+schema, `--json` envelope) is intended to be stable across `0.x`; the
+library API (`roba::*`, for integration testing) may shift between minor
+versions.
 
 ## License
 
