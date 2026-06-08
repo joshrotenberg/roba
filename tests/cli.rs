@@ -1434,3 +1434,24 @@ fn completions_bash_prints_script_and_exits_zero() {
         .success()
         .stdout(predicate::str::contains("roba"));
 }
+
+// ---------------------------------------------------------------------------
+// doctor
+// ---------------------------------------------------------------------------
+
+#[test]
+fn doctor_emits_all_check_lines() {
+    // `roba doctor` runs the boundary checks and prints one line per
+    // check to stdout. Assert structure (the check names are present),
+    // not pass/fail -- the outcome depends on the test environment
+    // (whether `claude` is installed, ANTHROPIC_API_KEY set, etc.).
+    // No status assertion for the same reason: a missing `claude`
+    // binary makes the command exit 1, which is correct behavior.
+    roba()
+        .arg("doctor")
+        .assert()
+        .stdout(predicate::str::contains("claude"))
+        .stdout(predicate::str::contains("auth"))
+        .stdout(predicate::str::contains("config"))
+        .stdout(predicate::str::contains("rates"));
+}
