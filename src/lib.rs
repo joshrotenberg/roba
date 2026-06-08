@@ -192,21 +192,28 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     let attachments = collect_attachments(&args.attach)?;
     let git_context = collect_git_context(&args)?;
     let context = merge_optional(attachments, git_context);
-    let prompt = compose_prompt(main, &args.prepend, context, &args.append)?;
+    // Promptless guard. The fully composed prompt (positional + prepend +
+    // attach + git) is only known here, so the check belongs at this seam:
+    // a user with no positional but a `--git-diff` is NOT promptless and
+    // must not be intercepted. `compose_prompt` returns `None` only when
+    // nothing composed to a non-empty body.
+    let prompt = match compose_prompt(main, &args.prepend, context, &args.append)? {
+        Some(p) => p,
+        None => {
+            // No resolvable prompt. On a TTY the user ran `roba` with no
+            // input -- guide them with an abbreviated help blurb (exit 0).
+            // Non-TTY (script/pipe) stays a hard error so callers still get
+            // a non-zero exit.
+            if std::io::stdin().is_terminal() {
+                eprintln!("{}", crate::cli::no_prompt_blurb());
+                return Ok(());
+            }
+            anyhow::bail!(
+                "no prompt: pass one as an argument, use -f / -e, --prepend / --append / --attach, pipe via stdin, or use `-` for stdin"
+            );
+        }
+    };
     let prompt = apply_vars(prompt, &args.var);
-
-    // Promptless-on-a-TTY guard. The fully composed prompt (positional +
-    // prepend + attach + git) is only known here, so the check belongs at
-    // this seam: a user with no positional but a `--git-diff` is NOT
-    // promptless and must not be intercepted. When the composed prompt is
-    // empty and stdin is interactive, guide the user instead of shipping an
-    // empty prompt to claude. The non-TTY (piped) path is unaffected:
-    // `resolve_main_prompt` already routes empty stdin through `read_stdin`,
-    // which bails with a non-zero exit.
-    if prompt.trim().is_empty() && std::io::stdin().is_terminal() {
-        eprintln!("roba: no prompt given. Try `roba \"your question\"` or `roba --help`.");
-        return Ok(());
-    }
 
     if args.echo && !args.quiet {
         eprintln!("{prompt}");
