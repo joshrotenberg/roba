@@ -14,6 +14,19 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-08
+
+### Dependencies
+
+- update dialoguer 0.12, indicatif 0.18, termimad 0.34, toml 1 ([#195](https://github.com/joshrotenberg/roba/pull/195))
+
+
+### Fixed
+
+- show abbreviated help blurb for bare roba on a TTY (closes #196) ([#197](https://github.com/joshrotenberg/roba/pull/197))
+
+
+
 ## [0.3.0] - 2026-06-08
 
 ### Added
