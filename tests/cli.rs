@@ -130,11 +130,12 @@ fn no_args_empty_stdin_non_tty_still_errors() {
     // the UNCHANGED path: no positional + non-TTY stdin routes through
     // `read_stdin`, which bails on empty input with a non-zero exit.
     //
-    // The promptless-on-a-TTY guard in `run_ask` (the "no prompt given,
-    // try roba --help" hint that returns exit 0) is TTY-only and gated
-    // on `std::io::stdin().is_terminal()`. assert_cmd's stdin is never a
-    // TTY, so that branch is not mechanically testable here -- it is
-    // covered by the `is_terminal()` guard itself.
+    // The promptless-on-a-TTY guard in `run_ask` (the abbreviated help
+    // blurb that returns exit 0) is TTY-only and gated on
+    // `std::io::stdin().is_terminal()`. assert_cmd's stdin is never a
+    // TTY, so that branch is not mechanically testable here -- the blurb
+    // content is covered by the `no_prompt_blurb()` unit test in
+    // `src/prompt.rs`.
     roba()
         .write_stdin("")
         .assert()

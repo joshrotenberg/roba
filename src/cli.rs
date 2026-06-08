@@ -57,6 +57,12 @@ Configuration (roba.toml):
   auto-applies. Define [alias.NAME] shortcuts too. See the `roba profile`
   and `roba alias` subcommands.";
 
+/// The blurb shown when `roba` is run with no resolvable prompt on a TTY.
+/// Single-sourced from `AFTER_HELP` so the examples never drift.
+pub(crate) fn no_prompt_blurb() -> String {
+    format!("roba -- ad-hoc Claude from your shell. No prompt given.\n\n{AFTER_HELP}")
+}
+
 /// Single-prompt CLI runner built on claude-wrapper.
 #[derive(Parser, Debug)]
 #[command(

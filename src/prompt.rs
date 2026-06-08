@@ -57,12 +57,18 @@ pub fn resolve_main_prompt(
 
 /// Assemble the final prompt from all sources, joined by blank lines.
 /// Order: prepend files, attachments / git context, main, append files.
+///
+/// Returns `Ok(None)` when nothing composed to a non-empty body (no
+/// main prompt and no non-empty prepend/attach/append). The caller
+/// decides what an empty composition means: on a TTY it guides the
+/// user, off a TTY it errors. `Ok(Some(body))` carries the joined
+/// prompt otherwise.
 pub fn compose_prompt(
     main: Option<String>,
     prepend: &[PathBuf],
     attachments: Option<String>,
     append: &[PathBuf],
-) -> Result<String> {
+) -> Result<Option<String>> {
     let mut parts: Vec<String> = Vec::new();
     for path in prepend {
         let content = std::fs::read_to_string(path)
@@ -82,11 +88,9 @@ pub fn compose_prompt(
     }
     parts.retain(|p| !p.is_empty());
     if parts.is_empty() {
-        bail!(
-            "no prompt: pass one as an argument, use -f / -e, --prepend / --append / --attach, pipe via stdin, or use `-` for stdin"
-        );
+        return Ok(None);
     }
-    Ok(parts.join("\n\n"))
+    Ok(Some(parts.join("\n\n")))
 }
 
 /// Substitute `{{KEY}}` placeholders in `prompt` with their values.
@@ -390,7 +394,7 @@ mod tests {
     #[test]
     fn compose_prompt_just_main() {
         let out = compose_prompt(Some("hi".to_string()), &[], None, &[]).unwrap();
-        assert_eq!(out, "hi");
+        assert_eq!(out, Some("hi".to_string()));
     }
 
     #[test]
@@ -404,7 +408,7 @@ mod tests {
             std::slice::from_ref(&post.path().to_path_buf()),
         )
         .unwrap();
-        assert_eq!(out, "SYSTEM\n\nquestion\n\nCONTEXT");
+        assert_eq!(out, Some("SYSTEM\n\nquestion\n\nCONTEXT".to_string()));
     }
 
     #[test]
@@ -418,7 +422,7 @@ mod tests {
             &[],
         )
         .unwrap();
-        assert_eq!(out, format!("PREP\n\n{attach}\n\nquestion"));
+        assert_eq!(out, Some(format!("PREP\n\n{attach}\n\nquestion")));
     }
 
     #[test]
@@ -431,13 +435,15 @@ mod tests {
             &[],
         )
         .unwrap();
-        assert_eq!(out, "STANDALONE");
+        assert_eq!(out, Some("STANDALONE".to_string()));
     }
 
     #[test]
-    fn compose_prompt_errors_when_everything_empty() {
-        let err = compose_prompt(None, &[], None, &[]).expect_err("must error");
-        assert!(format!("{err:#}").contains("no prompt"));
+    fn compose_prompt_none_when_everything_empty() {
+        // Nothing to compose -> `None`. The caller (run_ask) turns this
+        // into a TTY blurb (exit 0) or a non-TTY error (non-zero exit).
+        let out = compose_prompt(None, &[], None, &[]).unwrap();
+        assert_eq!(out, None);
     }
 
     #[test]
@@ -450,7 +456,22 @@ mod tests {
             &[],
         )
         .unwrap();
-        assert_eq!(out, "only");
+        assert_eq!(out, Some("only".to_string()));
+    }
+
+    #[test]
+    fn no_prompt_blurb_contains_examples_and_help_pointer() {
+        let blurb = crate::cli::no_prompt_blurb();
+        // An example line from AFTER_HELP survives the single-sourcing.
+        assert!(
+            blurb.contains("one-shot question"),
+            "expected an example line, got:\n{blurb}"
+        );
+        // The pointer to the full reference is present.
+        assert!(
+            blurb.contains("roba --help"),
+            "expected a `roba --help` pointer, got:\n{blurb}"
+        );
     }
 
     // -- editor preamble + scissors strip ----------------------------------
