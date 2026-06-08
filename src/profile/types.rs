@@ -344,6 +344,10 @@ pub struct ConfigFile {
     pub defaults: Profile,
     pub profile: HashMap<String, Profile>,
     pub alias: HashMap<String, Alias>,
+    /// `[session]` table: a flat `NAME = "<uuid>"` map binding a stable
+    /// handle to a claude session id. roba only ever READS this map
+    /// (`--session NAME` / `ROBA_SESSION`); it never writes it.
+    pub session: HashMap<String, String>,
 }
 
 /// Resolved view across every config source for one roba invocation.
@@ -358,6 +362,10 @@ pub struct Pool {
     /// merge field-by-field: when the same name appears in multiple
     /// files, the closest-to-cwd file's definition wins wholesale.
     pub aliases: HashMap<String, Alias>,
+    /// Merged `[session]` name -> uuid bindings. Like aliases, the
+    /// closest-to-cwd file's binding wins wholesale on a name collision.
+    /// Declarative + read-only: `--session NAME` resolves NAME here.
+    pub sessions: HashMap<String, String>,
     /// Source files that contributed, in load order. Used by
     /// `roba profile path` for diagnostics.
     pub sources: Vec<PathBuf>,
@@ -394,11 +402,20 @@ mod tests {
         } else {
             HashMap::new()
         };
+        let session_map: HashMap<String, String> = if let toml::Value::Table(t) = &mut value {
+            match t.remove("session") {
+                Some(v) => v.try_into()?,
+                None => HashMap::new(),
+            }
+        } else {
+            HashMap::new()
+        };
         let defaults: Profile = value.try_into()?;
         Ok(ConfigFile {
             defaults,
             profile: profile_map,
             alias: alias_map,
+            session: session_map,
         })
     }
 

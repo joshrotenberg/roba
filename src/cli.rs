@@ -552,6 +552,19 @@ pub struct AskArgs {
     )]
     pub fresh: bool,
 
+    /// Resume a session by its configured name (see `[session]` in roba.toml).
+    ///
+    /// Looks NAME up in the merged config pool and resumes the bound
+    /// session id. Bind names yourself in an (untracked, local) roba.toml
+    /// `[session]` table -- UUIDs are machine-local. Conflicts with -c/--pick/--fresh.
+    #[arg(
+        long,
+        value_name = "NAME",
+        conflicts_with_all = ["continue_session", "pick", "fresh"],
+        help_heading = "Sessions"
+    )]
+    pub session: Option<String>,
+
     /// Run in a fresh git worktree (optionally named: `-w NAME`).
     ///
     /// With no value claude generates the name; `-w NAME` (or `-w=NAME`)
@@ -1003,6 +1016,27 @@ mod tests {
     fn pick_conflicts_with_continue() {
         use clap::Parser;
         assert!(Cli::try_parse_from(["roba", "--pick", "-c", "prompt"]).is_err());
+    }
+
+    #[test]
+    fn session_parses_with_name() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--session", "meta", "-p", "hi"]).unwrap();
+        assert_eq!(cli.ask.session.as_deref(), Some("meta"));
+        assert_eq!(cli.ask.prompt_flag.as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn session_conflicts_with_continue() {
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["roba", "--session", "meta", "-c", "-p", "hi"]).is_err());
+    }
+
+    #[test]
+    fn session_conflicts_with_pick_and_fresh() {
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["roba", "--session", "meta", "--pick"]).is_err());
+        assert!(Cli::try_parse_from(["roba", "--session", "meta", "--fresh", "-p", "hi"]).is_err());
     }
 
     #[test]

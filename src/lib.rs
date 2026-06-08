@@ -115,6 +115,14 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         let source = profile::profile_source_label(&args, &pool);
         profile::merge_into_args(&mut args, chosen, &source);
     }
+    // `--session NAME` resolves a configured `[session]` handle to its
+    // bound uuid and feeds the existing `continue_session` path. Runs
+    // after the profile merge so it overrides a profile-supplied
+    // `continue`. clap already excludes `-c` / `--pick` / `--fresh`.
+    if let Some(name) = args.session.clone() {
+        let uuid = resolve_session(&name, &pool.sessions)?;
+        args.continue_session = Some(Some(uuid));
+    }
     // Expand the --dispatch preset: implies --full-auto, --worktree, and
     // --fresh, the three flags an unattended file-mutating worker needs.
     // Individual flags take precedence -- each leg is only set when the
@@ -314,6 +322,30 @@ fn ensure_interactive_for_flags(args: &AskArgs) -> Result<()> {
     Ok(())
 }
 
+/// Resolve a `--session NAME` handle to its bound session uuid using
+/// the merged `[session]` map. Errors (listing the known names) when
+/// the name is not configured -- the bind is the user's job, done in a
+/// local roba.toml `[session]` table, so an unknown name is a config
+/// mistake worth surfacing rather than silently starting fresh.
+fn resolve_session(
+    name: &str,
+    sessions: &std::collections::HashMap<String, String>,
+) -> Result<String> {
+    match sessions.get(name) {
+        Some(uuid) => Ok(uuid.clone()),
+        None => {
+            let known = if sessions.is_empty() {
+                "(none configured)".to_string()
+            } else {
+                let mut names: Vec<&str> = sessions.keys().map(String::as_str).collect();
+                names.sort_unstable();
+                names.join(", ")
+            };
+            bail!("no session named '{name}' in config (known: {known})")
+        }
+    }
+}
+
 /// Map an anyhow error chain to a stable exit code:
 /// - 0: ok (handled by the caller's happy path)
 /// - 1: generic failure
@@ -337,6 +369,33 @@ pub fn classify_exit_code(err: &anyhow::Error) -> i32 {
 mod tests {
     use super::*;
     use claude_wrapper::auth::AuthErrorKind;
+
+    #[test]
+    fn resolve_session_known_name_returns_uuid() {
+        let mut sessions = std::collections::HashMap::new();
+        sessions.insert("meta".to_string(), "0199-uuid".to_string());
+        let uuid = resolve_session("meta", &sessions).unwrap();
+        assert_eq!(uuid, "0199-uuid");
+    }
+
+    #[test]
+    fn resolve_session_unknown_name_errors_and_lists_known() {
+        let mut sessions = std::collections::HashMap::new();
+        sessions.insert("beta".to_string(), "b".to_string());
+        sessions.insert("alpha".to_string(), "a".to_string());
+        let err = resolve_session("nope", &sessions).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no session named 'nope'"), "got: {msg}");
+        // Known names are listed, sorted.
+        assert!(msg.contains("alpha, beta"), "got: {msg}");
+    }
+
+    #[test]
+    fn resolve_session_unknown_with_empty_map_says_none_configured() {
+        let sessions = std::collections::HashMap::new();
+        let err = resolve_session("meta", &sessions).unwrap_err();
+        assert!(err.to_string().contains("(none configured)"), "got: {err}");
+    }
 
     #[test]
     fn classify_auth_returns_2() {
