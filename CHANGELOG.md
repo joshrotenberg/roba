@@ -14,6 +14,37 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-06-08
+
+### CI
+
+- fix live-test install step failing under bash -e ([#176](https://github.com/joshrotenberg/roba/pull/176))
+
+
+### Documentation
+
+- slim roba --help into a scannable short/long split ([#180](https://github.com/joshrotenberg/roba/pull/180))
+- make --help a self-contained colored reference ([#181](https://github.com/joshrotenberg/roba/pull/181))
+- consolidate to README + --help + sample + skill; retire the book ([#182](https://github.com/joshrotenberg/roba/pull/182))
+
+
+### Fixed
+
+- empty changelog from empty skip_tags/ignore_tags (closes #173) ([#184](https://github.com/joshrotenberg/roba/pull/184))
+
+
+### Maintenance
+
+- drop MSRV, add rustfmt pre-commit hook (bleeding-edge binary) ([#183](https://github.com/joshrotenberg/roba/pull/183))
+
+
+### Tests
+
+- make live_system_prompt_influences_response deterministic ([#177](https://github.com/joshrotenberg/roba/pull/177))
+- stop gating live CI on model-compliance (fixes the flaky pair) ([#178](https://github.com/joshrotenberg/roba/pull/178))
+
+
+
 ## [0.2.1] - 2026-06-06
 
 ### Fixed
