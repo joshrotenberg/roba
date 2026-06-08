@@ -111,6 +111,25 @@ fn dash_with_empty_stdin_errors() {
         .stderr(predicate::str::contains("empty stdin"));
 }
 
+#[test]
+fn no_args_empty_stdin_non_tty_still_errors() {
+    // assert_cmd attaches a pipe (non-TTY) to stdin, so this exercises
+    // the UNCHANGED path: no positional + non-TTY stdin routes through
+    // `read_stdin`, which bails on empty input with a non-zero exit.
+    //
+    // The promptless-on-a-TTY guard in `run_ask` (the "no prompt given,
+    // try roba --help" hint that returns exit 0) is TTY-only and gated
+    // on `std::io::stdin().is_terminal()`. assert_cmd's stdin is never a
+    // TTY, so that branch is not mechanically testable here -- it is
+    // covered by the `is_terminal()` guard itself.
+    roba()
+        .write_stdin("")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("empty stdin"));
+}
+
 // ---------------------------------------------------------------------------
 // conflict matrix (clap rejects with exit 2 by convention)
 // ---------------------------------------------------------------------------
