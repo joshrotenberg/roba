@@ -260,11 +260,6 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     {
         args.no_agent_check = v;
     }
-    if let Some(v) = profile.dispatch
-        && !args.dispatch
-    {
-        args.dispatch = v;
-    }
     if args.permission_mode.is_none()
         && let Some(mode) = profile.permission_mode.take()
     {
@@ -818,18 +813,6 @@ mod tests {
         };
         merge_into_args(&mut args, profile, "profile.test");
         assert!(args.bare);
-    }
-
-    #[test]
-    fn merge_dispatch_applies_when_cli_unset() {
-        let mut args = empty_args();
-        assert!(!args.dispatch);
-        let profile = Profile {
-            dispatch: Some(true),
-            ..Default::default()
-        };
-        merge_into_args(&mut args, profile, "profile.test");
-        assert!(args.dispatch, "profile dispatch=true should flow through");
     }
 
     #[test]

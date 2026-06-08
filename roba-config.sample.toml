@@ -58,7 +58,6 @@
 # --- Failure / agent-tier ---
 # no_retry  = true                # surface transient failures immediately
 # bare      = true                # minimal-overhead mode (ANTHROPIC_API_KEY auth)
-# dispatch  = true                # unattended preset (full_auto + worktree + fresh)
 # no_agent_check = true           # skip the --agent frontmatter permission check
 
 # --- Template variables ---  substituted as {{KEY}} in prompts/prepends

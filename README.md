@@ -166,8 +166,9 @@ than `claude -p`:
 - **`--no-retry`** surfaces transient failures immediately (the caller
   decides whether to retry), and **`--trace PATH`** writes the spawned
   session's events as JSONL so you can observe a run in flight.
-- **`--dispatch`** is the unattended preset (`--full-auto --worktree
-  --fresh`) for firing a worker that edits files in its own sandbox.
+- **Unattended dispatch** composes the primitives: `--full-auto` to fire
+  a worker that edits files without supervision, plus `--worktree` when
+  parallel same-repo workers must not share a branch.
 
 For an agent that *invokes* roba, [`skills/use-roba/SKILL.md`](skills/use-roba/SKILL.md)
 documents this contract in agent-readable form -- copy it to
