@@ -14,7 +14,24 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-06
 
+### Fixed
+
+- accept camelCase `--permission-mode` values (#169)
+
+### CI
+
+- cargo-dist release artifacts (adrs pattern) + README badges (#165)
+- scheduled live-test workflow against the real API (#172)
+
+### Documentation
+
+- fix book rendering -- every chapter was a blank stub (#166)
+
+### Tests
+
+- fix stale/fragile live tests surfaced by full run (#170)
 
 ## [0.2.0] - 2026-06-06
 
