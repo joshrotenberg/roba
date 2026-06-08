@@ -33,12 +33,19 @@ Full flag detail, env vars, and roba.toml config: roba --help";
 /// env-var and roba.toml config layers, so the binary documents itself
 /// for humans and agents without depending on an external docs site.
 const AFTER_LONG_HELP: &str = "\
-Examples:
-  roba \"explain the borrow checker in 3 bullets\"       one-shot question
-  cat err.log | roba \"what's wrong here?\"              pipe stdin
-  roba --attach 'src/**/*.rs' \"audit error handling\"   attach files
-  roba -c -p \"now add a test for that\"                 continue the last session
-  roba --writable \"rename foo to bar in src/\"          let claude edit files
+Examples -- for humans (interactive, rich TTY):
+  roba \"explain the borrow checker in 3 bullets\"      one-shot question
+  cat err.log | roba \"what's wrong here?\"             pipe a file in
+  roba --attach 'src/**/*.rs' \"audit error handling\"  attach files as context
+  roba -e                                             compose in $EDITOR
+  roba -c -p \"now add a test for that\"                continue the last session
+
+Examples -- for agents & scripts (deterministic, pipe-clean):
+  roba --json \"list 3 risks\" | jq -r '.result.result'  structured output -> jq
+  roba -q \"one-line summary\" > out.txt                 answer only, no metadata
+  roba --no-retry \"...\"; echo \"exit=$?\"                typed exit codes
+  roba --session ci-bot \"follow up\"                    resume a named session
+  roba --full-auto -C repo -f task.md                  fire an unattended worker
 
 Dispatch modes (firing roba as an unattended worker):
   --full-auto -C <dir> -f <file>   edit the current checkout in place; the
