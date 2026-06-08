@@ -14,6 +14,25 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-08
+
+### Added
+
+- named sessions via [session] config + --session/ROBA_SESSION (closes #37) ([#199](https://github.com/joshrotenberg/roba/pull/199))
+- style the --help trailer sections (NO_COLOR/pipe-clean) ([#204](https://github.com/joshrotenberg/roba/pull/204))
+
+
+### Changed
+
+- remove the --dispatch preset (closes #202) ([#203](https://github.com/joshrotenberg/roba/pull/203)) (BREAKING)
+
+
+### Documentation
+
+- split --help examples into human + agent sections (closes #205) ([#206](https://github.com/joshrotenberg/roba/pull/206))
+
+
+
 ## [0.3.1] - 2026-06-08
 
 ### Dependencies
