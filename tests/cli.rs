@@ -101,6 +101,19 @@ fn missing_prepend_errors_with_exit_1() {
 }
 
 #[test]
+fn missing_claude_prints_install_hint_on_stderr() {
+    // Clear PATH so claude-wrapper can't find the `claude` binary,
+    // driving the real Error::NotFound path. roba itself is invoked
+    // by absolute path (cargo_bin), so it still launches.
+    roba()
+        .env("PATH", "")
+        .arg("hi")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found on PATH"));
+}
+
+#[test]
 fn dash_with_empty_stdin_errors() {
     roba()
         .arg("-")

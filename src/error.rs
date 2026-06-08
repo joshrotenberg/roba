@@ -94,6 +94,46 @@ pub fn kind_of(err: &anyhow::Error) -> &'static str {
     }
 }
 
+/// Canonical install URL for claude-code, pointed at by the
+/// `NotFound` hint + `see_also`. Kept in one place so the plain-path
+/// hint and the JSON `see_also` stay consistent.
+const CLAUDE_CODE_URL: &str = "https://github.com/anthropics/claude-code";
+
+/// Produce an actionable, human-facing hint for the two detectable
+/// first-run failures: claude missing from PATH, and claude not
+/// authenticated. Returns `None` for anything else (the primary error
+/// text is enough). The hint is supplementary -- callers print it
+/// *after* the underlying error, never instead of it.
+///
+/// `NotFound` is matched first so it wins over any auth classification.
+pub fn hint_for_error(err: &anyhow::Error) -> Option<String> {
+    let wrapper_err = err.downcast_ref::<claude_wrapper::Error>()?;
+    if matches!(wrapper_err, claude_wrapper::Error::NotFound) {
+        Some(format!(
+            "claude binary not found on PATH. Install claude-code: {CLAUDE_CODE_URL}"
+        ))
+    } else if wrapper_err.auth_kind().is_some() {
+        Some(
+            "claude is not authenticated. Run `claude /login`, or set ANTHROPIC_API_KEY (and use --bare for API-key-only auth)."
+                .to_string(),
+        )
+    } else {
+        None
+    }
+}
+
+/// Canonical doc URLs an error wants to point at, for the JSON
+/// `see_also` field. Only `NotFound` has a canonical doc URL today;
+/// the auth case has no doc page (the message-level hint covers it),
+/// so it returns empty.
+pub fn see_also_for(err: &anyhow::Error) -> Vec<String> {
+    if let Some(claude_wrapper::Error::NotFound) = err.downcast_ref::<claude_wrapper::Error>() {
+        vec![CLAUDE_CODE_URL.to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Build the envelope from an error + the already-computed exit code.
 /// `message` is the top of the anyhow chain (the most recent context
 /// call), matching what `{err}` would print without `:#`.
@@ -107,10 +147,9 @@ pub fn build_envelope(err: &anyhow::Error, exit_code: i32) -> ErrorEnvelope {
             message,
             exit_code,
             chain,
-            // Nothing maps an error to a doc URL yet; the field is
-            // wired and omitted-when-empty so it can populate later
-            // without a version bump.
-            see_also: Vec::new(),
+            // Populated only for errors with a canonical doc URL
+            // (currently just NotFound); omitted-when-empty otherwise.
+            see_also: see_also_for(err),
         },
     }
 }
@@ -253,6 +292,46 @@ mod tests {
             .expect("see_also must be an array when populated");
         assert_eq!(see_also.len(), 1);
         assert_eq!(see_also[0], "https://example.test/doc");
+    }
+
+    #[test]
+    fn hint_for_not_found_returns_install_hint() {
+        let err = anyhow::Error::new(claude_wrapper::Error::NotFound);
+        let hint = hint_for_error(&err).expect("NotFound must produce a hint");
+        assert!(hint.contains("not found on PATH"), "hint was: {hint}");
+        assert!(
+            hint.contains("https://github.com/anthropics/claude-code"),
+            "hint was: {hint}"
+        );
+    }
+
+    #[test]
+    fn hint_for_auth_returns_auth_hint() {
+        let err = anyhow::Error::new(claude_wrapper::Error::Auth {
+            kind: AuthErrorKind::NotAuthenticated,
+            command: "claude -p hi".to_string(),
+            exit_code: 1,
+            message: "not logged in".to_string(),
+        });
+        let hint = hint_for_error(&err).expect("auth error must produce a hint");
+        assert!(hint.contains("not authenticated"), "hint was: {hint}");
+    }
+
+    #[test]
+    fn hint_for_non_wrapper_error_is_none() {
+        let err = anyhow::anyhow!("boom");
+        assert!(hint_for_error(&err).is_none());
+    }
+
+    #[test]
+    fn not_found_populates_see_also_in_json() {
+        let err = anyhow::Error::new(claude_wrapper::Error::NotFound);
+        let value = envelope_value(&err, 1);
+        let see_also = value["error"]["see_also"]
+            .as_array()
+            .expect("NotFound must populate see_also");
+        assert_eq!(see_also.len(), 1);
+        assert_eq!(see_also[0], "https://github.com/anthropics/claude-code");
     }
 
     #[test]

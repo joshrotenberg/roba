@@ -20,6 +20,12 @@ async fn main() {
                 Style::detect_for_error()
             };
             roba::render::print_error(&format!("{err:#}"), &style);
+            // Additive: an actionable hint for the detectable
+            // first-run failures (claude missing / unauthenticated).
+            // Printed after the primary error, never instead of it.
+            if let Some(hint) = roba::error::hint_for_error(&err) {
+                roba::render::print_meta(&hint, &style);
+            }
         }
         std::process::exit(exit_code);
     }
