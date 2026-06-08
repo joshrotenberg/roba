@@ -40,6 +40,14 @@ Examples:
   roba -c -p \"now add a test for that\"                 continue the last session
   roba --writable \"rename foo to bar in src/\"          let claude edit files
 
+Dispatch modes (firing roba as an unattended worker):
+  --full-auto -C <dir> -f <file>   in-place: edit the current checkout
+                                   (orchestrator owns the branch + PR)
+  --dispatch                       isolated worktree (= --full-auto
+                                   --worktree --fresh); for parallel
+                                   same-repo workers that must not share a
+                                   branch. Overkill for sequential/in-place.
+
 Environment variables:
   Every long flag has a ROBA_<FLAG> override (uppercased, '-' -> '_'):
   --model -> ROBA_MODEL; bool flags take a truthy value (--writable ->
@@ -642,6 +650,9 @@ pub struct AskArgs {
     /// Implies `--full-auto`, `--worktree`, and `--fresh` (individual
     /// flags override). For firing a worker agent that edits files
     /// without supervision. Warns to stderr if `--agent` is unset.
+    /// Use the worktree isolation for *parallel* same-repo workers; for
+    /// in-place or orchestrator-owned-branch work, prefer bare
+    /// `--full-auto`.
     #[arg(long, help_heading = "Dispatch")]
     pub dispatch: bool,
 

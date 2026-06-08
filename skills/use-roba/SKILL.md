@@ -94,6 +94,7 @@ bumping the version.
 | `--show-permissions` | Preview the resolved permission stack with per-entry provenance; exits 0 without calling claude |
 | `--writable` | Add Edit and Write to the default read-only permission set |
 | `--full-auto` | Bypass all permission checks (sandbox use only) |
+| `--dispatch` | Preset for an unattended worker: `--full-auto` + `--worktree` + `--fresh`. Use for parallel same-repo workers needing isolation; for in-place / orchestrator-owned-branch work, prefer bare `--full-auto -C -f`. |
 | `--allow-tool TOOL` | Add a specific tool pattern (repeatable) |
 | `--deny-tool TOOL` | Block a specific tool pattern (repeatable) |
 | `--permission-mode MODE` | Pass a permission mode directly to claude: `dontAsk` (auto-approve allowed tools), `acceptEdits` (auto-accept file edits), `plan` (show plan before executing), `auto`, `default`. Coexists with `--writable` / `--allow-tool`: those set the allowlist, this sets the interaction mode. |
@@ -147,6 +148,24 @@ roba --writable -w=my-branch -p "implement the foo feature in src/foo.rs"
 roba --trace /tmp/run.jsonl --json -p "analyze the codebase for security issues"
 # tail -f /tmp/run.jsonl to watch streaming events as they arrive
 ```
+
+`--trace` passes through claude code's raw stream-json events unchanged.
+Among them, an orchestrator tailing the file will see a `system` event with
+`"subtype": "post_turn_summary"` near the end of a turn -- a convenient
+"is it done / what happened" handle:
+
+```json
+{ "type": "system", "subtype": "post_turn_summary",
+  "status_category": "review_ready",
+  "status_detail": "issue #177 fixed: ... all checks green",
+  "needs_action": "", "session_id": "...", "summarizes_uuid": "...", "uuid": "..." }
+```
+
+`status_category` (e.g. `review_ready`) plus `status_detail` (a human-readable
+summary) are useful as a completion signal. Caveat: this is **claude code's**
+event passed through the trace, not part of roba's versioned ABI -- roba just
+forwards it, and the schema is upstream and may change. Don't depend on it the
+way you can depend on the `--json` envelope or the exit codes.
 
 **Run in a different project directory**
 
