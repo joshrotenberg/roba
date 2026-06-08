@@ -101,6 +101,16 @@ pub enum SubCommand {
         #[command(subcommand)]
         action: AliasAction,
     },
+    /// Generate a shell completion script (bash, zsh, fish, ...).
+    ///
+    /// Prints the script for SHELL to stdout; pipe or redirect it into
+    /// the right place for your shell. Examples:
+    ///   roba completions zsh  > ~/.zfunc/_roba
+    ///   roba completions bash > /etc/bash_completion.d/roba
+    Completions {
+        /// Target shell (bash, zsh, fish, powershell, elvish).
+        shell: clap_complete::Shell,
+    },
     /// Captures a user-defined alias invocation (`roba NAME [args]`).
     /// Not a real subcommand -- clap routes any unrecognized leading
     /// word here, and [`crate::dispatch`] expands it against the alias
