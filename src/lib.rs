@@ -51,6 +51,14 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Some(SubCommand::Profile { action }) => profile::run(action),
         Some(SubCommand::Cost(args)) => cost::run(args),
         Some(SubCommand::Alias { action }) => aliases::run(action),
+        // Pure generator: print the completion script and exit. No
+        // claude call, no prompt resolution.
+        Some(SubCommand::Completions { shell }) => {
+            use clap::CommandFactory;
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "roba", &mut std::io::stdout());
+            Ok(())
+        }
         // An unrecognized leading word: clap routes it here. The alias
         // name landed in `ask.prompt`; the remaining tokens are the
         // alias args (positional + any trailing flags).

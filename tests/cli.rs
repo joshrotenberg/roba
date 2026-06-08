@@ -1419,3 +1419,18 @@ fn both_system_prompt_flags_coexist() {
         .assert()
         .success();
 }
+
+// ---------------------------------------------------------------------------
+// completions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn completions_bash_prints_script_and_exits_zero() {
+    // Pure generator: emits a completion script to stdout, no claude
+    // call. The script references the binary name.
+    roba()
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("roba"));
+}
