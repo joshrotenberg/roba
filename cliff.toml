@@ -43,8 +43,10 @@ topo_order = false
 
 # Tag pattern roba uses: v0.2.0, v0.2.1, ...
 tag_pattern = "v[0-9].*"
-skip_tags = ""
-ignore_tags = ""
+# NB: do NOT set skip_tags / ignore_tags to "". An empty regex matches
+# *every* tag, so release-plz's embedded git-cliff skips every release
+# ("Skipping release: X") and emits an EMPTY changelog -- which is what
+# shipped 0.2.1 with no notes (#173). Leave them unset (no skip/ignore).
 
 # Conventional commit type -> changelog section.
 # Order here is the display order in each release body.
