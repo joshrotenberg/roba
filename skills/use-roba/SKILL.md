@@ -86,7 +86,7 @@ bumping the version.
 | `-c=ID` or `-c ID` | Resume a specific session by id |
 | `--session NAME` / `ROBA_SESSION=NAME` | Resume a session by a stable name bound in a roba.toml `[session]` table (`NAME = "<uuid>"`); roba reads the map and resumes the bound id. Conflicts with `-c` / `--pick` / `--fresh`. Useful for long-lived per-repo or driver sessions you don't want to address by UUID. |
 | `--fresh` | Force a new session even if config or env has `continue = true` |
-| `-w` / `--worktree` | Run in a fresh git worktree (sandboxed checkout) |
+| `-w` / `--worktree` | Run in a fresh git worktree (sandboxed checkout); use for parallel same-repo workers that must not share a branch |
 | `-w=NAME` / `-w NAME` | Same, with a pinned worktree name (useful for branch naming) |
 | `-C PATH` | Run as if invoked from a different directory (git -C style) |
 | `--trace PATH` | Write raw streaming events to a JSONL file as they arrive; stable observability handle for in-flight runs |
@@ -147,6 +147,25 @@ roba --writable -w=my-branch -p "implement the foo feature in src/foo.rs"
 roba --trace /tmp/run.jsonl --json -p "analyze the codebase for security issues"
 # tail -f /tmp/run.jsonl to watch streaming events as they arrive
 ```
+
+`--trace` passes through claude code's raw stream-json events unchanged.
+Among them, an orchestrator tailing the file will see a `system` event with
+`"subtype": "post_turn_summary"` near the end of a turn -- a convenient "is
+it done / what happened" handle:
+
+```json
+{ "type": "system", "subtype": "post_turn_summary",
+  "status_category": "review_ready",
+  "status_detail": "issue #177 fixed: ... all checks green",
+  "needs_action": "", "session_id": "...", "summarizes_uuid": "...", "uuid": "..." }
+```
+
+`status_category` (e.g. `review_ready`) plus `status_detail` (a
+human-readable summary) are useful as a completion signal. Caveat: this is
+claude code's event passed through the trace, not part of roba's versioned
+ABI -- roba just forwards it and the schema is upstream and may change.
+Don't depend on it the way you can depend on the `--json` envelope or the
+exit codes.
 
 **Run in a different project directory**
 
