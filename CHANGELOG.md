@@ -14,6 +14,21 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-08
+
+### Added
+
+- shell completions via clap_complete (closes #185) ([#189](https://github.com/joshrotenberg/roba/pull/189))
+- roba doctor health check (closes #186) ([#190](https://github.com/joshrotenberg/roba/pull/190))
+- actionable hints when claude is missing or unauthenticated (closes #188) ([#192](https://github.com/joshrotenberg/roba/pull/192))
+
+
+### Fixed
+
+- guide instead of hang when roba has no prompt on a TTY (closes #187) ([#191](https://github.com/joshrotenberg/roba/pull/191))
+
+
+
 ## [0.2.2] - 2026-06-08
 
 ### CI
