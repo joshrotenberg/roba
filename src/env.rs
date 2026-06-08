@@ -240,11 +240,6 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
         args.bare = true;
     }
 
-    // ----- Dispatch -----
-    if !args.dispatch && read_truthy(env, "ROBA_DISPATCH") {
-        args.dispatch = true;
-    }
-
     // ----- Vars (ROBA_VAR_<KEY>=<value>) -----
     for (key, value) in env {
         if let Some(var_key) = key.strip_prefix("ROBA_VAR_")
@@ -823,38 +818,6 @@ mod tests {
         let mut args = empty_args();
         apply_env_overrides_from(&mut args, &env_with(&[("ROBA_BARE", "false")]));
         assert!(!args.bare);
-    }
-
-    // -- dispatch ----------------------------------------------------------
-
-    #[test]
-    fn env_dispatch_sets_from_roba_dispatch_var() {
-        for val in ["1", "true", "yes", "on", "TRUE", "Yes"] {
-            let mut args = empty_args();
-            apply_env_overrides_from(&mut args, &env_with(&[("ROBA_DISPATCH", val)]));
-            assert!(args.dispatch, "env value {val:?} should enable dispatch");
-        }
-    }
-
-    #[test]
-    fn env_dispatch_does_not_override_cli() {
-        // `--dispatch` is a bool; once true, the env layer must not clear it.
-        let mut args = empty_args();
-        args.dispatch = true;
-        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_DISPATCH", "0")]));
-        assert!(args.dispatch);
-    }
-
-    #[test]
-    fn env_dispatch_ignores_false_value() {
-        for val in ["0", "false", "no", "off", "", "garbage"] {
-            let mut args = empty_args();
-            apply_env_overrides_from(&mut args, &env_with(&[("ROBA_DISPATCH", val)]));
-            assert!(
-                !args.dispatch,
-                "env value {val:?} should leave dispatch off"
-            );
-        }
     }
 
     // -- system_prompt / append_system_prompt ------------------------------

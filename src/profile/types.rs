@@ -97,11 +97,6 @@ pub struct Profile {
     /// Skip the agent frontmatter permission check (`--no-agent-check`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub no_agent_check: Option<bool>,
-    /// Preset for unattended file-mutating dispatch (`--dispatch`):
-    /// implies `--full-auto`, `--worktree`, and `--fresh`, with
-    /// per-flag overrides respected.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dispatch: Option<bool>,
     /// Set claude's `--permission-mode` (`--permission-mode MODE`).
     /// Accepts: `default`, `acceptEdits`, `dontAsk`, `plan`, `auto`.
     /// The shortcut flags (`readonly`, `writable`, `full_auto`) take
@@ -191,7 +186,6 @@ impl Profile {
             && self.rates_file.is_none()
             && self.no_dollars.is_none()
             && self.no_agent_check.is_none()
-            && self.dispatch.is_none()
             && self.permission_mode.is_none()
             && self.system_prompt.is_none()
             && self.append_system_prompt.is_none()
@@ -235,7 +229,6 @@ impl Profile {
             rates_file,
             no_dollars,
             no_agent_check,
-            dispatch,
             permission_mode,
             system_prompt,
             append_system_prompt,
@@ -320,9 +313,6 @@ impl Profile {
         }
         if no_agent_check.is_some() {
             self.no_agent_check = no_agent_check;
-        }
-        if dispatch.is_some() {
-            self.dispatch = dispatch;
         }
         if permission_mode.is_some() {
             self.permission_mode = permission_mode;

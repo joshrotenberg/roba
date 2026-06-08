@@ -123,30 +123,6 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         let uuid = resolve_session(&name, &pool.sessions)?;
         args.continue_session = Some(Some(uuid));
     }
-    // Expand the --dispatch preset: implies --full-auto, --worktree, and
-    // --fresh, the three flags an unattended file-mutating worker needs.
-    // Individual flags take precedence -- each leg is only set when the
-    // caller (CLI, env, or profile) didn't already choose otherwise.
-    // Runs after the full layer merge so a profile `dispatch = true` and
-    // any explicit overrides are both visible, and before
-    // --show-permissions so the preview reflects the expanded full_auto.
-    if args.dispatch {
-        if !args.full_auto && !args.writable && !args.readonly && args.permission_mode.is_none() {
-            args.full_auto = true;
-            args.full_auto_source = Some("--dispatch".to_string());
-        }
-        if args.worktree.is_none() {
-            args.worktree = Some(None);
-        }
-        if !args.fresh && args.continue_session.is_none() {
-            args.fresh = true;
-        }
-        if args.agent.is_none() {
-            eprintln!(
-                "warning: --dispatch without --agent; consider --agent for unattended dispatch"
-            );
-        }
-    }
     // --show-permissions previews the resolved allow/deny set (with
     // provenance) using the exact same resolution flow a real run
     // uses, then exits without calling claude. Must come after the
