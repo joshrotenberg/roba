@@ -92,6 +92,17 @@ fn load_file(path: &Path) -> Result<ConfigFile> {
         HashMap::new()
     };
 
+    let session_map: HashMap<String, String> = if let toml::Value::Table(table) = &mut value {
+        match table.remove("session") {
+            Some(v) => v
+                .try_into()
+                .with_context(|| format!("parsing [session] table in {}", path.display()))?,
+            None => HashMap::new(),
+        }
+    } else {
+        HashMap::new()
+    };
+
     let defaults: Profile = value
         .try_into()
         .with_context(|| format!("parsing top-level keys in {}", path.display()))?;
@@ -100,6 +111,7 @@ fn load_file(path: &Path) -> Result<ConfigFile> {
         defaults,
         profile: profile_map,
         alias: alias_map,
+        session: session_map,
     })
 }
 
@@ -135,6 +147,11 @@ pub fn load_pool_from(cwd: &Path) -> Result<Pool> {
         // (closer file) overwrites.
         for (name, alias) in cfg.alias {
             pool.aliases.insert(name, alias);
+        }
+        // Session bindings, same wholesale closest-to-cwd-wins rule as
+        // aliases: a later insert (closer file) overwrites the name.
+        for (name, uuid) in cfg.session {
+            pool.sessions.insert(name, uuid);
         }
         pool.sources.push(path);
     }
@@ -300,6 +317,73 @@ allow_tool = ["Bash(git diff)"]
         assert_eq!(
             pool.defaults.allow_tool,
             vec!["Bash(git status)".to_string(), "Bash(git diff)".to_string()]
+        );
+    }
+
+    #[test]
+    fn pool_parses_session_bindings() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_file(tmp.path(), "repo/.git/HEAD", "");
+        write_file(
+            tmp.path(),
+            "repo/roba.toml",
+            r#"
+[session]
+meta = "0199aabb-ccdd"
+worktree-a = "0199eeff-0011"
+"#,
+        );
+        write_file(tmp.path(), "repo/sub/.gitkeep", "");
+        let pool = load_pool_from(&tmp.path().join("repo/sub")).unwrap();
+        assert_eq!(
+            pool.sessions.get("meta").map(String::as_str),
+            Some("0199aabb-ccdd")
+        );
+        assert_eq!(
+            pool.sessions.get("worktree-a").map(String::as_str),
+            Some("0199eeff-0011")
+        );
+    }
+
+    #[test]
+    fn pool_walkup_session_closest_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_file(tmp.path(), "repo/.git/HEAD", "");
+        // farther file binds `meta` and `only-far`
+        write_file(
+            tmp.path(),
+            "repo/roba.toml",
+            r#"
+[session]
+meta = "far-uuid"
+only-far = "far-only-uuid"
+"#,
+        );
+        // closer file rebinds `meta` (wholesale) and adds `only-near`
+        write_file(
+            tmp.path(),
+            "repo/sub/roba.toml",
+            r#"
+[session]
+meta = "near-uuid"
+only-near = "near-only-uuid"
+"#,
+        );
+        write_file(tmp.path(), "repo/sub/inner/.gitkeep", "");
+        let pool = load_pool_from(&tmp.path().join("repo/sub/inner")).unwrap();
+        // Closer file wins wholesale on the colliding name.
+        assert_eq!(
+            pool.sessions.get("meta").map(String::as_str),
+            Some("near-uuid")
+        );
+        // Non-colliding names from both files survive.
+        assert_eq!(
+            pool.sessions.get("only-far").map(String::as_str),
+            Some("far-only-uuid")
+        );
+        assert_eq!(
+            pool.sessions.get("only-near").map(String::as_str),
+            Some("near-only-uuid")
         );
     }
 

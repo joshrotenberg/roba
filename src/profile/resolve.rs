@@ -342,6 +342,7 @@ mod tests {
             defaults,
             profiles,
             aliases: HashMap::new(),
+            sessions: HashMap::new(),
             sources: vec![],
         }
     }

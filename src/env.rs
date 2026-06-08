@@ -134,6 +134,15 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
         }
     }
 
+    // ROBA_SESSION mirrors `--session NAME`: a configured `[session]`
+    // handle resolved against the pool later in `run_ask`. String flag,
+    // CLI wins.
+    if args.session.is_none()
+        && let Some(s) = read_string(env, "ROBA_SESSION")
+    {
+        args.session = Some(s);
+    }
+
     // ----- Permissions -----
     if args.permission_mode.is_none()
         && let Some(s) = read_string(env, "ROBA_PERMISSION_MODE")
@@ -504,6 +513,30 @@ mod tests {
         args.continue_session = Some(Some("cli-id".to_string()));
         apply_env_overrides_from(&mut args, &env_with(&[("ROBA_CONTINUE", "1")]));
         assert_eq!(args.continue_session, Some(Some("cli-id".to_string())));
+    }
+
+    // -- session -----------------------------------------------------------
+
+    #[test]
+    fn env_session_sets_from_roba_session_var() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_SESSION", "meta")]));
+        assert_eq!(args.session.as_deref(), Some("meta"));
+    }
+
+    #[test]
+    fn env_session_does_not_override_cli() {
+        let mut args = empty_args();
+        args.session = Some("cli-name".into());
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_SESSION", "env-name")]));
+        assert_eq!(args.session.as_deref(), Some("cli-name"));
+    }
+
+    #[test]
+    fn env_session_ignores_empty() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_SESSION", "")]));
+        assert!(args.session.is_none());
     }
 
     // -- usize -------------------------------------------------------------
