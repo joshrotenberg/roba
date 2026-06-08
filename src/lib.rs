@@ -194,6 +194,20 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     let context = merge_optional(attachments, git_context);
     let prompt = compose_prompt(main, &args.prepend, context, &args.append)?;
     let prompt = apply_vars(prompt, &args.var);
+
+    // Promptless-on-a-TTY guard. The fully composed prompt (positional +
+    // prepend + attach + git) is only known here, so the check belongs at
+    // this seam: a user with no positional but a `--git-diff` is NOT
+    // promptless and must not be intercepted. When the composed prompt is
+    // empty and stdin is interactive, guide the user instead of shipping an
+    // empty prompt to claude. The non-TTY (piped) path is unaffected:
+    // `resolve_main_prompt` already routes empty stdin through `read_stdin`,
+    // which bails with a non-zero exit.
+    if prompt.trim().is_empty() && std::io::stdin().is_terminal() {
+        eprintln!("roba: no prompt given. Try `roba \"your question\"` or `roba --help`.");
+        return Ok(());
+    }
+
     if args.echo && !args.quiet {
         eprintln!("{prompt}");
         eprintln!();
