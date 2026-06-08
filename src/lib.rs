@@ -14,6 +14,7 @@ pub mod agent_check;
 pub mod aliases;
 pub mod cli;
 pub mod cost;
+pub mod doctor;
 pub mod env;
 pub mod error;
 pub mod history;
@@ -50,6 +51,12 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Some(SubCommand::Last(args)) => run_last(args),
         Some(SubCommand::Profile { action }) => profile::run(action),
         Some(SubCommand::Cost(args)) => cost::run(args),
+        // Health check: print one line per check, exit 0/1. No claude
+        // prompt -- only `claude --version`.
+        Some(SubCommand::Doctor) => {
+            let code = doctor::run()?;
+            std::process::exit(code);
+        }
         Some(SubCommand::Alias { action }) => aliases::run(action),
         // Pure generator: print the completion script and exit. No
         // claude call, no prompt resolution.
