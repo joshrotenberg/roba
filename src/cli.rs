@@ -96,6 +96,13 @@ pub enum SubCommand {
     },
     /// Roll up token usage across session history.
     Cost(CostArgs),
+    /// Diagnose the claude boundary: binary, auth, config, rates.
+    ///
+    /// Runs a series of health checks and prints a pass/warn/fail line
+    /// for each. Exits 0 if no check fails, 1 if any does (warnings
+    /// don't fail). Never calls claude with a prompt -- only
+    /// `claude --version`.
+    Doctor,
     /// Inspect user-defined aliases (`[alias.NAME]` in roba.toml).
     Alias {
         #[command(subcommand)]
