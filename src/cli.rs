@@ -70,6 +70,72 @@ pub(crate) fn no_prompt_blurb() -> String {
     format!("roba -- ad-hoc Claude from your shell. No prompt given.\n\n{AFTER_HELP}")
 }
 
+/// Build the styled `--help` trailer from [`AFTER_LONG_HELP`].
+///
+/// Section header lines (column 0, ending in `:`) get the header style
+/// (green-bold, matching clap's own `Options:` headers) and the command
+/// column of two-column rows gets the literal style (cyan), so the trailer
+/// matches the rest of `--help` instead of rendering flat.
+///
+/// The styling is pushed as ANSI spans into a [`clap::builder::StyledStr`],
+/// which clap accumulates into the full help and strips alongside everything
+/// else on a non-TTY / under `NO_COLOR` -- so the agent-ABI output stays
+/// byte-clean (the #181 discipline). [`AFTER_LONG_HELP`] stays the single
+/// plain source of the content; only the long `--help` is styled. The short
+/// `-h` trailer ([`AFTER_HELP`]) and the no-prompt blurb keep the plain
+/// const, since the blurb prints via `eprintln!` -- not clap's color
+/// pipeline -- and would leak ANSI on a pipe.
+fn after_long_help_styled() -> clap::builder::StyledStr {
+    use std::fmt::Write as _;
+
+    let header = STYLES.get_header();
+    let literal = STYLES.get_literal();
+    let mut out = clap::builder::StyledStr::new();
+
+    for (i, line) in AFTER_LONG_HELP.lines().enumerate() {
+        if i > 0 {
+            out.push_str("\n");
+        }
+        if is_section_header(line) {
+            let _ = write!(out, "{}{line}{}", header.render(), header.render_reset());
+        } else if let Some((indent, command, rest)) = split_two_column(line) {
+            let _ = write!(
+                out,
+                "{indent}{}{command}{}{rest}",
+                literal.render(),
+                literal.render_reset()
+            );
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+/// A section header is a non-empty, column-0 line ending in `:`
+/// (e.g. `Examples:`, `Configuration (roba.toml):`).
+fn is_section_header(line: &str) -> bool {
+    !line.is_empty() && !line.starts_with(char::is_whitespace) && line.ends_with(':')
+}
+
+/// Split a two-column row into `(indent, command, rest)`, where `command` is
+/// the left token and `rest` is the gap-plus-description. A row qualifies
+/// when, after its leading indent, a run of 2+ spaces separates a command
+/// from a description. Prose and wrapped continuation lines (no interior 2+
+/// space gap) return `None` and stay plain.
+fn split_two_column(line: &str) -> Option<(&str, &str, &str)> {
+    let indent_len = line.len() - line.trim_start().len();
+    if indent_len == 0 {
+        return None;
+    }
+    let (indent, body) = line.split_at(indent_len);
+    let gap = body.find("  ")?;
+    if gap == 0 {
+        return None;
+    }
+    Some((indent, &body[..gap], &body[gap..]))
+}
+
 /// Single-prompt CLI runner built on claude-wrapper.
 #[derive(Parser, Debug)]
 #[command(
@@ -77,7 +143,7 @@ pub(crate) fn no_prompt_blurb() -> String {
     about,
     long_about = None,
     after_help = AFTER_HELP,
-    after_long_help = AFTER_LONG_HELP,
+    after_long_help = after_long_help_styled(),
     styles = STYLES,
 )]
 pub struct Cli {

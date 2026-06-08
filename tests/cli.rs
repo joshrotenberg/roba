@@ -28,6 +28,28 @@ fn help_prints_usage_and_exits_zero() {
 }
 
 #[test]
+fn help_long_trailer_is_byte_clean_off_tty() {
+    // The `--help` long trailer is styled (green-bold headers, cyan command
+    // columns), but the styling MUST route through clap's color pipeline so
+    // it strips on a non-TTY. assert_cmd runs the binary off a TTY, so the
+    // captured stdout must carry NO ANSI escape -- the agent ABI stays
+    // byte-clean (the #181 discipline). A regression here would leak ANSI
+    // into a pipe.
+    let assert = roba().arg("--help").assert().success();
+    let stdout =
+        String::from_utf8(assert.get_output().stdout.clone()).expect("help output is valid UTF-8");
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "--help stdout leaked an ANSI escape off-TTY: {stdout:?}"
+    );
+    // Sanity: the styled sections are still present as plain text.
+    assert!(stdout.contains("Examples:"));
+    assert!(stdout.contains("Dispatch modes"));
+    assert!(stdout.contains("Environment variables:"));
+    assert!(stdout.contains("Configuration (roba.toml):"));
+}
+
+#[test]
 fn version_prints_crate_version_and_exits_zero() {
     roba()
         .arg("--version")
