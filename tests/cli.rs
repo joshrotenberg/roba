@@ -1019,6 +1019,27 @@ fn alias_show_unknown_errors_with_suggestion() {
 }
 
 #[test]
+fn session_unknown_name_errors_before_claude() {
+    // `--session NAME` for an unconfigured NAME must fail loudly (and
+    // before any claude call -- the unknown-name bail happens during
+    // resolution, so this is safe to assert mechanically). A *known*
+    // name would resume a session and invoke claude, so that path is
+    // covered by unit tests, not here.
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = roba();
+    cmd.arg("-C")
+        .arg(project.path())
+        .env("XDG_CONFIG_HOME", home.path())
+        .env_remove("ROBA_SESSION")
+        .env_remove("ROBA_PROFILE")
+        .args(["--session", "nope", "hi"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no session named"));
+}
+
+#[test]
 fn alias_path_lists_contributing_files() {
     let project = alias_project();
     let home = tempfile::tempdir().unwrap();

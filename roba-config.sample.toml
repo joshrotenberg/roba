@@ -144,3 +144,16 @@ template = "Write a conventional-commit message for:\n\n$(git diff --staged)"
 description = "Quick read-only review preset"
 agent = "reviewer"
 flags = ["--readonly"]
+
+# ===========================================================================
+# Named sessions -- bind a stable handle to a claude session id, then resume
+# it with `roba --session NAME` (or ROBA_SESSION=NAME). roba only READS this
+# map; it never writes it. To bind a name, run a session, grab its id from the
+# JSON envelope (`roba --json ... | jq -r '.result.session_id'`), and paste it
+# here. UUIDs are machine-local, so keep `[session]` in an untracked/local
+# roba.toml (e.g. one git-ignored alongside the repo, or ~/.config/roba.toml).
+# ===========================================================================
+
+# [session]
+# meta       = "0199aabb-ccdd-eeff-0011-223344556677"  # roba --session meta "..."
+# this-repo  = "0199eeff-0011-2233-4455-66778899aabb"

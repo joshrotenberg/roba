@@ -84,6 +84,7 @@ bumping the version.
 | `-p TEXT` / `--prompt TEXT` | Explicit prompt flag; use when `-c` or `-w` are also present to avoid ambiguity (those flags consume a space-separated word as their value) |
 | `-c` | Continue most recent session in this directory |
 | `-c=ID` or `-c ID` | Resume a specific session by id |
+| `--session NAME` / `ROBA_SESSION=NAME` | Resume a session by a stable name bound in a roba.toml `[session]` table (`NAME = "<uuid>"`); roba reads the map and resumes the bound id. Conflicts with `-c` / `--pick` / `--fresh`. Useful for long-lived per-repo or driver sessions you don't want to address by UUID. |
 | `--fresh` | Force a new session even if config or env has `continue = true` |
 | `-w` / `--worktree` | Run in a fresh git worktree (sandboxed checkout) |
 | `-w=NAME` / `-w NAME` | Same, with a pinned worktree name (useful for branch naming) |
