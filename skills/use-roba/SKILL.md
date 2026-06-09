@@ -46,13 +46,52 @@ On success, the envelope goes to **stdout**:
   "result": {
     "result": "the answer text",
     "session_id": "abc123",
+    "total_cost_usd": 0.0123,
+    "duration_ms": 1234,
+    "num_turns": 7,
     "is_error": false
   },
   "refusal": false
 }
 ```
 
-`refusal` is true when the answer matches the refusal heuristic; still exits 0.
+Field map (success):
+
+| Path | Type | Notes |
+|------|------|-------|
+| `.version` | int | Always `1`. **Top-level.** |
+| `.refusal` | bool | True when the answer matched the refusal heuristic. **Top-level.** Still exits 0. |
+| `.result.result` | string | The answer text. **This is the answer**, not `.result`. |
+| `.result.session_id` | string | Session id, for `-c`/`--resume` follow-ups. |
+| `.result.total_cost_usd` | number \| null | Cost in USD. Serde renames `cost_usd` -> `total_cost_usd`. May be null. |
+| `.result.duration_ms` | int \| null | Wall-clock ms. May be null. |
+| `.result.num_turns` | int \| null | Turn count. May be null. |
+| `.result.is_error` | bool | Wrapper-level error flag. |
+
+Plus any extra CLI fields, flattened into `.result`.
+
+**Schema gotchas (read this before writing `jq`):**
+
+- The answer is at **`.result.result`**, *not* `.result`. `jq -r '.result'`
+  prints the whole inner object, not the text.
+- Metrics nest one level deep, under `.result`. `jq '.duration_ms'`,
+  `jq '.num_turns'`, `jq '.cost_usd'` all return **`null`** at the top
+  level -- use `.result.duration_ms`, `.result.num_turns`,
+  `.result.total_cost_usd`.
+- The cost field is serialized as **`total_cost_usd`** (serde rename of
+  the internal `cost_usd`); `jq '.result.cost_usd'` is `null`.
+- `total_cost_usd` / `duration_ms` / `num_turns` are `Option` -- expect
+  `null` when the run or path didn't report them.
+- `version` and `refusal` are the only **top-level** fields besides
+  `result`.
+
+Extraction example:
+
+```sh
+out=$(roba --json --quiet "what is the capital of France?")
+echo "$out" | jq -r '.result.result'
+echo "$out" | jq '{cost: .result.total_cost_usd, turns: .result.num_turns, refused: .refusal}'
+```
 
 On a runtime error, the envelope goes to **stderr** (stdout stays empty):
 
@@ -63,13 +102,17 @@ On a runtime error, the envelope goes to **stderr** (stdout stays empty):
     "kind": "auth",
     "message": "claude -p exited with 1: not logged in",
     "exit_code": 2,
-    "chain": ["top context", "root cause"]
+    "chain": ["top context", "root cause"],
+    "see_also": ["https://docs.example/page"]
   }
 }
 ```
 
 `kind` values: `"auth"` (exit 2), `"budget"` (3), `"timeout"` (4),
-`"history"` (1), `"other"` (1).
+`"history"` (1), `"other"` (1). `exit_code` mirrors the process exit
+code. `chain` lists the anyhow context layers, top (most recent) to root
+(underlying cause). `see_also` is an optional list of doc URLs --
+**omitted entirely when empty**, so don't assume the key is present.
 
 Version 1 contract: `version` is always present; `result` and `error`
 are mutually exclusive; new fields may be added additively without
