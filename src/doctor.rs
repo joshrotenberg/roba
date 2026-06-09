@@ -81,23 +81,33 @@ fn check_claude() -> Status {
     }
 }
 
-/// Is `ANTHROPIC_API_KEY` set? PASS if so. WARN otherwise -- OAuth /
-/// keychain auth can't be verified without a real call, and that path
-/// may well be working; the key only matters for `--bare`.
+/// Is `ANTHROPIC_API_KEY` set? PASS if so. Otherwise WARN -- but the
+/// wording is deliberately *informational*, not alarming: a missing key
+/// is the normal, expected state for OAuth/subscription auth (roba's
+/// default), which can't be verified here without a real call. Only
+/// `--bare` strictly needs the key. A nested operator reading this line
+/// must be able to tell "fine, OAuth" from "actually broken".
 fn check_auth() -> Status {
-    match std::env::var("ANTHROPIC_API_KEY") {
-        Ok(v) if !v.is_empty() => {
-            report(Status::Ok, "auth", "ANTHROPIC_API_KEY set");
-            Status::Ok
-        }
-        _ => {
-            report(
-                Status::Warn,
-                "auth",
-                "ANTHROPIC_API_KEY not set (OAuth/keychain not verifiable here; --bare needs the API key)",
-            );
-            Status::Warn
-        }
+    let key = std::env::var("ANTHROPIC_API_KEY").ok();
+    let (status, detail) = auth_status(key.as_deref());
+    report(status, "auth", &detail);
+    status
+}
+
+/// Decide the `auth` check's status and wording from the API-key value.
+/// Pure (no env read) so the wording/status can be unit-tested without
+/// touching process-global state. `key` is `Some` only when the env var
+/// is set to a non-empty value.
+fn auth_status(key: Option<&str>) -> (Status, String) {
+    match key {
+        Some(v) if !v.is_empty() => (Status::Ok, "ANTHROPIC_API_KEY set".to_string()),
+        _ => (
+            Status::Warn,
+            "ANTHROPIC_API_KEY not set -- normal for OAuth/subscription auth (roba's default), \
+             which can't be verified here; only --bare needs the key. If a real run fails with \
+             an auth error, run: claude /login"
+                .to_string(),
+        ),
     }
 }
 
@@ -254,6 +264,29 @@ mod tests {
         // A date far in the future relative to any plausible clock.
         let d = days_since("2999-01-01").expect("parses");
         assert!(d < 0, "future date should be negative, got {d}");
+    }
+
+    #[test]
+    fn auth_status_key_set_is_ok() {
+        let (status, detail) = auth_status(Some("sk-ant-xxx"));
+        assert_eq!(status, Status::Ok);
+        assert_eq!(detail, "ANTHROPIC_API_KEY set");
+    }
+
+    #[test]
+    fn auth_status_no_key_warns_informationally() {
+        // No key (None) and an empty key both take the OAuth-normal path.
+        for key in [None, Some("")] {
+            let (status, detail) = auth_status(key);
+            assert_eq!(status, Status::Warn, "missing key is a warn, not a fail");
+            // The wording must read as normal-for-OAuth, not broken, and
+            // point at the recovery path for a real auth failure.
+            assert!(detail.contains("normal for OAuth"), "detail: {detail}");
+            assert!(detail.contains("--bare"), "detail: {detail}");
+            assert!(detail.contains("claude /login"), "detail: {detail}");
+            // It must NOT read as a hard failure.
+            assert!(!detail.contains("[fail]"), "detail: {detail}");
+        }
     }
 
     #[test]
