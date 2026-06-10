@@ -1,5 +1,5 @@
 use clap::Parser;
-use roba::cli::{Cli, SubCommand};
+use roba::cli::{Cli, SubCommand, WorktreeCmd};
 use roba::render::Style;
 
 #[tokio::main]
@@ -43,6 +43,9 @@ fn wants_json(cli: &Cli) -> bool {
     match &cli.command {
         Some(SubCommand::History(args)) => args.json,
         Some(SubCommand::Cost(args)) => args.json,
+        Some(SubCommand::Worktree {
+            cmd: WorktreeCmd::List(args),
+        }) => args.json,
         _ => false,
     }
 }

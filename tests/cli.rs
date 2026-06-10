@@ -356,6 +356,75 @@ fn worktree_named_with_equals_parses() {
 }
 
 // ---------------------------------------------------------------------------
+// roba worktree list (shells to git, not claude)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn worktree_help_says_git_worktrees_not_claude() {
+    // The help text must be accurate: the output is a superset of
+    // claude's worktrees, so it describes "git worktrees", not
+    // "claude's worktrees".
+    roba()
+        .args(["worktree", "list", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("git worktree"));
+}
+
+#[test]
+fn worktree_list_json_lists_main_and_added() {
+    use std::process::Command as Git;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+
+    let git = |args: &[&str]| {
+        let ok = Git::new("git")
+            .current_dir(&repo)
+            .args(args)
+            .status()
+            .expect("run git")
+            .success();
+        assert!(ok, "git {args:?} failed");
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test"]);
+    std::fs::write(repo.join("f.txt"), "hi").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "init"]);
+
+    // Add a second worktree on a new branch.
+    let wt2 = tmp.path().join("wt2");
+    git(&[
+        "worktree",
+        "add",
+        "-q",
+        wt2.to_str().unwrap(),
+        "-b",
+        "feature",
+    ]);
+
+    // --json: a JSON array containing both worktrees.
+    let assert = roba()
+        .args(["worktree", "list", "--json", "-C", repo.to_str().unwrap()])
+        .assert()
+        .success();
+    let out = &assert.get_output().stdout;
+    let json: serde_json::Value = serde_json::from_slice(out).expect("valid JSON");
+    let arr = json.as_array().expect("JSON array");
+    assert_eq!(arr.len(), 2, "expected main + added worktree, got: {json}");
+
+    // The plain (human) form runs and exits 0.
+    roba()
+        .args(["worktree", "list", "-C", repo.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PATH"));
+}
+
+// ---------------------------------------------------------------------------
 // --agent
 // ---------------------------------------------------------------------------
 
