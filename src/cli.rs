@@ -457,6 +457,21 @@ pub struct HistoryArgs {
     /// Optional N limits to the N most recent sessions. Implies --quiet.
     #[arg(long, value_name = "N", num_args = 0..=1, require_equals = false)]
     pub paths: Option<Option<usize>>,
+
+    /// Only show sessions that ran in a given git worktree.
+    ///
+    /// Matches sessions whose working directory is under
+    /// `.claude/worktrees/<NAME>` -- the runner-worktree convention that
+    /// `roba worktree list` enumerates. Use it to find a dispatched
+    /// runner's session to `-c` / `--resume`.
+    ///
+    /// Worktree sessions live under their own project slug (distinct from
+    /// the base repo's), so this implies a cross-project scan and is
+    /// orthogonal to `--project` (when both are given, `--worktree` wins).
+    /// Only the most recent sessions are scanned; a note is printed if
+    /// that scan cap is reached.
+    #[arg(long, value_name = "NAME")]
+    pub worktree: Option<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -1652,6 +1667,18 @@ mod tests {
         use clap::Parser;
         let cli = Cli::try_parse_from(["roba", "show", "abc-123", "-C", "/some/repo"]).unwrap();
         assert_eq!(cli.cwd.as_deref(), Some(std::path::Path::new("/some/repo")));
+    }
+
+    #[test]
+    fn history_worktree_filter_parses() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "history", "--worktree", "agent-abc123"]).unwrap();
+        match cli.command {
+            Some(SubCommand::History(args)) => {
+                assert_eq!(args.worktree.as_deref(), Some("agent-abc123"));
+            }
+            other => panic!("expected history --worktree, got {other:?}"),
+        }
     }
 
     #[test]
