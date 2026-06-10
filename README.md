@@ -30,7 +30,7 @@ $ roba "summarize the rust ownership model in 3 bullets"
      • When the owner goes out of scope, the value is dropped.
      • Borrows are either many immutable or one mutable.
 
-tokens 1.2k/450 · 2.0s · session abc12345
+tokens 1.2k/450 . $0.0042 . 2.0s . session abc12345
 ```
 
 ## Install
@@ -131,7 +131,7 @@ a server config file:
 
 ```bash
 roba --mcp-config mcp.json "..."                  # add those servers' tools
-roba --mcp-config mcp.json --strict-mcp-config .. # use ONLY those servers
+roba --mcp-config mcp.json --strict-mcp-config "..." # use ONLY those servers
 ```
 
 `--mcp-config` (repeatable) passes through to claude's `--mcp-config`:

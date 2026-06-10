@@ -22,7 +22,7 @@ const STYLES: Styles = Styles::styled()
 const AFTER_HELP: &str = "\
 Examples:
   roba \"explain the borrow checker in 3 bullets\"       one-shot question
-  cat err.log | roba \"what's wrong here?\"              pipe stdin
+  roba --prepend err.log \"what's wrong here?\"          feed a file as context
   roba --attach 'src/**/*.rs' \"audit error handling\"   attach files
   roba -c -p \"now add a test for that\"                 continue the last session
   roba --writable \"rename foo to bar in src/\"          let claude edit files
@@ -35,7 +35,7 @@ Full flag detail, env vars, and roba.toml config: roba --help";
 const AFTER_LONG_HELP: &str = "\
 Examples -- for humans (interactive, rich TTY):
   roba \"explain the borrow checker in 3 bullets\"      one-shot question
-  cat err.log | roba \"what's wrong here?\"             pipe a file in
+  roba --prepend err.log \"what's wrong here?\"         feed a file as context
   roba --attach 'src/**/*.rs' \"audit error handling\"  attach files as context
   roba -e                                             compose in $EDITOR
   roba -c -p \"now add a test for that\"                continue the last session
@@ -49,7 +49,8 @@ Examples -- for agents & scripts (deterministic, pipe-clean):
 
 Dispatch modes (firing roba as an unattended worker):
   --full-auto -C <dir> -f <file>   edit the current checkout in place; the
-                                   orchestrator owns the branch and PR
+                                   orchestrator owns the branch and PR (-C
+                                   chdirs first, so -f resolves inside <dir>)
   ...add --worktree                run in an isolated git worktree, for
                                    parallel same-repo workers that must not
                                    share a branch
