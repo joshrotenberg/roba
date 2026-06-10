@@ -1497,6 +1497,80 @@ fn show_not_found_errors_cleanly() {
 }
 
 // ---------------------------------------------------------------------------
+// roba history --worktree (read-only worktree filter) -- closes #218
+// ---------------------------------------------------------------------------
+
+/// Seed two sessions in distinct project dirs: one whose user-entry cwd
+/// is inside `.claude/worktrees/foo`, and one in the base repo. The
+/// `--worktree` filter discriminates purely on the cwd, regardless of
+/// project slug. Returns the home tempdir.
+fn home_with_worktree_sessions() -> tempfile::TempDir {
+    let home = tempfile::tempdir().expect("home");
+
+    // Session that ran inside .claude/worktrees/foo.
+    let wt_proj = home
+        .path()
+        .join(".claude/projects/-repo--claude-worktrees-foo");
+    std::fs::create_dir_all(&wt_proj).expect("mkdir worktree proj");
+    let wt_user = r#"{"type":"user","timestamp":"2026-06-01T10:00:00.000Z","cwd":"/repo/.claude/worktrees/foo","message":{"content":"hi"}}"#;
+    let wt_assistant = r#"{"type":"assistant","timestamp":"2026-06-01T10:00:01.000Z","message":{"content":[{"type":"text","text":"in worktree"}]}}"#;
+    std::fs::write(
+        wt_proj.join("wt-sess.jsonl"),
+        format!("{wt_user}\n{wt_assistant}\n"),
+    )
+    .expect("write worktree session");
+
+    // Session that ran in the base repo (no worktree).
+    let base_proj = home.path().join(".claude/projects/-repo");
+    std::fs::create_dir_all(&base_proj).expect("mkdir base proj");
+    let base_user = r#"{"type":"user","timestamp":"2026-06-02T10:00:00.000Z","cwd":"/repo","message":{"content":"hi"}}"#;
+    let base_assistant = r#"{"type":"assistant","timestamp":"2026-06-02T10:00:01.000Z","message":{"content":[{"type":"text","text":"in base"}]}}"#;
+    std::fs::write(
+        base_proj.join("base-sess.jsonl"),
+        format!("{base_user}\n{base_assistant}\n"),
+    )
+    .expect("write base session");
+
+    home
+}
+
+#[test]
+fn history_worktree_filter_returns_only_matching() {
+    let home = home_with_worktree_sessions();
+    let out = roba()
+        .args(["history", "--worktree", "foo", "--json"])
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("stdout is JSON");
+    let arr = v.as_array().expect("array of sessions");
+    assert_eq!(arr.len(), 1, "only the worktree session should match");
+    assert_eq!(arr[0]["session_id"], "wt-sess");
+}
+
+#[test]
+fn history_worktree_filter_no_match_is_clean_empty() {
+    let home = home_with_worktree_sessions();
+    let out = roba()
+        .args(["history", "--worktree", "nope", "--json"])
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("stdout is JSON");
+    assert_eq!(
+        v.as_array().expect("array of sessions").len(),
+        0,
+        "no session matches an unknown worktree"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // --no-agent-check / agent frontmatter permission check (#123)
 // ---------------------------------------------------------------------------
 
