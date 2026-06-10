@@ -13,6 +13,7 @@ use std::io::IsTerminal;
 pub mod agent_check;
 pub mod aliases;
 pub mod cli;
+pub mod config;
 pub mod cost;
 pub mod doctor;
 pub mod draft;
@@ -71,6 +72,11 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Some(SubCommand::Alias { action }) => match action {
             crate::cli::AliasAction::Draft(args) => aliases::run_draft(args).await,
             other => aliases::run(other),
+        },
+        // `config init` makes one claude call (with a read-only window
+        // onto the project), so it is async like the draft verbs.
+        Some(SubCommand::Config { cmd }) => match cmd {
+            crate::cli::ConfigCmd::Init(args) => config::run_init(args).await,
         },
         // Read-only inspection of the repo's git worktrees. Shells to
         // `git worktree list` via claude-wrapper; no claude call.
