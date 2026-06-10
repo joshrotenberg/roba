@@ -22,6 +22,14 @@ pub struct Style {
     pub spinner: bool,
 }
 
+/// Whether the live-call spinner should draw. Pure predicate so it can
+/// be tested without a real TTY. The spinner is suppressed by `--plain`,
+/// `--quiet` (per its answer-only contract), `--stream` (tokens are
+/// already arriving), or a non-TTY stderr.
+fn spinner_enabled(plain: bool, quiet: bool, stream: bool, stderr_tty: bool) -> bool {
+    !plain && !quiet && !stream && stderr_tty
+}
+
 impl Style {
     /// Resolve from CLI args + environment + TTY detection.
     pub fn detect(args: &AskArgs) -> Self {
@@ -44,9 +52,10 @@ impl Style {
         let color = !plain && stdout_tty && !no_color;
 
         // Spinner draws on stderr. Skip in --stream (tokens are
-        // already arriving), --plain, or when stderr isn't a TTY
-        // (e.g. captured for logging).
-        let spinner = !plain && stderr_tty && !args.stream;
+        // already arriving), --plain, --quiet (its contract suppresses
+        // the spinner), or when stderr isn't a TTY (e.g. captured for
+        // logging).
+        let spinner = spinner_enabled(plain, args.quiet, args.stream, stderr_tty);
 
         Self {
             render_markdown,
@@ -212,4 +221,32 @@ pub fn spinner() -> indicatif::ProgressBar {
         indicatif::ProgressStyle::with_template("{spinner} {elapsed}").expect("static template"),
     );
     pb
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spinner_enabled;
+
+    // --quiet suppresses the spinner even on an interactive,
+    // non-stream stderr -- matching its answer-only contract and the
+    // behavior --plain already has. Regression guard for #282.
+    #[test]
+    fn quiet_suppresses_spinner_on_tty() {
+        let plain = false;
+        let quiet = true;
+        let stream = false;
+        let stderr_tty = true;
+        assert!(!spinner_enabled(plain, quiet, stream, stderr_tty));
+    }
+
+    // Don't over-suppress: a non-quiet, non-plain, non-stream call on
+    // an interactive stderr still draws the spinner.
+    #[test]
+    fn non_quiet_tty_non_stream_draws_spinner() {
+        let plain = false;
+        let quiet = false;
+        let stream = false;
+        let stderr_tty = true;
+        assert!(spinner_enabled(plain, quiet, stream, stderr_tty));
+    }
 }
