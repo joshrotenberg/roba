@@ -75,7 +75,12 @@ when you want any of:
 - **Read-only inspection.** `roba worktree list` enumerates the git
   worktrees for the repo (all of them -- a superset of the ones claude's
   `--worktree` creates), with `--json` for scripts. Lists only; roba
-  never creates, prunes, or removes worktrees.
+  never creates, prunes, or removes worktrees. `roba show <SESSION_ID>`
+  prints a stored session's result, reconstructed from its on-disk JSONL
+  (the answer plus a `--json` envelope and an optional `--metrics`
+  breakdown). The envelope is reconstructed, not replayed: it matches a
+  live `roba --json` in shape but `duration_ms` is always null and
+  `cost_usd` / `num_turns` are derived from the log.
 - **A real ABI.** Typed exit codes, a versioned `--json` envelope, and a
   clean stream split -- so a script or agent can pin a contract instead
   of scraping prose. (See [For agents & scripts](#for-agents--scripts).)

@@ -24,6 +24,7 @@ pub mod prompt;
 pub mod rates;
 pub mod render;
 pub mod session;
+pub mod show;
 pub mod stream;
 pub mod worktree;
 
@@ -62,6 +63,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         // Read-only inspection of the repo's git worktrees. Shells to
         // `git worktree list` via claude-wrapper; no claude call.
         Some(SubCommand::Worktree { cmd }) => worktree::run(cmd),
+        // Read-only result handle: reconstruct a stored session's result
+        // from its on-disk JSONL. No claude call.
+        Some(SubCommand::Show(args)) => show::run(&args),
         // Pure generator: print the completion script and exit. No
         // claude call, no prompt resolution.
         Some(SubCommand::Completions { shell }) => {
@@ -99,15 +103,19 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
 /// contract); `result` holds the wrapper's `QueryResult` shape
 /// verbatim. Mirrors the error envelope's `version` + `error` layout
 /// so success and failure are structurally consistent.
+///
+/// `pub(crate)` so `roba show` (the reconstructed-envelope path in
+/// [`crate::show`]) emits the byte-identical envelope shape instead of
+/// re-deriving it.
 #[derive(serde::Serialize)]
-struct SuccessEnvelope<'a> {
-    version: u32,
-    result: &'a claude_wrapper::types::QueryResult,
+pub(crate) struct SuccessEnvelope<'a> {
+    pub(crate) version: u32,
+    pub(crate) result: &'a claude_wrapper::types::QueryResult,
     /// True when [`crate::output::looks_like_refusal`] matched the
     /// response body. Lets non-TTY consumers (the ones that never see
     /// the human-facing footer warning) branch on "got an answer" vs
     /// "got refused" without parsing the body text. Additive v1 field.
-    refusal: bool,
+    pub(crate) refusal: bool,
 }
 
 /// Default action: resolve a prompt, send it through claude, render

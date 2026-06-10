@@ -351,6 +351,48 @@ fn live_session_id_assigns() {
 
 #[test]
 #[ignore]
+fn live_show_roundtrips() {
+    // Create a session, capture its id, then `roba show` it back and
+    // assert the reconstructed envelope roundtrips: same session id, a
+    // non-empty result. Mechanics, not model compliance.
+    let dir = fresh_dir();
+    let seed = roba_in(dir.path())
+        .args(["--json", "respond with the single word: echo"])
+        .output()
+        .expect("run roba --json");
+    assert!(seed.status.success(), "seed failed: {seed:?}");
+    let seed_json: serde_json::Value =
+        serde_json::from_slice(&seed.stdout).expect("seed stdout is JSON");
+    let id = seed_json["result"]["session_id"]
+        .as_str()
+        .expect("session_id");
+
+    // `show` finds the session by id across all projects, so it does not
+    // need `-C`; use a plain binary invocation against the real $HOME.
+    let out = Command::cargo_bin("roba")
+        .expect("cargo-built roba binary")
+        .args(["show", id, "--json"])
+        .output()
+        .expect("run roba show");
+    assert!(out.status.success(), "show failed: {out:?}");
+    let shown: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("show stdout is JSON");
+    assert_eq!(
+        shown["result"]["session_id"].as_str(),
+        Some(id),
+        "session id must roundtrip"
+    );
+    assert!(
+        !shown["result"]["result"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "reconstructed result must be non-empty"
+    );
+}
+
+#[test]
+#[ignore]
 fn live_json_schema_accepted() {
     // --json-schema constrains structured output. Assert MECHANICS only:
     // the flag is accepted, the run completes, and the --json envelope
