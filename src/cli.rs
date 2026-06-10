@@ -1161,6 +1161,9 @@ pub struct AskArgs {
     /// Layer per `deny_tool` entry (parallel-indexed to `deny_tool`).
     #[clap(skip)]
     pub deny_tool_sources: Vec<String>,
+    /// Layer per `add_dir` entry (parallel-indexed to `add_dir`).
+    #[clap(skip)]
+    pub add_dir_sources: Vec<String>,
     /// Layer that set `permission_mode`.
     #[clap(skip)]
     pub permission_mode_source: Option<String>,

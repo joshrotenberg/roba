@@ -245,6 +245,7 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     if args.add_dir.is_empty() {
         let dirs = read_list(env, "ROBA_ADD_DIR");
         if !dirs.is_empty() {
+            args.add_dir_sources = vec!["env".to_string(); dirs.len()];
             args.add_dir = dirs;
         }
     }
@@ -367,6 +368,9 @@ fn tag_cli_sources(args: &mut AskArgs) {
     }
     if !args.deny_tool.is_empty() && args.deny_tool_sources.is_empty() {
         args.deny_tool_sources = vec!["CLI".to_string(); args.deny_tool.len()];
+    }
+    if !args.add_dir.is_empty() && args.add_dir_sources.is_empty() {
+        args.add_dir_sources = vec!["CLI".to_string(); args.add_dir.len()];
     }
     if args.permission_mode.is_some() && args.permission_mode_source.is_none() {
         args.permission_mode_source = Some("CLI".to_string());
