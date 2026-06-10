@@ -51,12 +51,40 @@ use serde::{Deserialize, Serialize};
 use crate::cli::{AliasAction, AliasDraftArgs, AskArgs};
 use crate::profile::{self, Pool};
 
-/// Built-in subcommand names. A user alias matching one of these is
-/// shadowed (the built-in wins); [`profile::load_pool`] warns when it
-/// loads such an alias.
-pub const BUILTIN_SUBCOMMANDS: &[&str] = &[
-    "history", "last", "profile", "cost", "skill", "agent", "alias", "help",
-];
+/// Built-in subcommand names, **derived from the clap command tree** so
+/// the set can never drift from the real dispatch table. A user alias
+/// matching one of these is shadowed (the built-in wins);
+/// [`profile::load_pool`] warns when it loads such an alias.
+///
+/// The set is every real [`crate::cli::SubCommand`] variant clap exposes
+/// (via `get_subcommands()`), each subcommand's visible aliases (if any),
+/// plus clap's implicit `help` subcommand. The `external_subcommand`
+/// catch-all (the very mechanism that dispatches user aliases) has no
+/// fixed name and is intentionally absent. Computed once and cached.
+pub fn builtin_subcommands() -> &'static [String] {
+    use clap::CommandFactory;
+    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        let cmd = crate::cli::Cli::command();
+        let mut names: Vec<String> = Vec::new();
+        for sub in cmd.get_subcommands() {
+            names.push(sub.get_name().to_string());
+            names.extend(sub.get_visible_aliases().map(str::to_string));
+        }
+        // clap synthesizes a `help` subcommand; it is not a `SubCommand`
+        // variant, so add it explicitly.
+        names.push("help".to_string());
+        names.sort();
+        names.dedup();
+        names
+    })
+}
+
+/// True if `name` collides with a built-in subcommand (see
+/// [`builtin_subcommands`]).
+pub fn is_builtin_subcommand(name: &str) -> bool {
+    builtin_subcommands().iter().any(|n| n == name)
+}
 
 /// One `[alias.NAME]` section.
 ///
@@ -252,7 +280,7 @@ pub async fn run_draft(args: AliasDraftArgs) -> Result<()> {
     // 4. Normalize so stdout is canonical regardless of model formatting.
     let block = render_alias_toml(&name, &alias)?;
 
-    let is_builtin = BUILTIN_SUBCOMMANDS.contains(&name.as_str());
+    let is_builtin = is_builtin_subcommand(&name);
     match &args.write {
         Some(target) => {
             let path = match target {
@@ -641,7 +669,7 @@ fn preview_template(template: &str, schema: &[String]) -> String {
 /// Build the "no built-in or alias named X" error, with up to three
 /// close matches (built-ins + aliases) by Levenshtein distance.
 fn unknown_alias_message(name: &str, pool: &Pool) -> String {
-    let mut candidates: Vec<String> = BUILTIN_SUBCOMMANDS.iter().map(|s| s.to_string()).collect();
+    let mut candidates: Vec<String> = builtin_subcommands().to_vec();
     candidates.extend(pool.aliases.keys().cloned());
     let mut scored: Vec<(usize, String)> = candidates
         .into_iter()
@@ -902,8 +930,39 @@ mod tests {
 
     #[test]
     fn builtin_collision_is_detectable() {
-        assert!(BUILTIN_SUBCOMMANDS.contains(&"history"));
-        assert!(!BUILTIN_SUBCOMMANDS.contains(&"my-custom-verb"));
+        assert!(is_builtin_subcommand("history"));
+        assert!(!is_builtin_subcommand("my-custom-verb"));
+    }
+
+    #[test]
+    fn builtin_set_is_derived_from_the_clap_tree() {
+        // Future-proofing: every current SubCommand variant name (plus
+        // clap's synthesized `help`) must appear in the derived set, so
+        // the shadow-warning can never silently miss a real subcommand.
+        for name in [
+            "history",
+            "last",
+            "cost",
+            "profile",
+            "alias",
+            "doctor",
+            "completions",
+            "worktree",
+            "show",
+            "config",
+            "help",
+        ] {
+            assert!(
+                is_builtin_subcommand(name),
+                "derived builtin set is missing `{name}`"
+            );
+        }
+        // Regression for #268: `skill`/`agent` were removed as
+        // subcommands in #130 and must NOT shadow user aliases anymore;
+        // the `external_subcommand` catch-all has no fixed name.
+        assert!(!is_builtin_subcommand("skill"));
+        assert!(!is_builtin_subcommand("agent"));
+        assert!(!is_builtin_subcommand("external"));
     }
 
     #[test]

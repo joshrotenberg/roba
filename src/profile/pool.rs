@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use super::home_dir;
 use super::types::{ConfigFile, Pool, Profile};
-use crate::aliases::{Alias, BUILTIN_SUBCOMMANDS};
+use crate::aliases::{Alias, is_builtin_subcommand};
 
 // ---------------------------------------------------------------------------
 // Path discovery
@@ -169,17 +169,24 @@ pub fn load_pool_from(cwd: &Path) -> Result<Pool> {
 /// an alias is dead -- surface it instead of letting it silently
 /// no-op.
 fn warn_on_shadowed_aliases(pool: &Pool) {
-    let mut shadowed: Vec<&String> = pool
-        .aliases
-        .keys()
-        .filter(|n| BUILTIN_SUBCOMMANDS.contains(&n.as_str()))
-        .collect();
-    shadowed.sort();
-    for name in shadowed {
+    for name in shadowed_alias_names(pool) {
         eprintln!(
             "warning: alias `{name}` is shadowed by the built-in `{name}` subcommand; rename it to use this alias"
         );
     }
+}
+
+/// The (sorted) alias names in `pool` that collide with a built-in
+/// subcommand. Pure half of [`warn_on_shadowed_aliases`], split out so
+/// the shadow logic is unit-testable without capturing stderr.
+fn shadowed_alias_names(pool: &Pool) -> Vec<&String> {
+    let mut shadowed: Vec<&String> = pool
+        .aliases
+        .keys()
+        .filter(|n| is_builtin_subcommand(n))
+        .collect();
+    shadowed.sort();
+    shadowed
 }
 
 /// Convenience: load the pool keyed off the current cwd.
@@ -204,6 +211,29 @@ mod tests {
         let path = dir.join(rel);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, content).unwrap();
+    }
+
+    // -- Shadowed-alias detection ------------------------------------------
+
+    #[test]
+    fn shadowed_aliases_track_the_real_subcommand_set() {
+        let mut pool = Pool::default();
+        for name in ["show", "doctor", "skill", "agent", "my-verb"] {
+            pool.aliases.insert(name.to_string(), Alias::default());
+        }
+        let shadowed: Vec<&str> = shadowed_alias_names(&pool)
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        // Real subcommands shadow (regression: these were missing from the
+        // old hand-list, so they warned for nobody).
+        assert!(shadowed.contains(&"show"));
+        assert!(shadowed.contains(&"doctor"));
+        // #268: `skill`/`agent` were removed in #130 -- legal alias names
+        // again, no spurious warning. A genuine user verb never shadows.
+        assert!(!shadowed.contains(&"skill"));
+        assert!(!shadowed.contains(&"agent"));
+        assert!(!shadowed.contains(&"my-verb"));
     }
 
     // -- Discovery walk ----------------------------------------------------
