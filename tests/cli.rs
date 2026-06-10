@@ -251,6 +251,36 @@ fn prompt_flag_parses_and_fails_at_runtime_not_clap() {
 }
 
 #[test]
+fn json_schema_missing_file_errors_cleanly() {
+    // --json-schema PATH that doesn't exist: parse succeeds (it's a plain
+    // string flag), the failure is roba's runtime file-read error. Clean
+    // non-zero exit, no panic.
+    roba()
+        .args(["--json-schema", "/no/such/schema-file.json", "hi"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("reading --json-schema"));
+}
+
+#[test]
+fn json_schema_malformed_json_errors_cleanly() {
+    // A real file whose contents are not valid JSON fails through roba's
+    // error path (not a panic, not an opaque claude error).
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let schema = tmp.path().join("bad.json");
+    std::fs::write(&schema, "{ this is not json ").expect("write schema");
+    roba()
+        .args(["--json-schema"])
+        .arg(&schema)
+        .arg("hi")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("not valid JSON"));
+}
+
+#[test]
 fn continue_bare_parses() {
     // Bare `-c` followed by a flag (`--prepend`) stays the presence
     // form (Some(None)) -- clap does not consume a flag token as the

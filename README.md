@@ -163,6 +163,13 @@ than `claude -p`:
   `{ "version": 1, "result": { ... }, "refusal": bool }`. Failure:
   `{ "version": 1, "error": { kind, message, exit_code, chain } }`.
   Pin `version` and you've pinned the shape.
+- **Schema-validated output:** `--json-schema PATH` constrains the model's
+  output to a JSON Schema (claude's own `--json-schema`). roba takes a
+  path to a `.json` file, reads it, and inlines the contents (claude's
+  flag wants inline JSON; a path is the ergonomic sugar) -- a missing or
+  malformed file fails through the error envelope. The structured output
+  surfaces under `.result.*` in the `--json` envelope. roba's default path
+  already runs claude with JSON output, so just pair it with `--json`.
 - **Typed exit codes:** `0` ok, `1` generic, `2` auth, `3` budget,
   `4` timeout.
 - **`--no-retry`** surfaces transient failures immediately (the caller

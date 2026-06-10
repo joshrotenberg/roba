@@ -149,6 +149,21 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
             None => bail!("--fork requires `-c=ID`"),
         }
     }
+    // --json-schema names a PATH to a JSON Schema file. Resolve it here,
+    // after the full CLI > env > profile merge, by reading the file and
+    // replacing the value with its contents (claude's `--json-schema`
+    // takes inline JSON; the path is roba's ergonomic sugar). Validate
+    // the contents parse as JSON so a malformed schema fails via roba's
+    // error envelope instead of surfacing as an opaque claude error. Both
+    // the streaming and non-streaming paths read the resolved string from
+    // `args.json_schema`, so this single seam covers both.
+    if let Some(path) = args.json_schema.clone() {
+        let contents = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading --json-schema file `{path}`"))?;
+        serde_json::from_str::<serde_json::Value>(&contents)
+            .with_context(|| format!("--json-schema file `{path}` is not valid JSON"))?;
+        args.json_schema = Some(contents);
+    }
     ensure_interactive_for_flags(&args)?;
     if args.pick {
         let id = pick_session_interactive()?;
