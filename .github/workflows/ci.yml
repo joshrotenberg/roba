@@ -18,17 +18,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Pinned macos-14 instead of macos-latest: the current
-        # macos-latest image (aliased to macos-15) has a broken
-        # `rustup` -- it's actually the `rustup-init` bootstrap
-        # stub, which intercepts `cargo clippy` invocations
-        # (rustup-init treats `clippy` as an unknown CLI arg and
-        # exits 1). Revisit when GitHub fixes the macos-latest
-        # image.
-        os: [ubuntu-latest, macos-14, windows-latest]
+        # Re-checking macos-latest (aliased to macos-15): it
+        # previously shipped a broken `rustup` (the `rustup-init`
+        # bootstrap stub intercepted `cargo clippy` and exited 1),
+        # which forced a macos-14 pin. This run tests whether the
+        # upstream image is fixed; if the macOS clippy job is green,
+        # the pin is no longer needed (see #274).
+        os: [ubuntu-latest, macos-latest, windows-latest]
         rust: [stable, beta]
         exclude:
-          - os: macos-14
+          - os: macos-latest
             rust: beta
           - os: windows-latest
             rust: beta
