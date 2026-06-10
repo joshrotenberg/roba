@@ -13,8 +13,16 @@
 # resolves to the `claude-sonnet-4-6` entry.
 
 [meta]
-as_of = "2026-06-08"
+as_of = "2026-06-10"
 source = "https://platform.claude.com/docs/en/about-claude/pricing"
+
+# -- Fable -------------------------------------------------------------
+
+[models."claude-fable-5"]
+input = 10.00
+output = 50.00
+cache_read = 1.00
+cache_write = 12.50
 
 # -- Opus --------------------------------------------------------------
 
