@@ -133,6 +133,10 @@ git_status = true
 #   $(command)      shell substitution -- runs in YOUR shell (sh -c), stdout
 #                   interpolated. This is NOT sandboxed; don't put a command
 #                   you wouldn't run yourself. (Orthogonal to claude's perms.)
+#                   Args interpolated into a $(...) region are shell-quoted:
+#                   they are DATA, not shell code, so `roba review '1; rm -rf ~'`
+#                   runs `gh pr diff '1; rm -rf ~'` (one inert arg). Put shell
+#                   syntax in the template literal, not in an arg.
 #
 # `flags` merge BEFORE your CLI flags, so CLI wins (put extra flags after the
 # positional args: `roba review 42 --full-auto`). A template-less alias is a
