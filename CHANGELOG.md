@@ -14,6 +14,41 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-10
+
+### Added
+
+- unambiguous doctor auth + documented --json envelope schema (closes #214) ([#215](https://github.com/joshrotenberg/roba/pull/215))
+- add --session-id pass-through flag (refs #222, #37) ([#225](https://github.com/joshrotenberg/roba/pull/225))
+- add --max-turns + --max-budget-usd guardrail flags (refs #222) ([#226](https://github.com/joshrotenberg/roba/pull/226))
+- add --json-schema validated structured output (refs #222) ([#227](https://github.com/joshrotenberg/roba/pull/227))
+- add --mcp-config + --strict-mcp-config pass-through (refs #222) ([#228](https://github.com/joshrotenberg/roba/pull/228))
+- add --add-dir, --fallback-model, --no-session-persistence (refs #222) ([#229](https://github.com/joshrotenberg/roba/pull/229))
+- add roba worktree list read-only subcommand (closes #217) ([#230](https://github.com/joshrotenberg/roba/pull/230))
+- add roba show read-only result handle + --metrics (refs #220) ([#231](https://github.com/joshrotenberg/roba/pull/231))
+- add roba history --worktree filter (closes #218) ([#232](https://github.com/joshrotenberg/roba/pull/232))
+- uniform {version:1} --json envelope for cost/history/doctor (closes #221) ([#233](https://github.com/joshrotenberg/roba/pull/233)) (BREAKING)
+- add roba show --wait poll-until-complete (closes #220) ([#236](https://github.com/joshrotenberg/roba/pull/236))
+- merge piped stdin as context when a prompt is present (closes #242) ([#243](https://github.com/joshrotenberg/roba/pull/243))
+
+
+### Documentation
+
+- sharpen positioning to claude -p sugar; remove use-roba skill; add cost + worktree notes (closes #223, #224, #209) ([#234](https://github.com/joshrotenberg/roba/pull/234))
+- tighten README to a factual voice (cut fluff, anecdote, prose) ([#235](https://github.com/joshrotenberg/roba/pull/235))
+- README tables -- install options, vs claude -p, agents ABI (clearer scan) ([#239](https://github.com/joshrotenberg/roba/pull/239))
+- add contributor-facing AGENTS.md ([#240](https://github.com/joshrotenberg/roba/pull/240))
+- fix verified-example drift (footer illustration, placeholder quoting, stdin-dropping err.log example, -C/-f ordering note) ([#241](https://github.com/joshrotenberg/roba/pull/241))
+- pre-release help-audit fixes (22 edits incl. two behavior gates) ([#244](https://github.com/joshrotenberg/roba/pull/244))
+
+
+### Maintenance
+
+- re-verify bundled rates as of 2026-06-08 (prices unchanged) ([#207](https://github.com/joshrotenberg/roba/pull/207))
+- add claude-fable-5 to the bundled rate table (verified 2026-06-10) ([#237](https://github.com/joshrotenberg/roba/pull/237))
+
+
+
 ## [0.4.0] - 2026-06-08
 
 ### Added
