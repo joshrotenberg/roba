@@ -261,6 +261,45 @@ fn empty_piped_stdin_with_positional_still_composes() {
 }
 
 // ---------------------------------------------------------------------------
+// --detach guards (all fail before any spawn -- claude-free)
+// ---------------------------------------------------------------------------
+//
+// assert_cmd attaches a non-TTY stdin, so the `run_ask` detach branch trips
+// its input guards before reaching the claude preflight: a promptless call
+// hits the "needs a prompt" guard, a prompted call hits the "can't read
+// piped stdin" guard. Both must fail WITHOUT printing a handle on stdout --
+// that empty stdout is the proof that nothing was spawned. The preflight
+// gate (claude-missing) only runs once a real TTY is present, so it is
+// exercised by the live `live_detach_roundtrip` test, not here.
+
+#[test]
+fn detach_promptless_errors_without_spawning() {
+    // No prompt source at all: the detached child could never resolve a
+    // prompt, so roba refuses up front. No handle on stdout.
+    roba()
+        .arg("--detach")
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("explicit prompt"));
+}
+
+#[test]
+fn detach_piped_stdin_errors_without_spawning() {
+    // A prompt is present, but stdin is a (non-TTY) pipe -- the detached
+    // child's stdin is /dev/null, so the piped input would vanish. roba
+    // rejects it and prints NO handle (proving no spawn happened).
+    roba()
+        .arg("--detach")
+        .arg("say ok")
+        .write_stdin("piped context that would be lost\n")
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("piped stdin"));
+}
+
+// ---------------------------------------------------------------------------
 // conflict matrix (clap rejects with exit 2 by convention)
 // ---------------------------------------------------------------------------
 

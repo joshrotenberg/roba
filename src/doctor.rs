@@ -103,6 +103,15 @@ fn overall_status(checks: &[Check]) -> Status {
     }
 }
 
+/// Does the `claude` binary resolve and run? Runs `claude --version` and
+/// reports whether it succeeded. This is the same probe [`check_claude`]
+/// uses for its `[ok]`/`[fail]` line; `--detach` reuses it as a preflight
+/// so it never spawns a detached child behind a printed handle when claude
+/// is missing (a dead-on-arrival run is just silence).
+pub(crate) fn claude_on_path() -> bool {
+    matches!(Command::new("claude").arg("--version").output(), Ok(out) if out.status.success())
+}
+
 /// Is `claude` on PATH and runnable? PASS with the reported version,
 /// FAIL if the binary can't be found or run.
 fn check_claude() -> Check {

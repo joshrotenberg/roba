@@ -34,6 +34,9 @@ tempfile = "3"
 termimad = "0.34"
 toml = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# v4 UUID minting for `--detach` (client-side session handle). Minimal
+# features: just the v4 generator, no serde / no formatting extras.
+uuid = { version = "1", default-features = false, features = ["v4"] }
 
 [dev-dependencies]
 assert_cmd = "2"
