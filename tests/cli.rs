@@ -284,6 +284,8 @@ fn detach_promptless_errors_without_spawning() {
 }
 
 #[test]
+#[cfg(unix)] // the piped-data stdin gate is unix-only by design;
+// windows proceeds to the preflight (documented in src/detach.rs)
 fn detach_piped_stdin_errors_without_spawning() {
     // A prompt is present, but stdin is a (non-TTY) pipe -- the detached
     // child's stdin is /dev/null, so the piped input would vanish. roba
