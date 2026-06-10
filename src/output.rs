@@ -96,7 +96,7 @@ pub fn extract_code_blocks(text: &str, lang_filter: Option<&str>) -> String {
 /// `model_override` is the resolved `--model` (after env/profile merge),
 /// used as a fallback when claude's `modelUsage` is absent; `effort` is
 /// the resolved client-side effort label, appended only when a model is
-/// shown. See [`format_model_segment`].
+/// shown. See `format_model_segment`.
 pub fn format_footer(
     r: &QueryResult,
     rates: Option<&crate::rates::Rates>,
