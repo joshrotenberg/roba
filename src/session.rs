@@ -69,6 +69,12 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
         // `max_attempts(1)` means "no retries."
         cmd = cmd.retry(RetryPolicy::new().max_attempts(1));
     }
+    if let Some(n) = args.max_turns {
+        cmd = cmd.max_turns(n);
+    }
+    if let Some(v) = args.max_budget_usd {
+        cmd = cmd.max_budget_usd(v);
+    }
     if args.bare {
         cmd = cmd.bare();
     }

@@ -886,6 +886,41 @@ fn session_id_parses_with_show_permissions() {
 }
 
 #[test]
+fn limits_flags_parse_and_accept() {
+    // --max-turns + --max-budget-usd parse cleanly alongside a real
+    // prompt. Pair with --show-permissions so the run short-circuits
+    // before any claude call: a clean exit proves both flags parse and
+    // compose without conflict.
+    roba()
+        .args([
+            "foo",
+            "--max-turns",
+            "5",
+            "--max-budget-usd",
+            "10.0",
+            "--show-permissions",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn max_turns_rejects_non_numeric_value() {
+    roba()
+        .args(["foo", "--max-turns", "abc"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn max_budget_usd_rejects_non_numeric_value() {
+    roba()
+        .args(["foo", "--max-budget-usd", "lots"])
+        .assert()
+        .failure();
+}
+
+#[test]
 fn editor_without_tty_fails_fast() {
     // assert_cmd's write_stdin attaches a pipe to stdin, so stdin
     // is not a TTY. -e must error early with the canonical message.
