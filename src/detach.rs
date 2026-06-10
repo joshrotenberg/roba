@@ -9,8 +9,12 @@
 //!
 //! The flow ([`run_detached`]):
 //! 1. Require an explicit prompt source -- the child can't read this
-//!    process's stdin (it's redirected to /dev/null), so a promptless or
-//!    piped-stdin invocation would fail into the void. Reject both up front.
+//!    process's stdin (it's redirected to /dev/null), so a promptless
+//!    invocation would fail into the void. Reject it up front, then reject
+//!    only stdin that carries data we'd lose (a pipe with bytes, a non-empty
+//!    `< file` redirect) -- NOT a benign non-TTY caller (a closed/EOF pipe,
+//!    /dev/null), so an orchestrator firing `roba --detach -f task.md`
+//!    without a TTY is not blocked. See `stdin_would_lose_data`.
 //! 2. Preflight the claude binary (reusing `doctor`'s check) so a
 //!    dead-on-arrival child behind a printed handle is an error, not silence.
 //! 3. Resolve the handle: a caller-supplied `--session-id` / `-c=ID` /
@@ -46,18 +50,20 @@ pub fn run_detached(args: &AskArgs) -> Result<()> {
         );
     }
 
-    // (1, cont.) Piped-stdin guard. The child's stdin is /dev/null, so any
-    // piped input would silently vanish. A non-TTY stdin is the signal that
-    // input may be piped; reject it and point at the file-based sources the
-    // child CAN read.
-    {
-        use std::io::IsTerminal;
-        if !std::io::stdin().is_terminal() {
-            bail!(
-                "--detach cannot read piped stdin (the detached run's stdin is /dev/null); \
-                 pass the input with -f or --prepend instead"
-            );
-        }
+    // (1, cont.) Piped-DATA guard. The child's stdin is /dev/null, so real
+    // input on this process's stdin would silently vanish. Block exactly
+    // that -- bytes we'd lose -- while letting benign non-TTY stdin through
+    // (a closed/EOF pipe, /dev/null, an agent's null stdin), so an
+    // orchestrator can fire `roba --detach -f task.md` without a TTY. The
+    // data classification is unix-only (see `stdin_would_lose_data`); other
+    // platforms proceed. An unexpected classification error proceeds rather
+    // than block a caller on a stat hiccup -- the common loss cases (a pipe
+    // with bytes, a non-empty redirect) classify cleanly.
+    if stdin_would_lose_data().unwrap_or(false) {
+        bail!(
+            "--detach cannot read piped stdin (the detached run's stdin is /dev/null); \
+             pass the input with -f or --prepend instead"
+        );
     }
 
     // (2) Preflight: the claude binary must resolve, or the detached child
@@ -173,6 +179,108 @@ where
 /// detached run, so the guardrails matter more, not less -- one nudge.
 fn rails_nudge_needed(args: &AskArgs) -> bool {
     args.max_turns.is_none() && args.max_budget_usd.is_none()
+}
+
+/// Would the detached run silently lose data on this process's stdin?
+///
+/// The detached child's stdin is `/dev/null`, so anything pending on THIS
+/// process's stdin can never reach it. We block exactly that -- real input
+/// we'd drop -- while letting benign non-TTY stdin through (a TTY, /dev/null,
+/// or a closed/EOF pipe from a spawner), so an orchestrator firing
+/// `roba --detach -f task.md` with a null stdin is not rejected.
+///
+/// Classification (unix), by `fstat` mode:
+/// - TTY                     -> `false` (interactive, nothing to lose)
+/// - regular file (`< file`) -> `true` iff the file has bytes
+/// - FIFO / pipe             -> poll (zero timeout) + one nonblocking 1-byte
+///   read: readable-with-a-byte -> `true`; clean EOF -> `false`;
+///   open-but-silent -> `true` (a writer exists; treat as data intent)
+/// - char device (/dev/null) / socket / anything else / closed fd -> `false`
+///
+/// The single byte is read ONLY on the `true` (we're about to error and exit)
+/// path, so the proceed path never consumes stdin. Unix-only; the
+/// `cfg(not(unix))` stub returns `false` (the data check is not yet
+/// implemented on Windows -- the child still gets a null stdin, we just don't
+/// detect input that would be lost).
+#[cfg(unix)]
+fn stdin_would_lose_data() -> std::io::Result<bool> {
+    use std::os::unix::io::AsRawFd;
+    fd_would_lose_data(std::io::stdin().as_raw_fd())
+}
+
+/// Classify an arbitrary fd for the data-loss check (the testable core of
+/// [`stdin_would_lose_data`]).
+#[cfg(unix)]
+fn fd_would_lose_data(fd: std::os::unix::io::RawFd) -> std::io::Result<bool> {
+    // A TTY is interactive -- there is nothing buffered to lose.
+    if unsafe { libc::isatty(fd) } == 1 {
+        return Ok(false);
+    }
+
+    // fstat to classify the fd.
+    // SAFETY: an all-zero `libc::stat` is a valid out-param for `fstat` to
+    // fill; we only read fields after a success return.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, &mut st) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    match st.st_mode & libc::S_IFMT {
+        // A `< file` redirect: data to lose iff the file is non-empty.
+        libc::S_IFREG => Ok(st.st_size > 0),
+        // A pipe: distinguish pending data from a closed/EOF pipe.
+        libc::S_IFIFO => fifo_has_pending_data(fd),
+        // Char device (/dev/null), socket, or anything else: nothing to lose.
+        _ => Ok(false),
+    }
+}
+
+/// Poll a FIFO fd (zero timeout) and, if readable, do one 1-byte read to tell
+/// pending data (`true`) from a closed/EOF pipe (`false`). An open pipe whose
+/// writer is silent (not readable yet) is treated as data intent (`true`): a
+/// writer exists and may send, and a detached child must not silently drop it.
+#[cfg(unix)]
+fn fifo_has_pending_data(fd: std::os::unix::io::RawFd) -> std::io::Result<bool> {
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // Zero timeout -> never blocks.
+    let n = unsafe { libc::poll(&mut pfd, 1, 0) };
+    if n < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if n == 0 {
+        // Not readable right now: an open pipe whose writer hasn't sent yet.
+        // Conservative -- treat as intent to send data we'd lose.
+        return Ok(true);
+    }
+    // Readable: real data or EOF (POLLHUP). poll guaranteed readiness, so a
+    // 1-byte read returns immediately (a byte, or 0 at EOF). The byte is
+    // consumed only here, on the about-to-error path.
+    let mut byte = [0u8; 1];
+    let r = unsafe { libc::read(fd, byte.as_mut_ptr() as *mut libc::c_void, 1) };
+    if r > 0 {
+        Ok(true) // real pending data the child would lose
+    } else if r == 0 {
+        Ok(false) // clean EOF -- a closed pipe, nothing to lose
+    } else {
+        // poll said readable but read would block / errored: no settled data.
+        // Don't block the caller on a transient (EAGAIN/EWOULDBLOCK -> ok).
+        let err = std::io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(e) if e == libc::EAGAIN || e == libc::EWOULDBLOCK => Ok(false),
+            _ => Err(err),
+        }
+    }
+}
+
+/// Windows stub: the piped-data classification is unix-only for now, so we
+/// never block here. The detached child still gets a null stdin; we simply
+/// don't yet detect piped input that would be lost.
+#[cfg(not(unix))]
+fn stdin_would_lose_data() -> std::io::Result<bool> {
+    Ok(false)
 }
 
 /// Put the spawned child in its own process group / detached session so it
@@ -384,5 +492,115 @@ mod tests {
     fn no_nudge_with_max_budget() {
         let args = ask(&["roba", "--detach", "--max-budget-usd", "5", "prompt"]);
         assert!(!rails_nudge_needed(&args));
+    }
+
+    // -- stdin data-loss classification (unix) -----------------------------
+
+    #[cfg(unix)]
+    mod data_loss {
+        use super::super::fd_would_lose_data;
+        use std::io::Write;
+        use std::os::unix::io::AsRawFd;
+
+        /// RAII pipe pair so a panicking assert still closes the fds.
+        struct Pipe {
+            read: libc::c_int,
+            write: libc::c_int,
+        }
+
+        impl Pipe {
+            fn new() -> Self {
+                let mut fds = [0 as libc::c_int; 2];
+                let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+                assert_eq!(rc, 0, "pipe() failed");
+                Pipe {
+                    read: fds[0],
+                    write: fds[1],
+                }
+            }
+
+            fn close_write(&mut self) {
+                if self.write >= 0 {
+                    unsafe { libc::close(self.write) };
+                    self.write = -1;
+                }
+            }
+        }
+
+        impl Drop for Pipe {
+            fn drop(&mut self) {
+                self.close_write();
+                if self.read >= 0 {
+                    unsafe { libc::close(self.read) };
+                }
+            }
+        }
+
+        #[test]
+        fn pipe_with_bytes_would_lose_data() {
+            let p = Pipe::new();
+            let wrote = unsafe { libc::write(p.write, b"x".as_ptr() as *const libc::c_void, 1) };
+            assert_eq!(wrote, 1);
+            assert!(
+                fd_would_lose_data(p.read).unwrap(),
+                "a pipe carrying a byte is data we'd lose"
+            );
+        }
+
+        #[test]
+        fn closed_pipe_eof_is_safe() {
+            // A spawner that opened then closed the child's stdin pipe with no
+            // data: the read end sees clean EOF -> nothing to lose -> proceed.
+            let mut p = Pipe::new();
+            p.close_write();
+            assert!(
+                !fd_would_lose_data(p.read).unwrap(),
+                "a closed/EOF pipe has nothing to lose"
+            );
+        }
+
+        #[test]
+        fn open_but_silent_pipe_is_data_intent() {
+            // Write end open, nothing sent yet: a writer exists and may send,
+            // so the conservative verdict is "data intent" -> block.
+            let p = Pipe::new();
+            assert!(
+                fd_would_lose_data(p.read).unwrap(),
+                "an open pipe with a live writer is treated as data intent"
+            );
+        }
+
+        #[test]
+        fn empty_file_redirect_is_safe() {
+            let f = tempfile::NamedTempFile::new().unwrap();
+            let fd = f.as_file().as_raw_fd();
+            assert!(
+                !fd_would_lose_data(fd).unwrap(),
+                "an empty `< file` redirect has nothing to lose"
+            );
+        }
+
+        #[test]
+        fn nonempty_file_redirect_would_lose_data() {
+            let mut f = tempfile::NamedTempFile::new().unwrap();
+            f.write_all(b"piped context\n").unwrap();
+            f.flush().unwrap();
+            let fd = f.as_file().as_raw_fd();
+            assert!(
+                fd_would_lose_data(fd).unwrap(),
+                "a non-empty `< file` redirect is data the child would lose"
+            );
+        }
+
+        #[test]
+        fn dev_null_is_safe() {
+            // /dev/null is a char device -- the canonical benign non-TTY
+            // stdin an agent supplies; must proceed.
+            let f = std::fs::File::open("/dev/null").unwrap();
+            assert!(
+                !fd_would_lose_data(f.as_raw_fd()).unwrap(),
+                "/dev/null is a char device with nothing to lose"
+            );
+        }
     }
 }

@@ -816,6 +816,7 @@ dependencies = [
  "dialoguer",
  "glob",
  "indicatif",
+ "libc",
  "predicates",
  "serde",
  "serde_json",

@@ -1012,10 +1012,13 @@ pub struct AskArgs {
     /// own session records.
     ///
     /// Requires an explicit prompt source (positional / `-p` / `-f`): the
-    /// detached child's stdin is /dev/null, so piped stdin is rejected (it
-    /// would silently vanish). roba also verifies the claude binary
-    /// resolves BEFORE detaching -- a dead-on-arrival child behind a
-    /// printed handle is just silence.
+    /// detached child's stdin is /dev/null, so stdin that carries data
+    /// (a pipe with bytes, a non-empty `< file` redirect) is rejected rather
+    /// than silently lost, while a benign non-TTY stdin (a closed/empty pipe
+    /// or /dev/null from an orchestrator) passes through; this data check is
+    /// unix-only for now. roba also verifies the claude binary resolves
+    /// BEFORE detaching -- a dead-on-arrival child behind a printed handle is
+    /// just silence.
     ///
     /// CLI-only by design: detaching is a deliberate per-invocation act, so
     /// there is no `ROBA_DETACH` env var and no profile key (same as `-e`

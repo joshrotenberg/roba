@@ -38,6 +38,12 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # features: just the v4 generator, no serde / no formatting extras.
 uuid = { version = "1", default-features = false, features = ["v4"] }
 
+# Unix-only: `--detach` classifies this process's stdin (fstat/poll/read) to
+# block input that the detached child -- whose stdin is /dev/null -- would
+# silently lose. See `stdin_would_lose_data` in src/detach.rs.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"

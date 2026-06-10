@@ -264,13 +264,12 @@ fn empty_piped_stdin_with_positional_still_composes() {
 // --detach guards (all fail before any spawn -- claude-free)
 // ---------------------------------------------------------------------------
 //
-// assert_cmd attaches a non-TTY stdin, so the `run_ask` detach branch trips
-// its input guards before reaching the claude preflight: a promptless call
-// hits the "needs a prompt" guard, a prompted call hits the "can't read
-// piped stdin" guard. Both must fail WITHOUT printing a handle on stdout --
-// that empty stdout is the proof that nothing was spawned. The preflight
-// gate (claude-missing) only runs once a real TTY is present, so it is
-// exercised by the live `live_detach_roundtrip` test, not here.
+// The detach branch runs three guards in order: promptless -> stdin
+// data-loss -> claude preflight. A promptless call hits the "needs a prompt"
+// guard; a call with real piped DATA hits the "can't read piped stdin" guard;
+// a benign non-TTY stdin (a closed/empty pipe, as an orchestrator supplies)
+// passes the data-loss gate and reaches the claude preflight. Every failure
+// here must leave stdout EMPTY -- that is the proof nothing was spawned.
 
 #[test]
 fn detach_promptless_errors_without_spawning() {
@@ -297,6 +296,32 @@ fn detach_piped_stdin_errors_without_spawning() {
         .failure()
         .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains("piped stdin"));
+}
+
+#[test]
+fn detach_benign_nontty_stdin_passes_gate() {
+    // A benign non-TTY stdin (here an empty/closed pipe, the shape an
+    // orchestrator firing `roba --detach -f task.md` supplies) carries no
+    // data, so the data-loss gate lets it through. With PATH cleared, the run
+    // proceeds PAST the stdin gate to the claude preflight and fails there --
+    // proving the gate no longer blocks non-TTY callers. The failure is the
+    // claude-missing error, NOT the stdin error, and stdout stays empty
+    // (no handle, no spawn).
+    //
+    // (A true `< file` redirect is not cleanly expressible via assert_cmd's
+    // pipe-based stdin; the regular-file empty/non-empty classification is
+    // covered by the `data_loss` unit tests in src/detach.rs.)
+    roba()
+        .env("PATH", "")
+        .arg("--detach")
+        .arg("-f")
+        .arg("Cargo.toml")
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("not found on PATH"))
+        .stderr(predicate::str::contains("piped stdin").not());
 }
 
 // ---------------------------------------------------------------------------
