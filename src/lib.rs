@@ -4,7 +4,7 @@
 //! the same code paths the binary uses. `main.rs` is just an entry
 //! that hands a parsed [`cli::Cli`] to [`dispatch`].
 //!
-//! See `cli-runner.md` at the repo root for the design brainstorm.
+//! See the README for positioning and the agent ABI.
 
 use anyhow::{Context, Result, bail};
 use claude_wrapper::{Claude, QueryCommand};
@@ -216,10 +216,10 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     agent_check::maybe_warn(&args, &cwd);
 
     // `-p / --prompt` is an explicit alternative to the positional
-    // prompt (clap enforces the mutual exclusion via conflicts_with).
-    // Whichever was supplied is the explicit prompt string; the rest of
-    // the precedence (stdin > editor > explicit > file > none) is
-    // unchanged.
+    // prompt (clap enforces the mutual exclusion via conflicts_with_all,
+    // also against `-f`/`-e`). Whichever was supplied is the explicit
+    // prompt string; the resolve order is editor > file > explicit (piped
+    // stdin becomes the prompt when none is given, otherwise context).
     let explicit_prompt = args.prompt_flag.as_deref().or(args.prompt.as_deref());
     let resolved = resolve_main_prompt(
         explicit_prompt,
