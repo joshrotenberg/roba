@@ -12,7 +12,7 @@ repository = "https://github.com/joshrotenberg/roba"
 homepage = "https://github.com/joshrotenberg/roba"
 documentation = "https://docs.rs/roba"
 readme = "README.md"
-description = "Single-prompt CLI runner built on claude-wrapper"
+description = "A sharp, focused sugaring of claude -p -- pipeable, composable, safe-by-default, session-re-enterable."
 keywords = ["claude", "cli", "ai", "llm", "anthropic"]
 categories = ["command-line-utilities"]
 
