@@ -14,6 +14,29 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-10
+
+### Added
+
+- footer model/effort segment + alias-list AGENT column polish (closes #250, closes #251) ([#252](https://github.com/joshrotenberg/roba/pull/252))
+- roba alias draft -- claude-assisted, parse-validated alias generation (closes #254) ([#257](https://github.com/joshrotenberg/roba/pull/257))
+- roba profile draft -- claude-assisted, parse-validated profile generation (closes #255) ([#259](https://github.com/joshrotenberg/roba/pull/259))
+- roba config init -- claude-assisted per-project roba.toml bootstrap (closes #256) ([#261](https://github.com/joshrotenberg/roba/pull/261))
+- --detach -- fire a run that survives the caller, print the handle (closes #260) ([#262](https://github.com/joshrotenberg/roba/pull/262))
+
+
+### Documentation
+
+- add roberview slide deck (snapshot @ v0.5.0) ([#253](https://github.com/joshrotenberg/roba/pull/253))
+- the survivable hand-off -- --detach + show --wait (closes #258) ([#263](https://github.com/joshrotenberg/roba/pull/263))
+
+
+### Fixed
+
+- substitute ${args} inside $(...) shell substitutions before running them (closes #247) ([#248](https://github.com/joshrotenberg/roba/pull/248))
+
+
+
 ## [0.5.0] - 2026-06-10
 
 ### Added
