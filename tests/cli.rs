@@ -211,6 +211,32 @@ fn dash_with_empty_stdin_errors() {
 }
 
 #[test]
+fn swallow_note_names_consumed_token_on_no_prompt() {
+    // `-c "two words"` lets the optional value swallow what was meant as the
+    // prompt, leaving nothing to run. The no-prompt error then names the
+    // consumed token so the failure explains itself (#285). Empty stdin keeps
+    // this off the TTY blurb path (assert_cmd stdin is a non-TTY pipe).
+    roba()
+        .args(["-c", "two words"])
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("-c consumed \"two words\""));
+}
+
+#[test]
+fn swallow_note_absent_for_bare_session_id_value() {
+    // A whitespace-free `-c` value is a plausible real session id, not a
+    // swallowed prompt -- the heuristic must NOT fire a note here.
+    roba()
+        .args(["-c", "abc123"])
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("consumed").not());
+}
+
+#[test]
 fn no_args_empty_stdin_non_tty_still_errors() {
     // assert_cmd attaches a pipe (non-TTY) to stdin, so this exercises
     // the UNCHANGED path: no positional + non-TTY stdin routes through
@@ -373,21 +399,25 @@ fn conflict_fresh_and_pick() {
     assert_conflict(&["foo", "--fresh", "--pick"]);
 }
 
+// A well-formed UUID, so the conflict check (not the value_parser) is what
+// rejects these invocations.
+const VALID_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
+
 #[test]
 fn conflict_session_id_and_continue() {
     // --session-id assigns a NEW session's id; -c=ID resumes an
     // existing one. clap rejects the combination at parse time.
-    assert_conflict(&["foo", "--session-id", "x", "-c=y"]);
+    assert_conflict(&["foo", "--session-id", VALID_UUID, "-c=y"]);
 }
 
 #[test]
 fn conflict_session_id_and_pick() {
-    assert_conflict(&["foo", "--session-id", "x", "--pick"]);
+    assert_conflict(&["foo", "--session-id", VALID_UUID, "--pick"]);
 }
 
 #[test]
 fn conflict_session_id_and_session() {
-    assert_conflict(&["foo", "--session-id", "x", "--session", "meta"]);
+    assert_conflict(&["foo", "--session-id", VALID_UUID, "--session", "meta"]);
 }
 
 #[test]
