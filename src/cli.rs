@@ -775,11 +775,12 @@ pub struct AskArgs {
     /// the ergonomic roba sugar). roba validates the file is parseable JSON
     /// and surfaces a clean error envelope if it is missing or malformed.
     ///
-    /// The validated structured output arrives as extra fields on claude's
-    /// result and surfaces under `.result.*` in roba's `--json` envelope.
-    /// roba's default (non-streaming) path already runs claude with
-    /// `--output-format json`, so no extra output flag is needed; pair with
-    /// `--json` to see the structured envelope on stdout. Composes with
+    /// The validated answer arrives as claude's `structured_output`. On the
+    /// default path roba renders it as pretty-printed JSON to stdout (it
+    /// stays pipeable -- `roba --json-schema s.json "..." | jq` sees the
+    /// object), since the textual result is empty when a schema is in play.
+    /// With `--json` the structured output nests under
+    /// `.result.structured_output` in the envelope instead. Composes with
     /// `--stream` (StreamJson is still a JSON format).
     #[arg(long, value_name = "PATH", help_heading = "Output")]
     pub json_schema: Option<String>,

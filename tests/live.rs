@@ -458,6 +458,41 @@ fn live_json_schema_accepted() {
     assert!(parsed.get("result").is_some());
 }
 
+#[test]
+#[ignore]
+fn live_json_schema_default_render() {
+    // --json-schema with NO --json: the validated answer lands in
+    // structured_output (the textual result is empty), and roba's default
+    // path renders it as pretty JSON on stdout instead of a blank line.
+    // Assert MECHANICS: stdout is non-empty and parses as a JSON object.
+    let dir = fresh_dir();
+    let schema_path = dir.path().join("schema.json");
+    std::fs::write(
+        &schema_path,
+        r#"{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}"#,
+    )
+    .expect("write schema");
+
+    let out = roba_in(dir.path())
+        .arg("--json-schema")
+        .arg(&schema_path)
+        .arg("capital of France?")
+        .output()
+        .expect("json-schema default run");
+
+    assert!(out.status.success(), "roba failed: {out:?}");
+    assert!(
+        !out.stdout.is_empty(),
+        "default path printed nothing; structured_output was dropped"
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("default path produced non-JSON stdout");
+    assert!(
+        parsed.get("answer").is_some(),
+        "structured output missing `answer` key: {parsed}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // streaming + tool use
 // ---------------------------------------------------------------------------
