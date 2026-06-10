@@ -50,6 +50,10 @@
 
 # --- Output / rendering ---
 # json  = true                    # structured --json envelope on stdout
+# json_schema = "schema.json"     # path to a JSON Schema; constrains structured
+#                                 #   output (claude --json-schema). roba reads the
+#                                 #   file and inlines it; output surfaces under
+#                                 #   .result.* in the --json envelope
 # quiet = true                    # suppress metadata (footer/spinner/markers)
 # plain = true                    # no markdown render / color / spinner
 # stream = true                   # live TTY progress (TTY only)

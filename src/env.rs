@@ -152,6 +152,16 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
         args.session_id = Some(s);
     }
 
+    // ROBA_JSON_SCHEMA mirrors `--json-schema PATH`: the path to a JSON
+    // Schema file. String flag, CLI wins. run_ask reads the path and
+    // inlines + validates the contents, so this layer just carries the
+    // path through.
+    if args.json_schema.is_none()
+        && let Some(s) = read_string(env, "ROBA_JSON_SCHEMA")
+    {
+        args.json_schema = Some(s);
+    }
+
     // ----- Permissions -----
     if args.permission_mode.is_none()
         && let Some(s) = read_string(env, "ROBA_PERMISSION_MODE")
@@ -595,6 +605,36 @@ mod tests {
         let mut args = empty_args();
         apply_env_overrides_from(&mut args, &env_with(&[("ROBA_SESSION_ID", "")]));
         assert!(args.session_id.is_none());
+    }
+
+    // -- json_schema -------------------------------------------------------
+
+    #[test]
+    fn env_json_schema_sets_from_roba_json_schema_var() {
+        let mut args = empty_args();
+        apply_env_overrides_from(
+            &mut args,
+            &env_with(&[("ROBA_JSON_SCHEMA", "/path/to/schema.json")]),
+        );
+        assert_eq!(args.json_schema.as_deref(), Some("/path/to/schema.json"));
+    }
+
+    #[test]
+    fn env_json_schema_does_not_override_cli() {
+        let mut args = empty_args();
+        args.json_schema = Some("/cli/schema.json".into());
+        apply_env_overrides_from(
+            &mut args,
+            &env_with(&[("ROBA_JSON_SCHEMA", "/env/schema.json")]),
+        );
+        assert_eq!(args.json_schema.as_deref(), Some("/cli/schema.json"));
+    }
+
+    #[test]
+    fn env_json_schema_ignores_empty() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_JSON_SCHEMA", "")]));
+        assert!(args.json_schema.is_none());
     }
 
     // -- usize -------------------------------------------------------------

@@ -75,6 +75,13 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     if let Some(v) = args.max_budget_usd {
         cmd = cmd.max_budget_usd(v);
     }
+    if let Some(schema) = &args.json_schema {
+        // By this point `args.json_schema` holds the inlined schema JSON
+        // (run_ask reads the PATH the flag named and replaces the value
+        // with the file contents). claude's `--json-schema` takes inline
+        // JSON, so pass it straight through.
+        cmd = cmd.json_schema(schema.clone());
+    }
     if args.bare {
         cmd = cmd.bare();
     }

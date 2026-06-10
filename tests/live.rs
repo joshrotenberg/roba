@@ -349,6 +349,36 @@ fn live_session_id_assigns() {
     );
 }
 
+#[test]
+#[ignore]
+fn live_json_schema_accepted() {
+    // --json-schema constrains structured output. Assert MECHANICS only:
+    // the flag is accepted, the run completes, and the --json envelope
+    // parses. We do NOT assert the model's output is schema-valid -- that
+    // is model compliance and flaky. roba reads the schema from a file
+    // and inlines it; a tiny valid JSON Schema keeps the run cheap.
+    let dir = fresh_dir();
+    let schema_path = dir.path().join("schema.json");
+    std::fs::write(
+        &schema_path,
+        r#"{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}"#,
+    )
+    .expect("write schema");
+
+    let out = roba_in(dir.path())
+        .args(["--json", "--json-schema"])
+        .arg(&schema_path)
+        .arg("respond with the single word: schema")
+        .output()
+        .expect("json-schema run");
+
+    assert!(out.status.success(), "roba failed: {out:?}");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("--json produced non-JSON stdout");
+    assert_eq!(parsed["version"].as_u64(), Some(1));
+    assert!(parsed.get("result").is_some());
+}
+
 // ---------------------------------------------------------------------------
 // streaming + tool use
 // ---------------------------------------------------------------------------
