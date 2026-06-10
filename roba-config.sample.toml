@@ -48,8 +48,6 @@
 # --- Sessions ---
 # continue = true                 # auto-continue the most recent session here
 #                                 #   (or continue = "session-id" for a specific one)
-# session_id = "..."              # assign a caller-chosen UUID to a new session
-#                                 #   (claude --session-id; rarely set in config)
 # worktree = true                 # run in a fresh git worktree
 # agent    = "reviewer"           # pin a claude-code subagent for the call
 # no_session_persistence = true   # run without writing a resumable session record

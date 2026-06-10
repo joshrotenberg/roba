@@ -276,11 +276,6 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     {
         args.append_system_prompt = Some(s);
     }
-    if args.session_id.is_none()
-        && let Some(s) = profile.session_id.take()
-    {
-        args.session_id = Some(s);
-    }
     if args.max_turns.is_none()
         && let Some(n) = profile.max_turns
     {
@@ -909,33 +904,6 @@ mod tests {
         };
         merge_into_args(&mut args, profile, "profile.test");
         assert_eq!(args.permission_mode, Some(PermMode::Auto));
-    }
-
-    #[test]
-    fn merge_session_id_applies_when_cli_unset() {
-        let mut args = empty_args();
-        assert!(args.session_id.is_none());
-        let profile = Profile {
-            session_id: Some("11111111-1111-4111-8111-111111111111".to_string()),
-            ..Default::default()
-        };
-        merge_into_args(&mut args, profile, "profile.test");
-        assert_eq!(
-            args.session_id.as_deref(),
-            Some("11111111-1111-4111-8111-111111111111")
-        );
-    }
-
-    #[test]
-    fn merge_session_id_cli_wins_over_profile() {
-        let mut args = empty_args();
-        args.session_id = Some("cli-uuid".to_string());
-        let profile = Profile {
-            session_id: Some("profile-uuid".to_string()),
-            ..Default::default()
-        };
-        merge_into_args(&mut args, profile, "profile.test");
-        assert_eq!(args.session_id.as_deref(), Some("cli-uuid"));
     }
 
     #[test]

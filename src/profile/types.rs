@@ -110,11 +110,6 @@ pub struct Profile {
     /// Append to the default system prompt (`--append-system-prompt`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub append_system_prompt: Option<String>,
-    /// Assign a caller-chosen session UUID (`--session-id`). Conflicts
-    /// with the session selectors at the CLI layer; passed through to
-    /// claude's own `--session-id`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
     /// Cap the agentic turn count (`--max-turns`). Unattended guardrail.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
@@ -225,7 +220,6 @@ impl Profile {
             && self.permission_mode.is_none()
             && self.system_prompt.is_none()
             && self.append_system_prompt.is_none()
-            && self.session_id.is_none()
             && self.max_turns.is_none()
             && self.max_budget_usd.is_none()
             && self.json_schema.is_none()
@@ -277,7 +271,6 @@ impl Profile {
             permission_mode,
             system_prompt,
             append_system_prompt,
-            session_id,
             max_turns,
             max_budget_usd,
             json_schema,
@@ -376,9 +369,6 @@ impl Profile {
         }
         if append_system_prompt.is_some() {
             self.append_system_prompt = append_system_prompt;
-        }
-        if session_id.is_some() {
-            self.session_id = session_id;
         }
         if max_turns.is_some() {
             self.max_turns = max_turns;
@@ -562,6 +552,23 @@ continue = "abc12345"
         assert_eq!(
             cfg.profile["persist"].continue_session,
             Some(ContinueSetting::Specific("abc12345".to_string()))
+        );
+    }
+
+    #[test]
+    fn profile_session_id_is_rejected_as_unknown_field() {
+        // session_id is per-invocation only (the --session-id CLI flag /
+        // ROBA_SESSION_ID env), never a profile/config default -- a config
+        // default would make every run on that profile resume the same
+        // session (closes #270). deny_unknown_fields must reject it.
+        let toml = r#"
+[profile.x]
+session_id = "11111111-1111-4111-8111-111111111111"
+"#;
+        let err = load_file_from_str(toml).unwrap_err().to_string();
+        assert!(
+            err.contains("session_id") || err.contains("unknown field"),
+            "expected an unknown-field error for session_id, got: {err}"
         );
     }
 
