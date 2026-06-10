@@ -2007,6 +2007,152 @@ fn agent_check_suppressed_by_full_auto() {
     );
 }
 
+#[test]
+fn agent_check_missing_tool_hint_leads_with_no_agent_check() {
+    // The missing-tools hint must lead with the acknowledge-the-constraint
+    // option (running an agent below its declared tools is often deliberate).
+    let project = project_with_bash_agent();
+    let user_home = tempfile::tempdir().expect("user home");
+
+    let out = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "--agent",
+            "test-agent",
+            "--prepend",
+            "/no/such/agent-check-hint-test",
+            "some prompt",
+        ])
+        .env("HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .output()
+        .expect("run");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("hint: intentional? --no-agent-check suppresses"),
+        "expected the constraint-acknowledging hint, got:\n{stderr}"
+    );
+}
+
+/// A project dir whose `.claude/agents/write-agent/AGENT.md` declares
+/// Edit + Write (the canonical stall hazard).
+fn project_with_write_agent() -> tempfile::TempDir {
+    make_dir_with_files(&[
+        (".git/HEAD", ""),
+        (
+            ".claude/agents/write-agent/AGENT.md",
+            "---\nname: Write Agent\ntools:\n  - Edit\n  - Write\n---\n# body\n",
+        ),
+    ])
+}
+
+#[test]
+fn agent_check_no_stall_warning_under_readonly() {
+    // #264 false-positive repro: a write-declaring agent run read-only. The
+    // write tools are unresolved, so the stall warning must NOT fire -- they
+    // surface in the missing-tools warning instead.
+    let project = project_with_write_agent();
+    let user_home = tempfile::tempdir().expect("user home");
+
+    let out = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "--agent",
+            "write-agent",
+            "--prepend",
+            "/no/such/agent-check-readonly-stall-test",
+            "some prompt",
+        ])
+        .env("HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .output()
+        .expect("run");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not in the resolved allowlist"),
+        "expected the missing-tools warning, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("dispatch will stall"),
+        "stall warning must NOT fire under read-only, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn agent_check_stall_warning_with_writable() {
+    // --writable resolves Edit/Write into the allowlist but sets no
+    // permission mode, so the first write stalls: the stall warning fires
+    // (and the missing-tools warning does not -- they are mutually exclusive).
+    let project = project_with_write_agent();
+    let user_home = tempfile::tempdir().expect("user home");
+
+    let out = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "--agent",
+            "write-agent",
+            "--writable",
+            "--prepend",
+            "/no/such/agent-check-writable-stall-test",
+            "some prompt",
+        ])
+        .env("HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .output()
+        .expect("run");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("dispatch will stall"),
+        "expected the stall warning under --writable + default mode, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--permission-mode acceptEdits"),
+        "expected the escalation-shaped stall hint, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("not in the resolved allowlist"),
+        "missing-tools warning must NOT fire when writes are resolved, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn agent_check_no_stall_warning_with_writable_accept_edits() {
+    // --writable resolves the write tools and accept-edits auto-approves
+    // them: no stall, no warning.
+    let project = project_with_write_agent();
+    let user_home = tempfile::tempdir().expect("user home");
+
+    let out = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "--agent",
+            "write-agent",
+            "--writable",
+            "--permission-mode",
+            "accept-edits",
+            "--prepend",
+            "/no/such/agent-check-acceptedits-test",
+            "some prompt",
+        ])
+        .env("HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .output()
+        .expect("run");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("dispatch will stall"),
+        "stall warning must NOT fire under accept-edits, got:\n{stderr}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // --effort flag
 // ---------------------------------------------------------------------------
