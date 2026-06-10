@@ -44,7 +44,10 @@ pub fn run_history(args: HistoryArgs) -> Result<()> {
     let (sessions, inferred_from_cwd) = list_for_history(&root, &args, limit)?;
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&sessions)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&crate::VersionedResult::new(&sessions))?
+        );
         return Ok(());
     }
 

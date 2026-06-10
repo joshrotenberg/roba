@@ -119,7 +119,10 @@ pub fn run(args: CostArgs) -> Result<()> {
     }
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&rollup)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&crate::VersionedResult::new(&rollup))?
+        );
         return Ok(());
     }
 

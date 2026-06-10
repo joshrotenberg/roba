@@ -406,14 +406,16 @@ fn worktree_list_json_lists_main_and_added() {
         "feature",
     ]);
 
-    // --json: a JSON array containing both worktrees.
+    // --json: the uniform { version: 1, result: [...] } envelope, where
+    // result is the array of both worktrees.
     let assert = roba()
         .args(["worktree", "list", "--json", "-C", repo.to_str().unwrap()])
         .assert()
         .success();
     let out = &assert.get_output().stdout;
     let json: serde_json::Value = serde_json::from_slice(out).expect("valid JSON");
-    let arr = json.as_array().expect("JSON array");
+    assert_eq!(json["version"], 1, "top-level version must be 1");
+    let arr = json["result"].as_array().expect("result is a JSON array");
     assert_eq!(arr.len(), 2, "expected main + added worktree, got: {json}");
 
     // The plain (human) form runs and exits 0.
@@ -1437,6 +1439,28 @@ fn cost_by_project_shows_cost_column() {
         .stdout(predicate::str::contains("COST").and(predicate::str::contains("$3.00")));
 }
 
+#[test]
+fn cost_json_carries_version_and_result() {
+    // The uniform { version: 1, result: <Rollup> } envelope: peel off
+    // version + result and the rollup fields sit under result.
+    let home = home_with_session("claude-sonnet-4-6", 1_000_000, 0);
+    let out = roba()
+        .args(["cost", "--json"])
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("stdout is JSON");
+    assert_eq!(v["version"], 1, "top-level version must be 1");
+    assert!(v.get("result").is_some(), "result must be present");
+    assert!(v.get("error").is_none(), "error must be absent on success");
+    // Rollup shape lives under result.
+    assert_eq!(v["result"]["sessions"], 1);
+    assert_eq!(v["result"]["total_tokens"], 1_000_000);
+}
+
 // ---------------------------------------------------------------------------
 // roba show (read-only result handle, reconstructed envelope) -- refs #220
 // ---------------------------------------------------------------------------
@@ -1548,7 +1572,8 @@ fn history_worktree_filter_returns_only_matching() {
         .get_output()
         .clone();
     let v: serde_json::Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
-    let arr = v.as_array().expect("array of sessions");
+    assert_eq!(v["version"], 1, "top-level version must be 1");
+    let arr = v["result"].as_array().expect("result is array of sessions");
     assert_eq!(arr.len(), 1, "only the worktree session should match");
     assert_eq!(arr[0]["session_id"], "wt-sess");
 }
@@ -1565,10 +1590,38 @@ fn history_worktree_filter_no_match_is_clean_empty() {
         .stdout
         .clone();
     let v: serde_json::Value = serde_json::from_slice(&out).expect("stdout is JSON");
+    assert_eq!(v["version"], 1, "top-level version must be 1");
     assert_eq!(
-        v.as_array().expect("array of sessions").len(),
+        v["result"]
+            .as_array()
+            .expect("result is array of sessions")
+            .len(),
         0,
         "no session matches an unknown worktree"
+    );
+}
+
+#[test]
+fn history_json_carries_version_and_result() {
+    // The uniform { version: 1, result: [<SessionSummary>] } envelope:
+    // the session list (formerly a bare top-level array) now sits under
+    // result. --all-projects widens past the cwd-scoped default.
+    let home = home_with_worktree_sessions();
+    let out = roba()
+        .args(["history", "--all-projects", "--json"])
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("stdout is JSON");
+    assert_eq!(v["version"], 1, "top-level version must be 1");
+    assert!(v.get("error").is_none(), "error must be absent on success");
+    let arr = v["result"].as_array().expect("result is array of sessions");
+    assert!(
+        !arr.is_empty(),
+        "seeded sessions must appear under result, got: {v}"
     );
 }
 
@@ -1864,4 +1917,39 @@ fn doctor_emits_all_check_lines() {
         .stdout(predicate::str::contains("auth"))
         .stdout(predicate::str::contains("config"))
         .stdout(predicate::str::contains("rates"));
+}
+
+#[test]
+fn doctor_json_carries_version_result_and_consistent_exit() {
+    // The uniform { version: 1, result: { checks, overall } } envelope.
+    // The exit code (0 unless any check fails) depends on the test
+    // environment (whether `claude` is installed, etc.), so assert the
+    // shape and the exit-code/overall *consistency* rather than a fixed
+    // code: exit is 1 exactly when overall == "fail".
+    let out = roba().args(["doctor", "--json"]).output().expect("run");
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout is JSON on --json");
+    assert_eq!(v["version"], 1, "top-level version must be 1");
+    assert!(v.get("error").is_none(), "error must be absent on success");
+    let checks = v["result"]["checks"].as_array().expect("checks array");
+    let names: Vec<&str> = checks
+        .iter()
+        .map(|c| c["name"].as_str().expect("check name is a string"))
+        .collect();
+    assert_eq!(names, vec!["claude", "auth", "config", "rates"]);
+    // Every check carries a status + message.
+    for c in checks {
+        assert!(c["status"].is_string(), "status must be a string");
+        assert!(c["message"].is_string(), "message must be a string");
+    }
+    let overall = v["result"]["overall"]
+        .as_str()
+        .expect("overall is a string");
+    let code = out.status.code().expect("exited normally");
+    assert_eq!(
+        code == 1,
+        overall == "fail",
+        "exit 1 iff overall is fail (overall={overall}, code={code})"
+    );
+    assert!(code == 0 || code == 1, "doctor exits 0 or 1, got {code}");
 }

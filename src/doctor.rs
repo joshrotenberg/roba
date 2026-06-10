@@ -7,21 +7,30 @@
 //! `[ok]` / `[warn]` / `[fail]` line for each.
 //!
 //! Exit code: 0 if no check FAILs, 1 if any check FAILs. Warnings do
-//! not fail. The command never calls claude with a prompt -- the only
+//! not fail. The same code is returned in both human and `--json`
+//! modes. The command never calls claude with a prompt -- the only
 //! claude invocation is `claude --version`.
+//!
+//! `--json` emits the uniform `{ version: 1, result: { checks, overall } }`
+//! envelope (via the crate's `VersionedResult` wrapper); the human form
+//! prints one `[ok]`/`[warn]`/`[fail]` line per check, unchanged.
 
 use anyhow::Result;
+use serde::Serialize;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::cli::DoctorArgs;
 use crate::profile;
 use crate::rates::Rates;
 
 /// Warn when the bundled rate table's `as_of` date is older than this.
 const RATES_STALE_DAYS: i64 = 90;
 
-/// The pass/warn/fail outcome of one check.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// The pass/warn/fail outcome of one check. Serializes as a lowercase
+/// string (`"ok"` / `"warn"` / `"fail"`) for the `--json` envelope.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
 enum Status {
     Ok,
     Warn,
@@ -38,46 +47,86 @@ impl Status {
     }
 }
 
-/// Print one check line to stdout: `[ok] name: detail`.
-fn report(status: Status, name: &str, detail: &str) {
-    println!("{} {name}: {detail}", status.marker());
+/// The structured result of one check: a stable `name`, a `status`, and
+/// a human-readable `message`. Collected (not printed) so both the
+/// human and `--json` forms render from the same data.
+#[derive(Debug, Serialize)]
+struct Check {
+    name: &'static str,
+    status: Status,
+    message: String,
 }
 
-/// Run all checks, printing one line each, and return the process exit
-/// code (0 = no failures, 1 = at least one FAIL).
-pub fn run() -> Result<i32> {
-    let mut any_fail = false;
+/// The full doctor report: every check plus the worst status across
+/// them. The `--json` envelope's `result` payload.
+#[derive(Debug, Serialize)]
+struct Report {
+    checks: Vec<Check>,
+    /// The worst status across all checks: `fail` if any failed, else
+    /// `warn` if any warned, else `ok`. The exit code is `1` exactly
+    /// when this is `fail`.
+    overall: Status,
+}
 
-    any_fail |= check_claude() == Status::Fail;
-    let _ = check_auth();
-    any_fail |= check_config() == Status::Fail;
-    any_fail |= check_rates() == Status::Fail;
+/// Run all checks, then render either one line each (human) or the
+/// uniform `{ version, result }` JSON envelope. Returns the process
+/// exit code (0 = no FAILs, 1 = at least one FAIL); the same code is
+/// returned in both modes.
+pub fn run(args: DoctorArgs) -> Result<i32> {
+    let checks = vec![check_claude(), check_auth(), check_config(), check_rates()];
+    let overall = overall_status(&checks);
+    let exit = if overall == Status::Fail { 1 } else { 0 };
+    let report = Report { checks, overall };
 
-    Ok(if any_fail { 1 } else { 0 })
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&crate::VersionedResult::new(&report))?
+        );
+    } else {
+        for c in &report.checks {
+            println!("{} {}: {}", c.status.marker(), c.name, c.message);
+        }
+    }
+    Ok(exit)
+}
+
+/// The worst status across the checks, used as the report's `overall`
+/// and to derive the exit code.
+fn overall_status(checks: &[Check]) -> Status {
+    if checks.iter().any(|c| c.status == Status::Fail) {
+        Status::Fail
+    } else if checks.iter().any(|c| c.status == Status::Warn) {
+        Status::Warn
+    } else {
+        Status::Ok
+    }
 }
 
 /// Is `claude` on PATH and runnable? PASS with the reported version,
 /// FAIL if the binary can't be found or run.
-fn check_claude() -> Status {
+fn check_claude() -> Check {
     match Command::new("claude").arg("--version").output() {
         Ok(out) if out.status.success() => {
             let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let detail = if version.is_empty() {
+            let message = if version.is_empty() {
                 "found on PATH".to_string()
             } else {
                 version
             };
-            report(Status::Ok, "claude", &detail);
-            Status::Ok
+            Check {
+                name: "claude",
+                status: Status::Ok,
+                message,
+            }
         }
-        Ok(_) | Err(_) => {
-            report(
-                Status::Fail,
-                "claude",
-                "not found on PATH -- install claude-code (https://github.com/anthropics/claude-code)",
-            );
-            Status::Fail
-        }
+        Ok(_) | Err(_) => Check {
+            name: "claude",
+            status: Status::Fail,
+            message:
+                "not found on PATH -- install claude-code (https://github.com/anthropics/claude-code)"
+                    .to_string(),
+        },
     }
 }
 
@@ -87,11 +136,14 @@ fn check_claude() -> Status {
 /// default), which can't be verified here without a real call. Only
 /// `--bare` strictly needs the key. A nested operator reading this line
 /// must be able to tell "fine, OAuth" from "actually broken".
-fn check_auth() -> Status {
+fn check_auth() -> Check {
     let key = std::env::var("ANTHROPIC_API_KEY").ok();
-    let (status, detail) = auth_status(key.as_deref());
-    report(status, "auth", &detail);
-    status
+    let (status, message) = auth_status(key.as_deref());
+    Check {
+        name: "auth",
+        status,
+        message,
+    }
 }
 
 /// Decide the `auth` check's status and wording from the API-key value.
@@ -113,12 +165,9 @@ fn auth_status(key: Option<&str>) -> (Status, String) {
 
 /// Does the roba.toml pool load and parse? PASS listing the source
 /// files (or "no roba.toml found"), FAIL with the parse error.
-fn check_config() -> Status {
-    match profile::load_pool() {
-        Ok(pool) if pool.sources.is_empty() => {
-            report(Status::Ok, "config", "no roba.toml found");
-            Status::Ok
-        }
+fn check_config() -> Check {
+    let (status, message) = match profile::load_pool() {
+        Ok(pool) if pool.sources.is_empty() => (Status::Ok, "no roba.toml found".to_string()),
         Ok(pool) => {
             let files = pool
                 .sources
@@ -126,57 +175,50 @@ fn check_config() -> Status {
                 .map(|p| p.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            report(
+            (
                 Status::Ok,
-                "config",
-                &format!("{} file(s): {files}", pool.sources.len()),
-            );
-            Status::Ok
+                format!("{} file(s): {files}", pool.sources.len()),
+            )
         }
-        Err(e) => {
-            report(Status::Fail, "config", &format!("{e:#}"));
-            Status::Fail
-        }
+        Err(e) => (Status::Fail, format!("{e:#}")),
+    };
+    Check {
+        name: "config",
+        status,
+        message,
     }
 }
 
 /// Report the bundled rate table's `as_of` date. WARN if it's older
 /// than [`RATES_STALE_DAYS`], else PASS. FAIL only if the bundled
 /// table can't be parsed (a build-time invariant, but checked anyway).
-fn check_rates() -> Status {
+fn check_rates() -> Check {
     let rates = match Rates::bundled() {
         Ok(r) => r,
         Err(e) => {
-            report(Status::Fail, "rates", &format!("{e:#}"));
-            return Status::Fail;
+            return Check {
+                name: "rates",
+                status: Status::Fail,
+                message: format!("{e:#}"),
+            };
         }
     };
     let as_of = &rates.meta.as_of;
-    match days_since(as_of) {
-        Some(days) if days > RATES_STALE_DAYS => {
-            report(
-                Status::Warn,
-                "rates",
-                &format!("as_of {as_of} ({days} days old; prices may be stale)"),
-            );
-            Status::Warn
-        }
-        Some(days) => {
-            report(
-                Status::Ok,
-                "rates",
-                &format!("as_of {as_of} ({days} days old)"),
-            );
-            Status::Ok
-        }
-        None => {
-            report(
-                Status::Warn,
-                "rates",
-                &format!("as_of {as_of} (could not parse date)"),
-            );
-            Status::Warn
-        }
+    let (status, message) = match days_since(as_of) {
+        Some(days) if days > RATES_STALE_DAYS => (
+            Status::Warn,
+            format!("as_of {as_of} ({days} days old; prices may be stale)"),
+        ),
+        Some(days) => (Status::Ok, format!("as_of {as_of} ({days} days old)")),
+        None => (
+            Status::Warn,
+            format!("as_of {as_of} (could not parse date)"),
+        ),
+    };
+    Check {
+        name: "rates",
+        status,
+        message,
     }
 }
 
@@ -294,5 +336,39 @@ mod tests {
         assert_eq!(Status::Ok.marker(), "[ok]");
         assert_eq!(Status::Warn.marker(), "[warn]");
         assert_eq!(Status::Fail.marker(), "[fail]");
+    }
+
+    fn check(status: Status) -> Check {
+        Check {
+            name: "x",
+            status,
+            message: String::new(),
+        }
+    }
+
+    #[test]
+    fn overall_status_is_worst() {
+        // fail dominates everything.
+        assert_eq!(
+            overall_status(&[check(Status::Ok), check(Status::Warn), check(Status::Fail)]),
+            Status::Fail
+        );
+        // warn beats ok when there's no fail.
+        assert_eq!(
+            overall_status(&[check(Status::Ok), check(Status::Warn)]),
+            Status::Warn
+        );
+        // all-ok stays ok.
+        assert_eq!(
+            overall_status(&[check(Status::Ok), check(Status::Ok)]),
+            Status::Ok
+        );
+    }
+
+    #[test]
+    fn status_serializes_as_lowercase_string() {
+        assert_eq!(serde_json::to_value(Status::Ok).unwrap(), "ok");
+        assert_eq!(serde_json::to_value(Status::Warn).unwrap(), "warn");
+        assert_eq!(serde_json::to_value(Status::Fail).unwrap(), "fail");
     }
 }

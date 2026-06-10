@@ -43,6 +43,7 @@ fn wants_json(cli: &Cli) -> bool {
     match &cli.command {
         Some(SubCommand::History(args)) => args.json,
         Some(SubCommand::Cost(args)) => args.json,
+        Some(SubCommand::Doctor(args)) => args.json,
         Some(SubCommand::Worktree {
             cmd: WorktreeCmd::List(args),
         }) => args.json,

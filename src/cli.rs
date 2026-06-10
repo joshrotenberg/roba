@@ -185,10 +185,14 @@ pub enum SubCommand {
     /// Diagnose the claude boundary: binary, auth, config, rates.
     ///
     /// Runs a series of health checks and prints a pass/warn/fail line
-    /// for each. Exits 0 if no check fails, 1 if any does (warnings
-    /// don't fail). Never calls claude with a prompt -- only
-    /// `claude --version`.
-    Doctor,
+    /// for each. Exit codes: 0 = no check failed (warnings are allowed
+    /// and do not fail); 1 = at least one check failed. The same code is
+    /// returned in both human and `--json` modes. Never calls claude
+    /// with a prompt -- only `claude --version`.
+    ///
+    /// `--json` emits the uniform `{ version: 1, result: { checks,
+    /// overall } }` envelope.
+    Doctor(DoctorArgs),
     /// Inspect user-defined aliases (`[alias.NAME]` in roba.toml).
     Alias {
         #[command(subcommand)]
@@ -321,6 +325,17 @@ pub struct CostArgs {
     /// rates are stale and you don't want misleading numbers.
     #[arg(long)]
     pub no_dollars: bool,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct DoctorArgs {
+    /// Emit the check results as a `{ version, result }` JSON envelope.
+    ///
+    /// `result` is `{ checks: [{ name, status, message }], overall }`,
+    /// where each status is `ok`/`warn`/`fail`. The exit code is the
+    /// same as the human form (1 when any check fails).
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -996,6 +1011,26 @@ mod tests {
             Some(std::path::Path::new("result.txt"))
         );
         assert!(cli.ask.json);
+    }
+
+    #[test]
+    fn doctor_parses_without_json() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "doctor"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(SubCommand::Doctor(DoctorArgs { json: false }))
+        ));
+    }
+
+    #[test]
+    fn doctor_json_flag_parses() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "doctor", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(SubCommand::Doctor(DoctorArgs { json: true }))
+        ));
     }
 
     #[test]
