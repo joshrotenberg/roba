@@ -15,6 +15,7 @@ pub mod aliases;
 pub mod cli;
 pub mod cost;
 pub mod doctor;
+pub mod draft;
 pub mod env;
 pub mod error;
 pub mod history;
@@ -51,7 +52,12 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
         Some(SubCommand::History(args)) => run_history(args),
         Some(SubCommand::Last(args)) => run_last(args),
-        Some(SubCommand::Profile { action }) => profile::run(action),
+        // Profile inspection is synchronous; `draft` makes one claude call
+        // (the only async profile verb), so it routes through `run_draft`.
+        Some(SubCommand::Profile { action }) => match action {
+            crate::cli::ProfileAction::Draft(args) => profile::run_draft(args).await,
+            other => profile::run(other),
+        },
         Some(SubCommand::Cost(args)) => cost::run(args),
         // Health check: print one line per check (or a `--json`
         // envelope), exit 0/1. No claude prompt -- only `claude

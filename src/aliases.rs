@@ -46,7 +46,6 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use claude_wrapper::{Claude, QueryCommand};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{AliasAction, AliasDraftArgs, AskArgs};
@@ -243,22 +242,12 @@ pub async fn run_draft(args: AliasDraftArgs) -> Result<()> {
     // 1. Deterministic prompt: schema-by-example + the user's description.
     let prompt = draft_prompt(&args.description);
 
-    // 2. One lean claude call -- NOT routed through `run_ask`. Read-only
-    //    default tool posture (generation needs no tools), no session kept
-    //    (a draft is not a thread worth resuming), stdin-fed, optional
-    //    model override.
-    let claude = Claude::builder().build()?;
-    let mut cmd = QueryCommand::new(prompt)
-        .name("roba: alias draft")
-        .prompt_via_stdin(true)
-        .no_session_persistence();
-    if let Some(model) = &args.model {
-        cmd = cmd.model(model.clone());
-    }
-    let result = cmd.execute_json(&claude).await?;
+    // 2. One lean claude call -- NOT routed through `run_ask`. The shared
+    //    draft core handles the read-only, no-session, stdin-fed posture.
+    let raw = crate::draft::generate(prompt, args.model.as_deref(), "roba: alias draft").await?;
 
     // 3. Validate with the real deserializer; require exactly one entry.
-    let (name, alias) = parse_drafted_alias(&result.result)?;
+    let (name, alias) = parse_drafted_alias(&raw)?;
 
     // 4. Normalize so stdout is canonical regardless of model formatting.
     let block = render_alias_toml(&name, &alias)?;
@@ -288,7 +277,7 @@ pub async fn run_draft(args: AliasDraftArgs) -> Result<()> {
                     path.display()
                 );
             }
-            append_alias_block(&path, &block)?;
+            crate::draft::append_block(&path, &block)?;
             eprintln!("wrote [alias.{name}] to {}", path.display());
         }
         None => {
@@ -359,7 +348,7 @@ fn parse_drafted_alias(raw: &str) -> Result<(String, Alias)> {
         #[serde(default)]
         alias: HashMap<String, Alias>,
     }
-    let cleaned = strip_code_fences(raw);
+    let cleaned = crate::draft::strip_code_fences(raw);
     let wrapper: Wrapper = toml::from_str(&cleaned).map_err(|e| {
         anyhow::anyhow!("drafted alias did not parse: {e}\n\n--- raw model output ---\n{raw}")
     })?;
@@ -373,25 +362,6 @@ fn parse_drafted_alias(raw: &str) -> Result<(String, Alias)> {
             "drafted output defined {n} alias blocks (expected exactly one)\n\n--- raw model output ---\n{raw}"
         ),
     }
-}
-
-/// Strip a single surrounding markdown code fence if present, so output
-/// wrapped in ```toml ... ``` still parses. Fence-free input is returned
-/// trimmed but otherwise untouched.
-fn strip_code_fences(s: &str) -> String {
-    let trimmed = s.trim();
-    if !trimmed.starts_with("```") {
-        return trimmed.to_string();
-    }
-    let mut lines: Vec<&str> = trimmed.lines().collect();
-    lines.remove(0); // opening ``` or ```toml
-    if lines
-        .last()
-        .is_some_and(|l| l.trim_start().starts_with("```"))
-    {
-        lines.pop(); // closing ```
-    }
-    lines.join("\n")
 }
 
 /// True when `path` already defines `[alias.name]`. A missing file
@@ -413,25 +383,6 @@ fn file_defines_alias(path: &Path, name: &str) -> Result<bool> {
     let probe: Probe = toml::from_str(&text)
         .with_context(|| format!("--write target {} is not valid TOML", path.display()))?;
     Ok(probe.alias.contains_key(name))
-}
-
-/// Append a blank line + the block to `path`, creating the file (and any
-/// missing parent dirs) if absent.
-fn append_alias_block(path: &Path, block: &str) -> Result<()> {
-    use std::io::Write;
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating parent directory for {}", path.display()))?;
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("opening {} for append", path.display()))?;
-    write!(file, "\n{block}").with_context(|| format!("writing to {}", path.display()))?;
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -873,18 +824,6 @@ mod tests {
         let pool = Pool::default();
         let msg = unknown_alias_message("zzzzzzzz", &pool);
         assert_eq!(msg, "no built-in or alias named `zzzzzzzz`");
-    }
-
-    #[test]
-    fn strip_code_fences_unwraps_toml_fence() {
-        let raw = "```toml\n[alias.x]\ndescription = \"hi\"\n```";
-        assert_eq!(strip_code_fences(raw), "[alias.x]\ndescription = \"hi\"");
-    }
-
-    #[test]
-    fn strip_code_fences_leaves_plain_input() {
-        let raw = "[alias.x]\ndescription = \"hi\"\n";
-        assert_eq!(strip_code_fences(raw), "[alias.x]\ndescription = \"hi\"");
     }
 
     #[test]
