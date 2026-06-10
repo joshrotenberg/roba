@@ -126,6 +126,14 @@ pub struct Profile {
     /// before passing them to claude's own `--json-schema`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub json_schema: Option<String>,
+    /// MCP server config file paths for the run (`--mcp-config`,
+    /// repeatable). Forwarded verbatim to claude's own `--mcp-config`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mcp_config: Vec<String>,
+    /// Use only the `mcp_config` servers, ignoring all other MCP config
+    /// (`--strict-mcp-config`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strict_mcp_config: Option<bool>,
 }
 
 /// Profile value for the `permission_mode` field. Serializes as a
@@ -209,6 +217,8 @@ impl Profile {
             && self.max_turns.is_none()
             && self.max_budget_usd.is_none()
             && self.json_schema.is_none()
+            && self.mcp_config.is_empty()
+            && self.strict_mcp_config.is_none()
     }
 
     /// Merge `other` on top of `self`. Used to layer roba.toml files
@@ -256,6 +266,8 @@ impl Profile {
             max_turns,
             max_budget_usd,
             json_schema,
+            mut mcp_config,
+            strict_mcp_config,
         } = other;
 
         self.prepend.append(&mut prepend);
@@ -358,6 +370,10 @@ impl Profile {
         }
         if json_schema.is_some() {
             self.json_schema = json_schema;
+        }
+        self.mcp_config.append(&mut mcp_config);
+        if strict_mcp_config.is_some() {
+            self.strict_mcp_config = strict_mcp_config;
         }
     }
 }

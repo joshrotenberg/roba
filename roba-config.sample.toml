@@ -70,6 +70,12 @@
 # max_turns      = 20             # cap the agentic turn count
 # max_budget_usd = 5.0            # cap total spend in USD
 
+# --- MCP servers (thin pass-through to claude --mcp-config; NOT a daemon) ---
+# mcp_config = ["mcp.json"]       # load MCP servers from JSON files (forwarded
+#                                 #   verbatim; claude reads them, roba does not)
+# strict_mcp_config = true        # use ONLY the mcp_config servers, ignoring
+#                                 #   all other configured MCP servers
+
 # --- Template variables ---  substituted as {{KEY}} in prompts/prepends
 # [vars]
 # TEAM = "platform"

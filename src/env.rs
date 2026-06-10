@@ -271,6 +271,20 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
         args.bare = true;
     }
 
+    // ----- MCP -----
+    // ROBA_MCP_CONFIG mirrors --mcp-config: comma-separated list of config
+    // file paths. List flag, CLI wins (only fills when CLI left it empty).
+    if args.mcp_config.is_empty() {
+        let configs = read_list(env, "ROBA_MCP_CONFIG");
+        if !configs.is_empty() {
+            args.mcp_config = configs;
+        }
+    }
+    // ROBA_STRICT_MCP_CONFIG mirrors --strict-mcp-config: truthy bool.
+    if !args.strict_mcp_config && read_truthy(env, "ROBA_STRICT_MCP_CONFIG") {
+        args.strict_mcp_config = true;
+    }
+
     // ----- Vars (ROBA_VAR_<KEY>=<value>) -----
     for (key, value) in env {
         if let Some(var_key) = key.strip_prefix("ROBA_VAR_")
@@ -921,6 +935,65 @@ mod tests {
         let mut args = empty_args();
         apply_env_overrides_from(&mut args, &env_with(&[("ROBA_BARE", "false")]));
         assert!(!args.bare);
+    }
+
+    // -- mcp ---------------------------------------------------------------
+
+    #[test]
+    fn env_mcp_config_comma_separated() {
+        let mut args = empty_args();
+        apply_env_overrides_from(
+            &mut args,
+            &env_with(&[("ROBA_MCP_CONFIG", "a.json, b.json , c.json")]),
+        );
+        assert_eq!(
+            args.mcp_config,
+            vec![
+                "a.json".to_string(),
+                "b.json".to_string(),
+                "c.json".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn env_mcp_config_does_not_override_cli() {
+        let mut args = empty_args();
+        args.mcp_config = vec!["cli.json".into()];
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_MCP_CONFIG", "env.json")]));
+        assert_eq!(args.mcp_config, vec!["cli.json".to_string()]);
+    }
+
+    #[test]
+    fn env_strict_mcp_config_truthy_enables() {
+        for val in ["1", "true", "yes", "on", "TRUE", "Yes"] {
+            let mut args = empty_args();
+            apply_env_overrides_from(&mut args, &env_with(&[("ROBA_STRICT_MCP_CONFIG", val)]));
+            assert!(
+                args.strict_mcp_config,
+                "env value {val:?} should enable strict_mcp_config"
+            );
+        }
+    }
+
+    #[test]
+    fn env_strict_mcp_config_ignores_falsy_or_garbage() {
+        for val in ["0", "false", "no", "off", "", "garbage"] {
+            let mut args = empty_args();
+            apply_env_overrides_from(&mut args, &env_with(&[("ROBA_STRICT_MCP_CONFIG", val)]));
+            assert!(
+                !args.strict_mcp_config,
+                "env value {val:?} should leave strict_mcp_config off"
+            );
+        }
+    }
+
+    #[test]
+    fn env_strict_mcp_config_does_not_clear_cli() {
+        let mut args = empty_args();
+        args.strict_mcp_config = true;
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_STRICT_MCP_CONFIG", "0")]));
+        assert!(args.strict_mcp_config, "CLI true should survive env false");
     }
 
     // -- limits (max_turns / max_budget_usd) -------------------------------

@@ -296,6 +296,16 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     {
         args.json_schema = Some(s);
     }
+    // mcp_config is a list: the CLI list (if any) replaces the profile's,
+    // matching --allow-tool's per-layer replace semantics.
+    if args.mcp_config.is_empty() {
+        args.mcp_config = std::mem::take(&mut profile.mcp_config);
+    }
+    if let Some(v) = profile.strict_mcp_config
+        && !args.strict_mcp_config
+    {
+        args.strict_mcp_config = v;
+    }
 }
 
 /// Convert a profile-layer `PermissionModeConfig` to the CLI's
@@ -934,6 +944,59 @@ mod tests {
         };
         merge_into_args(&mut args, profile, "profile.test");
         assert_eq!(args.json_schema.as_deref(), Some("/cli/schema.json"));
+    }
+
+    // -- MCP (mcp_config / strict_mcp_config) ------------------------------
+
+    #[test]
+    fn merge_mcp_config_applies_when_cli_empty() {
+        let mut args = empty_args();
+        let profile = Profile {
+            mcp_config: vec!["a.json".to_string(), "b.json".to_string()],
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(
+            args.mcp_config,
+            vec!["a.json".to_string(), "b.json".to_string()]
+        );
+    }
+
+    #[test]
+    fn merge_mcp_config_cli_replaces_profile() {
+        let mut args = args_with(&["--mcp-config", "cli.json"]);
+        let profile = Profile {
+            mcp_config: vec!["profile.json".to_string()],
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.mcp_config, vec!["cli.json".to_string()]);
+    }
+
+    #[test]
+    fn merge_strict_mcp_config_applies_when_cli_unset() {
+        let mut args = empty_args();
+        let profile = Profile {
+            strict_mcp_config: Some(true),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert!(args.strict_mcp_config);
+    }
+
+    #[test]
+    fn merge_strict_mcp_config_cli_already_set_is_unaffected() {
+        let mut args = args_with(&["--strict-mcp-config"]);
+        assert!(args.strict_mcp_config);
+        let profile = Profile {
+            strict_mcp_config: Some(false),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert!(
+            args.strict_mcp_config,
+            "CLI --strict-mcp-config survives a profile strict_mcp_config=false"
+        );
     }
 
     // -- Limits (max_turns / max_budget_usd) -------------------------------

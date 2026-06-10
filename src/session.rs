@@ -85,6 +85,14 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     if args.bare {
         cmd = cmd.bare();
     }
+    // MCP servers for this run: forward each --mcp-config path verbatim
+    // (claude reads the file), then the strict flag. Pure pass-through.
+    for p in &args.mcp_config {
+        cmd = cmd.mcp_config(p.clone());
+    }
+    if args.strict_mcp_config {
+        cmd = cmd.strict_mcp_config();
+    }
     apply_permissions(cmd, args)
 }
 
