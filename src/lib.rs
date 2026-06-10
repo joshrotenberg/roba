@@ -166,7 +166,7 @@ impl<'a, T: serde::Serialize> VersionedResult<'a, T> {
 /// Default action: resolve a prompt, send it through claude, render
 /// the result.
 pub async fn run_ask(mut args: AskArgs) -> Result<()> {
-    env::apply_env_overrides(&mut args);
+    env::apply_env_overrides(&mut args)?;
     let pool = profile::load_pool()?;
     if let Some(chosen) = profile::resolve(&args, &pool)? {
         let source = profile::profile_source_label(&args, &pool);

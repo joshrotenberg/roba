@@ -227,8 +227,13 @@ pub fn extract_tokens(extra: &HashMap<String, serde_json::Value>) -> Option<(u64
 }
 
 /// Render a count compactly: `42`, `1.2k`, `3.4M`.
+///
+/// The thresholds are rounding-aware so a value never displays as
+/// `1000.0k`: anything that would round up to `1000.0k` at one decimal
+/// (i.e. `>= 999_950`) promotes to the `M` form instead. `M` is the top
+/// unit, so very large counts keep growing as `M` (e.g. `1000.0M`).
 pub fn format_count(n: u64) -> String {
-    if n >= 1_000_000 {
+    if n >= 999_950 {
         format!("{:.1}M", n as f64 / 1_000_000.0)
     } else if n >= 1_000 {
         format!("{:.1}k", n as f64 / 1_000.0)
@@ -435,13 +440,28 @@ mod tests {
     fn format_count_thousand_scale() {
         assert_eq!(format_count(1_000), "1.0k");
         assert_eq!(format_count(1_234), "1.2k");
-        assert_eq!(format_count(999_999), "1000.0k");
+        // Just below the rounding-promotion boundary: still the k form.
+        assert_eq!(format_count(999_949), "999.9k");
     }
 
     #[test]
     fn format_count_million_scale() {
         assert_eq!(format_count(1_000_000), "1.0M");
         assert_eq!(format_count(1_500_000), "1.5M");
+    }
+
+    #[test]
+    fn format_count_k_to_m_rounding_boundary() {
+        // A value that would round to "1000.0k" promotes to "1.0M"
+        // instead (the #273 fix); the exact boundary is 999_950.
+        assert_eq!(format_count(999_950), "1.0M");
+        assert_eq!(format_count(999_999), "1.0M");
+        assert_eq!(format_count(999_949), "999.9k");
+        // The plain/k boundary is unchanged: 999 stays plain, 1_000 is k.
+        assert_eq!(format_count(999), "999");
+        assert_eq!(format_count(1_000), "1.0k");
+        // M is the top unit, so very large counts keep growing as M.
+        assert_eq!(format_count(999_999_999), "1000.0M");
     }
 
     #[test]

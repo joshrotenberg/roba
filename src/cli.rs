@@ -1018,8 +1018,10 @@ pub struct AskArgs {
     /// detached child's stdin is /dev/null, so stdin that carries data
     /// (a pipe with bytes, a non-empty `< file` redirect) is rejected rather
     /// than silently lost, while a benign non-TTY stdin (a closed/empty pipe
-    /// or /dev/null from an orchestrator) passes through; this data check is
-    /// unix-only for now. roba also verifies the claude binary resolves
+    /// or /dev/null from an orchestrator) passes through. On unix the check
+    /// peeks for actual bytes; on Windows it is conservative -- any pipe on
+    /// stdin is rejected (a console or `NUL` stdin passes). roba also
+    /// verifies the claude binary resolves
     /// BEFORE detaching -- a dead-on-arrival child behind a printed handle is
     /// just silence.
     ///

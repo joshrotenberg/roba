@@ -1,0 +1,13 @@
+[alias.audit]
+description = "Read-only audit of the current repo"
+agent = "auditor"
+template = """
+Audit this repo (read-only). Survey the codebase and report findings -- bugs, risks, dead code, missing tests, security or dependency concerns, and anything that needs attention.
+
+Structure:
+$(git ls-files | head -200)
+
+Recent history:
+$(git log --oneline -20)
+"""
+flags = ["--readonly"]

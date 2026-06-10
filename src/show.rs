@@ -47,15 +47,29 @@ pub fn run(args: &crate::cli::ShowArgs) -> Result<()> {
         // started yet" rather than an immediate not-found error.
         wait_for_complete(&root, args)?
     } else {
-        // `read_session` only fails when no `<id>.jsonl` exists anywhere,
-        // so map any failure to a clean not-found error (never a panic).
-        match root.read_session(&args.session_id) {
-            Ok(log) => log,
-            Err(_) => bail!("session `{}` not found", args.session_id),
-        }
+        load_session(&root, &args.session_id)?
     };
 
     render_session(&root, &log, args)
+}
+
+/// Load a session by id, distinguishing a genuine not-found from a real
+/// I/O / lookup failure.
+///
+/// `read_session` collapses both into one `Error::History`, so we split
+/// them via `find_session`: `Ok(None)` is the clean not-found case
+/// (emit the plain "not found" message); an `Err` from the project walk
+/// (e.g. a permissions error on `~/.claude/projects/`) propagates with
+/// context; a found session that then fails to read (e.g. it vanished
+/// mid-read) also propagates rather than masquerading as not-found.
+fn load_session(root: &HistoryRoot, session_id: &str) -> Result<SessionLog> {
+    match root.find_session(session_id) {
+        Ok(Some(_)) => root
+            .read_session(session_id)
+            .with_context(|| format!("reading session `{session_id}`")),
+        Ok(None) => bail!("session `{session_id}` not found"),
+        Err(e) => Err(e).with_context(|| format!("looking up session `{session_id}`")),
+    }
 }
 
 /// Poll the session's on-disk JSONL until it both exists AND looks
@@ -70,10 +84,21 @@ fn wait_for_complete(root: &HistoryRoot, args: &crate::cli::ShowArgs) -> Result<
     loop {
         // A missing session under `--wait` means "not started yet", not
         // an error: keep polling until it appears or the timeout fires.
-        if let Ok(log) = root.read_session(&args.session_id)
-            && is_complete(&log)
-        {
-            return Ok(log);
+        // A REAL lookup/read error (permissions, a vanished file) is NOT
+        // "not started yet" -- fail fast rather than poll until timeout.
+        match root.find_session(&args.session_id) {
+            Ok(Some(_)) => {
+                let log = root
+                    .read_session(&args.session_id)
+                    .with_context(|| format!("reading session `{}`", args.session_id))?;
+                if is_complete(&log) {
+                    return Ok(log);
+                }
+            }
+            Ok(None) => {} // not started yet -- keep polling
+            Err(e) => {
+                return Err(e).with_context(|| format!("looking up session `{}`", args.session_id));
+            }
         }
         if let Some(deadline) = deadline
             && Instant::now() >= deadline
@@ -343,6 +368,33 @@ mod tests {
         let (text, turns) = reconstruct_answer(&log(vec![]));
         assert_eq!(text, "");
         assert_eq!(turns, 0);
+    }
+
+    #[test]
+    fn load_session_missing_is_clean_not_found() {
+        // An empty projects root: no `<id>.jsonl` anywhere -> the clean
+        // not-found message, NOT a masked I/O error.
+        let dir = tempfile::tempdir().unwrap();
+        let root = HistoryRoot::at(dir.path());
+        let err = load_session(&root, "missing-id").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("not found"), "got: {msg}");
+    }
+
+    #[test]
+    fn load_session_real_error_propagates_not_as_not_found() {
+        // Point the root at a regular FILE: the project walk's read_dir
+        // fails with a non-NotFound error, which must surface as a real
+        // lookup error rather than collapse to "not found".
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let root = HistoryRoot::at(file.path());
+        let err = load_session(&root, "any-id").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            !msg.contains("not found"),
+            "a real I/O error must not masquerade as not-found: {msg}"
+        );
+        assert!(msg.contains("looking up session"), "got: {msg}");
     }
 
     #[test]
