@@ -60,6 +60,9 @@ Unattended workers (composing the primitives):
                                    orchestrator-owns-the-branch case; roba's
                                    --worktree makes a claude-managed worktree
                                    instead
+  --detach -C <dir> -f <file>      fire a run that survives the caller;
+                                   prints the session handle (re-attach:
+                                   roba show <id> --wait)
 
 Environment variables:
   Most long flags have a ROBA_<FLAG> override (uppercased, '-' -> '_'):

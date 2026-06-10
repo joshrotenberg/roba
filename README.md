@@ -211,6 +211,39 @@ system event (`status_category` + `status_detail`) -- a usable done /
 what-happened signal, but it is claude's event passed through, not part
 of roba's versioned ABI.
 
+### Work that must outlive the caller
+
+A run owns nothing once it returns -- any sub-work still in flight dies
+with it, and nothing resumes on its own. So there are two shapes for
+work, and only two: **synchronous units** (each unit finishes inside the
+turn and the caller loops), or **detached-with-handle** when the
+hand-off itself is the point.
+
+The detached form, primary:
+
+```bash
+id=$(roba --detach --profile worker -C <dir> -f task.md --trace /tmp/t.jsonl)
+roba show "$id" --wait --timeout 600
+```
+
+The minted session handle is the only thing on stdout, so `id=$(...)`
+captures it. roba verifies the claude binary resolves before detaching,
+so it refuses rather than print a handle for a dead-on-arrival child. A
+piped stdin that carries data is refused rather than silently lost (the
+detached child's stdin is `/dev/null`; this data check is unix-only for
+now). Nobody is watching the run, so pair it with the rails
+(`--max-turns`, `--max-budget-usd`).
+
+The manual fallback (older versions, or no `--detach`):
+
+```bash
+nohup roba --session-id "$(uuidgen)" -C <dir> -f task.md >/dev/null 2>&1 &
+roba show <id> --wait
+```
+
+Never bare fire-and-forget: an orphaned branch and an empty draft PR are
+the signature of that failure.
+
 > [!NOTE]
 > As of 2026-06-15 Anthropic meters programmatic usage (claude -p / Agent SDK) separately from interactive Claude. Every roba call is programmatic by construction, so all roba usage -- and the figures `roba cost` reports -- draws from that programmatic allotment, not your interactive limit.
 
