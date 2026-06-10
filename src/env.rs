@@ -54,6 +54,11 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     {
         args.model = Some(s);
     }
+    if args.fallback_model.is_none()
+        && let Some(s) = read_string(env, "ROBA_FALLBACK_MODEL")
+    {
+        args.fallback_model = Some(s);
+    }
 
     // ----- Effort -----
     if args.effort.is_none()
@@ -162,6 +167,12 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
         args.json_schema = Some(s);
     }
 
+    // ROBA_NO_SESSION_PERSISTENCE mirrors --no-session-persistence:
+    // truthy bool. Like every bool in this layer it can only enable.
+    if !args.no_session_persistence && read_truthy(env, "ROBA_NO_SESSION_PERSISTENCE") {
+        args.no_session_persistence = true;
+    }
+
     // ----- Permissions -----
     if args.permission_mode.is_none()
         && let Some(s) = read_string(env, "ROBA_PERMISSION_MODE")
@@ -194,6 +205,14 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
         if !tools.is_empty() {
             args.deny_tool_sources = vec!["env".to_string(); tools.len()];
             args.deny_tool = tools;
+        }
+    }
+    // ROBA_ADD_DIR mirrors --add-dir: comma-separated list of extra
+    // tool-access directories. List flag, CLI wins (only fills when empty).
+    if args.add_dir.is_empty() {
+        let dirs = read_list(env, "ROBA_ADD_DIR");
+        if !dirs.is_empty() {
+            args.add_dir = dirs;
         }
     }
 
@@ -1084,5 +1103,98 @@ mod tests {
             &env_with(&[("ROBA_APPEND_SYSTEM_PROMPT", "env-append")]),
         );
         assert_eq!(args.append_system_prompt.as_deref(), Some("cli-append"));
+    }
+
+    // -- med-tier pass-throughs (add_dir / fallback_model / no_session_persistence) --
+
+    #[test]
+    fn env_add_dir_comma_separated() {
+        let mut args = empty_args();
+        apply_env_overrides_from(
+            &mut args,
+            &env_with(&[("ROBA_ADD_DIR", "/extra/a, /extra/b , /extra/c")]),
+        );
+        assert_eq!(
+            args.add_dir,
+            vec![
+                "/extra/a".to_string(),
+                "/extra/b".to_string(),
+                "/extra/c".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn env_add_dir_does_not_override_cli() {
+        let mut args = empty_args();
+        args.add_dir = vec!["/cli/dir".into()];
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_ADD_DIR", "/env/dir")]));
+        assert_eq!(args.add_dir, vec!["/cli/dir".to_string()]);
+    }
+
+    #[test]
+    fn env_fallback_model_sets_from_roba_var() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_FALLBACK_MODEL", "haiku")]));
+        assert_eq!(args.fallback_model.as_deref(), Some("haiku"));
+    }
+
+    #[test]
+    fn env_fallback_model_does_not_override_cli() {
+        let mut args = empty_args();
+        args.fallback_model = Some("opus".into());
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_FALLBACK_MODEL", "haiku")]));
+        assert_eq!(args.fallback_model.as_deref(), Some("opus"));
+    }
+
+    #[test]
+    fn env_fallback_model_ignores_empty() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_FALLBACK_MODEL", "")]));
+        assert!(args.fallback_model.is_none());
+    }
+
+    #[test]
+    fn env_no_session_persistence_truthy_enables() {
+        for val in ["1", "true", "yes", "on", "TRUE", "Yes"] {
+            let mut args = empty_args();
+            apply_env_overrides_from(
+                &mut args,
+                &env_with(&[("ROBA_NO_SESSION_PERSISTENCE", val)]),
+            );
+            assert!(
+                args.no_session_persistence,
+                "env value {val:?} should enable no_session_persistence"
+            );
+        }
+    }
+
+    #[test]
+    fn env_no_session_persistence_ignores_falsy_or_garbage() {
+        for val in ["0", "false", "no", "off", "", "garbage"] {
+            let mut args = empty_args();
+            apply_env_overrides_from(
+                &mut args,
+                &env_with(&[("ROBA_NO_SESSION_PERSISTENCE", val)]),
+            );
+            assert!(
+                !args.no_session_persistence,
+                "env value {val:?} should leave no_session_persistence off"
+            );
+        }
+    }
+
+    #[test]
+    fn env_no_session_persistence_does_not_clear_cli() {
+        let mut args = empty_args();
+        args.no_session_persistence = true;
+        apply_env_overrides_from(
+            &mut args,
+            &env_with(&[("ROBA_NO_SESSION_PERSISTENCE", "0")]),
+        );
+        assert!(
+            args.no_session_persistence,
+            "CLI true should survive env false"
+        );
     }
 }

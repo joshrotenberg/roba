@@ -34,6 +34,9 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     if let Some(m) = &args.model {
         cmd = cmd.model(m.clone());
     }
+    if let Some(m) = &args.fallback_model {
+        cmd = cmd.fallback_model(m.clone());
+    }
     if let Some(e) = args.effort {
         cmd = cmd.effort(match e {
             EffortLevel::Low => Effort::Low,
@@ -84,6 +87,14 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     }
     if args.bare {
         cmd = cmd.bare();
+    }
+    if args.no_session_persistence {
+        cmd = cmd.no_session_persistence();
+    }
+    // Additional tool-access directories: forward each --add-dir path
+    // verbatim (claude resolves and reads them). Pure pass-through.
+    for d in &args.add_dir {
+        cmd = cmd.add_dir(d.clone());
     }
     // MCP servers for this run: forward each --mcp-config path verbatim
     // (claude reads the file), then the strict flag. Pure pass-through.

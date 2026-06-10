@@ -1050,6 +1050,37 @@ fn live_mcp_config_accepted() {
 }
 
 // ---------------------------------------------------------------------------
+// med-tier pass-throughs (--add-dir / --fallback-model / --no-session-persistence)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn live_medtier_flags_accepted() {
+    // The three med-tier pass-throughs plumb through and a normal short run
+    // completes. Assert MECHANICS only: all three flags are accepted and the
+    // run succeeds. We do NOT assert that the fallback actually fires (needs
+    // an overloaded primary) or that no JSONL was written (environment- and
+    // timing-dependent) -- those are claude's behaviors, not roba's plumbing.
+    // --add-dir points at a real temp dir; --fallback-model reuses the haiku
+    // id the helpers default to; --no-session-persistence is a bare flag.
+    let dir = fresh_dir();
+    let extra = fresh_dir();
+
+    roba_in(dir.path())
+        .arg("--add-dir")
+        .arg(extra.path())
+        .args([
+            "--fallback-model",
+            "haiku",
+            "--no-session-persistence",
+            "respond with the single word: medtier",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("medtier"));
+}
+
+// ---------------------------------------------------------------------------
 // INTENTIONALLY UNTESTED (high cost / low signal, or no fixture path yet)
 // ---------------------------------------------------------------------------
 //
