@@ -68,8 +68,11 @@ when you want any of:
 - **Session re-entry without living in a session.** `-c` continues the
   most recent session in the directory, `-c ID` resumes a specific one,
   `--fork` branches it, `--pick` is a fuzzy chooser; `roba history` /
-  `roba last` browse past runs. You dip back into a thread without
-  opening the TUI. `--session-id <uuid>` assigns a caller-chosen id to a
+  `roba last` browse past runs. `roba history --worktree <NAME>` filters
+  to the sessions that ran in a given git worktree -- the quickest way to
+  find a dispatched runner's session to `-c` / `--resume`. You dip back
+  into a thread without opening the TUI. `--session-id <uuid>` assigns a
+  caller-chosen id to a
   *new* session -- mint it once, then `-c=<uuid>` on later turns (the
   reliable scripted-multi-turn pattern).
 - **Read-only inspection.** `roba worktree list` enumerates the git
