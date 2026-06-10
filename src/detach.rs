@@ -284,15 +284,59 @@ fn fifo_has_pending_data(fd: std::os::unix::io::RawFd) -> std::io::Result<bool> 
 /// - `FILE_TYPE_CHAR` (a console or `NUL`), a disk file, or an
 ///   unknown/erroring type -> `false` (proceed)
 ///
-/// This is conservative on pipes -- it blocks `echo x | roba --detach`
-/// rather than silently dropping the input -- while letting an interactive
-/// console or a benign `NUL` stdin through. It does not peek (so a closed,
-/// data-less pipe is still blocked, unlike unix); the trade is no false
-/// data-loss on the common console/redirect cases.
+/// Pipes are classified with `PeekNamedPipe`, which reports available
+/// bytes WITHOUT consuming them: data present -> error; an empty or
+/// EOF'd pipe (a spawner's closed stdin -- the common orchestrator
+/// shape) -> proceed. This matches the unix semantics; the only
+/// asymmetry is an open-but-silent pipe (unix conservatively errors,
+/// windows proceeds on zero available bytes).
 #[cfg(not(unix))]
 fn stdin_would_lose_data() -> std::io::Result<bool> {
     use std::os::windows::io::AsRawHandle;
-    Ok(handle_is_pipe(std::io::stdin().as_raw_handle()))
+    let handle = std::io::stdin().as_raw_handle();
+    if !handle_is_pipe(handle) {
+        return Ok(false);
+    }
+    Ok(pipe_has_data(handle))
+}
+
+/// True iff the pipe handle has bytes available to read, per
+/// `PeekNamedPipe` (non-consuming). A broken pipe (writer closed, no
+/// data -- the EOF case) proceeds; any other peek failure is treated
+/// conservatively as data-risk.
+#[cfg(not(unix))]
+fn pipe_has_data(handle: std::os::windows::io::RawHandle) -> bool {
+    const ERROR_BROKEN_PIPE: u32 = 109;
+    // SAFETY: PeekNamedPipe with a null buffer only queries the byte
+    // count; GetLastError reads thread-local state. Both are read-only
+    // with respect to the pipe contents.
+    unsafe extern "system" {
+        fn PeekNamedPipe(
+            handle: *mut core::ffi::c_void,
+            buffer: *mut core::ffi::c_void,
+            buffer_size: u32,
+            bytes_read: *mut u32,
+            total_bytes_avail: *mut u32,
+            bytes_left_this_message: *mut u32,
+        ) -> i32;
+        fn GetLastError() -> u32;
+    }
+    let mut avail: u32 = 0;
+    let ok = unsafe {
+        PeekNamedPipe(
+            handle,
+            core::ptr::null_mut(),
+            0,
+            core::ptr::null_mut(),
+            &mut avail,
+            core::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        // Writer already closed with nothing buffered = EOF = benign.
+        return unsafe { GetLastError() } != ERROR_BROKEN_PIPE;
+    }
+    avail > 0
 }
 
 /// True iff the Windows handle is an anonymous/named pipe
