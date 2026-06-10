@@ -32,6 +32,13 @@
 //! intentional -- it is *not* a sandbox. Don't define aliases whose
 //! templates run commands you wouldn't run yourself.
 //!
+//! Alias *args* interpolated into a `$(...)` region are treated as
+//! **data, not shell code**: every `${...}` value is POSIX
+//! single-quoted before the command reaches `sh -c`, so a
+//! `;`/`&&`/backtick-bearing arg cannot break out and execute
+//! (closes #287). Put shell syntax in the template literal, not in an
+//! arg.
+//!
 //! # v1 limitations
 //!
 //! - No recursive expansion: an alias cannot invoke another alias.
@@ -512,6 +519,22 @@ fn split_positional_flags(raw: &[String]) -> (Vec<String>, Vec<String>) {
 // Template expansion
 // ---------------------------------------------------------------------------
 
+/// The context a `${...}` value is being expanded into.
+///
+/// In [`Ctx::Prompt`] a resolved value is inserted verbatim -- it is
+/// inert prompt text. In [`Ctx::Shell`] the value is interpolated into a
+/// `$(...)` command string that will be handed to `sh -c`, so every
+/// substituted value is POSIX single-quoted to land as ONE inert shell
+/// token: alias args are *data, not shell code* (closes #287). The
+/// author's literal template text, the `$$`->`$` escape, and nested
+/// `$()` composition are unaffected -- only resolved arg values are
+/// quoted, and only in `Shell` context.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ctx {
+    Prompt,
+    Shell,
+}
+
 /// Expand a template: `${...}` variables, `$$` escape, and `$(...)`
 /// shell substitution, in a single left-to-right scan.
 ///
@@ -522,7 +545,22 @@ fn split_positional_flags(raw: &[String]) -> (Vec<String>, Vec<String>) {
 /// `$(cmd)` runs `cmd` in `sh -c` and inserts its stdout (one trailing
 /// newline trimmed). A literal `$` not part of any of these forms is
 /// passed through unchanged -- so dollar amounts in prose survive.
+///
+/// # Security
+///
+/// Any arg value substituted *inside* a `$(...)` region is POSIX
+/// single-quoted before reaching the shell, so it is data and never
+/// shell code: `$(gh pr diff ${pr})` with `pr = "244; rm -rf ~"`
+/// expands to `gh pr diff '244; rm -rf ~'` -- one inert argument, no
+/// exec. Shell syntax must live in the template literal, not in an arg.
 pub fn expand_template(template: &str, schema: &[String], args: &[String]) -> Result<String> {
+    expand_in(template, schema, args, Ctx::Prompt)
+}
+
+/// Inner expander, parameterized by [`Ctx`]. The public
+/// [`expand_template`] enters at [`Ctx::Prompt`]; a `$(...)` region
+/// always recurses at [`Ctx::Shell`] (its body feeds `sh -c`).
+fn expand_in(template: &str, schema: &[String], args: &[String], ctx: Ctx) -> Result<String> {
     let chars: Vec<char> = template.chars().collect();
     let mut out = String::new();
     let mut i = 0;
@@ -537,7 +575,10 @@ pub fn expand_template(template: &str, schema: &[String], args: &[String]) -> Re
                 '{' => {
                     if let Some(close) = find_char(&chars, i + 2, '}') {
                         let name: String = chars[i + 2..close].iter().collect();
-                        out.push_str(&resolve_var(&name, schema, args));
+                        match ctx {
+                            Ctx::Prompt => out.push_str(&resolve_var(&name, schema, args)),
+                            Ctx::Shell => out.push_str(&resolve_var_shell(&name, schema, args)),
+                        }
                         i = close + 1;
                         continue;
                     }
@@ -550,7 +591,9 @@ pub fn expand_template(template: &str, schema: &[String], args: &[String]) -> Re
                         // like `$(gh pr diff ${pr})` sees the real value.
                         // `$$` stays the escape for shell-side `$`
                         // (`$(echo $$HOME)` reaches sh as `echo $HOME`).
-                        let cmd = expand_template(&cmd, schema, args)?;
+                        // Shell context single-quotes every resolved arg
+                        // so it is data, not code (closes #287).
+                        let cmd = expand_in(&cmd, schema, args, Ctx::Shell)?;
                         out.push_str(&run_shell(&cmd)?);
                         i = close + 1;
                         continue;
@@ -579,6 +622,44 @@ fn resolve_var(name: &str, schema: &[String], args: &[String]) -> String {
         return args.get(idx).cloned().unwrap_or_default();
     }
     String::new()
+}
+
+/// Shell-context variable resolution: like [`resolve_var`] but every
+/// value is POSIX single-quoted (via [`shell_quote`]) so it lands as one
+/// inert `sh` token. `${@}` quotes each arg *separately* and space-joins
+/// them (`'a' 'b' 'c'`), preserving word separation; `${N}` / `${name}`
+/// quote their single resolved value (empty / unknown -> `''`).
+fn resolve_var_shell(name: &str, schema: &[String], args: &[String]) -> String {
+    if name == "@" {
+        return args
+            .iter()
+            .map(|a| shell_quote(a))
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
+    shell_quote(&resolve_var(name, schema, args))
+}
+
+/// POSIX single-quote `s` so it is exactly one inert `sh` token: wrap in
+/// single quotes and rewrite every embedded `'` as `'\''` (close-quote,
+/// escaped literal quote, reopen-quote). An empty string becomes `''`.
+/// Bulletproof for `sh`: inside single quotes nothing is special, so no
+/// metacharacter (`;`, `&&`, backtick, `$(...)`, glob, newline) can act.
+fn shell_quote(s: &str) -> String {
+    if s.is_empty() {
+        return "''".to_string();
+    }
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
 }
 
 /// Run `cmd` in `sh -c`, returning stdout with one trailing newline
@@ -802,6 +883,139 @@ mod tests {
     fn expand_template_failing_shell_errors() {
         let err = expand_template("$(exit 3)", &[], &[]).unwrap_err();
         assert!(format!("{err:#}").contains("shell substitution"));
+    }
+
+    // --- #287: shell-context quoting (args are data, not shell code) ---
+
+    #[test]
+    fn shell_quote_wraps_plain_value() {
+        assert_eq!(shell_quote("244"), "'244'");
+        assert_eq!(shell_quote("hello world"), "'hello world'");
+    }
+
+    #[test]
+    fn shell_quote_empty_is_two_quotes() {
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn shell_quote_escapes_embedded_single_quote() {
+        // close-quote, escaped literal quote, reopen-quote.
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn shell_quote_neutralizes_metacharacters() {
+        // Every shell metacharacter ends up inside single quotes, where
+        // nothing is special -- one inert token, no exec.
+        for raw in [
+            "X; rm -rf ~",
+            "a && b",
+            "`whoami`",
+            "$(whoami)",
+            "a | b",
+            "x > /etc/passwd",
+            "* .rs",
+        ] {
+            let q = shell_quote(raw);
+            assert!(q.starts_with('\'') && q.ends_with('\''), "{q}");
+            // No raw single-quote survives unescaped inside the body, and
+            // the value is bracketed by exactly the wrapping quotes.
+            assert_eq!(q, format!("'{}'", raw.replace('\'', "'\\''")), "{q}");
+        }
+    }
+
+    #[test]
+    fn shell_ctx_quotes_injection_payload_as_one_token() {
+        // The verified repro from #287: the arg value must land as a
+        // SINGLE quoted token inside the command, never as live shell
+        // code. We expand the COMMAND BODY directly in Shell context, so
+        // no shell runs -- we prove the transform, not the execution.
+        let payload = "X; touch /tmp/PWN; echo END";
+        let cmd = expand_in(
+            "echo got-${n}",
+            &s(&["n"]),
+            &[payload.to_string()],
+            Ctx::Shell,
+        )
+        .unwrap();
+        assert_eq!(cmd, "echo got-'X; touch /tmp/PWN; echo END'");
+        // The dangerous `;` only appears inside the quoted token; there
+        // is no unquoted `;` that sh would treat as a command separator.
+        let outside_quotes: String = {
+            let mut keep = String::new();
+            let mut in_q = false;
+            for c in cmd.chars() {
+                if c == '\'' {
+                    in_q = !in_q;
+                } else if !in_q {
+                    keep.push(c);
+                }
+            }
+            keep
+        };
+        assert!(
+            !outside_quotes.contains(';'),
+            "unquoted `;`: {outside_quotes}"
+        );
+    }
+
+    #[test]
+    fn shell_ctx_quotes_various_metachar_args() {
+        for payload in ["a; b", "a && b", "`id`", "$(id)", "it's", "has space"] {
+            let cmd =
+                expand_in("run ${x}", &s(&["x"]), &[payload.to_string()], Ctx::Shell).unwrap();
+            assert_eq!(cmd, format!("run {}", shell_quote(payload)), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn shell_ctx_quotes_each_at_arg_separately() {
+        // ${@} preserves word separation: each arg is its own quoted
+        // token, so an injected separator in one arg can't merge them.
+        let cmd = expand_in("cmd ${@}", &[], &s(&["a b", "c;d", "e"]), Ctx::Shell).unwrap();
+        assert_eq!(cmd, "cmd 'a b' 'c;d' 'e'");
+    }
+
+    #[test]
+    fn shell_ctx_legit_path_still_substitutes_quoted() {
+        // The #248 guarantee survives: the value IS substituted into the
+        // command (just quoted now). `$(gh pr diff ${pr})` with pr=244
+        // yields the command `gh pr diff '244'`.
+        let cmd = expand_in("gh pr diff ${pr}", &s(&["pr"]), &s(&["244"]), Ctx::Shell).unwrap();
+        assert_eq!(cmd, "gh pr diff '244'");
+    }
+
+    #[test]
+    fn shell_ctx_empty_var_quotes_to_empty_token() {
+        // An unset/out-of-range var becomes an explicit empty token, not
+        // a bare gap that could let the next word collide.
+        let cmd = expand_in("echo ${nope}", &[], &[], Ctx::Shell).unwrap();
+        assert_eq!(cmd, "echo ''");
+    }
+
+    #[test]
+    fn shell_ctx_dollar_escape_unchanged() {
+        // `$$` is still the shell-`$` escape inside a command body; it is
+        // not an arg value, so quoting does not touch it.
+        let cmd = expand_in("echo $$HOME", &[], &[], Ctx::Shell).unwrap();
+        assert_eq!(cmd, "echo $HOME");
+    }
+
+    #[test]
+    fn expand_template_injection_payload_does_not_execute() {
+        // End-to-end with a BENIGN payload: the injected `echo INJECTED`
+        // must appear as inert text in the result, NOT run as a second
+        // command. If quoting failed, sh would run `echo INJECTED` and
+        // the marker would be on its own line / absent from the token.
+        let out = expand_template(
+            "$(echo got-${n})",
+            &s(&["n"]),
+            &["A; echo INJECTED".to_string()],
+        )
+        .unwrap();
+        // `echo got-'A; echo INJECTED'` prints the whole thing literally.
+        assert_eq!(out, "got-A; echo INJECTED");
     }
 
     #[test]
