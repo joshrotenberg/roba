@@ -98,10 +98,10 @@ pub struct Profile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub no_agent_check: Option<bool>,
     /// Set claude's `--permission-mode` (`--permission-mode MODE`).
-    /// Accepts: `default`, `acceptEdits`, `dontAsk`, `plan`, `auto`.
-    /// The shortcut flags (`readonly`, `writable`, `full_auto`) take
-    /// precedence at the CLI layer; this key applies when none of the
-    /// shortcuts are set.
+    /// Accepts: `default`, `acceptEdits`, `dontAsk`, `plan`, `auto`,
+    /// `bypassPermissions`. Applies alongside the allow-list flags
+    /// (`readonly`, `writable`); `full_auto` bypasses all checks and
+    /// ignores this key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<PermissionModeConfig>,
     /// Replace the default system prompt entirely (`--system-prompt`).

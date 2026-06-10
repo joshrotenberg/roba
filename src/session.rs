@@ -61,7 +61,7 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     if let Some(ref text) = args.append_system_prompt {
         cmd = cmd.append_system_prompt(text.clone());
     }
-    if args.show_thinking {
+    if args.show_thinking && (args.stream || args.trace.is_some()) {
         cmd = cmd.include_partial_messages();
     }
     if args.no_retry {
@@ -115,21 +115,24 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
 /// - `--readonly` -- explicit form of the default; no-op.
 /// - `--writable` -- preset that adds Edit + Write.
 /// - `--permission-mode MODE` -- pass a specific permission mode to
-///   claude (`plan`, `dontAsk`, `auto`, `acceptEdits`, `default`).
+///   claude (`plan`, `dontAsk`, `auto`, `acceptEdits`, `bypassPermissions`,
+///   `default`).
 ///   Overrides the shortcut flags for the mode itself, but the
 ///   allowlist (`--allow-tool` / `--writable` preset) still applies.
 /// - `--allow-tool` / profile `allow_tool` -- add specific tools or
 ///   patterns (e.g. `"Bash(git status)"`).
-/// - `--deny-tool` / profile `deny_tool` -- block patterns. Applied
-///   independently; useful with `--full-auto` to keep some teeth.
+/// - `--deny-tool` / profile `deny_tool` -- block patterns. Not applied
+///   under `--full-auto`, which bypasses all checks before the allow/deny
+///   lists are built.
 /// - `--full-auto` -- bypass everything (overrides above).
 pub fn apply_permissions(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     if args.full_auto {
         return cmd.dangerously_skip_permissions();
     }
 
-    // Apply --permission-mode if set (and no shortcut flag overrides it;
-    // clap's conflicts_with_all ensures only one of the three is set).
+    // Apply --permission-mode if set. --full-auto returned above, so the
+    // mode only applies on the non-bypass path; it composes with
+    // --readonly / --writable (the allow list below still applies).
     if let Some(mode) = args.permission_mode {
         let cw_mode = permission_mode_to_cw(mode);
         cmd = cmd.permission_mode(cw_mode);
@@ -229,6 +232,44 @@ mod tests {
     fn name_empty_prompt_falls_back_to_bare_roba() {
         assert_eq!(derive_session_name(""), "roba");
         assert_eq!(derive_session_name("   \n  \n"), "roba");
+    }
+
+    #[test]
+    fn show_thinking_gated_on_stream_or_trace() {
+        // `--show-thinking` only sets claude's --include-partial-messages
+        // when streaming (--stream) or tracing (--trace); on the default
+        // non-streaming path claude rejects --include-partial-messages, so
+        // the flag must NOT be forwarded. Assert via the derived Debug of
+        // the resolved QueryCommand.
+        use crate::cli::Cli;
+        use clap::Parser;
+
+        let apply = |argv: &[&str]| {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            format!("{:?}", apply_session(QueryCommand::new("hi"), &cli.ask))
+        };
+
+        // Default path: gated off.
+        assert!(
+            apply(&["roba", "--show-thinking", "prompt"])
+                .contains("include_partial_messages: false")
+        );
+        // --stream: gated on.
+        assert!(
+            apply(&["roba", "--show-thinking", "--stream", "prompt"])
+                .contains("include_partial_messages: true")
+        );
+        // --trace: gated on.
+        assert!(
+            apply(&[
+                "roba",
+                "--show-thinking",
+                "--trace",
+                "/tmp/x.jsonl",
+                "prompt"
+            ])
+            .contains("include_partial_messages: true")
+        );
     }
 
     #[test]

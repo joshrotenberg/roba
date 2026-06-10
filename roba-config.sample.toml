@@ -6,7 +6,8 @@
 #
 # DISCOVERY  roba reads ~/.config/roba.toml, then every roba.toml from the
 #            git root down to the cwd. Closer-to-cwd files win per key; list
-#            keys (prepend/append/attach/allow_tool/deny_tool) concatenate.
+#            keys (prepend/append/attach/allow_tool/deny_tool/add_dir/
+#            mcp_config) concatenate.
 # PRECEDENCE highest wins: CLI flag > ROBA_<KEY> env var > active
 #            [profile.NAME] > top-level keys below > roba's built-in defaults.
 # MIRRORS    every key here is also a CLI flag (--key) and an env var
@@ -21,6 +22,7 @@
 # prepend = ["CLAUDE.md"]         # files prepended to every prompt
 # append  = ["CONVENTIONS.md"]    # files appended
 # attach  = ["src/**/*.rs"]       # globbed files embedded with `File: PATH`
+# editor_history = 1              # pre-fill -e with the last N responses (0 disables)
 # git_diff   = true               # embed the working-tree diff
 # git_log    = 5                  # embed the last N commits
 # git_status = true               # embed `git status --short`
@@ -64,6 +66,8 @@
 # echo  = true                    # print the resolved prompt before the answer
 # show_thinking = true            # render extended-thinking blocks (needs stream)
 # no_dollars = true               # footer shows tokens only, no dollar figure
+# trace = "trace.jsonl"           # write the spawned session's events as JSONL
+# rates_file = "rates.toml"       # override the bundled per-model rate table
 
 # --- Failure / agent-tier ---
 # no_retry  = true                # surface transient failures immediately

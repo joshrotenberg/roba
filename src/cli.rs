@@ -46,35 +46,43 @@ Examples -- for agents & scripts (deterministic, pipe-clean):
   roba --no-retry \"...\"; echo \"exit=$?\"                typed exit codes
   roba --session ci-bot \"follow up\"                    resume a named session
   roba --full-auto -C repo -f task.md                  fire an unattended worker
+  Exit codes: 0 ok (refusals included), 1 failure (incl. --max-turns /
+  --max-budget-usd cap hits), 2 auth, 3 budget, 4 timeout.
 
-Dispatch modes (firing roba as an unattended worker):
+Unattended workers (composing the primitives):
   --full-auto -C <dir> -f <file>   edit the current checkout in place; the
                                    orchestrator owns the branch and PR (-C
                                    chdirs first, so -f resolves inside <dir>)
   ...add --worktree                run in an isolated git worktree, for
                                    parallel same-repo workers that must not
                                    share a branch
-  git worktree add <dir> -C <dir>  own the branch you'll PR from, for the
+  git worktree add; roba -C <dir>  own the branch you'll PR from, for the
                                    orchestrator-owns-the-branch case; roba's
                                    --worktree makes a claude-managed worktree
                                    instead
 
 Environment variables:
-  Every long flag has a ROBA_<FLAG> override (uppercased, '-' -> '_'):
+  Most long flags have a ROBA_<FLAG> override (uppercased, '-' -> '_'):
   --model -> ROBA_MODEL; bool flags take a truthy value (--writable ->
-  ROBA_WRITABLE=1). Special cases:
+  ROBA_WRITABLE=1; falsy values are ignored -- env can only enable, never
+  disable). One-shot flags (-p, -f, -e, --code, --out, --fork, --pick,
+  --fresh, --show-permissions, -C) have no env form. Special cases:
     ROBA_PROFILE=NAME      apply a profile (like --profile NAME)
     ROBA_VAR_<KEY>=VALUE   set a template var (like --var KEY=VALUE)
-    ROBA_RATES_FILE=PATH   override the footer rates table
+    ROBA_CONTINUE=1|ID     truthy = continue most recent; else a session id
+    ROBA_WORKTREE=1|NAME   truthy = fresh anonymous worktree; else a name
+    ROBA_RATES_FILE=PATH   override the rates table (footer + roba cost)
     NO_COLOR=1             disable color (help and answer rendering)
-  Precedence: CLI flag > ROBA_* env > active profile > built-in default.
+  Precedence: CLI > ROBA_* env > profile > top-level keys > built-in default.
 
 Configuration (roba.toml):
-  Every flag is also a key under [profile.NAME] or at the top level of a
+  Most flags are also keys under [profile.NAME] or at the top level of a
   roba.toml -- discovered by walking up from the cwd, plus
   ~/.config/roba.toml. Closer-to-cwd files win; a `default` profile
-  auto-applies. Define [alias.NAME] shortcuts too. See the `roba profile`
-  and `roba alias` subcommands.";
+  auto-applies. [alias.NAME] defines shortcut verbs; [session] binds
+  NAME = \"uuid\" handles for --session NAME. roba-config.sample.toml
+  (written by `roba profile init`) lists every valid key. See the
+  `roba profile` and `roba alias` subcommands.";
 
 /// The blurb shown when `roba` is run with no resolvable prompt on a TTY.
 /// Single-sourced from `AFTER_HELP` so the examples never drift.
@@ -176,7 +184,7 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum SubCommand {
-    /// List recent sessions across all projects.
+    /// List recent sessions (current project by default).
     History(HistoryArgs),
     /// Reprint the most recent session's last answer.
     Last(LastArgs),
@@ -237,6 +245,7 @@ pub enum SubCommand {
     /// the right place for your shell. Examples:
     ///   roba completions zsh  > ~/.zfunc/_roba
     ///   roba completions bash > /etc/bash_completion.d/roba
+    #[command(verbatim_doc_comment)]
     Completions {
         /// Target shell (bash, zsh, fish, powershell, elvish).
         shell: clap_complete::Shell,
@@ -278,6 +287,8 @@ pub enum WorktreeCmd {
 #[derive(ClapArgs, Debug)]
 pub struct WorktreeListArgs {
     /// Emit JSON instead of a human table.
+    ///
+    /// Output is the uniform `{ version: 1, result: [worktrees] }` envelope.
     #[arg(long)]
     pub json: bool,
 }
@@ -349,6 +360,8 @@ pub struct CostArgs {
     pub limit: Option<usize>,
 
     /// Emit JSON instead of a human table.
+    ///
+    /// Output is the uniform `{ version: 1, result: <rollup> }` envelope.
     #[arg(long)]
     pub json: bool,
 
@@ -501,11 +514,15 @@ pub struct HistoryArgs {
     pub all_projects: bool,
 
     /// Emit JSON instead of a human table.
+    ///
+    /// Output is the uniform `{ version: 1, result: [sessions] }` envelope.
     #[arg(long)]
     pub json: bool,
 
-    /// Output JSONL file paths only (one per line), suitable for shell composition.
-    /// Optional N limits to the N most recent sessions. Implies --quiet.
+    /// Output JSONL file paths only (one per line), suitable for shell
+    /// composition. Optional N limits to the N most recent sessions; without
+    /// N every session's path prints (`-n`/`--all` are ignored). Nothing but
+    /// paths is printed.
     #[arg(long, value_name = "N", num_args = 0..=1, require_equals = false)]
     pub paths: Option<Option<usize>>,
 
@@ -514,7 +531,7 @@ pub struct HistoryArgs {
     /// Matches sessions whose working directory is under
     /// `.claude/worktrees/<NAME>` -- the runner-worktree convention that
     /// `roba worktree list` enumerates. Use it to find a dispatched
-    /// runner's session to `-c` / `--resume`.
+    /// runner's session to resume with `-c ID`.
     ///
     /// Worktree sessions live under their own project slug (distinct from
     /// the base repo's), so this implies a cross-project scan and is
@@ -539,12 +556,13 @@ pub struct AskArgs {
     ///
     /// Use when the positional form would be swallowed by an
     /// optional-value flag, e.g. `roba -c -p "..."` to continue the most
-    /// recent session. Mutually exclusive with the positional `[PROMPT]`.
+    /// recent session. Mutually exclusive with the positional `[PROMPT]`,
+    /// `-f`, and `-e`.
     #[arg(
         short = 'p',
         long = "prompt",
         value_name = "TEXT",
-        conflicts_with = "prompt",
+        conflicts_with_all = ["prompt", "file", "editor"],
         help_heading = "Prompt sources"
     )]
     pub prompt_flag: Option<String>,
@@ -659,6 +677,11 @@ pub struct AskArgs {
     /// A stable observability handle for in-flight runs that survives
     /// roba's exit. Forces the streaming pipeline internally even when
     /// `--stream` is not set.
+    ///
+    /// The lines are claude's own stream-json events written verbatim (one
+    /// JSON object per line). The format is claude-code's, not part of
+    /// roba's versioned `--json` ABI, and may change with claude versions;
+    /// only the path is stable.
     #[arg(long, value_name = "PATH", help_heading = "Output")]
     pub trace: Option<PathBuf>,
 
@@ -673,8 +696,9 @@ pub struct AskArgs {
     )]
     pub stream: bool,
 
-    /// Render extended-thinking blocks live on stderr. Only takes
-    /// effect with `--stream`; ignored otherwise.
+    /// Render extended-thinking blocks live on stderr. Only takes effect
+    /// with `--stream` (rendered live) or `--trace` (events land in the
+    /// trace); ignored otherwise.
     #[arg(long, help_heading = "Output")]
     pub show_thinking: bool,
 
@@ -831,7 +855,7 @@ pub struct AskArgs {
     ///
     /// Passes claude's own `--session-id <uuid>` through. The value must
     /// be a valid UUID (claude validates it). Use it to mint a session
-    /// with an id you control on the FIRST turn, then `--resume`/`-c=ID`
+    /// with an id you control on the FIRST turn, then `-c=ID`
     /// that id on later turns -- the reliable scripted-multi-turn pattern,
     /// since `claude -p --continue` no-ops in print mode. Conflicts with
     /// the session selectors (`-c`/`--continue`, `--fork`, `--pick`,
@@ -874,7 +898,8 @@ pub struct AskArgs {
     ///
     /// Passes claude's own `--no-session-persistence` through. The run
     /// executes normally but leaves no resumable session on disk -- so it
-    /// won't appear in `roba history` and can't be `-c`/`--resume`d later.
+    /// won't appear in `roba history` and can't be continued with
+    /// `-c`/`-c=ID` later.
     /// For one-off, stateless calls where a session record is just noise.
     #[arg(long, help_heading = "Sessions")]
     pub no_session_persistence: bool,
@@ -882,10 +907,12 @@ pub struct AskArgs {
     // ----- Permissions ------------------------------------------------------
     /// Set claude's own `--permission-mode`.
     ///
-    /// A separate axis from `--readonly` / `--writable` / `--full-auto`
-    /// (which set the allowed-tools list); setting both is valid -- e.g.
+    /// A separate axis from `--readonly` / `--writable` (which set the
+    /// allowed-tools list); setting both is valid -- e.g.
     /// `--writable --permission-mode plan` grants write access but
-    /// requires a plan review first.
+    /// requires a plan review first. `--full-auto` is the exception: it
+    /// bypasses permission checks entirely, so a `--permission-mode`
+    /// passed with it is ignored.
     #[arg(long, value_name = "MODE", value_enum, help_heading = "Permissions")]
     pub permission_mode: Option<PermMode>,
 
@@ -1476,10 +1503,33 @@ mod tests {
 
     #[test]
     fn prompt_flag_conflicts_with_positional() {
-        // clap's `conflicts_with = "prompt"` rejects supplying both the
-        // explicit `-p` flag and the positional argument.
+        // clap's `conflicts_with_all` rejects supplying both the explicit
+        // `-p` flag and the positional argument.
         use clap::Parser;
         assert!(Cli::try_parse_from(["roba", "-p", "x", "positional"]).is_err());
+    }
+
+    #[test]
+    fn prompt_flag_conflicts_with_file() {
+        // `-p` and `-f` are both prompt sources; supplying both silently
+        // dropped the `-p` text before the conflicts_with_all fix.
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["roba", "-p", "x", "-f", "task.md"]).is_err());
+    }
+
+    #[test]
+    fn prompt_flag_conflicts_with_editor() {
+        // `-p` and `-e` are both prompt sources and are mutually exclusive.
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["roba", "-p", "x", "-e"]).is_err());
+    }
+
+    #[test]
+    fn prompt_flag_alone_still_parses() {
+        // The escape hatch on its own is unaffected by the added conflicts.
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "-p", "x"]).unwrap();
+        assert_eq!(cli.ask.prompt_flag.as_deref(), Some("x"));
     }
 
     #[test]
