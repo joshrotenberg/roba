@@ -55,7 +55,7 @@ exit. roba keeps that model and adds:
 
 | Adds | How |
 |---|---|
-| **Composable input** | `-f` file, piped stdin, `-e` editor, `--prepend` / `--append`, `--attach` globs, `--git-diff` / `--git-log` / `--git-status`, `--var` template vars |
+| **Composable input** | `-f` file, piped stdin (the prompt, or context when a prompt is given), `-e` editor, `--prepend` / `--append`, `--attach` globs, `--git-diff` / `--git-log` / `--git-status`, `--var` template vars |
 | **Pipe-clean output** | stdout is the answer; all metadata (footer, spinner, tool lines, warnings) goes to stderr -- piping to `jq` sees a clean stream |
 | **TTY rendering** | markdown, spinner, color while it runs; `--plain` / `NO_COLOR` turns it off |
 | **Session re-entry** | `-c` continue, `-c ID` resume, `--fork`, `--pick` chooser, `--session-id` mints a caller-chosen id; `roba history` / `roba last` browse past runs |
@@ -95,6 +95,7 @@ roba -c="$uuid" "now do step 1"
 # Pipe-friendly: answer only, stdin in
 roba "what's 2+2" -q            # prints "4"
 echo "summarize this" | roba    # stdin works, no flag needed
+cat err.log | roba "what's wrong here?"   # piped data becomes context
 ```
 
 > [!NOTE]
