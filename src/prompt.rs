@@ -102,6 +102,19 @@ fn piped_stdin_context() -> Result<Option<String>> {
     if std::io::stdin().is_terminal() {
         return Ok(None);
     }
+    // Non-TTY stdin, but only read it if data is actually ready. An
+    // open-but-idle inherited pipe (a backgrounded/orchestrated roba whose
+    // stdin is an open pipe with no data and no EOF) would block
+    // `read_to_string` forever (#288). The shared probe classifies it as
+    // not-readable, so we skip it: no piped context, no hang. A pipe with
+    // bytes or a non-empty `< file` redirect is readable and reads as before.
+    // Only a DEFINITIVE "not readable" skips; a rare probe error falls
+    // through to the read, preserving the old data-preserving behavior. (The
+    // tradeoff: a producer that hasn't written its first byte by the time
+    // roba probes is treated as no-context -- acceptable next to a hang.)
+    if let Ok(false) = crate::stdin_probe::stdin_is_readable() {
+        return Ok(None);
+    }
     let mut buf = String::new();
     std::io::stdin().read_to_string(&mut buf)?;
     Ok(stdin_as_context(&buf))
@@ -172,6 +185,58 @@ pub fn apply_vars(mut prompt: String, vars: &[(String, String)]) -> String {
     prompt
 }
 
+/// Scan a resolved prompt for surviving identifier-shaped `{{NAME}}`
+/// placeholders -- ones [`apply_vars`] did not substitute, usually a typo'd
+/// `--var` key (`--var NMAE=x` leaves `{{NAME}}`). Returns each distinct
+/// surviving placeholder in first-seen order (e.g. `{{NAME}}`).
+///
+/// Only `{{` + an identifier (`[A-Za-z_][A-Za-z0-9_]*`) + `}}` matches, so
+/// legitimate literal prose braces (`{{ 1 + 2 }}`, `{{}}`, `{{ not-ident }}`)
+/// do not false-fire. Hand-scanned to avoid a regex dependency.
+pub fn find_unsubstituted_placeholders(prompt: &str) -> Vec<String> {
+    let bytes = prompt.as_bytes();
+    let mut found: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'{' && bytes[i + 1] == b'{' {
+            let name_start = i + 2;
+            let mut j = name_start;
+            // First char of an identifier: letter or underscore.
+            if j < bytes.len() && (bytes[j].is_ascii_alphabetic() || bytes[j] == b'_') {
+                j += 1;
+                while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                    j += 1;
+                }
+                // Require a closing `}}` immediately after the identifier.
+                if j + 1 < bytes.len() && bytes[j] == b'}' && bytes[j + 1] == b'}' {
+                    let placeholder = format!("{{{{{}}}}}", &prompt[name_start..j]);
+                    if !found.contains(&placeholder) {
+                        found.push(placeholder);
+                    }
+                    i = j + 2;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    found
+}
+
+/// Emit one stderr warning when a resolved prompt still carries
+/// identifier-shaped `{{VAR}}` placeholders after substitution. The prompt
+/// still sends (warn, not error -- legitimate literal braces can exist); this
+/// just surfaces a likely typo'd `--var` key before it ships to claude.
+pub fn warn_unsubstituted_placeholders(prompt: &str) {
+    let leftover = find_unsubstituted_placeholders(prompt);
+    if !leftover.is_empty() {
+        eprintln!(
+            "warning: unsubstituted placeholder(s): {} -- did you mean a different --var key?",
+            leftover.join(", ")
+        );
+    }
+}
+
 /// Merge two optional strings with a blank line in between.
 pub fn merge_optional(a: Option<String>, b: Option<String>) -> Option<String> {
     match (a, b) {
@@ -198,6 +263,7 @@ pub fn collect_attachments(patterns: &[String]) -> Result<Option<String>> {
                 continue;
             }
             had_any = true;
+            check_attach_size(&path)?;
             let content = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading --attach {}", path.display()))?;
             blocks.push(format!(
@@ -214,6 +280,51 @@ pub fn collect_attachments(patterns: &[String]) -> Result<Option<String>> {
         Ok(None)
     } else {
         Ok(Some(blocks.join("\n\n")))
+    }
+}
+
+/// Per-file size cap for `--attach`. A glob can fan out across a large tree
+/// and silently catch a multi-GB build artifact or log; reading that into
+/// memory before claude even starts would OOM. 10 MiB is generous for source
+/// and config (the intended attach targets) while still catching a runaway
+/// match. Fixed for now -- a `--max-attach-size` knob can come later if a
+/// real need appears. Applies ONLY to the `--attach` glob path; `-f` /
+/// `--prepend` / `--append` are single files the user named deliberately and
+/// stay uncapped.
+const MAX_ATTACH_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Error loudly if an attachment exceeds [`MAX_ATTACH_BYTES`], naming the file
+/// and its size, rather than OOMing on the read or silently skipping it
+/// (silent skip is its own data-loss bug). Stats the file without reading it.
+fn check_attach_size(path: &Path) -> Result<()> {
+    let len = std::fs::metadata(path)
+        .with_context(|| format!("stat --attach {}", path.display()))?
+        .len();
+    if len > MAX_ATTACH_BYTES {
+        bail!(
+            "attachment \"{}\" is {}, exceeds the {} cap; narrow the --attach glob",
+            path.display(),
+            human_bytes(len),
+            human_bytes(MAX_ATTACH_BYTES)
+        );
+    }
+    Ok(())
+}
+
+/// Format a byte count as a short human-readable size (e.g. `2.3 GiB`,
+/// `512 B`). Binary units to match the MiB cap.
+fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut size = n as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{n} B")
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
     }
 }
 
@@ -426,6 +537,86 @@ mod tests {
         let prompt = "{{X}} and {{X}} again".to_string();
         let vars = vec![("X".to_string(), "go".to_string())];
         assert_eq!(apply_vars(prompt, &vars), "go and go again");
+    }
+
+    // -- unsubstituted placeholder detection (#286) ------------------------
+
+    #[test]
+    fn detects_surviving_placeholder() {
+        let leftover = find_unsubstituted_placeholders("hi {{NAME}}");
+        assert_eq!(leftover, vec!["{{NAME}}".to_string()]);
+    }
+
+    #[test]
+    fn detects_multiple_distinct_placeholders_in_order() {
+        let leftover = find_unsubstituted_placeholders("{{NAME}} did {{TICKET}}");
+        assert_eq!(
+            leftover,
+            vec!["{{NAME}}".to_string(), "{{TICKET}}".to_string()]
+        );
+    }
+
+    #[test]
+    fn dedupes_repeated_placeholder() {
+        let leftover = find_unsubstituted_placeholders("{{X}} and {{X}}");
+        assert_eq!(leftover, vec!["{{X}}".to_string()]);
+    }
+
+    #[test]
+    fn fully_substituted_prompt_has_no_leftovers() {
+        // What `apply_vars` produces on a clean run: nothing to warn about.
+        let resolved = apply_vars(
+            "Hello {{NAME}}".to_string(),
+            &[("NAME".to_string(), "Josh".to_string())],
+        );
+        assert!(find_unsubstituted_placeholders(&resolved).is_empty());
+    }
+
+    #[test]
+    fn non_identifier_braces_do_not_false_fire() {
+        // Literal prose / non-identifier braces must not be flagged.
+        assert!(find_unsubstituted_placeholders("compute {{ 1 + 2 }}").is_empty());
+        assert!(find_unsubstituted_placeholders("empty {{}} here").is_empty());
+        assert!(find_unsubstituted_placeholders("{{not-an-ident}}").is_empty());
+        assert!(find_unsubstituted_placeholders("a single { brace").is_empty());
+    }
+
+    #[test]
+    fn underscore_and_digit_identifiers_match() {
+        let leftover = find_unsubstituted_placeholders("{{_PRIVATE}} {{VAR2}}");
+        assert_eq!(
+            leftover,
+            vec!["{{_PRIVATE}}".to_string(), "{{VAR2}}".to_string()]
+        );
+    }
+
+    // -- attach size guard (#271) ------------------------------------------
+
+    #[test]
+    fn human_bytes_formats_units() {
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(10 * 1024 * 1024), "10.0 MiB");
+        assert_eq!(human_bytes(2 * 1024 * 1024 * 1024), "2.0 GiB");
+    }
+
+    #[test]
+    fn under_cap_attachment_passes_size_check() {
+        let f = write_temp("small file contents");
+        assert!(check_attach_size(f.path()).is_ok());
+    }
+
+    #[test]
+    fn over_cap_attachment_errors_with_name_and_size() {
+        // Sparse file: set_len reports a logical size over the cap without
+        // writing bytes, so the stat-first guard bails before any read.
+        let f = tempfile::NamedTempFile::new().unwrap();
+        f.as_file().set_len(MAX_ATTACH_BYTES + 1).unwrap();
+        let err = check_attach_size(f.path()).unwrap_err().to_string();
+        assert!(err.contains("exceeds the 10.0 MiB cap"), "got: {err}");
+        assert!(
+            err.contains(&f.path().display().to_string()),
+            "error should name the file, got: {err}"
+        );
     }
 
     #[test]
