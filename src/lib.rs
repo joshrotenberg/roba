@@ -25,6 +25,7 @@ pub mod rates;
 pub mod render;
 pub mod session;
 pub mod stream;
+pub mod worktree;
 
 use crate::cli::{AskArgs, Cli, SubCommand};
 use crate::history::{pick_session_interactive, run_history, run_last};
@@ -58,6 +59,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             std::process::exit(code);
         }
         Some(SubCommand::Alias { action }) => aliases::run(action),
+        // Read-only inspection of the repo's git worktrees. Shells to
+        // `git worktree list` via claude-wrapper; no claude call.
+        Some(SubCommand::Worktree { cmd }) => worktree::run(cmd),
         // Pure generator: print the completion script and exit. No
         // claude call, no prompt resolution.
         Some(SubCommand::Completions { shell }) => {
