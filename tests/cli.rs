@@ -150,6 +150,19 @@ fn alias_draft_reaches_claude_call() {
 }
 
 #[test]
+fn profile_draft_reaches_claude_call() {
+    // With PATH cleared, `roba profile draft` wires through to the claude
+    // call and fails with the normal claude-missing error -- proving the
+    // verb dispatches without needing the API.
+    roba()
+        .env("PATH", "")
+        .args(["profile", "draft", "a long-running worker with spend rails"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found on PATH"));
+}
+
+#[test]
 fn dash_with_empty_stdin_errors() {
     roba()
         .arg("-")

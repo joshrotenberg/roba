@@ -436,6 +436,36 @@ pub enum ProfileAction {
     Path,
     /// Show which profile would auto-apply right now (none, env, or default).
     Active,
+    /// Draft a new profile from a plain-language description.
+    ///
+    /// Sends DESCRIPTION to claude with the bundled profile schema, parses
+    /// the result with roba's real deserializer (a hallucinated key is
+    /// rejected exactly as a hand-written config would be), and prints
+    /// the canonical `[profile.NAME]` block on stdout -- byte-clean, so it
+    /// pipes straight to `>> roba.toml`. Everything else (collision
+    /// warnings, where-it-wrote) goes to stderr. There is NO retry loop:
+    /// an invalid draft fails loud with the deserializer error.
+    Draft(ProfileDraftArgs),
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct ProfileDraftArgs {
+    /// Plain-language description of the profile you want.
+    pub description: String,
+
+    /// Append the drafted block to a config file instead of only printing.
+    ///
+    /// Bare `--write` targets your user config (`~/.config/roba.toml`);
+    /// `--write PATH` targets an explicit file (created if absent). A
+    /// duplicate `[profile.NAME]` already in the target is a hard error --
+    /// it would break the next config load. The block still prints on
+    /// stdout in either case.
+    #[arg(long, num_args = 0..=1, value_name = "PATH")]
+    pub write: Option<Option<PathBuf>>,
+
+    /// Model override for the generation call (alias or full id).
+    #[arg(long, value_name = "NAME")]
+    pub model: Option<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -1942,6 +1972,69 @@ mod tests {
                 action: AliasAction::Draft(args),
             }) => assert_eq!(args.model.as_deref(), Some("claude-haiku-4-5")),
             other => panic!("expected alias draft, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn profile_draft_parses_description() {
+        use clap::Parser;
+        let cli =
+            Cli::try_parse_from(["roba", "profile", "draft", "a long-running worker"]).unwrap();
+        match cli.command {
+            Some(SubCommand::Profile {
+                action: ProfileAction::Draft(args),
+            }) => {
+                assert_eq!(args.description, "a long-running worker");
+                assert!(args.write.is_none());
+                assert!(args.model.is_none());
+            }
+            other => panic!("expected profile draft, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn profile_draft_write_without_path() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "profile", "draft", "desc", "--write"]).unwrap();
+        match cli.command {
+            Some(SubCommand::Profile {
+                action: ProfileAction::Draft(args),
+            }) => assert!(matches!(args.write, Some(None))),
+            other => panic!("expected profile draft, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn profile_draft_write_with_path() {
+        use clap::Parser;
+        let cli =
+            Cli::try_parse_from(["roba", "profile", "draft", "desc", "--write", "/tmp/p.toml"])
+                .unwrap();
+        match cli.command {
+            Some(SubCommand::Profile {
+                action: ProfileAction::Draft(args),
+            }) => assert_eq!(args.write, Some(Some(PathBuf::from("/tmp/p.toml")))),
+            other => panic!("expected profile draft, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn profile_draft_accepts_model() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "roba",
+            "profile",
+            "draft",
+            "desc",
+            "--model",
+            "claude-haiku-4-5",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(SubCommand::Profile {
+                action: ProfileAction::Draft(args),
+            }) => assert_eq!(args.model.as_deref(), Some("claude-haiku-4-5")),
+            other => panic!("expected profile draft, got {other:?}"),
         }
     }
 }

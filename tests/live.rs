@@ -1233,6 +1233,49 @@ fn live_alias_draft() {
     );
 }
 
+#[test]
+#[ignore]
+fn live_profile_draft() {
+    // Profile twin of `live_alias_draft`. Assert MECHANICS: a draft exits 0
+    // and its stdout parses through the REAL `Profile` deserializer
+    // (`deny_unknown_fields`) as exactly one `[profile.NAME]` block. We do
+    // NOT assert anything about the generated NAME or keys -- that's model
+    // behavior, not roba's plumbing. The draft call carries its own
+    // `--model` (not roba_in's top-level one, which draft ignores).
+    let dir = fresh_dir();
+    let out = Command::cargo_bin("roba")
+        .expect("cargo-built roba binary")
+        .args([
+            "-C",
+            dir.path().to_str().expect("utf-8 tempdir path"),
+            "profile",
+            "draft",
+            "a cheap fast one-shot profile",
+            "--model",
+            "claude-haiku-4-5",
+        ])
+        .output()
+        .expect("run roba profile draft");
+    assert!(
+        out.status.success(),
+        "draft should exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    #[derive(serde::Deserialize)]
+    struct Wrapper {
+        profile: std::collections::HashMap<String, roba::profile::Profile>,
+    }
+    let parsed: Wrapper = toml::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("draft stdout did not parse as a profile: {e}\n{stdout}"));
+    assert_eq!(
+        parsed.profile.len(),
+        1,
+        "expected exactly one profile block on stdout, got:\n{stdout}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // INTENTIONALLY UNTESTED (high cost / low signal, or no fixture path yet)
 // ---------------------------------------------------------------------------

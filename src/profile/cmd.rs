@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
+use std::path::Path;
 
 use super::pool::{discover_project_configs, load_pool, user_config_path};
 use super::resolve::missing_profile_error;
@@ -28,6 +29,9 @@ pub fn run(action: crate::cli::ProfileAction) -> Result<()> {
         ProfileAction::Init { force } => run_init(force),
         ProfileAction::Path => run_path(),
         ProfileAction::Active => run_active(),
+        // `draft` is async (it makes a claude call), so it is dispatched via
+        // [`run_draft`] by [`crate::dispatch`], never here.
+        ProfileAction::Draft(_) => unreachable!("profile draft is dispatched via run_draft"),
     }
 }
 
@@ -150,11 +154,277 @@ fn run_path() -> Result<()> {
     Ok(())
 }
 
-/// Render one named profile back to TOML for `profile show` / `active`.
+/// Render one named profile back to TOML for `profile show` / `active`
+/// / `draft`.
 fn render_named_profile(name: &str, profile: &Profile) -> Result<String> {
     let mut wrapper: HashMap<String, HashMap<String, Profile>> = HashMap::new();
     let mut inner: HashMap<String, Profile> = HashMap::new();
     inner.insert(name.to_string(), profile.clone());
     wrapper.insert("profile".to_string(), inner);
     toml::to_string_pretty(&wrapper).context("re-serializing profile")
+}
+
+// ---------------------------------------------------------------------------
+// Draft: claude-assisted, parse-validated profile generation
+// ---------------------------------------------------------------------------
+
+/// Run `roba profile draft DESCRIPTION`.
+///
+/// The profile twin of `roba alias draft`: deterministic bookends around
+/// one generation. Build a prompt from the bundled (parse-tested) profile
+/// schema + the user's words via the shared [`crate::draft`] core, make a
+/// single lean claude call, then validate the output with roba's REAL
+/// [`Profile`] deserializer (`deny_unknown_fields`) and normalize it back
+/// through `render_named_profile`. stdout gets only the canonical block;
+/// collision warnings and write confirmations go to stderr. No retry loop.
+pub async fn run_draft(args: crate::cli::ProfileDraftArgs) -> Result<()> {
+    // 1. Deterministic prompt: schema-by-example + the user's description.
+    let prompt = draft_prompt(&args.description);
+
+    // 2. One lean claude call -- NOT routed through `run_ask`. The shared
+    //    draft core handles the read-only, no-session, stdin-fed posture.
+    let raw = crate::draft::generate(prompt, args.model.as_deref(), "roba: profile draft").await?;
+
+    // 3. Validate with the real deserializer; require exactly one entry.
+    let (name, profile) = parse_drafted_profile(&raw)?;
+
+    // 4. Normalize so stdout is canonical regardless of model formatting.
+    let block = render_named_profile(&name, &profile)?;
+
+    match &args.write {
+        Some(target) => {
+            let path = match target {
+                Some(p) => p.clone(),
+                None => user_config_path().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--write: cannot locate your user config; pass an explicit path (`--write PATH`)"
+                    )
+                })?,
+            };
+            // A duplicate `[profile.NAME]` table in the target would
+            // hard-break the next config load -- hard error.
+            if file_defines_profile(&path, &name)? {
+                bail!(
+                    "{} already defines [profile.{name}]; refusing to append a duplicate (it would break the next config load)",
+                    path.display()
+                );
+            }
+            crate::draft::append_block(&path, &block)?;
+            eprintln!("wrote [profile.{name}] to {}", path.display());
+        }
+        None => {
+            // Print mode: a name already in the pool is a warning, not an error.
+            if load_pool()?.profiles.contains_key(&name) {
+                eprintln!(
+                    "warning: profile `{name}` already exists in your config pool; this draft would shadow or duplicate it"
+                );
+            }
+        }
+    }
+
+    // A profile literally named `default` is legal and meaningful: it
+    // auto-applies. Flag that so the user knows this draft changes the
+    // no-flag behavior, not just adds an opt-in overlay.
+    if name == "default" {
+        eprintln!("note: a profile named `default` auto-applies when no --profile is given");
+    }
+
+    // stdout = the block only, byte-clean (pipeable to `>> roba.toml`).
+    print!("{block}");
+    Ok(())
+}
+
+/// Build the deterministic generation prompt: the bundled profile schema
+/// (by example, so it cannot drift from the real deserializer) + the
+/// user's description + firm single-block output instructions.
+fn draft_prompt(description: &str) -> String {
+    let schema = profile_sample_section();
+    format!(
+        "You are generating a single roba profile definition in TOML.\n\n\
+         A roba profile is a named bundle of flag defaults, activated with \
+         `--profile NAME`. Here is the profile schema, documented by \
+         example -- these are the ONLY allowed keys, do not invent \
+         fields:\n\n\
+         {schema}\n\n\
+         The user wants a profile for: {description}\n\n\
+         Output requirements (follow exactly):\n\
+         - Produce EXACTLY ONE `[profile.NAME]` TOML block and nothing else \
+           (a sub-table like `[profile.NAME.vars]` is allowed).\n\
+         - Pick a short, memorable kebab-case or single-word NAME from the description.\n\
+         - Use ONLY the keys shown above.\n\
+         - The block must be valid TOML that parses against that schema.\n\
+         - Do NOT wrap the output in markdown code fences.\n\
+         - Do NOT include any prose, comments, or explanation -- only the TOML block."
+    )
+}
+
+/// Slice the schema section out of the bundled, parse-tested sample
+/// config: the top of the file (the per-key catalog IS the profile
+/// schema, since every key is a valid profile key) through the start of
+/// the `# Aliases` banner. Falls back to the whole sample if that marker
+/// moves, so a future sample reshuffle degrades to "embed everything"
+/// rather than silently shipping an empty schema.
+fn profile_sample_section() -> String {
+    const SAMPLE: &str = STARTER_CONFIG_TOML;
+    match SAMPLE.find("# Aliases") {
+        Some(e) => SAMPLE[..e].trim_end().to_string(),
+        None => SAMPLE.trim_end().to_string(),
+    }
+}
+
+/// Parse a drafted profile block. Strip optional markdown fences (a model
+/// may add them despite instructions), deserialize via the real
+/// `{ profile: { NAME = Profile } }` shape so `deny_unknown_fields` on
+/// [`Profile`] polices hallucinated keys, and require EXACTLY one entry.
+/// On any failure, the error carries the raw model output for stderr.
+fn parse_drafted_profile(raw: &str) -> Result<(String, Profile)> {
+    #[derive(serde::Deserialize)]
+    struct Wrapper {
+        #[serde(default)]
+        profile: HashMap<String, Profile>,
+    }
+    let cleaned = crate::draft::strip_code_fences(raw);
+    let wrapper: Wrapper = toml::from_str(&cleaned).map_err(|e| {
+        anyhow::anyhow!("drafted profile did not parse: {e}\n\n--- raw model output ---\n{raw}")
+    })?;
+    let mut entries: Vec<(String, Profile)> = wrapper.profile.into_iter().collect();
+    match entries.len() {
+        1 => Ok(entries.pop().expect("len checked == 1")),
+        0 => {
+            bail!(
+                "drafted output defined no [profile.NAME] block\n\n--- raw model output ---\n{raw}"
+            )
+        }
+        n => bail!(
+            "drafted output defined {n} profile blocks (expected exactly one)\n\n--- raw model output ---\n{raw}"
+        ),
+    }
+}
+
+/// True when `path` already defines `[profile.name]`. A missing file
+/// defines nothing. Unknown top-level tables (aliases, sessions, the
+/// top-level defaults) are ignored -- only the profile map is probed --
+/// but malformed TOML surfaces as an error rather than a silent "no".
+fn file_defines_profile(path: &Path, name: &str) -> Result<bool> {
+    #[derive(serde::Deserialize)]
+    struct Probe {
+        #[serde(default)]
+        profile: HashMap<String, Profile>,
+    }
+    if !path.exists() {
+        return Ok(false);
+    }
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading --write target {}", path.display()))?;
+    let probe: Probe = toml::from_str(&text)
+        .with_context(|| format!("--write target {} is not valid TOML", path.display()))?;
+    Ok(probe.profile.contains_key(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_sample_section_includes_schema_not_aliases() {
+        let section = profile_sample_section();
+        // The per-key catalog + a profile example are present...
+        assert!(section.contains("[profile.review]"), "got:\n{section}");
+        // ...but the slice stops before the aliases section.
+        assert!(!section.contains("[alias.review]"), "got:\n{section}");
+        assert!(!section.contains("Named sessions"), "got:\n{section}");
+    }
+
+    #[test]
+    fn profile_sample_section_falls_back_to_whole_sample() {
+        // Sanity: the marker exists in the real sample, so the slice is a
+        // strict prefix of the whole file (the fallback is the full file).
+        let section = profile_sample_section();
+        assert!(STARTER_CONFIG_TOML.starts_with(&section[..section.len().min(40)]));
+        assert!(section.len() < STARTER_CONFIG_TOML.len());
+    }
+
+    #[test]
+    fn parse_drafted_profile_accepts_one_block() {
+        let (name, profile) =
+            parse_drafted_profile("[profile.worker]\nfull_auto = true\nmax_turns = 80").unwrap();
+        assert_eq!(name, "worker");
+        assert_eq!(profile.full_auto, Some(true));
+        assert_eq!(profile.max_turns, Some(80));
+    }
+
+    #[test]
+    fn parse_drafted_profile_strips_fences_first() {
+        let (name, _) =
+            parse_drafted_profile("```toml\n[profile.quick]\nmodel = \"claude-haiku-4-5\"\n```")
+                .unwrap();
+        assert_eq!(name, "quick");
+    }
+
+    #[test]
+    fn parse_drafted_profile_rejects_zero_entries() {
+        let err = parse_drafted_profile("# nothing here").unwrap_err();
+        assert!(
+            format!("{err:#}").contains("no [profile.NAME] block"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn parse_drafted_profile_rejects_two_entries() {
+        let raw = "[profile.a]\nreadonly = true\n[profile.b]\nwritable = true";
+        let err = parse_drafted_profile(raw).unwrap_err();
+        assert!(format!("{err:#}").contains("2 profile blocks"), "{err:#}");
+    }
+
+    #[test]
+    fn parse_drafted_profile_rejects_unknown_field() {
+        // `deny_unknown_fields` on `Profile` rejects a hallucinated key; the
+        // raw output is echoed for the user.
+        let raw = "[profile.x]\nreadonly = true\nmade_up_key = true";
+        let err = parse_drafted_profile(raw).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("did not parse"), "{msg}");
+        assert!(msg.contains("made_up_key"), "{msg}");
+        assert!(msg.contains("raw model output"), "{msg}");
+    }
+
+    #[test]
+    fn parse_drafted_profile_accepts_default_name() {
+        // `default` is a legal, meaningful profile name (it auto-applies).
+        let (name, _) = parse_drafted_profile("[profile.default]\nreadonly = true").unwrap();
+        assert_eq!(name, "default");
+    }
+
+    #[test]
+    fn file_defines_profile_detects_duplicate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roba.toml");
+        std::fs::write(
+            &path,
+            "[alias.review]\ndescription = \"r\"\n\n[profile.review]\nreadonly = true\n",
+        )
+        .unwrap();
+        assert!(file_defines_profile(&path, "review").unwrap());
+        assert!(!file_defines_profile(&path, "nope").unwrap());
+    }
+
+    #[test]
+    fn file_defines_profile_missing_file_is_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("absent.toml");
+        assert!(!file_defines_profile(&path, "anything").unwrap());
+    }
+
+    #[test]
+    fn render_named_profile_round_trips() {
+        let (name, profile) =
+            parse_drafted_profile("[profile.worker]\nfull_auto = true\nmax_turns = 80").unwrap();
+        let block = render_named_profile(&name, &profile).unwrap();
+        assert!(block.contains("[profile.worker]"), "{block}");
+        // The canonical block re-parses back to the same profile.
+        let (name2, profile2) = parse_drafted_profile(&block).unwrap();
+        assert_eq!(name2, "worker");
+        assert_eq!(profile2.max_turns, Some(80));
+    }
 }

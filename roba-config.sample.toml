@@ -170,9 +170,10 @@ flags = ["--readonly"]
 
 # Self-hosted "draft an alias" verb (pure config form).  ->  roba draft "..."
 # The built-in `roba alias draft "..."` is the VALIDATED form -- it parses the
-# generation against the real schema before printing. This config alias is the
-# unvalidated shortcut: it just asks claude, pipes nothing back through the
-# deserializer. Reach for the built-in when you want the safety rail.
+# generation against the real schema before printing (and `roba profile draft
+# "..."` is its profile twin). This config alias is the unvalidated shortcut:
+# it just asks claude, pipes nothing back through the deserializer. Reach for
+# the built-in when you want the safety rail.
 [alias.draft]
 description = "Draft a roba alias from a description (unvalidated; see `roba alias draft`)"
 flags = ["--quiet"]

@@ -54,7 +54,7 @@ pub mod pool;
 pub mod resolve;
 pub mod types;
 
-pub use cmd::{STARTER_CONFIG_TOML, run};
+pub use cmd::{STARTER_CONFIG_TOML, run, run_draft};
 pub use pool::{discover_project_configs, load_pool, load_pool_from, user_config_path};
 pub use resolve::{merge_into_args, profile_source_label, resolve, select_profile_name};
 pub use types::{ConfigFile, ContinueSetting, Pool, Profile, WorktreeSetting};

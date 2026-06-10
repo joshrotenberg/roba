@@ -152,9 +152,10 @@ Files are discovered by walking up from the cwd (plus
   `[alias.review]` prompt template (`${1}` / `${pr}` / `$(...)` shell
   substitution) plus default flags and dispatches like a normal call.
   Your domain knowledge lives in your aliases, not the binary.
-- **Draft one with claude:** `roba alias draft "review a PR by number,
-  read-only"` generates a validated `[alias.NAME]` block on stdout (pipe
-  it to `>> roba.toml`); `--write` appends it for you.
+- **Draft one with claude:** `roba alias draft "..."` /
+  `roba profile draft "..."` generate a validated `[alias.NAME]` /
+  `[profile.NAME]` block from a description on stdout (pipe it to
+  `>> roba.toml`); `--write` appends it for you.
 
 The fully-commented [`roba-config.sample.toml`](roba-config.sample.toml)
 documents every key with worked examples; `roba profile init` drops it
