@@ -72,6 +72,10 @@ when you want any of:
   opening the TUI. `--session-id <uuid>` assigns a caller-chosen id to a
   *new* session -- mint it once, then `-c=<uuid>` on later turns (the
   reliable scripted-multi-turn pattern).
+- **Read-only inspection.** `roba worktree list` enumerates the git
+  worktrees for the repo (all of them -- a superset of the ones claude's
+  `--worktree` creates), with `--json` for scripts. Lists only; roba
+  never creates, prunes, or removes worktrees.
 - **A real ABI.** Typed exit codes, a versioned `--json` envelope, and a
   clean stream split -- so a script or agent can pin a contract instead
   of scraping prose. (See [For agents & scripts](#for-agents--scripts).)

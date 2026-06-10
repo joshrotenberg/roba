@@ -194,6 +194,15 @@ pub enum SubCommand {
         #[command(subcommand)]
         action: AliasAction,
     },
+    /// Inspect the git worktrees for this repo (read-only).
+    ///
+    /// Read-only inspection only: `list` enumerates every git worktree
+    /// the repo knows about. It does NOT create, prune, or remove
+    /// worktrees -- that's git's (or claude's) job.
+    Worktree {
+        #[command(subcommand)]
+        cmd: WorktreeCmd,
+    },
     /// Generate a shell completion script (bash, zsh, fish, ...).
     ///
     /// Prints the script for SHELL to stdout; pipe or redirect it into
@@ -223,6 +232,26 @@ pub enum AliasAction {
     },
     /// Print which files contribute aliases, in walk-up order.
     Path,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WorktreeCmd {
+    /// List the git worktrees for this repo.
+    ///
+    /// Shells (via claude-wrapper) to `git worktree list --porcelain`
+    /// and prints a row per worktree: path, branch (or `(detached)` /
+    /// `(bare)`), short HEAD, and markers (`[main]`, `[locked]`,
+    /// `[prunable]`). This is the full git view -- a SUPERSET of the
+    /// worktrees claude's `--worktree` flag creates -- so it includes
+    /// user-made worktrees too, not just claude's.
+    List(WorktreeListArgs),
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct WorktreeListArgs {
+    /// Emit JSON instead of a human table.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -1505,6 +1534,38 @@ mod tests {
         assert_eq!(cli.ask.add_dir, vec!["/extra".to_string()]);
         assert_eq!(cli.ask.fallback_model.as_deref(), Some("sonnet"));
         assert!(cli.ask.no_session_persistence);
+    }
+
+    #[test]
+    fn worktree_list_parses() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "worktree", "list"]).unwrap();
+        match cli.command {
+            Some(SubCommand::Worktree {
+                cmd: WorktreeCmd::List(args),
+            }) => assert!(!args.json),
+            other => panic!("expected worktree list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worktree_list_json_parses() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "worktree", "list", "--json"]).unwrap();
+        match cli.command {
+            Some(SubCommand::Worktree {
+                cmd: WorktreeCmd::List(args),
+            }) => assert!(args.json),
+            other => panic!("expected worktree list --json, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worktree_list_honors_global_cwd() {
+        // `-C/--cwd` is a global flag, so it attaches to the subcommand.
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "worktree", "list", "-C", "/some/repo"]).unwrap();
+        assert_eq!(cli.cwd.as_deref(), Some(std::path::Path::new("/some/repo")));
     }
 
     #[test]
