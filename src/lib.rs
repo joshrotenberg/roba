@@ -166,6 +166,44 @@ impl<'a, T: serde::Serialize> VersionedResult<'a, T> {
 
 /// Default action: resolve a prompt, send it through claude, render
 /// the result.
+/// If an optional-value flag plausibly swallowed what the user meant as the
+/// prompt, return a one-line note naming the flag and the consumed token.
+///
+/// Conservative by design: only fires when the consumed value contains
+/// whitespace, since a real session id, worktree name, or language token
+/// never does. So a legitimate `-c <uuid>`, `-w branch`, or `--code rust`
+/// never triggers it -- only a quoted multi-word value that was almost
+/// certainly meant as the prompt. `--git-log` is excluded: it parses as a
+/// number, so a swallowed prompt already fails loud at parse time and never
+/// reaches a no-prompt error.
+fn swallow_note(args: &AskArgs) -> Option<String> {
+    fn looks_like_prompt(v: &str) -> bool {
+        v.chars().any(char::is_whitespace)
+    }
+    if let Some(Some(v)) = &args.continue_session
+        && looks_like_prompt(v)
+    {
+        return Some(format!(
+            "note: -c consumed \"{v}\" as its value; pass the prompt with -p, or -c alone to continue"
+        ));
+    }
+    if let Some(Some(v)) = &args.worktree
+        && looks_like_prompt(v)
+    {
+        return Some(format!(
+            "note: -w consumed \"{v}\" as its value; pass the prompt with -p"
+        ));
+    }
+    if let Some(v) = &args.code
+        && looks_like_prompt(v)
+    {
+        return Some(format!(
+            "note: --code consumed \"{v}\" as its value; pass the prompt with -p"
+        ));
+    }
+    None
+}
+
 pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     env::apply_env_overrides(&mut args)?;
     let pool = profile::load_pool()?;
@@ -249,12 +287,23 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     // prompt string; the resolve order is editor > file > explicit (piped
     // stdin becomes the prompt when none is given, otherwise context).
     let explicit_prompt = args.prompt_flag.as_deref().or(args.prompt.as_deref());
-    let resolved = resolve_main_prompt(
+    let resolved = match resolve_main_prompt(
         explicit_prompt,
         args.file.as_deref(),
         args.editor,
         args.editor_history,
-    )?;
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            // An `empty stdin` (or similar) prompt-resolution failure can
+            // really be an optional-value flag that swallowed the prompt --
+            // surface that before the raw error.
+            if let Some(note) = swallow_note(&args) {
+                eprintln!("{note}");
+            }
+            return Err(e);
+        }
+    };
     let attachments = collect_attachments(&args.attach)?;
     let git_context = collect_git_context(&args)?;
     let context = merge_optional(attachments, git_context);
@@ -279,6 +328,12 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
             if std::io::stdin().is_terminal() {
                 eprintln!("{}", crate::cli::no_prompt_blurb());
                 return Ok(());
+            }
+            // If an optional-value flag swallowed the intended prompt, the
+            // bare "no prompt" message hides the real cause -- name the
+            // consumed token so the error explains itself.
+            if let Some(note) = swallow_note(&args) {
+                eprintln!("{note}");
             }
             anyhow::bail!(
                 "no prompt: pass one as an argument, use -f / -e, --prepend / --append / --attach, pipe via stdin, or use `-` for stdin"

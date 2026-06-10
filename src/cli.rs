@@ -735,6 +735,11 @@ pub struct AskArgs {
     pub git_diff: bool,
 
     /// Embed `git log --oneline -n N` (default 5).
+    ///
+    /// The value is optional, so a space-separated word after `--git-log`
+    /// is consumed as N -- a non-numeric next token (e.g. a prompt) fails
+    /// loud as a usage error. To pass a prompt, put it before the flag or
+    /// use `-p`.
     #[arg(
         long,
         value_name = "N",
@@ -786,6 +791,11 @@ pub struct AskArgs {
     pub json_schema: Option<String>,
 
     /// Print only fenced code blocks (optional language filter).
+    ///
+    /// The value is optional, so a space-separated word after `--code` is
+    /// consumed as the LANG filter -- `roba --code "Write a fn..."` treats
+    /// the prompt as the language and then has no prompt left. To filter by
+    /// language and pass a prompt, use `roba --code rust -p "..."`.
     #[arg(
         long,
         value_name = "LANG",
@@ -993,6 +1003,7 @@ pub struct AskArgs {
     #[arg(
         long,
         value_name = "UUID",
+        value_parser = parse_session_id,
         conflicts_with_all = ["continue_session", "fork", "pick", "session"],
         help_heading = "Sessions"
     )]
@@ -1186,6 +1197,17 @@ pub struct AskArgs {
 
 /// Parser for `--var K=V`. Splits on the first `=` so values may
 /// contain additional `=` characters. Rejects an empty key.
+/// Validate `--session-id` as a UUID locally so a malformed value fails
+/// fast at parse time (usage error, exit 2) instead of spawning a doomed
+/// claude that dies with "Invalid session ID" (exit 1). Accepts any case;
+/// the value is returned unchanged. claude still does the authoritative
+/// check, but the common typo is caught before the spawn.
+pub fn parse_session_id(s: &str) -> std::result::Result<String, String> {
+    uuid::Uuid::try_parse(s)
+        .map(|_| s.to_string())
+        .map_err(|_| format!("not a valid UUID: `{s}`"))
+}
+
 pub fn parse_kv(s: &str) -> std::result::Result<(String, String), String> {
     let (k, v) = s
         .split_once('=')
@@ -1229,6 +1251,27 @@ mod tests {
     #[test]
     fn parse_kv_accepts_empty_value() {
         assert_eq!(parse_kv("k="), Ok(("k".to_string(), String::new())));
+    }
+
+    #[test]
+    fn session_id_valid_uuid_parses() {
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        let cli = Cli::try_parse_from(["roba", "--session-id", uuid, "hi"]).unwrap();
+        assert_eq!(cli.ask.session_id.as_deref(), Some(uuid));
+    }
+
+    #[test]
+    fn session_id_uppercase_uuid_parses() {
+        let uuid = "550E8400-E29B-41D4-A716-446655440000";
+        let cli = Cli::try_parse_from(["roba", "--session-id", uuid, "hi"]).unwrap();
+        assert_eq!(cli.ask.session_id.as_deref(), Some(uuid));
+    }
+
+    #[test]
+    fn session_id_rejects_non_uuid_at_parse_time() {
+        let err = Cli::try_parse_from(["roba", "--session-id", "not-a-uuid", "hi"]).unwrap_err();
+        // Usage error (exit 2), not a successful parse that spawns claude.
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
     }
 
     #[test]
@@ -1678,9 +1721,10 @@ mod tests {
         // --fresh (cancel auto-continue) and --session-id (name the new
         // session) are not contradictory: both want a new session.
         use clap::Parser;
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
         let cli =
-            Cli::try_parse_from(["roba", "--session-id", "x", "--fresh", "-p", "hi"]).unwrap();
-        assert_eq!(cli.ask.session_id.as_deref(), Some("x"));
+            Cli::try_parse_from(["roba", "--session-id", uuid, "--fresh", "-p", "hi"]).unwrap();
+        assert_eq!(cli.ask.session_id.as_deref(), Some(uuid));
         assert!(cli.ask.fresh);
     }
 
