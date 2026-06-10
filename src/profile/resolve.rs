@@ -281,6 +281,16 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     {
         args.session_id = Some(s);
     }
+    if args.max_turns.is_none()
+        && let Some(n) = profile.max_turns
+    {
+        args.max_turns = Some(n);
+    }
+    if args.max_budget_usd.is_none()
+        && let Some(v) = profile.max_budget_usd
+    {
+        args.max_budget_usd = Some(v);
+    }
 }
 
 /// Convert a profile-layer `PermissionModeConfig` to the CLI's
@@ -895,6 +905,52 @@ mod tests {
         };
         merge_into_args(&mut args, profile, "profile.test");
         assert_eq!(args.session_id.as_deref(), Some("cli-uuid"));
+    }
+
+    // -- Limits (max_turns / max_budget_usd) -------------------------------
+
+    #[test]
+    fn merge_max_turns_applies_when_cli_unset() {
+        let mut args = empty_args();
+        let profile = Profile {
+            max_turns: Some(5),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.max_turns, Some(5));
+    }
+
+    #[test]
+    fn merge_max_turns_cli_wins_over_profile() {
+        let mut args = args_with(&["--max-turns", "3"]);
+        let profile = Profile {
+            max_turns: Some(5),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.max_turns, Some(3));
+    }
+
+    #[test]
+    fn merge_max_budget_usd_applies_when_cli_unset() {
+        let mut args = empty_args();
+        let profile = Profile {
+            max_budget_usd: Some(12.5),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.max_budget_usd, Some(12.5));
+    }
+
+    #[test]
+    fn merge_max_budget_usd_cli_wins_over_profile() {
+        let mut args = args_with(&["--max-budget-usd", "4.0"]);
+        let profile = Profile {
+            max_budget_usd: Some(12.5),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.max_budget_usd, Some(4.0));
     }
 
     // -- Path expansion ----------------------------------------------------

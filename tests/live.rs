@@ -969,6 +969,32 @@ fn live_bare_succeeds() {
 }
 
 // ---------------------------------------------------------------------------
+// limits: unattended guardrails (--max-turns / --max-budget-usd)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn live_limits_flags_accepted() {
+    // Both guardrails plumb through and a normal short run completes.
+    // We assert ONLY that the flags are accepted and the run succeeds --
+    // not that a cap FIRES (turn-count / spend dependent = model-flaky).
+    // The caps here (5 turns, $10) are generous enough that a trivial
+    // one-shot answer never trips them.
+    let dir = fresh_dir();
+    roba_in(dir.path())
+        .args([
+            "--max-turns",
+            "5",
+            "--max-budget-usd",
+            "10.0",
+            "respond with the single word: bounded",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("bounded"));
+}
+
+// ---------------------------------------------------------------------------
 // INTENTIONALLY UNTESTED (high cost / low signal, or no fixture path yet)
 // ---------------------------------------------------------------------------
 //

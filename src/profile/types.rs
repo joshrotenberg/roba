@@ -115,6 +115,12 @@ pub struct Profile {
     /// claude's own `--session-id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Cap the agentic turn count (`--max-turns`). Unattended guardrail.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+    /// Cap total spend in USD (`--max-budget-usd`). Unattended guardrail.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_budget_usd: Option<f64>,
 }
 
 /// Profile value for the `permission_mode` field. Serializes as a
@@ -195,6 +201,8 @@ impl Profile {
             && self.system_prompt.is_none()
             && self.append_system_prompt.is_none()
             && self.session_id.is_none()
+            && self.max_turns.is_none()
+            && self.max_budget_usd.is_none()
     }
 
     /// Merge `other` on top of `self`. Used to layer roba.toml files
@@ -239,6 +247,8 @@ impl Profile {
             system_prompt,
             append_system_prompt,
             session_id,
+            max_turns,
+            max_budget_usd,
         } = other;
 
         self.prepend.append(&mut prepend);
@@ -332,6 +342,12 @@ impl Profile {
         }
         if session_id.is_some() {
             self.session_id = session_id;
+        }
+        if max_turns.is_some() {
+            self.max_turns = max_turns;
+        }
+        if max_budget_usd.is_some() {
+            self.max_budget_usd = max_budget_usd;
         }
     }
 }

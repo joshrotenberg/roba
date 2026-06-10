@@ -244,6 +244,18 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
         args.no_retry = true;
     }
 
+    // ----- Limits -----
+    if args.max_turns.is_none()
+        && let Some(n) = read_u32(env, "ROBA_MAX_TURNS")
+    {
+        args.max_turns = Some(n);
+    }
+    if args.max_budget_usd.is_none()
+        && let Some(v) = read_f64(env, "ROBA_MAX_BUDGET_USD")
+    {
+        args.max_budget_usd = Some(v);
+    }
+
     // ----- Mode -----
     if !args.bare && read_truthy(env, "ROBA_BARE") {
         args.bare = true;
@@ -304,6 +316,18 @@ fn read_truthy(env: &HashMap<String, String>, key: &str) -> bool {
 }
 
 fn read_usize(env: &HashMap<String, String>, key: &str) -> Option<usize> {
+    env.get(key)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse().ok())
+}
+
+fn read_u32(env: &HashMap<String, String>, key: &str) -> Option<u32> {
+    env.get(key)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse().ok())
+}
+
+fn read_f64(env: &HashMap<String, String>, key: &str) -> Option<f64> {
     env.get(key)
         .filter(|s| !s.is_empty())
         .and_then(|s| s.parse().ok())
@@ -857,6 +881,52 @@ mod tests {
         let mut args = empty_args();
         apply_env_overrides_from(&mut args, &env_with(&[("ROBA_BARE", "false")]));
         assert!(!args.bare);
+    }
+
+    // -- limits (max_turns / max_budget_usd) -------------------------------
+
+    #[test]
+    fn env_max_turns_sets_from_roba_var() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_MAX_TURNS", "7")]));
+        assert_eq!(args.max_turns, Some(7));
+    }
+
+    #[test]
+    fn env_max_turns_does_not_override_cli() {
+        let mut args = empty_args();
+        args.max_turns = Some(3);
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_MAX_TURNS", "7")]));
+        assert_eq!(args.max_turns, Some(3));
+    }
+
+    #[test]
+    fn env_max_turns_ignores_invalid() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_MAX_TURNS", "lots")]));
+        assert_eq!(args.max_turns, None);
+    }
+
+    #[test]
+    fn env_max_budget_usd_sets_from_roba_var() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_MAX_BUDGET_USD", "12.5")]));
+        assert_eq!(args.max_budget_usd, Some(12.5));
+    }
+
+    #[test]
+    fn env_max_budget_usd_does_not_override_cli() {
+        let mut args = empty_args();
+        args.max_budget_usd = Some(4.0);
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_MAX_BUDGET_USD", "12.5")]));
+        assert_eq!(args.max_budget_usd, Some(4.0));
+    }
+
+    #[test]
+    fn env_max_budget_usd_ignores_invalid() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_MAX_BUDGET_USD", "free")]));
+        assert_eq!(args.max_budget_usd, None);
     }
 
     // -- system_prompt / append_system_prompt ------------------------------

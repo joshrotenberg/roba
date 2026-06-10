@@ -171,6 +171,9 @@ than `claude -p`:
 - **Unattended dispatch** composes the primitives: `--full-auto` to fire
   a worker that edits files without supervision, plus `--worktree` when
   parallel same-repo workers must not share a branch.
+- **Unattended guardrails:** `--max-turns N` caps the agentic turn count
+  and `--max-budget-usd USD` caps total spend -- the rails an unbounded
+  loop needs. Hitting either cap errors the run (generic exit `1`).
 
 For an agent that *invokes* roba, [`skills/use-roba/SKILL.md`](skills/use-roba/SKILL.md)
 documents this contract in agent-readable form -- copy it to
