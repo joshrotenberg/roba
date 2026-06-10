@@ -1188,6 +1188,52 @@ fn live_medtier_flags_accepted() {
 }
 
 // ---------------------------------------------------------------------------
+// alias draft (claude-assisted, parse-validated alias generation)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn live_alias_draft() {
+    // Assert MECHANICS: a draft exits 0 and its stdout parses through the
+    // REAL `Alias` deserializer as exactly one `[alias.NAME]` block. We do
+    // NOT assert anything about the generated NAME or wording -- that's
+    // model behavior, not roba's plumbing. The draft call carries its own
+    // `--model` (not roba_in's top-level one, which draft ignores).
+    let dir = fresh_dir();
+    let out = Command::cargo_bin("roba")
+        .expect("cargo-built roba binary")
+        .args([
+            "-C",
+            dir.path().to_str().expect("utf-8 tempdir path"),
+            "alias",
+            "draft",
+            "a verb that asks for a one-line summary of a file given as the first argument",
+            "--model",
+            "claude-haiku-4-5",
+        ])
+        .output()
+        .expect("run roba alias draft");
+    assert!(
+        out.status.success(),
+        "draft should exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    #[derive(serde::Deserialize)]
+    struct Wrapper {
+        alias: std::collections::HashMap<String, roba::aliases::Alias>,
+    }
+    let parsed: Wrapper = toml::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("draft stdout did not parse as an alias: {e}\n{stdout}"));
+    assert_eq!(
+        parsed.alias.len(),
+        1,
+        "expected exactly one alias block on stdout, got:\n{stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // INTENTIONALLY UNTESTED (high cost / low signal, or no fixture path yet)
 // ---------------------------------------------------------------------------
 //

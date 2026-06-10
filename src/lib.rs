@@ -60,7 +60,12 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             let code = doctor::run(args)?;
             std::process::exit(code);
         }
-        Some(SubCommand::Alias { action }) => aliases::run(action),
+        // Alias inspection is synchronous; `draft` makes one claude call
+        // (the only async alias verb), so it routes through `run_draft`.
+        Some(SubCommand::Alias { action }) => match action {
+            crate::cli::AliasAction::Draft(args) => aliases::run_draft(args).await,
+            other => aliases::run(other),
+        },
         // Read-only inspection of the repo's git worktrees. Shells to
         // `git worktree list` via claude-wrapper; no claude call.
         Some(SubCommand::Worktree { cmd }) => worktree::run(cmd),
