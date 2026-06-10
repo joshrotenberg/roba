@@ -6,22 +6,19 @@
 [![Downloads](https://img.shields.io/crates/d/roba.svg)](https://crates.io/crates/roba)
 [![License](https://img.shields.io/crates/l/roba.svg)](#license)
 
-A single-prompt CLI runner built on top of `claude -p`. One invocation,
-one answer, done -- but with composable input, pipe-clean output,
-sessions you can re-enter without living in them, and a stable scripting
-ABI for agents and scripts.
+A single-prompt CLI runner on top of `claude -p`: one invocation, one
+answer. Adds composable input, pipe-clean output, re-enterable sessions,
+and a stable scripting ABI.
 
 roba is sugar over the one binary -- not a platform, orchestrator,
-daemon, or skills framework. What you point it at -- a quick question, a
-CI step, an unattended worker -- is up to you.
+daemon, or skills framework. Point it at a quick question, a CI step, or
+an unattended worker.
 
-- **For humans** -- what `claude -p` could be: build the prompt from
-  files / stdin / git context, get rendered markdown on a TTY, save
-  flag bundles as profiles, browse history, track cost.
-- **For agents** in [Claude Code](https://github.com/anthropics/claude-code)
-  -- a stable contract: stdout is the answer, stderr is metadata, a
-  versioned `--json` envelope, typed exit codes, and `--trace` for
-  observing a run in flight.
+- **Humans:** prompt from files / stdin / git context, rendered markdown
+  on a TTY, flag bundles as profiles, history, cost.
+- **Agents** ([Claude Code](https://github.com/anthropics/claude-code)):
+  stdout is the answer, stderr is metadata, a versioned `--json`
+  envelope, typed exit codes, `--trace` to watch a run.
 
 Built on [`claude-wrapper`](https://crates.io/crates/claude-wrapper).
 
@@ -48,56 +45,42 @@ cargo install roba
 authenticated (or `ANTHROPIC_API_KEY` set) on your `PATH`.
 
 **The full flag, env-var, and config reference lives in the binary:
-`roba --help`.** This README is the conceptual tour.
+`roba --help`.** This README is the overview.
 
 ## Why not just `claude -p`?
 
-`claude -p` is the one-shot primitive: one prompt in, the response to
-stdout, exit. It's perfect for a quick "just answer this string" with no
-piping, no file context, no continuity. roba doesn't replace it -- it
-gives that same one-invocation-one-answer model a richer surface, for
-when you want any of:
+`claude -p` is the one-shot primitive: one prompt in, response to stdout,
+exit -- no piping, no file context, no continuity. roba keeps that model
+and adds:
 
-- **Composable input.** Build the prompt from more than a string: a
-  file (`-f`), piped stdin, an editor buffer (`-e`), `--prepend` /
-  `--append` files, glob-embedded files (`--attach`), git context
-  (`--git-diff` / `--git-log` / `--git-status`), and `{{KEY}}` template
-  vars (`--var`).
-- **Pipe-clean output.** stdout is the answer and *only* the answer;
-  every bit of metadata (cost footer, spinner, tool-call lines, refusal
-  warnings) goes to stderr. `roba "..." | jq` always sees a clean pipe.
-- **Rich on a TTY.** Rendered markdown, a spinner, dim metadata, colored
-  markers -- a transient UI that exists while roba works and evaporates
-  when the answer lands. `--plain` (or `NO_COLOR`) turns it all off.
-- **Session re-entry without living in a session.** `-c` continues the
-  most recent session in the directory, `-c ID` resumes a specific one,
-  `--fork` branches it, `--pick` is a fuzzy chooser; `roba history` /
-  `roba last` browse past runs. `roba history --worktree <NAME>` filters
-  to the sessions that ran in a given git worktree -- the quickest way to
-  find a dispatched runner's session to `-c` / `--resume`. You dip back
-  into a thread without opening the TUI. `--session-id <uuid>` assigns a
-  caller-chosen id to a
-  *new* session -- mint it once, then `-c=<uuid>` on later turns (the
-  reliable scripted-multi-turn pattern, since bare `claude -p --continue`
+- **Composable input.** Files (`-f`), stdin, an editor (`-e`),
+  `--prepend` / `--append`, globbed files (`--attach`), git context
+  (`--git-diff` / `--git-log` / `--git-status`), `{{KEY}}` vars (`--var`).
+- **Pipe-clean output.** stdout is the answer; all metadata (cost footer,
+  spinner, tool-call lines, refusal warnings) goes to stderr.
+  `roba "..." | jq` sees a clean pipe.
+- **On a TTY.** Rendered markdown, spinner, dim metadata, colored markers
+  -- gone when the answer lands. `--plain` / `NO_COLOR` turns it off.
+- **Session re-entry, without living in one.** `-c` continues the latest
+  session here, `-c ID` resumes a specific one, `--fork` branches,
+  `--pick` is a fuzzy chooser. `roba history` / `roba last` browse past
+  runs; `roba history --worktree <NAME>` finds a runner's session to
+  resume. `--session-id <uuid>` names a new session -- mint once, reuse
+  with `-c=<uuid>` (scripted multi-turn; bare `claude -p --continue`
   no-ops in print mode).
-- **Read-only inspection.** `roba worktree list` enumerates the git
-  worktrees for the repo (all of them -- a superset of the ones claude's
-  `--worktree` creates), with `--json` for scripts. Lists only; roba
-  never creates, prunes, or removes worktrees. `roba show <SESSION_ID>`
-  prints a stored session's result, reconstructed from its on-disk JSONL
-  (the answer plus a `--json` envelope and an optional `--metrics`
-  breakdown). The envelope is reconstructed, not replayed: it matches a
-  live `roba --json` in shape but `duration_ms` is always null and
-  `cost_usd` / `num_turns` are derived from the log.
-- **A real ABI.** Typed exit codes, a versioned `--json` envelope, and a
-  clean stream split -- so a script or agent can pin a contract instead
-  of scraping prose. (See [For agents & scripts](#for-agents--scripts).)
+- **Read-only inspection.** `roba worktree list` lists the repo's git
+  worktrees (`--json` for scripts; list-only, never mutates).
+  `roba show <SESSION_ID>` prints a stored session's result from its
+  JSONL (`--json` envelope, optional `--metrics`) -- reconstructed, so
+  `duration_ms` is null and `cost_usd` / `num_turns` are derived.
+- **A stable ABI.** Typed exit codes, a versioned `--json` envelope, a
+  clean stream split. Pin a contract instead of scraping prose. (See
+  [For agents & scripts](#for-agents--scripts).)
 
-Same one-shot model, a citizen of the pipe. For *interactive,
-multi-turn* work, reach for `claude` itself; for *multiple providers*,
-a tool like [`llm`](https://llm.datasette.com/). roba is Claude-only by
-design -- the Claude-Code-native integration (sessions, permissions,
-history) is the point.
+For interactive, multi-turn work, use `claude` itself. For multiple
+providers, a tool like [`llm`](https://llm.datasette.com/). roba is
+Claude-only by design -- the Claude-Code-native integration (sessions,
+permissions, history) is the point.
 
 ## Quick examples
 
@@ -149,16 +132,13 @@ roba --full-auto "..."                   # bypass every check (sandbox only)
 roba --show-permissions --profile review # preview the resolved set, then exit
 ```
 
-`--add-dir` (repeatable) is a thin pass-through to claude's own
-`--add-dir` -- claude's file tools are scoped to the cwd by default, and
-each `--add-dir` grants access to one more directory.
+`--add-dir` (repeatable) passes through to claude's `--add-dir`: claude's
+file tools are cwd-scoped by default; each `--add-dir` adds one directory.
 
-This came from a real "oops" -- a streaming run quietly let claude
-create a git branch when the user just wanted a chat. The default
-doesn't regress. `--permission-mode` additionally sets claude's own
-approval mode (`plan`, `acceptEdits`, ...), orthogonal to the
-allow-list. Precedence across all layers: **CLI flag > `ROBA_*` env >
-profile > built-in default**, and deny always wins over allow.
+The read-only start does not regress. `--permission-mode` additionally
+sets claude's own approval mode (`plan`, `acceptEdits`, ...), orthogonal
+to the allow-list. Precedence across all layers: **CLI flag > `ROBA_*`
+env > profile > built-in default**, and deny always wins over allow.
 
 To give claude extra tools from an MCP server for one run, point it at
 a server config file:
@@ -168,10 +148,9 @@ roba --mcp-config mcp.json "..."                  # add those servers' tools
 roba --mcp-config mcp.json --strict-mcp-config .. # use ONLY those servers
 ```
 
-`--mcp-config` (repeatable) is a thin pass-through to claude's own
-`--mcp-config` -- roba forwards the path and claude reads the file.
-This is *not* a roba MCP server; it just wires per-run MCP servers into
-the `claude -p` call.
+`--mcp-config` (repeatable) passes through to claude's `--mcp-config`:
+roba forwards the path, claude reads it. Not a roba MCP server -- it
+wires per-run MCP servers into the `claude -p` call.
 
 ## Configuration: profiles & aliases
 
@@ -182,10 +161,9 @@ Files are discovered by walking up from the cwd (plus
 - **Profiles** are named bundles of flag defaults: `--profile review`
   applies `[profile.review]`. A `default` profile auto-applies.
 - **Aliases** are new verbs: `roba review 42` expands an
-  `[alias.review]` prompt template (with `${1}` / `${pr}` / `$(...)`
-  shell substitution) plus default flags, and dispatches like a normal
-  call. This is how you keep roba's built-in surface generic -- your
-  domain knowledge lives in *your* aliases, not the binary.
+  `[alias.review]` prompt template (`${1}` / `${pr}` / `$(...)` shell
+  substitution) plus default flags and dispatches like a normal call.
+  Your domain knowledge lives in your aliases, not the binary.
 
 The fully-commented [`roba-config.sample.toml`](roba-config.sample.toml)
 documents every key with worked examples; `roba profile init` drops it
@@ -194,8 +172,8 @@ in your project. Inspect with `roba profile {list,show,active}` and
 
 ## For agents & scripts
 
-When something other than a human is calling, roba is a much cleaner ABI
-than `claude -p`:
+When something other than a human is calling, roba is a stable ABI over
+`claude -p`:
 
 - **stdout = the answer, stderr = everything else.** `roba "..." | jq`
   never sees decoration.
