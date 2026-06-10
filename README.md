@@ -11,6 +11,10 @@ one answer, done -- but with composable input, pipe-clean output,
 sessions you can re-enter without living in them, and a stable scripting
 ABI for agents and scripts.
 
+roba is sugar over the one binary -- not a platform, orchestrator,
+daemon, or skills framework. What you point it at -- a quick question, a
+CI step, an unattended worker -- is up to you.
+
 - **For humans** -- what `claude -p` could be: build the prompt from
   files / stdin / git context, get rendered markdown on a TTY, save
   flag bundles as profiles, browse history, track cost.
@@ -74,7 +78,8 @@ when you want any of:
   into a thread without opening the TUI. `--session-id <uuid>` assigns a
   caller-chosen id to a
   *new* session -- mint it once, then `-c=<uuid>` on later turns (the
-  reliable scripted-multi-turn pattern).
+  reliable scripted-multi-turn pattern, since bare `claude -p --continue`
+  no-ops in print mode).
 - **Read-only inspection.** `roba worktree list` enumerates the git
   worktrees for the repo (all of them -- a superset of the ones claude's
   `--worktree` creates), with `--json` for scripts. Lists only; roba
@@ -112,6 +117,11 @@ roba --readonly --git-diff "is this safe to merge?"
 # Continue the most recent session here (pass the prompt with -p, since
 # -c takes an optional session id)
 roba -c -p "now show me how to test the unsafe variant"
+
+# scripted multi-turn: mint an id once, reuse it on later turns
+uuid=$(uuidgen)
+roba --session-id "$uuid" "start a refactor plan"
+roba -c="$uuid" "now do step 1"
 
 # Pipe-friendly: answer only, stdin in
 roba "what's 2+2" -q            # prints "4"
@@ -196,6 +206,15 @@ than `claude -p`:
   commands (`cost`, `history`, `doctor`, `worktree list`) emit the same
   `{ "version": 1, "result": ... }` envelope (without the ask-only
   `refusal` flag), so one parser handles every `--json` output.
+  Schema gotchas before you write `jq`: the answer is at
+  **`.result.result`** (the whole object is at `.result` -- don't grab
+  that); metrics nest under `.result`, so top-level `.duration_ms` /
+  `.num_turns` / `.cost_usd` all return `null` -- read
+  `.result.duration_ms` / `.result.num_turns` / `.result.total_cost_usd`;
+  cost is serialized as `total_cost_usd` (a serde rename of `cost_usd`);
+  and `version` and `refusal` are the only top-level fields besides
+  `result`. The reliable extraction one-liner:
+  `out=$(roba --json "..."); echo "$out" | jq -r '.result.result'`.
 - **`roba doctor --json`** reports the boundary checks as
   `{ checks: [{ name, status, message }], overall }` (status is
   `ok`/`warn`/`fail`); it exits `0` when no check fails and `1` when any
@@ -208,25 +227,39 @@ than `claude -p`:
   surfaces under `.result.*` in the `--json` envelope. roba's default path
   already runs claude with JSON output, so just pair it with `--json`.
 - **Typed exit codes:** `0` ok, `1` generic, `2` auth, `3` budget,
-  `4` timeout.
+  `4` timeout. A refusal still exits `0` (the call succeeded) -- detect it
+  via the top-level `refusal` field, not the exit code. On a failure the
+  error `kind` maps to the code: `auth` -> 2, `budget` -> 3, `timeout` ->
+  4, `history` / `other` -> 1. The error envelope's `see_also` (doc URLs)
+  is omitted entirely when empty, so don't assume the key is present.
 - **`--no-retry`** surfaces transient failures immediately (the caller
   decides whether to retry), and **`--trace PATH`** writes the spawned
-  session's events as JSONL so you can observe a run in flight.
+  session's events as JSONL so you can observe a run in flight. An
+  orchestrator tailing that trace will see a `system` event with
+  `"subtype": "post_turn_summary"` (carrying `status_category` +
+  `status_detail`) near the end of a turn -- a convenient
+  done / what-happened signal. Caveat: that event is claude's own,
+  passed through unchanged; it is NOT part of roba's versioned ABI, so
+  don't depend on it the way you depend on the `--json` envelope or the
+  exit codes.
 - **Unattended dispatch** composes the primitives: `--full-auto` to fire
   a worker that edits files without supervision, plus `--worktree` when
-  parallel same-repo workers must not share a branch.
+  parallel same-repo workers must not share a branch. For the
+  orchestrator-owns-the-branch case, prefer a plain `git worktree add`
+  plus `-C <dir>` instead -- roba's `--worktree` creates a
+  claude-managed worktree on a branch you won't PR from.
 - **Unattended guardrails:** `--max-turns N` caps the agentic turn count
   and `--max-budget-usd USD` caps total spend -- the rails an unbounded
   loop needs. Hitting either cap errors the run (generic exit `1`).
+
+  > [!NOTE]
+  > As of 2026-06-15 Anthropic meters programmatic usage (claude -p / Agent SDK) separately from interactive Claude. Every roba call is programmatic by construction, so all roba usage -- and the figures `roba cost` reports -- draws from that programmatic allotment, not your interactive limit.
+
 - **Resilience and statelessness:** `--fallback-model MODEL` retries on a
   second model when the primary is overloaded, and
   `--no-session-persistence` runs without writing a resumable session
   record (so the call leaves no trace in `roba history`). Both are thin
   pass-throughs to claude's own flags.
-
-For an agent that *invokes* roba, [`skills/use-roba/SKILL.md`](skills/use-roba/SKILL.md)
-documents this contract in agent-readable form -- copy it to
-`~/.claude/skills/use-roba/SKILL.md`.
 
 ## Bring your own skills and agents
 
