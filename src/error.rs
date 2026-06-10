@@ -32,11 +32,24 @@
 //!
 //! The top-level `version` field is the stability contract for
 //! programmatic consumers. It is present on every `--json` output --
-//! both this error envelope and the success envelope (`{ "version":
-//! 1, "result": {...}, "refusal": <bool> }`, see [`crate::run_ask`]).
-//! Peel off `version` before inspecting anything inside. The success
-//! envelope's `refusal` flag is the additive v1 field that surfaces
-//! the refusal heuristic to non-TTY consumers.
+//! the error envelope and the success envelope alike. Peel off
+//! `version` before inspecting anything inside.
+//!
+//! The success shape is `{ "version": 1, "result": {...} }`. Two
+//! flavors share it:
+//!
+//! - The **ask** path ([`crate::run_ask`]) adds an `"refusal": <bool>`
+//!   field alongside `result` -- the additive v1 flag that surfaces the
+//!   refusal heuristic to non-TTY consumers.
+//! - The **read-only management** commands -- `roba cost`, `roba
+//!   history`, `roba doctor`, and `roba worktree list` -- emit the same
+//!   `{ "version": 1, "result": {...} }` envelope *without* `refusal`
+//!   (it's ask-specific). They wrap their payload through the crate's
+//!   `VersionedResult` helper. `roba show` reuses the ask success
+//!   envelope verbatim (its `result` is a reconstructed `QueryResult`).
+//!
+//! So the whole `--json` surface is `{ version, result, [refusal] }` on
+//! success and `{ version, error }` on failure, uniformly.
 //!
 //! Version 1 guarantees:
 //!

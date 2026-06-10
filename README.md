@@ -192,7 +192,14 @@ than `claude -p`:
 - **Versioned `--json` envelope.** Success:
   `{ "version": 1, "result": { ... }, "refusal": bool }`. Failure:
   `{ "version": 1, "error": { kind, message, exit_code, chain } }`.
-  Pin `version` and you've pinned the shape.
+  Pin `version` and you've pinned the shape. The read-only management
+  commands (`cost`, `history`, `doctor`, `worktree list`) emit the same
+  `{ "version": 1, "result": ... }` envelope (without the ask-only
+  `refusal` flag), so one parser handles every `--json` output.
+- **`roba doctor --json`** reports the boundary checks as
+  `{ checks: [{ name, status, message }], overall }` (status is
+  `ok`/`warn`/`fail`); it exits `0` when no check fails and `1` when any
+  does -- the same code in human and `--json` modes.
 - **Schema-validated output:** `--json-schema PATH` constrains the model's
   output to a JSON Schema (claude's own `--json-schema`). roba takes a
   path to a `.json` file, reads it, and inlines the contents (claude's

@@ -53,10 +53,11 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Some(SubCommand::Last(args)) => run_last(args),
         Some(SubCommand::Profile { action }) => profile::run(action),
         Some(SubCommand::Cost(args)) => cost::run(args),
-        // Health check: print one line per check, exit 0/1. No claude
-        // prompt -- only `claude --version`.
-        Some(SubCommand::Doctor) => {
-            let code = doctor::run()?;
+        // Health check: print one line per check (or a `--json`
+        // envelope), exit 0/1. No claude prompt -- only `claude
+        // --version`.
+        Some(SubCommand::Doctor(args)) => {
+            let code = doctor::run(args)?;
             std::process::exit(code);
         }
         Some(SubCommand::Alias { action }) => aliases::run(action),
@@ -116,6 +117,32 @@ pub(crate) struct SuccessEnvelope<'a> {
     /// the human-facing footer warning) branch on "got an answer" vs
     /// "got refused" without parsing the body text. Additive v1 field.
     pub(crate) refusal: bool,
+}
+
+/// Versioned success envelope for the read-only management commands'
+/// `--json` mode. Mirrors [`SuccessEnvelope`]'s `version` + `result`
+/// layout, minus the ask-only `refusal` flag, so the whole `--json`
+/// surface is `{ version: 1, result: ... }` on success and
+/// `{ version: 1, error: ... }` on failure (see the [`error`] module
+/// for the v1 contract).
+///
+/// `cost`, `history`, `doctor`, and `worktree list` all wrap their
+/// payload through this so a programmatic consumer peels off `version`
+/// and `result` uniformly regardless of which command produced the
+/// output. Generic over the payload `T` since each command has its own
+/// result shape (a `Rollup`, a `Vec<SessionSummary>`, a doctor report,
+/// a `Vec<Worktree>`).
+#[derive(serde::Serialize)]
+pub(crate) struct VersionedResult<'a, T: serde::Serialize> {
+    pub(crate) version: u32,
+    pub(crate) result: &'a T,
+}
+
+impl<'a, T: serde::Serialize> VersionedResult<'a, T> {
+    /// Wrap a payload reference at the current ABI version (1).
+    pub(crate) fn new(result: &'a T) -> Self {
+        Self { version: 1, result }
+    }
 }
 
 /// Default action: resolve a prompt, send it through claude, render
