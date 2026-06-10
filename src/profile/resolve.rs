@@ -291,6 +291,11 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     {
         args.max_budget_usd = Some(v);
     }
+    if args.json_schema.is_none()
+        && let Some(s) = profile.json_schema.take()
+    {
+        args.json_schema = Some(s);
+    }
 }
 
 /// Convert a profile-layer `PermissionModeConfig` to the CLI's
@@ -905,6 +910,30 @@ mod tests {
         };
         merge_into_args(&mut args, profile, "profile.test");
         assert_eq!(args.session_id.as_deref(), Some("cli-uuid"));
+    }
+
+    #[test]
+    fn merge_json_schema_applies_when_cli_unset() {
+        let mut args = empty_args();
+        assert!(args.json_schema.is_none());
+        let profile = Profile {
+            json_schema: Some("/path/to/schema.json".to_string()),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.json_schema.as_deref(), Some("/path/to/schema.json"));
+    }
+
+    #[test]
+    fn merge_json_schema_cli_wins_over_profile() {
+        let mut args = empty_args();
+        args.json_schema = Some("/cli/schema.json".to_string());
+        let profile = Profile {
+            json_schema: Some("/profile/schema.json".to_string()),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.json_schema.as_deref(), Some("/cli/schema.json"));
     }
 
     // -- Limits (max_turns / max_budget_usd) -------------------------------

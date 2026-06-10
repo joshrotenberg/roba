@@ -486,6 +486,24 @@ pub struct AskArgs {
     #[arg(long, help_heading = "Output")]
     pub json: bool,
 
+    /// Constrain the model's output to a JSON Schema (path to a `.json` file).
+    ///
+    /// Passes claude's own `--json-schema` through for schema-validated
+    /// structured output. The argument is a PATH to a file containing the
+    /// JSON Schema -- roba reads it and inlines the contents (claude's flag
+    /// takes inline JSON, which is hostile to type on a CLI, so the path is
+    /// the ergonomic roba sugar). roba validates the file is parseable JSON
+    /// and surfaces a clean error envelope if it is missing or malformed.
+    ///
+    /// The validated structured output arrives as extra fields on claude's
+    /// result and surfaces under `.result.*` in roba's `--json` envelope.
+    /// roba's default (non-streaming) path already runs claude with
+    /// `--output-format json`, so no extra output flag is needed; pair with
+    /// `--json` to see the structured envelope on stdout. Composes with
+    /// `--stream` (StreamJson is still a JSON format).
+    #[arg(long, value_name = "PATH", help_heading = "Output")]
+    pub json_schema: Option<String>,
+
     /// Print only fenced code blocks (optional language filter).
     #[arg(
         long,
@@ -1189,6 +1207,14 @@ mod tests {
             Cli::try_parse_from(["roba", "--session-id", "x", "--session", "meta", "-p", "hi"])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn json_schema_parses() {
+        use clap::Parser;
+        let cli =
+            Cli::try_parse_from(["roba", "--json-schema", "/tmp/schema.json", "-p", "hi"]).unwrap();
+        assert_eq!(cli.ask.json_schema.as_deref(), Some("/tmp/schema.json"));
     }
 
     #[test]

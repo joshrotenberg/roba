@@ -121,6 +121,11 @@ pub struct Profile {
     /// Cap total spend in USD (`--max-budget-usd`). Unattended guardrail.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_budget_usd: Option<f64>,
+    /// Path to a JSON Schema file constraining structured output
+    /// (`--json-schema`). roba reads the path and inlines the contents
+    /// before passing them to claude's own `--json-schema`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub json_schema: Option<String>,
 }
 
 /// Profile value for the `permission_mode` field. Serializes as a
@@ -203,6 +208,7 @@ impl Profile {
             && self.session_id.is_none()
             && self.max_turns.is_none()
             && self.max_budget_usd.is_none()
+            && self.json_schema.is_none()
     }
 
     /// Merge `other` on top of `self`. Used to layer roba.toml files
@@ -249,6 +255,7 @@ impl Profile {
             session_id,
             max_turns,
             max_budget_usd,
+            json_schema,
         } = other;
 
         self.prepend.append(&mut prepend);
@@ -348,6 +355,9 @@ impl Profile {
         }
         if max_budget_usd.is_some() {
             self.max_budget_usd = max_budget_usd;
+        }
+        if json_schema.is_some() {
+            self.json_schema = json_schema;
         }
     }
 }
