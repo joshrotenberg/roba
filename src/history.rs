@@ -9,10 +9,11 @@ use std::io::IsTerminal;
 use crate::cli::{HistoryArgs, LastArgs};
 use crate::output::{format_timestamp, truncate_arg};
 
-/// Upper bound on sessions scanned when matching `--worktree`. Worktree
-/// sessions live under their own project slugs, so the filter has to scan
-/// across projects and read each candidate's JSONL; this caps that work.
-/// If the cap is hit before the display limit is filled, a note is
+/// Upper bound on worktree-slug sessions whose JSONL is read when
+/// matching `--worktree`. After the cheap slug pre-filter narrows the
+/// candidate set to worktree-run sessions (see [`slug_is_worktree`]),
+/// each survivor's JSONL is read for its cwd; this caps that work. If
+/// the worktree-slug candidate set itself exceeds the cap, a note is
 /// printed (no silent truncation).
 const WORKTREE_SCAN_CAP: usize = 1000;
 
@@ -97,18 +98,38 @@ fn list_for_history(
     use claude_wrapper::history::{ListOptions, ListSort};
 
     if let Some(name) = args.worktree.as_deref() {
+        // Enumerate every session summary (cheap: metadata only), then
+        // pre-narrow to worktree-run sessions by project slug before
+        // reading any JSONL for its cwd.
+        //
+        // The slug pre-filter is SOUND: a worktree-run session's cwd is
+        // `<repo>/.claude/worktrees/<name>`, which claude-wrapper encodes
+        // into a project slug containing the substring `claude-worktrees`
+        // (the `/` path separators become `-`). The cwd rule that decides
+        // the actual match (`session_worktree`, via `session_in_worktree`)
+        // ONLY matches sessions whose cwd is under `.claude/worktrees/` --
+        // exactly the worktree-slug set. So the slug filter's domain is a
+        // superset of the cwd rule's: it can only skip sessions that could
+        // never match (no false negatives). The cwd check stays the source
+        // of truth; the slug filter is a pre-narrowing only.
         let scan_opts = ListOptions {
-            limit: Some(WORKTREE_SCAN_CAP),
+            limit: None,
             offset: 0,
             include_empty: false,
             sort: ListSort::RecencyDesc,
         };
-        let candidates = root
+        let candidates: Vec<_> = root
             .list_sessions_with(None, &scan_opts)
-            .context("reading session history")?;
-        let capped = candidates.len() >= WORKTREE_SCAN_CAP;
+            .context("reading session history")?
+            .into_iter()
+            .filter(|s| slug_is_worktree(&s.project_slug))
+            .collect();
+        // The cap now bounds the worktree-slug candidate set, so the
+        // note fires only when there are genuinely more worktree
+        // sessions than the cap -- not for ordinary sparse matches.
+        let capped = candidates.len() > WORKTREE_SCAN_CAP;
         let mut matched = Vec::new();
-        for s in candidates {
+        for s in candidates.into_iter().take(WORKTREE_SCAN_CAP) {
             if limit.is_some_and(|n| matched.len() >= n) {
                 break;
             }
@@ -118,7 +139,7 @@ fn list_for_history(
         }
         if capped && limit.is_none_or(|n| matched.len() < n) {
             eprintln!(
-                "note: scanned only the {WORKTREE_SCAN_CAP} most recent sessions for worktree `{name}`; older sessions were not checked"
+                "note: scanned only the {WORKTREE_SCAN_CAP} most recent worktree sessions for worktree `{name}`; older sessions were not checked"
             );
         }
         return Ok((matched, false));
@@ -183,6 +204,21 @@ fn session_worktree(cwd: &str) -> Option<&str> {
     let after = cwd.split(".claude/worktrees/").nth(1)?;
     let name = after.split('/').next()?;
     if name.is_empty() { None } else { Some(name) }
+}
+
+/// True if a project slug belongs to a worktree-run session.
+///
+/// claude-wrapper derives the project slug from the session's cwd by
+/// replacing path separators with `-`, so a worktree cwd
+/// `<repo>/.claude/worktrees/<name>` yields a slug containing the
+/// substring `claude-worktrees` (e.g. `-repo--claude-worktrees-foo`).
+/// This is the slug-level mirror of [`session_worktree`]: every cwd
+/// `session_worktree` can match lives under `.claude/worktrees/`, so its
+/// slug contains `claude-worktrees`. The set this returns `true` for is
+/// therefore a superset of the matchable sessions, which is what makes
+/// it a sound pre-filter (no false negatives).
+fn slug_is_worktree(slug: &str) -> bool {
+    slug.contains("claude-worktrees")
 }
 
 /// Implementation of `roba last`.
@@ -545,6 +581,23 @@ mod tests {
     fn session_worktree_none_for_empty_trailing_segment() {
         // A path ending exactly at the marker has no name segment.
         assert_eq!(session_worktree("/repo/.claude/worktrees/"), None);
+    }
+
+    #[test]
+    fn slug_is_worktree_true_for_worktree_slug() {
+        // Real-shape slugs (cwd separators collapsed to `-`).
+        assert!(slug_is_worktree("-repo--claude-worktrees-foo"));
+        assert!(slug_is_worktree(
+            "-Users-jo-Code-active-agent-tools--claude-worktrees-agent-a1ce841658fc4a90d"
+        ));
+    }
+
+    #[test]
+    fn slug_is_worktree_false_for_base_slug() {
+        // A base-repo session's slug has no worktree marker, so the
+        // pre-filter skips it -- and the cwd rule could never match it.
+        assert!(!slug_is_worktree("-repo"));
+        assert!(!slug_is_worktree("-Users-jo-Code-active-agent-tools"));
     }
 
     #[test]

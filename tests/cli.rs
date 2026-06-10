@@ -1537,15 +1537,17 @@ fn home_with_worktree_sessions() -> tempfile::TempDir {
 #[test]
 fn history_worktree_filter_returns_only_matching() {
     let home = home_with_worktree_sessions();
-    let out = roba()
+    let output = roba()
         .args(["history", "--worktree", "foo", "--json"])
         .env("HOME", home.path())
         .assert()
         .success()
+        // The slug pre-filter keeps the scanned set small, so the
+        // "scan capped" note must not fire for a sparse match set.
+        .stderr(predicate::str::contains("scanned only").not())
         .get_output()
-        .stdout
         .clone();
-    let v: serde_json::Value = serde_json::from_slice(&out).expect("stdout is JSON");
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
     let arr = v.as_array().expect("array of sessions");
     assert_eq!(arr.len(), 1, "only the worktree session should match");
     assert_eq!(arr[0]["session_id"], "wt-sess");
