@@ -1276,6 +1276,57 @@ fn live_profile_draft() {
     );
 }
 
+#[test]
+#[ignore]
+fn live_config_init() {
+    // The per-project bootstrap. Assert MECHANICS: in a tiny fixture
+    // project, `roba config init` exits 0 and its stdout parses through
+    // the REAL per-file config deserializer (the exact path the pool
+    // loader uses). We do NOT assert anything about which profiles/keys
+    // were chosen -- that's model behavior, not roba's plumbing. The call
+    // carries its own `--model` (config init ignores roba_in's top-level).
+    let dir = fresh_dir();
+    // A minimal but realistic project: a git marker so the config walk
+    // stops here, a README, and a source file for the call to skim.
+    std::fs::create_dir_all(dir.path().join(".git")).expect(".git marker");
+    std::fs::write(
+        dir.path().join("README.md"),
+        "# widget\n\nA small Rust CLI for widgets.\n",
+    )
+    .expect("write README");
+    std::fs::create_dir_all(dir.path().join("src")).expect("src dir");
+    std::fs::write(
+        dir.path().join("src/main.rs"),
+        "fn main() { println!(\"widget\"); }\n",
+    )
+    .expect("write src");
+
+    let out = Command::cargo_bin("roba")
+        .expect("cargo-built roba binary")
+        .args([
+            "-C",
+            dir.path().to_str().expect("utf-8 tempdir path"),
+            "config",
+            "init",
+            "keep it minimal",
+            "--model",
+            "claude-haiku-4-5",
+        ])
+        .output()
+        .expect("run roba config init");
+    assert!(
+        out.status.success(),
+        "config init should exit 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    // Validate through the SAME deserializer the pool loader uses.
+    roba::profile::pool::parse_config_str(&stdout).unwrap_or_else(|e| {
+        panic!("config init stdout did not parse as a config: {e:#}\n{stdout}")
+    });
+}
+
 // ---------------------------------------------------------------------------
 // INTENTIONALLY UNTESTED (high cost / low signal, or no fixture path yet)
 // ---------------------------------------------------------------------------

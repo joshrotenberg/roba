@@ -216,6 +216,16 @@ pub enum SubCommand {
         #[command(subcommand)]
         action: AliasAction,
     },
+    /// Bootstrap a project roba.toml (claude-assisted).
+    ///
+    /// The per-project half of the config-draft verbs: `init` looks at
+    /// the current project and drafts a whole starter roba.toml fitted
+    /// to it. Sibling to the per-block `roba profile draft` / `roba alias
+    /// draft`, which target your user config.
+    Config {
+        #[command(subcommand)]
+        cmd: ConfigCmd,
+    },
     /// Inspect the git worktrees for this repo (read-only).
     ///
     /// Read-only inspection only: `list` enumerates every git worktree
@@ -460,6 +470,48 @@ pub struct ProfileDraftArgs {
     /// duplicate `[profile.NAME]` already in the target is a hard error --
     /// it would break the next config load. The block still prints on
     /// stdout in either case.
+    #[arg(long, num_args = 0..=1, value_name = "PATH")]
+    pub write: Option<Option<PathBuf>>,
+
+    /// Model override for the generation call (alias or full id).
+    #[arg(long, value_name = "NAME")]
+    pub model: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConfigCmd {
+    /// Draft a starter project roba.toml from the current project.
+    ///
+    /// Makes ONE claude call with a read-only (Read/Glob/Grep) view of
+    /// the cwd, so it can skim the README / manifest / layout and fit a
+    /// starter config to what it sees: conservative top-level defaults, a
+    /// couple of profiles, maybe an alias or two -- every key commented.
+    /// The whole drafted file is validated by roba's REAL config
+    /// deserializer (a hallucinated key is rejected exactly as a
+    /// hand-written config would be) before it is shown.
+    ///
+    /// stdout is the validated file content ONLY (pipe it to
+    /// `> roba.toml`); collision/where-it-wrote notes go to stderr. There
+    /// is NO retry loop: an invalid draft fails loud with the deserializer
+    /// error and the raw output.
+    Init(ConfigInitArgs),
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct ConfigInitArgs {
+    /// Optional steer for the draft (e.g. "focus on PR review").
+    ///
+    /// Woven into the generation prompt on top of what the call observes
+    /// in the project. Omit it to let the project itself drive the draft.
+    pub description: Option<String>,
+
+    /// Write the drafted file instead of only printing it.
+    ///
+    /// Bare `--write` targets `./roba.toml` (the PROJECT file -- this is
+    /// the per-project verb); `--write PATH` targets an explicit file.
+    /// REFUSES if the target already exists -- a whole-file verb must
+    /// never clobber or append to an existing config; print to stdout and
+    /// merge by hand instead. The file still prints on stdout either way.
     #[arg(long, num_args = 0..=1, value_name = "PATH")]
     pub write: Option<Option<PathBuf>>,
 
@@ -1167,6 +1219,64 @@ mod tests {
             cli.command,
             Some(SubCommand::Doctor(DoctorArgs { json: true }))
         ));
+    }
+
+    #[test]
+    fn config_init_parses_without_description() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "config", "init"]).unwrap();
+        let Some(SubCommand::Config {
+            cmd: ConfigCmd::Init(args),
+        }) = cli.command
+        else {
+            panic!("expected config init");
+        };
+        assert!(args.description.is_none());
+        assert!(args.write.is_none());
+    }
+
+    #[test]
+    fn config_init_parses_with_description() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "config", "init", "focus on PR review"]).unwrap();
+        let Some(SubCommand::Config {
+            cmd: ConfigCmd::Init(args),
+        }) = cli.command
+        else {
+            panic!("expected config init");
+        };
+        assert_eq!(args.description.as_deref(), Some("focus on PR review"));
+    }
+
+    #[test]
+    fn config_init_write_bare_is_some_none() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "config", "init", "--write"]).unwrap();
+        let Some(SubCommand::Config {
+            cmd: ConfigCmd::Init(args),
+        }) = cli.command
+        else {
+            panic!("expected config init");
+        };
+        // Bare --write => Some(None) (default ./roba.toml target).
+        assert_eq!(args.write, Some(None));
+    }
+
+    #[test]
+    fn config_init_write_with_path() {
+        use clap::Parser;
+        let cli =
+            Cli::try_parse_from(["roba", "config", "init", "--write", "custom.toml"]).unwrap();
+        let Some(SubCommand::Config {
+            cmd: ConfigCmd::Init(args),
+        }) = cli.command
+        else {
+            panic!("expected config init");
+        };
+        assert_eq!(
+            args.write,
+            Some(Some(std::path::PathBuf::from("custom.toml")))
+        );
     }
 
     #[test]

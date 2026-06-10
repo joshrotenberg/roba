@@ -163,6 +163,43 @@ fn profile_draft_reaches_claude_call() {
 }
 
 #[test]
+fn config_init_reaches_claude_call() {
+    // With PATH cleared, `roba config init` wires through to the claude
+    // call and fails with the normal claude-missing error -- proving the
+    // verb dispatches without needing the API (no file is written, since
+    // the failure happens before any output).
+    roba()
+        .env("PATH", "")
+        .args(["config", "init"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found on PATH"));
+}
+
+#[test]
+fn config_init_write_refuses_existing_target_before_claude_call() {
+    // The fail-fast clobber guard: `config init --write` into a dir that
+    // already has a roba.toml refuses BEFORE any claude call. PATH is
+    // cleared, so if the guard didn't fire first we'd see the
+    // claude-missing error instead of the clobber message.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("roba.toml"), "readonly = true\n").expect("seed roba.toml");
+    roba()
+        .env("PATH", "")
+        .args([
+            "-C",
+            tmp.path().to_str().unwrap(),
+            "config",
+            "init",
+            "--write",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"))
+        .stderr(predicate::str::contains("not found on PATH").not());
+}
+
+#[test]
 fn dash_with_empty_stdin_errors() {
     roba()
         .arg("-")

@@ -67,14 +67,24 @@ pub fn discover_project_configs(start: &Path) -> Vec<PathBuf> {
 fn load_file(path: &Path) -> Result<ConfigFile> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("reading config at {}", path.display()))?;
-    let mut value: toml::Value = toml::from_str(&content)
-        .with_context(|| format!("parsing config at {}", path.display()))?;
+    parse_config_str(&content).with_context(|| format!("parsing config at {}", path.display()))
+}
+
+/// Parse a `roba.toml`'s text into a [`ConfigFile`], the same way
+/// `load_file` does but from a string rather than a path. Splits
+/// top-level keys (the defaults profile) from `[profile.NAME]` /
+/// `[alias.NAME]` / `[session]` tables before deserializing each, so
+/// `#[serde(deny_unknown_fields)]` catches typos in any section.
+///
+/// This is the REAL file-level validator the pool loader uses, exposed
+/// for `roba config init`, which drafts a whole-file config and validates
+/// it through this exact path before printing/writing.
+pub fn parse_config_str(content: &str) -> Result<ConfigFile> {
+    let mut value: toml::Value = toml::from_str(content).context("parsing config TOML")?;
 
     let profile_map: HashMap<String, Profile> = if let toml::Value::Table(table) = &mut value {
         match table.remove("profile") {
-            Some(v) => v
-                .try_into()
-                .with_context(|| format!("parsing [profile.*] tables in {}", path.display()))?,
+            Some(v) => v.try_into().context("parsing [profile.*] tables")?,
             None => HashMap::new(),
         }
     } else {
@@ -83,9 +93,7 @@ fn load_file(path: &Path) -> Result<ConfigFile> {
 
     let alias_map: HashMap<String, Alias> = if let toml::Value::Table(table) = &mut value {
         match table.remove("alias") {
-            Some(v) => v
-                .try_into()
-                .with_context(|| format!("parsing [alias.*] tables in {}", path.display()))?,
+            Some(v) => v.try_into().context("parsing [alias.*] tables")?,
             None => HashMap::new(),
         }
     } else {
@@ -94,18 +102,14 @@ fn load_file(path: &Path) -> Result<ConfigFile> {
 
     let session_map: HashMap<String, String> = if let toml::Value::Table(table) = &mut value {
         match table.remove("session") {
-            Some(v) => v
-                .try_into()
-                .with_context(|| format!("parsing [session] table in {}", path.display()))?,
+            Some(v) => v.try_into().context("parsing [session] table")?,
             None => HashMap::new(),
         }
     } else {
         HashMap::new()
     };
 
-    let defaults: Profile = value
-        .try_into()
-        .with_context(|| format!("parsing top-level keys in {}", path.display()))?;
+    let defaults: Profile = value.try_into().context("parsing top-level keys")?;
 
     Ok(ConfigFile {
         defaults,

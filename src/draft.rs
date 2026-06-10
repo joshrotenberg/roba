@@ -1,15 +1,15 @@
-//! Shared plumbing for the claude-assisted `draft` verbs
-//! (`roba alias draft`, `roba profile draft`).
+//! Shared plumbing for the claude-assisted `draft`/`init` verbs
+//! (`roba alias draft`, `roba profile draft`, `roba config init`).
 //!
-//! Both verbs use the same deterministic bookends: build a prompt from
-//! the bundled, parse-tested config schema + the user's words, make ONE
-//! lean claude call, then validate the output with roba's REAL
-//! deserializer (`deny_unknown_fields`) and normalize it back to a
-//! canonical block. The type-specific parts -- which schema section,
-//! which deserializer, how to render -- live in the calling module
-//! ([`crate::aliases`], [`crate::profile`]). The generic parts -- the
-//! claude call, fence-stripping, and block-appending -- live here, so
-//! there is one shared core rather than two parallel copies.
+//! All three verbs use the same deterministic bookends: build a prompt
+//! from the bundled, parse-tested config schema + the user's words, make
+//! ONE lean claude call, then validate the output with roba's REAL
+//! deserializer (`deny_unknown_fields`). The type-specific parts -- which
+//! schema section, which deserializer, how to render -- live in the
+//! calling module ([`crate::aliases`], [`crate::profile`],
+//! [`crate::config`]). The generic parts -- the claude call,
+//! fence-stripping, and block-appending -- live here, so there is one
+//! shared core rather than parallel copies.
 
 use std::path::Path;
 
@@ -19,15 +19,56 @@ use claude_wrapper::{Claude, QueryCommand};
 /// Make the single lean generation call and return claude's raw result
 /// text for the caller to validate.
 ///
-/// Read-only default tool posture (generation needs no tools), no
-/// session kept (a draft is not a thread worth resuming), stdin-fed,
-/// optional model override. NOT routed through `run_ask`.
+/// PURE generation: no tools (the alias/profile drafts generate a block
+/// from the schema + description alone), no session kept (a draft is not
+/// a thread worth resuming), stdin-fed, optional model override. NOT
+/// routed through `run_ask`.
 pub async fn generate(prompt: String, model: Option<&str>, call_name: &str) -> Result<String> {
+    run_generation(prompt, model, call_name, &[], None).await
+}
+
+/// Like [`generate`], but lets the call SEE the current project: a
+/// read-only Read/Glob/Grep tool posture so claude can skim the README /
+/// manifest / layout before drafting, bounded by a turn cap so a
+/// bootstrap skims rather than spelunks. Used by `roba config init`,
+/// which fits a whole-file config to what it observes in the cwd.
+pub async fn generate_inspecting(
+    prompt: String,
+    model: Option<&str>,
+    call_name: &str,
+) -> Result<String> {
+    run_generation(
+        prompt,
+        model,
+        call_name,
+        &["Read", "Glob", "Grep"],
+        Some(20),
+    )
+    .await
+}
+
+/// Shared core for both generation postures. `allowed_tools` empty means
+/// no tools (pure generation); a non-empty list opens a read-only window
+/// onto the project. `max_turns` bounds an inspecting call.
+async fn run_generation(
+    prompt: String,
+    model: Option<&str>,
+    call_name: &str,
+    allowed_tools: &[&str],
+    max_turns: Option<u32>,
+) -> Result<String> {
     let claude = Claude::builder().build()?;
     let mut cmd = QueryCommand::new(prompt)
         .name(call_name)
         .prompt_via_stdin(true)
         .no_session_persistence();
+    if !allowed_tools.is_empty() {
+        let tools: Vec<String> = allowed_tools.iter().map(|s| s.to_string()).collect();
+        cmd = cmd.allowed_tools(tools);
+    }
+    if let Some(n) = max_turns {
+        cmd = cmd.max_turns(n);
+    }
     if let Some(model) = model {
         cmd = cmd.model(model.to_string());
     }
