@@ -69,7 +69,9 @@ when you want any of:
   most recent session in the directory, `-c ID` resumes a specific one,
   `--fork` branches it, `--pick` is a fuzzy chooser; `roba history` /
   `roba last` browse past runs. You dip back into a thread without
-  opening the TUI.
+  opening the TUI. `--session-id <uuid>` assigns a caller-chosen id to a
+  *new* session -- mint it once, then `-c=<uuid>` on later turns (the
+  reliable scripted-multi-turn pattern).
 - **A real ABI.** Typed exit codes, a versioned `--json` envelope, and a
   clean stream split -- so a script or agent can pin a contract instead
   of scraping prose. (See [For agents & scripts](#for-agents--scripts).)

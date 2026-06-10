@@ -215,6 +215,23 @@ fn conflict_fresh_and_pick() {
 }
 
 #[test]
+fn conflict_session_id_and_continue() {
+    // --session-id assigns a NEW session's id; -c=ID resumes an
+    // existing one. clap rejects the combination at parse time.
+    assert_conflict(&["foo", "--session-id", "x", "-c=y"]);
+}
+
+#[test]
+fn conflict_session_id_and_pick() {
+    assert_conflict(&["foo", "--session-id", "x", "--pick"]);
+}
+
+#[test]
+fn conflict_session_id_and_session() {
+    assert_conflict(&["foo", "--session-id", "x", "--session", "meta"]);
+}
+
+#[test]
 fn conflict_prompt_flag_and_positional() {
     // -p and the positional prompt are mutually exclusive (clap-level
     // conflicts_with). Supplying both errors at parse time.
@@ -850,6 +867,22 @@ fn fork_with_bare_continue_errors_at_runtime() {
         .stderr(predicate::str::contains(
             "--fork requires an explicit session id",
         ));
+}
+
+#[test]
+fn session_id_parses_with_show_permissions() {
+    // --session-id parses cleanly alongside a real prompt. Pair with
+    // --show-permissions so the run short-circuits before any claude
+    // call: a clean exit proves the flag parses without conflict.
+    roba()
+        .args([
+            "foo",
+            "--session-id",
+            "11111111-1111-4111-8111-111111111111",
+            "--show-permissions",
+        ])
+        .assert()
+        .success();
 }
 
 #[test]
