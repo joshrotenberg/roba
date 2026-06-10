@@ -22,7 +22,7 @@ const STYLES: Styles = Styles::styled()
 const AFTER_HELP: &str = "\
 Examples:
   roba \"explain the borrow checker in 3 bullets\"       one-shot question
-  roba --prepend err.log \"what's wrong here?\"          feed a file as context
+  cat err.log | roba \"what's wrong here?\"              pipe a log + ask about it
   roba --attach 'src/**/*.rs' \"audit error handling\"   attach files
   roba -c -p \"now add a test for that\"                 continue the last session
   roba --writable \"rename foo to bar in src/\"          let claude edit files
@@ -35,7 +35,7 @@ Full flag detail, env vars, and roba.toml config: roba --help";
 const AFTER_LONG_HELP: &str = "\
 Examples -- for humans (interactive, rich TTY):
   roba \"explain the borrow checker in 3 bullets\"      one-shot question
-  roba --prepend err.log \"what's wrong here?\"         feed a file as context
+  cat err.log | roba \"what's wrong here?\"             pipe a log + ask about it
   roba --attach 'src/**/*.rs' \"audit error handling\"  attach files as context
   roba -e                                             compose in $EDITOR
   roba -c -p \"now add a test for that\"                continue the last session

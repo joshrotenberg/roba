@@ -167,6 +167,36 @@ fn no_args_empty_stdin_non_tty_still_errors() {
         .stderr(predicate::str::contains("empty stdin"));
 }
 
+#[test]
+fn piped_stdin_with_positional_composes_and_reaches_claude() {
+    // Real piped content + a positional prompt: the stdin is merged as a
+    // context block (it is no longer silently dropped), composition
+    // succeeds, and the run proceeds to the claude call -- which fails
+    // only because PATH is cleared. Reaching the claude-missing error
+    // (not an earlier bail) proves the merge path composed cleanly.
+    roba()
+        .env("PATH", "")
+        .arg("what's wrong here?")
+        .write_stdin("ERROR: boom\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found on PATH"));
+}
+
+#[test]
+fn empty_piped_stdin_with_positional_still_composes() {
+    // Rule: empty piped stdin + a positional prompt is byte-identical to
+    // no pipe -- no context part, composition is just the positional, and
+    // the run reaches the claude call (failing only on the cleared PATH).
+    roba()
+        .env("PATH", "")
+        .arg("hi")
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found on PATH"));
+}
+
 // ---------------------------------------------------------------------------
 // conflict matrix (clap rejects with exit 2 by convention)
 // ---------------------------------------------------------------------------

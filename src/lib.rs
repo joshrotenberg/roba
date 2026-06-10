@@ -221,7 +221,7 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     // the precedence (stdin > editor > explicit > file > none) is
     // unchanged.
     let explicit_prompt = args.prompt_flag.as_deref().or(args.prompt.as_deref());
-    let main = resolve_main_prompt(
+    let resolved = resolve_main_prompt(
         explicit_prompt,
         args.file.as_deref(),
         args.editor,
@@ -235,7 +235,13 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     // a user with no positional but a `--git-diff` is NOT promptless and
     // must not be intercepted. `compose_prompt` returns `None` only when
     // nothing composed to a non-empty body.
-    let prompt = match compose_prompt(main, &args.prepend, context, &args.append)? {
+    let prompt = match compose_prompt(
+        resolved.main,
+        &args.prepend,
+        resolved.piped_context,
+        context,
+        &args.append,
+    )? {
         Some(p) => p,
         None => {
             // No resolvable prompt. On a TTY the user ran `roba` with no

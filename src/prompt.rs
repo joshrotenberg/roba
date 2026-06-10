@@ -15,23 +15,48 @@ use std::process::Command;
 
 use crate::cli::AskArgs;
 
+/// The resolved prompt body plus any piped-stdin context to merge.
+///
+/// `main` is the prompt body resolved from one input source. `piped_context`
+/// is non-`None` only when an *explicit* prompt was given (positional, `-p`,
+/// or `-f`) AND stdin was piped with non-empty content: that content becomes
+/// a context block so `cat err.log | roba "what's wrong?"` just works instead
+/// of silently dropping the pipe.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ResolvedPrompt {
+    /// The main prompt body (editor / file / positional / `-p` / stdin-as-prompt).
+    pub main: Option<String>,
+    /// Piped stdin to embed as context, when an explicit prompt is present.
+    pub piped_context: Option<String>,
+}
+
 /// Resolve the main prompt body from one of: editor, file, positional
-/// arg, stdin (piped or explicit `-`). Returns `Ok(None)` only when
-/// no source was given and stdin is a TTY -- the caller should then
-/// rely on prepend/append/attach to supply content, or error if those
-/// are also empty.
+/// arg, stdin (piped or explicit `-`). `main` is `None` only when no
+/// source was given and stdin is a TTY -- the caller should then rely on
+/// prepend/append/attach to supply content, or error if those are also
+/// empty.
+///
+/// When the prompt is *explicit* (file `-f`, positional, or `-p`) and
+/// stdin is piped with non-empty content, that content is returned as
+/// `piped_context` for the caller to merge as a context block. Empty or
+/// whitespace-only piped stdin yields no context (byte-identical to no
+/// pipe). Stdin is read at most once. The `-` positional and the
+/// no-positional path keep their existing "stdin IS the prompt" meaning.
 pub fn resolve_main_prompt(
     positional: Option<&str>,
     file: Option<&Path>,
     editor: bool,
     editor_history: Option<usize>,
-) -> Result<Option<String>> {
+) -> Result<ResolvedPrompt> {
     if editor {
         if !std::io::stdin().is_terminal() {
             bail!("--editor requires a TTY; pipe-mode input is incompatible");
         }
         let n = editor_history.unwrap_or(1);
-        return Ok(Some(compose_in_editor(n)?));
+        return Ok(ResolvedPrompt {
+            main: Some(compose_in_editor(n)?),
+            piped_context: None,
+        });
     }
     if let Some(path) = file {
         let content = std::fs::read_to_string(path)
@@ -40,32 +65,74 @@ pub fn resolve_main_prompt(
         if trimmed.is_empty() {
             bail!("file {} is empty", path.display());
         }
-        return Ok(Some(trimmed));
+        // `-f` is an explicit prompt: piped stdin merges as context.
+        return Ok(ResolvedPrompt {
+            main: Some(trimmed),
+            piped_context: piped_stdin_context()?,
+        });
     }
     match positional {
-        Some("-") => Ok(Some(read_stdin()?)),
-        Some(p) => Ok(Some(p.to_string())),
+        Some("-") => Ok(ResolvedPrompt {
+            main: Some(read_stdin()?),
+            piped_context: None,
+        }),
+        Some(p) => Ok(ResolvedPrompt {
+            // Explicit positional / `-p`: piped stdin merges as context.
+            main: Some(p.to_string()),
+            piped_context: piped_stdin_context()?,
+        }),
         None => {
             if std::io::stdin().is_terminal() {
-                Ok(None)
+                Ok(ResolvedPrompt::default())
             } else {
-                Ok(Some(read_stdin()?))
+                Ok(ResolvedPrompt {
+                    main: Some(read_stdin()?),
+                    piped_context: None,
+                })
             }
         }
     }
 }
 
+/// When stdin is piped (not a TTY), read it and return its content as a
+/// context block, or `None` for a TTY or empty/whitespace-only input.
+/// This is the read shim; the keep/drop decision lives in the pure
+/// `stdin_as_context` so it stays unit-testable.
+fn piped_stdin_context() -> Result<Option<String>> {
+    if std::io::stdin().is_terminal() {
+        return Ok(None);
+    }
+    let mut buf = String::new();
+    std::io::stdin().read_to_string(&mut buf)?;
+    Ok(stdin_as_context(&buf))
+}
+
+/// Decide whether raw piped stdin should become a context part: the
+/// trimmed content if non-empty, else `None`. Empty or whitespace-only
+/// stdin is a no-op so a closed/empty pipe is byte-identical to no pipe.
+fn stdin_as_context(raw: &str) -> Option<String> {
+    let trimmed = raw.trim_end();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// Assemble the final prompt from all sources, joined by blank lines.
-/// Order: prepend files, attachments / git context, main, append files.
+/// Order: prepend files, piped stdin, attachments / git context, main,
+/// append files. Piped stdin sits in the `--prepend`-like slot (it is
+/// piped context, ahead of attachments and the main question).
 ///
 /// Returns `Ok(None)` when nothing composed to a non-empty body (no
-/// main prompt and no non-empty prepend/attach/append). The caller
+/// main prompt and no non-empty prepend/stdin/attach/append). The caller
 /// decides what an empty composition means: on a TTY it guides the
 /// user, off a TTY it errors. `Ok(Some(body))` carries the joined
 /// prompt otherwise.
 pub fn compose_prompt(
     main: Option<String>,
     prepend: &[PathBuf],
+    piped_context: Option<String>,
     attachments: Option<String>,
     append: &[PathBuf],
 ) -> Result<Option<String>> {
@@ -74,6 +141,9 @@ pub fn compose_prompt(
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("reading --prepend {}", path.display()))?;
         parts.push(content.trim_end().to_string());
+    }
+    if let Some(stdin_block) = piped_context {
+        parts.push(stdin_block);
     }
     if let Some(attach_block) = attachments {
         parts.push(attach_block);
@@ -393,7 +463,7 @@ mod tests {
 
     #[test]
     fn compose_prompt_just_main() {
-        let out = compose_prompt(Some("hi".to_string()), &[], None, &[]).unwrap();
+        let out = compose_prompt(Some("hi".to_string()), &[], None, None, &[]).unwrap();
         assert_eq!(out, Some("hi".to_string()));
     }
 
@@ -404,6 +474,7 @@ mod tests {
         let out = compose_prompt(
             Some("question".to_string()),
             std::slice::from_ref(&pre.path().to_path_buf()),
+            None,
             None,
             std::slice::from_ref(&post.path().to_path_buf()),
         )
@@ -418,6 +489,7 @@ mod tests {
         let out = compose_prompt(
             Some("question".to_string()),
             std::slice::from_ref(&pre.path().to_path_buf()),
+            None,
             Some(attach.clone()),
             &[],
         )
@@ -432,6 +504,7 @@ mod tests {
             None,
             std::slice::from_ref(&pre.path().to_path_buf()),
             None,
+            None,
             &[],
         )
         .unwrap();
@@ -442,7 +515,7 @@ mod tests {
     fn compose_prompt_none_when_everything_empty() {
         // Nothing to compose -> `None`. The caller (run_ask) turns this
         // into a TTY blurb (exit 0) or a non-TTY error (non-zero exit).
-        let out = compose_prompt(None, &[], None, &[]).unwrap();
+        let out = compose_prompt(None, &[], None, None, &[]).unwrap();
         assert_eq!(out, None);
     }
 
@@ -453,10 +526,62 @@ mod tests {
             Some("only".to_string()),
             std::slice::from_ref(&empty.path().to_path_buf()),
             None,
+            None,
             &[],
         )
         .unwrap();
         assert_eq!(out, Some("only".to_string()));
+    }
+
+    // -- piped stdin as context (--prepend-like slot) ----------------------
+
+    #[test]
+    fn compose_prompt_piped_context_sits_before_main() {
+        // The piped block lands AFTER prepend and BEFORE the main question.
+        let out = compose_prompt(
+            Some("what's wrong here?".to_string()),
+            &[],
+            Some("ERROR: boom".to_string()),
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(out, Some("ERROR: boom\n\nwhat's wrong here?".to_string()));
+    }
+
+    #[test]
+    fn compose_prompt_piped_context_order_prepend_stdin_attach_main() {
+        // Pin the full slot order: prepend, piped stdin, attachments, main.
+        let pre = write_temp("PREP");
+        let attach = "File: foo.rs\n```\nfn x() {}\n```".to_string();
+        let out = compose_prompt(
+            Some("question".to_string()),
+            std::slice::from_ref(&pre.path().to_path_buf()),
+            Some("PIPED".to_string()),
+            Some(attach.clone()),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(out, Some(format!("PREP\n\nPIPED\n\n{attach}\n\nquestion")));
+    }
+
+    #[test]
+    fn stdin_as_context_keeps_real_content() {
+        assert_eq!(
+            stdin_as_context("ERROR: boom\n"),
+            Some("ERROR: boom".to_string())
+        );
+    }
+
+    #[test]
+    fn stdin_as_context_empty_is_none() {
+        // The load-bearing guard: an empty pipe is byte-identical to no pipe.
+        assert_eq!(stdin_as_context(""), None);
+    }
+
+    #[test]
+    fn stdin_as_context_whitespace_only_is_none() {
+        assert_eq!(stdin_as_context("   \n\t \n"), None);
     }
 
     #[test]
