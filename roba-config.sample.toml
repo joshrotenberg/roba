@@ -62,6 +62,10 @@
 # bare      = true                # minimal-overhead mode (ANTHROPIC_API_KEY auth)
 # no_agent_check = true           # skip the --agent frontmatter permission check
 
+# --- Limits (unattended guardrails; cap hit -> run errors, exit 1) ---
+# max_turns      = 20             # cap the agentic turn count
+# max_budget_usd = 5.0            # cap total spend in USD
+
 # --- Template variables ---  substituted as {{KEY}} in prompts/prepends
 # [vars]
 # TEAM = "platform"

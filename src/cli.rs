@@ -555,6 +555,27 @@ pub struct AskArgs {
     #[arg(long, help_heading = "Failure modes")]
     pub no_retry: bool,
 
+    // ----- Limits -----------------------------------------------------------
+    /// Cap the agentic turn count for this run (unattended guardrail).
+    ///
+    /// Passes claude's own `--max-turns N` through. When the cap is hit
+    /// the run errors rather than continuing -- a rail for unattended /
+    /// Ralph loops that would otherwise run unbounded. claude-wrapper
+    /// does not distinguish a turn-cap failure from any other command
+    /// failure, so it surfaces as the generic failure exit code (1).
+    #[arg(long, value_name = "N", help_heading = "Limits")]
+    pub max_turns: Option<u32>,
+
+    /// Cap total spend in USD for this run (unattended guardrail).
+    ///
+    /// Passes claude's own `--max-budget-usd USD` through. When the cap
+    /// is hit the run errors. This is claude's CLI-side ceiling; it is a
+    /// different mechanism from the wrapper's own budget tracker, so a
+    /// cap hit surfaces as the generic failure exit code (1), not the
+    /// budget exit code.
+    #[arg(long, value_name = "USD", help_heading = "Limits")]
+    pub max_budget_usd: Option<f64>,
+
     // ----- Mode -------------------------------------------------------------
     /// Minimal-overhead mode (skip hooks, LSP, memory, keychain, etc.).
     ///
@@ -1262,6 +1283,50 @@ mod tests {
         let cli = Cli::try_parse_from(["roba", "-c", "-p", "follow up"]).unwrap();
         assert_eq!(cli.ask.continue_session, Some(None));
         assert_eq!(cli.ask.prompt_flag.as_deref(), Some("follow up"));
+    }
+
+    #[test]
+    fn max_turns_parses_valid_value() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--max-turns", "5", "prompt"]).unwrap();
+        assert_eq!(cli.ask.max_turns, Some(5));
+        assert_eq!(cli.ask.prompt.as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn max_turns_rejects_non_numeric() {
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["roba", "--max-turns", "abc", "prompt"]).is_err());
+    }
+
+    #[test]
+    fn max_budget_usd_parses_valid_value() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--max-budget-usd", "10.5", "prompt"]).unwrap();
+        assert_eq!(cli.ask.max_budget_usd, Some(10.5));
+    }
+
+    #[test]
+    fn max_budget_usd_rejects_non_numeric() {
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["roba", "--max-budget-usd", "lots", "prompt"]).is_err());
+    }
+
+    #[test]
+    fn limits_flags_compose() {
+        // Both guardrails together, the unattended-loop case.
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "roba",
+            "--max-turns",
+            "5",
+            "--max-budget-usd",
+            "10",
+            "prompt",
+        ])
+        .unwrap();
+        assert_eq!(cli.ask.max_turns, Some(5));
+        assert_eq!(cli.ask.max_budget_usd, Some(10.0));
     }
 
     #[test]
