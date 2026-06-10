@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>roba -- a sharp, focused sugaring of claude -p</title>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/base16/gruvbox-dark-hard.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Martian+Mono:wght@400;600;800&family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg:        #161210;   /* warm charcoal, not pure black */
+    --bg-raise:  #1f1915;
+    --ink:       #e8dcc8;   /* parchment */
+    --ink-dim:   #9c8f7a;
+    --oxide:     #c65b3f;   /* venetian terracotta */
+    --oxide-hot: #e07a55;
+    --moss:      #8a9a5b;   /* a quiet second accent for "ok" things */
+    --rule:      #3a2f27;
+  }
+
+  .reveal-viewport { background: var(--bg); }
+
+  /* scanlines + vignette, very quiet */
+  .reveal-viewport::before {
+    content: ""; position: fixed; inset: 0; z-index: 30; pointer-events: none;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px);
+    opacity: .35;
+  }
+  .reveal-viewport::after {
+    content: ""; position: fixed; inset: 0; z-index: 29; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.5) 100%);
+  }
+
+  .reveal { font-family: "IBM Plex Mono", monospace; font-size: 30px; color: var(--ink); }
+  .reveal .slides section { text-align: left; }
+
+  .reveal h1, .reveal h2 {
+    font-family: "Martian Mono", monospace; text-transform: none; letter-spacing: -0.02em;
+    color: var(--ink);
+  }
+  .reveal h1 { font-size: 2.6em; font-weight: 800; }
+  .reveal h2 { font-size: 1.15em; font-weight: 600; margin-bottom: .9em; }
+
+  /* slide kicker: the fake prompt line above each h2 */
+  .kick { color: var(--ink-dim); font-size: .62em; margin-bottom: .4em; }
+  .kick::before { content: "$ "; color: var(--oxide); }
+
+  .reveal p, .reveal li { font-weight: 300; line-height: 1.55; }
+  .reveal strong { color: var(--oxide-hot); font-weight: 500; }
+  .reveal .dim { color: var(--ink-dim); }
+  .reveal .ok  { color: var(--moss); }
+  .reveal em { color: var(--ink); font-style: italic; }
+
+  .reveal ul { margin-left: 0; }
+  .reveal li { list-style: none; margin: .35em 0; padding-left: 1.2em; position: relative; }
+  .reveal li::before { content: ">"; position: absolute; left: 0; color: var(--oxide); }
+
+  .reveal pre {
+    width: 100%; margin: .6em 0; box-shadow: none;
+    border: 1px solid var(--rule); border-left: 3px solid var(--oxide);
+    background: var(--bg-raise); font-size: .58em; line-height: 1.5;
+  }
+  .reveal pre code { background: transparent; padding: 14px 18px; max-height: 560px;
+    font-family: "IBM Plex Mono", monospace; }
+  .reveal code.inline { color: var(--oxide-hot); background: var(--bg-raise);
+    padding: .05em .3em; border-radius: 3px; font-size: .92em; }
+
+  .reveal table { font-size: .58em; border-collapse: collapse; margin-top: .4em; }
+  .reveal table th { color: var(--oxide); font-weight: 600; border-bottom: 1px solid var(--oxide);
+    padding: .35em .8em .35em 0; text-align: left; }
+  .reveal table td { border-bottom: 1px solid var(--rule); padding: .42em .8em .42em 0;
+    vertical-align: top; }
+  .reveal table tr:last-child td { border-bottom: none; }
+
+  /* title slide */
+  .title-wrap { text-align: left; }
+  .title-wrap .bigname { font-family: "Martian Mono", monospace; font-weight: 800;
+    font-size: 4.2em; color: var(--ink); line-height: 1; margin: 0; }
+  .bigname .cursor { display: inline-block; width: .55em; height: .95em;
+    background: var(--oxide); margin-left: .12em; vertical-align: baseline;
+    animation: blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .etym { color: var(--ink-dim); font-size: .6em; margin-top: 1.4em; font-style: italic; }
+  .oneliner { font-size: .85em; margin-top: .6em; }
+  .stamp { position: fixed; bottom: 18px; left: 26px; z-index: 40;
+    font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--ink-dim); }
+  .stamp b { color: var(--oxide); font-weight: 500; }
+
+  /* chapter intro slides */
+  .chapter .ch-num { color: var(--oxide); font-family: "Martian Mono", monospace;
+    font-weight: 800; font-size: .7em; letter-spacing: .1em; }
+  .chapter h1 { font-size: 2.4em; margin: .15em 0 .3em; }
+  .chapter .ch-sub { font-size: .8em; color: var(--ink); }
+  .dive { color: var(--ink-dim); font-size: .52em; margin-top: 2em; }
+  .dive::before { content: "v "; color: var(--oxide); font-weight: 600; }
+
+  /* staggered reveal on load (title slide only) */
+  .rise { opacity: 0; transform: translateY(10px); animation: rise .6s ease forwards; }
+  .rise.d1 { animation-delay: .15s } .rise.d2 { animation-delay: .45s }
+  .rise.d3 { animation-delay: .75s } .rise.d4 { animation-delay: 1.05s }
+  @keyframes rise { to { opacity: 1; transform: none; } }
+
+  .reveal .progress { color: var(--oxide); height: 2px; }
+  .reveal .controls { color: var(--oxide); }
+  .hint { color: var(--ink-dim); font-size: .5em; margin-top: 2.2em; }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2em; align-items: start; }
+  .foot-note { color: var(--ink-dim); font-size: .55em; margin-top: .8em; }
+
+  /* the precedence ladder */
+  .ladder { font-size: .62em; line-height: 1.9; }
+  .ladder .rung { padding-left: 0; }
+  .ladder .lvl { color: var(--oxide); font-weight: 500; }
+  .ladder .win { color: var(--moss); }
+</style>
+</head>
+<body>
+
+<div class="stamp">snapshot @ <b>v0.5.0</b> -- 2026-06-10</div>
+
+<div class="reveal">
+<div class="slides">
+
+<!-- ============ 1 :: title ============ -->
+<section>
+  <div class="title-wrap">
+    <p class="bigname rise d1">roba<span class="cursor"></span></p>
+    <p class="oneliner rise d2">A sharp, focused <strong>sugaring of <code class="inline">claude -p</code></strong> --<br>
+      pipeable, composable, safe-by-default, session-re-enterable.</p>
+    <p class="etym rise d3">roba (Venetian): "stuff, things." roba returns the stuff you asked about --<br>
+      roba is the bag, the answer the contents.</p>
+    <p class="hint rise d4">arrows to advance -- down dives into a chapter</p>
+  </div>
+</section>
+
+<!-- ============ 2 :: the shape ============ -->
+<section>
+  <p class="kick">man roba</p>
+  <h2>One invocation, one answer</h2>
+  <ul>
+    <li>Sugar over the one binary -- <strong>not</strong> a platform, orchestrator, daemon, or skills framework</li>
+    <li>Point it at a quick question, a CI step, or an unattended worker</li>
+    <li>stdout is the answer, stderr is everything else</li>
+    <li>Built on <code class="inline">claude-wrapper</code>; Claude-only by design</li>
+  </ul>
+  <pre><code class="language-console">$ roba "summarize the rust ownership model in 3 bullets"
+   Rust's ownership model rests on three rules:
+     - Each value has a single owner.
+     - When the owner goes out of scope, the value is dropped.
+     - Borrows are either many immutable or one mutable.
+
+tokens 1.2k/450 . $0.0042 . 2.0s . session abc12345</code></pre>
+</section>
+
+<!-- ============ 3 :: vs claude -p ============ -->
+<section>
+  <p class="kick">roba --help | diff claude-p -</p>
+  <h2>vs. <code class="inline">claude -p</code> directly</h2>
+  <table>
+    <tr><th>Adds</th><th>How</th></tr>
+    <tr><td><strong>Composable input</strong></td><td><code class="inline">-f</code> file, piped stdin, <code class="inline">-e</code> editor, <code class="inline">--prepend/--append</code>, <code class="inline">--attach</code> globs, <code class="inline">--git-diff/--git-log/--git-status</code>, <code class="inline">--var</code></td></tr>
+    <tr><td><strong>Pipe-clean output</strong></td><td>stdout = answer; footer, spinner, tool lines, warnings all on stderr</td></tr>
+    <tr><td><strong>TTY rendering</strong></td><td>markdown, spinner, color while it runs -- gone when the answer lands</td></tr>
+    <tr><td><strong>Session re-entry</strong></td><td><code class="inline">-c</code> continue, <code class="inline">--fork</code>, <code class="inline">--pick</code>, <code class="inline">--session-id</code> mints a caller-chosen id</td></tr>
+    <tr><td><strong>Read-only inspection</strong></td><td><code class="inline">roba show</code> (<code class="inline">--metrics</code>, <code class="inline">--wait</code>), <code class="inline">worktree list</code>, <code class="inline">history --worktree</code></td></tr>
+    <tr><td><strong>A stable scripting ABI</strong></td><td>typed exit codes, versioned <code class="inline">--json</code> envelope, clean stream split</td></tr>
+  </table>
+  <p class="foot-note">For interactive multi-turn work: use claude itself. That's the point.</p>
+</section>
+
+<!-- ============ 4 :: safe by default (stack) ============ -->
+<section>
+  <section>
+    <p class="kick">roba --show-permissions</p>
+    <h2>Safe by default</h2>
+    <p style="font-size:.8em">Starts read-only: <code class="inline">Read</code>, <code class="inline">Glob</code>, <code class="inline">Grep</code> and nothing else. Everything beyond is an explicit opt-in:</p>
+    <pre><code class="language-bash">roba "explain this"                      # read-only (default)
+roba --writable "rename foo to bar"      # add Edit + Write
+roba --allow-tool "Bash(git:*)" "..."    # one specific pattern
+roba --deny-tool WebFetch "..."          # block one (deny wins)
+roba --add-dir ../shared "..."           # widen file scope
+roba --full-auto "..."                   # bypass all (sandbox only)</code></pre>
+    <p class="dive">the two axes, with receipts</p>
+  </section>
+  <section>
+    <p class="kick">roba --show-permissions --profile worker</p>
+    <h2>Two axes, with receipts</h2>
+    <ul style="font-size:.78em">
+      <li><strong>Allow-list axis</strong> -- which tools exist at all: <code class="inline">--readonly / --writable / --allow-tool / --deny-tool</code>; deny always wins</li>
+      <li><strong>Approval axis</strong> -- claude's own gate, orthogonal: <code class="inline">--permission-mode</code> (<code class="inline">plan</code>, <code class="inline">acceptEdits</code>, ...)</li>
+      <li><code class="inline">--full-auto</code> is the exception: bypasses both, on purpose, loudly documented</li>
+    </ul>
+    <pre><code class="language-console">$ roba --show-permissions --profile worker
+all tools allowed (--full-auto from profile.worker)</code></pre>
+    <p class="foot-note">Resolved set + provenance ([default] / [env] / [profile.NAME]), then exit. Zero cost, no call -- the receipt for every permission question.</p>
+  </section>
+</section>
+
+<!-- ============ 5 :: sessions (stack) ============ -->
+<section>
+  <section>
+    <p class="kick">roba history</p>
+    <h2>Sessions, without living in one</h2>
+    <pre><code class="language-bash"># dip back into a thread
+roba -c -p "now add a test for that"
+
+# scripted multi-turn: mint an id once, reuse it
+# (bare `claude -p --continue` no-ops in print mode; this is the fix)
+uuid=$(uuidgen)
+roba --session-id "$uuid" "start a refactor plan"
+roba -c="$uuid" "now do step 1"</code></pre>
+    <p class="dive">inspection + named handles</p>
+  </section>
+  <section>
+    <p class="kick">roba show 2fca1a5d --metrics --wait</p>
+    <h2>Inspection: read-only by construction</h2>
+    <ul style="font-size:.72em">
+      <li><code class="inline">roba show &lt;id&gt;</code> -- a stored run's result, <strong>reconstructed</strong> from its JSONL: <code class="inline">duration_ms</code> null, turns/cost derived, honestly labeled</li>
+      <li><code class="inline">--wait [--timeout]</code> -- poll until the last assistant turn's <code class="inline">stop_reason</code> goes terminal (best-effort heuristic over the log, never a hang)</li>
+      <li><code class="inline">roba worktree list</code> -- the repo's <strong>git</strong> worktrees (a superset of claude's); list-only</li>
+      <li><code class="inline">roba history --worktree NAME</code> -- find a dispatched runner's session to resume</li>
+    </ul>
+    <p class="foot-note">The hard line: roba never writes .claude/ -- sessions, worktrees, credentials are claude's domain. Inspect and report, only.</p>
+  </section>
+  <section>
+    <p class="kick">roba --session meta -p "weekly groom"</p>
+    <h2>Named handles: config, not state</h2>
+    <pre><code class="language-toml">[session]                 # in roba.toml -- machine-local
+meta   = "8b273dbb-50d1-4cfa-9e2f-1c30a9b7e441"
+ci-bot = "f12e9f36-2a01-47bb-bd58-77c2b41d09aa"</code></pre>
+    <ul style="font-size:.72em">
+      <li><code class="inline">--session NAME</code> / <code class="inline">ROBA_SESSION=NAME</code> resolve the handle through the pool</li>
+      <li>Mint the uuid yourself (<code class="inline">--session-id</code>), then bind it -- names exist before first run</li>
+      <li>Parsed exactly like [profile] / [alias]: <strong>roba owns zero runtime state</strong>, so there's no ledger to corrupt</li>
+    </ul>
+  </section>
+</section>
+
+<!-- ============ 6 :: the ABI (stack) ============ -->
+<section>
+  <section>
+    <p class="kick">roba --json | jq</p>
+    <h2>The agent ABI: deterministic bookends</h2>
+    <pre><code class="language-text">success: { "version": 1, "result": { ... }, "refusal": bool }   (stdout)
+failure: { "version": 1, "error": { kind, message, exit_code, chain } }   (stderr)</code></pre>
+    <table>
+      <tr><th>Exit</th><th>Meaning</th></tr>
+      <tr><td><span class="ok">0</span></td><td>ok -- refusals included; detect via <code class="inline">refusal</code>, not the code</td></tr>
+      <tr><td>1</td><td>generic failure, incl. <code class="inline">--max-turns</code> / <code class="inline">--max-budget-usd</code> cap hits</td></tr>
+      <tr><td>2 / 3 / 4</td><td>auth / budget / timeout</td></tr>
+    </table>
+    <p class="dive">observability</p>
+  </section>
+  <section>
+    <p class="kick">tail -f trace.jsonl</p>
+    <h2>Watching a run</h2>
+    <ul style="font-size:.85em">
+      <li><code class="inline">--trace PATH</code> -- the spawned session's events as JSONL, live, on every path (even under <code class="inline">--json</code>)</li>
+      <li>Every <code class="inline">--json</code> output carries <code class="inline">version: 1</code> -- ask, cost, history, doctor, show, worktree list. One parser for everything</li>
+      <li>The answer lives at <code class="inline">.result.result</code>; metrics nest under <code class="inline">.result</code></li>
+      <li><code class="inline">roba show &lt;id&gt; --wait</code> -- poll a stored run until it completes, then render</li>
+    </ul>
+    <pre><code class="language-bash">roba --json "..." | jq -r '.result.result'</code></pre>
+    <p class="dive">jq survival</p>
+  </section>
+  <section>
+    <p class="kick">jq -r '.result.result'</p>
+    <h2>jq survival</h2>
+    <table style="font-size:.58em">
+      <tr><th>You want</th><th>The path</th></tr>
+      <tr><td>the answer</td><td><code class="inline">.result.result</code> -- not <code class="inline">.result</code> (that's the whole object)</td></tr>
+      <tr><td>metrics</td><td><code class="inline">.result.duration_ms</code>, <code class="inline">.result.num_turns</code>, <code class="inline">.result.total_cost_usd</code> (a serde rename of <code class="inline">cost_usd</code>); top-level paths return null</td></tr>
+      <tr><td>"did it refuse?"</td><td><code class="inline">.refusal</code>, top-level -- a refusal still exits <span class="ok">0</span></td></tr>
+      <tr><td>what broke</td><td><code class="inline">.error.kind</code> in the stderr envelope; <code class="inline">see_also</code> is omitted when empty</td></tr>
+    </table>
+    <pre><code class="language-bash"># capture with printf, not echo -- zsh's echo interprets the
+# JSON's backslash escapes and corrupts it
+out=$(roba --json "..."); printf '%s' "$out" | jq -r '.result.result'</code></pre>
+  </section>
+</section>
+
+<!-- ============ 7 :: PROFILES chapter ============ -->
+<section>
+  <section class="chapter">
+    <p class="ch-num">UNSUNG HERO 01</p>
+    <h1>Profiles</h1>
+    <p class="ch-sub">Named bundles of flag defaults. Nothing magical --<br>
+      and that's exactly why they're powerful.</p>
+    <p class="dive">six slides down: resolution, the pool, the surface, the theory</p>
+  </section>
+
+  <section>
+    <p class="kick">roba profile show worker</p>
+    <h2>Profiles are just defaults</h2>
+    <p style="font-size:.8em">A profile is a TOML alias for flags you'd otherwise type every time. CLI always wins.</p>
+    <pre><code class="language-toml">[profile.review]
+readonly = true
+git_diff = true</code></pre>
+    <pre><code class="language-bash">roba --profile review "is this safe to merge?"
+# identical to: roba --readonly --git-diff "is this safe to merge?"</code></pre>
+    <p class="foot-note">A profile named `default` auto-applies. ROBA_PROFILE=name selects by env. --no-default-profile kills auto-apply.</p>
+  </section>
+
+  <section>
+    <p class="kick">roba --show-permissions --profile review</p>
+    <h2>The resolution ladder</h2>
+    <p style="font-size:.75em">Every knob resolves the same way, highest layer wins:</p>
+    <div class="ladder">
+      <p class="rung"><span class="lvl">1. CLI flag</span> <span class="dim">-- you typed it, it wins</span></p>
+      <p class="rung"><span class="lvl">2. ROBA_* env var</span> <span class="dim">-- lists comma-separated; truthy bools only enable</span></p>
+      <p class="rung"><span class="lvl">3. active [profile.NAME]</span> <span class="dim">-- the overlay</span></p>
+      <p class="rung"><span class="lvl">4. top-level roba.toml keys</span> <span class="dim">-- the floor you set</span></p>
+      <p class="rung"><span class="lvl">5. roba's built-in defaults</span> <span class="dim">-- read-only, fresh session</span></p>
+      <p class="rung"><span class="lvl">6. claude's defaults</span></p>
+    </div>
+    <p class="foot-note">Deterministic and inspectable: --show-permissions prints the resolved set with provenance ([default] / [env] / [profile.NAME]) and exits. No call, no guessing.</p>
+  </section>
+
+  <section>
+    <p class="kick">roba profile path</p>
+    <h2>The pool: config that composes</h2>
+    <ul style="font-size:.8em">
+      <li><code class="inline">~/.config/roba.toml</code> + every <code class="inline">roba.toml</code> walking up from cwd to the git root</li>
+      <li><strong>Closer-to-cwd wins per-key</strong> -- a repo can sharpen your global defaults</li>
+      <li>Lists <strong>concatenate</strong> across files; <code class="inline">[vars]</code> merge per-key</li>
+      <li><code class="inline">[session]</code> binds <code class="inline">NAME = "uuid"</code> handles for <code class="inline">--session NAME</code> -- config, not state</li>
+    </ul>
+    <p class="foot-note">roba owns zero runtime state. The pool is a pure function of the files; parse errors are loud (unknown keys are hard errors, listing every valid key).</p>
+  </section>
+
+  <section>
+    <p class="kick">grep -c '=' roba-config.sample.toml</p>
+    <h2>The surface: 40+ keys, every dimension of a run</h2>
+    <table style="font-size:.5em">
+      <tr><th>Dimension</th><th>Keys</th></tr>
+      <tr><td><strong>Posture</strong></td><td>readonly, writable, full_auto, allow_tool, deny_tool, permission_mode</td></tr>
+      <tr><td><strong>Context</strong></td><td>prepend, append, attach, git_diff, git_log, git_status, vars</td></tr>
+      <tr><td><strong>Identity</strong></td><td>model, effort, fallback_model, agent, system_prompt, append_system_prompt</td></tr>
+      <tr><td><strong>Session</strong></td><td>continue, session_id, worktree, no_session_persistence</td></tr>
+      <tr><td><strong>Output</strong></td><td>json, json_schema, quiet, plain, stream, echo, show_thinking, trace, no_dollars, rates_file</td></tr>
+      <tr><td><strong>Rails</strong></td><td>max_turns, max_budget_usd, no_retry, bare, no_agent_check</td></tr>
+      <tr><td><strong>Tools</strong></td><td>mcp_config, strict_mcp_config, add_dir</td></tr>
+    </table>
+    <p class="foot-note">The annotated sample (roba profile init) documents every key and is parse-tested in CI -- config docs that cannot go stale.</p>
+  </section>
+
+  <section>
+    <p class="kick">: the theory</p>
+    <h2>Enforcement vs. compliance</h2>
+    <p style="font-size:.78em">A "review skill" <em>asks</em> the model to stay read-only and look at the diff.<br>
+      Model compliance is a coin flip -- that lesson is paid for.</p>
+    <p style="font-size:.78em"><code class="inline">[profile.review]</code> doesn't ask:</p>
+    <ul style="font-size:.72em">
+      <li>permissions <strong>blocked by machinery</strong>, whether or not the model agrees</li>
+      <li>the diff is in the prompt because <strong>roba put it there</strong></li>
+      <li><code class="inline">json_schema</code> output is <strong>validated</strong>, not requested</li>
+      <li>the spend cap <strong>fires regardless</strong> of cooperation</li>
+    </ul>
+  </section>
+
+  <section>
+    <p class="kick">: the theory, part two</p>
+    <h2>Deterministic bookends, probabilistic middle</h2>
+    <div class="two-col">
+      <div>
+        <p style="font-size:.72em">A profile pins <strong>both ends</strong> of a run -- the setup (posture, context, model, rails) and the finish line (the output contract). Only the reasoning in between belongs to the model.</p>
+        <p style="font-size:.72em">That's most of what people want from a lightweight agent -- with <strong>zero prose to drift</strong> and zero interpretation risk.</p>
+        <p style="font-size:.72em" class="dim">Where it tops out: procedure. Sequence and judgment are irreducibly prose -- that's the skill layer's job, and it lives outside the binary.</p>
+      </div>
+      <pre style="margin-top:0"><code class="language-toml"># an enforced-read-only,
+# diff-fed, schema-validated
+# reviewer. nine lines. no
+# skill. nothing to ignore.
+[profile.review]
+readonly = true
+git_diff = true
+append_system_prompt = """
+Review for correctness.
+Cite file:line. No nits."""
+json_schema = "findings.json"
+max_turns = 10</code></pre>
+    </div>
+  </section>
+
+  <section>
+    <p class="kick">cat ~/.config/roba.toml</p>
+    <h2>A working set</h2>
+    <pre><code class="language-toml"># the proven unattended-worker shape, wearing its rails
+[profile.worker]
+full_auto = true
+max_turns = 80          # a true spiral trips them,
+max_budget_usd = 10.0   # a heavy 20-edit run clears them
+
+# long-horizon: fable primary, opus on overload
+[profile.fable]
+model = "claude-fable-5"
+fallback_model = "claude-opus-4-8"
+
+# cheap fast one-shots
+[profile.quick]
+model = "claude-haiku-4-5"</code></pre>
+    <p class="foot-note">Plus review / explain / commit-msg / fix-build on the human side. The dispatch line is now: roba --profile worker -C repo -f task.md --trace t.jsonl</p>
+  </section>
+</section>
+
+<!-- ============ 8 :: ALIASES chapter ============ -->
+<section>
+  <section class="chapter">
+    <p class="ch-num">UNSUNG HERO 02</p>
+    <h1>Aliases</h1>
+    <p class="ch-sub">New verbs. <code class="inline">roba review 42</code> expands a prompt template + flags<br>
+      and dispatches like a normal call.</p>
+    <p class="dive">five slides down: the schema, the template language, a worked verb</p>
+  </section>
+
+  <section>
+    <p class="kick">roba alias show review</p>
+    <h2>An alias is a verb definition</h2>
+    <pre><code class="language-toml">[alias.review]
+description = "Review a PR by number"
+agent = "reviewer"          # pin a claude-code subagent
+args = ["pr"]               # positional 1 -> ${pr}
+flags = ["--readonly"]      # merged BEFORE your CLI flags
+template = """
+Review PR #${pr} in this repo.
+
+Diff:
+$(gh pr diff ${pr})
+"""</code></pre>
+    <p class="foot-note">description, agent, args, flags, template -- that's the whole schema.</p>
+  </section>
+
+  <section>
+    <p class="kick">man roba-template</p>
+    <h2>The template language</h2>
+    <table style="font-size:.56em">
+      <tr><th>Form</th><th>Means</th></tr>
+      <tr><td><code class="inline">${1} ${2} ...</code></td><td>positional args after the verb (1-based)</td></tr>
+      <tr><td><code class="inline">${@}</code></td><td>all positional args, space-joined</td></tr>
+      <tr><td><code class="inline">${name}</code></td><td>named arg, resolved via the <code class="inline">args</code> schema</td></tr>
+      <tr><td><code class="inline">$$</code></td><td>a literal <code class="inline">$</code> -- dollar amounts and shell vars survive</td></tr>
+      <tr><td><code class="inline">$(command)</code></td><td>shell substitution: runs in <strong>your</strong> shell, stdout interpolated</td></tr>
+    </table>
+    <p class="foot-note" style="color:var(--oxide-hot)">$(...) is NOT sandboxed -- it's your shell, before claude ever runs. Orthogonal to claude's permissions. Don't template a command you wouldn't type.</p>
+  </section>
+
+  <section>
+    <p class="kick">roba review 42</p>
+    <h2>What one verb buys you</h2>
+    <pre><code class="language-text">roba review 42
+  |
+  |  1. lookup: [alias.review] in the pool (built-ins win; shadowing warns)
+  |  2. args:   42 -> ${pr}
+  |  3. shell:  $(gh pr diff 42) runs NOW, in your shell
+  |  4. flags:  --readonly merged in (your CLI flags still win)
+  |  5. agent:  reviewer pinned
+  v
+roba --readonly --agent reviewer "Review PR #42 ... [the actual diff]"</code></pre>
+    <p class="foot-note">The diff is IN the prompt before claude starts -- mechanically, not because a skill asked the model to go fetch it.</p>
+  </section>
+
+  <section>
+    <p class="kick">roba r "look at the auth module"</p>
+    <h2>Template-less = a flag shortcut</h2>
+    <pre><code class="language-toml">[alias.r]
+description = "Quick read-only review preset"
+agent = "reviewer"
+flags = ["--readonly"]      # no template: args become the prompt</code></pre>
+    <ul style="font-size:.78em">
+      <li><code class="inline">flags</code> merge <strong>before</strong> CLI flags -- your CLI always wins</li>
+      <li>Built-in names (cost, history, profile, ...) cannot be shadowed</li>
+      <li>Inspect everything: <code class="inline">roba alias {list, show, path}</code></li>
+    </ul>
+    <p class="foot-note">Your domain knowledge lives in your aliases, not the binary.</p>
+  </section>
+
+  <section>
+    <p class="kick">roba alias list</p>
+    <h2>A working set</h2>
+    <pre><code class="language-console">NAME    DESCRIPTION
+cm      Conventional-commit message from the staged diff
+issue   Summarize an issue and propose an approach
+review  Review a PR by number
+wtf     Diagnose piped failure output</code></pre>
+    <pre><code class="language-bash">roba review 244                      # gh pr diff, in the prompt
+roba issue 242                       # gh issue view, summarized
+git add -p && roba cm                # staged diff -> commit message
+cargo build 2>&1 | roba wtf          # piped failure, diagnosed</code></pre>
+    <p class="foot-note">Adding review/issue surfaced a real bug the same day: ${arg} wasn't substituted inside $(...) -- fixed within the hour (#247). The heroes earn their keep by being used.</p>
+  </section>
+
+  <section>
+    <p class="kick">: the stack</p>
+    <h2>The determinism gradient</h2>
+    <table style="font-size:.6em">
+      <tr><th>Layer</th><th>Carries</th><th>Character</th></tr>
+      <tr><td><strong>Profile</strong></td><td>params: posture, context, model, rails, output contract</td><td>fully deterministic -- enforced by machinery</td></tr>
+      <tr><td><strong>Alias</strong></td><td>params + a prompt template + live shell context</td><td>deterministic setup, parameterized prose</td></tr>
+      <tr><td><strong>Skill</strong></td><td>procedure: sequence, judgment, lifecycle</td><td>prose a model interprets -- lives outside roba</td></tr>
+    </table>
+    <p style="font-size:.75em; margin-top:.8em">Each step up adds expressiveness and sheds determinism.<br>
+      <strong>Push everything parametric down the stack</strong> -- reserve prose for what only prose can do.</p>
+  </section>
+</section>
+
+<!-- ============ 9 :: unattended workers (stack) ============ -->
+<section>
+  <section>
+    <p class="kick">roba --profile worker</p>
+    <h2>Unattended workers</h2>
+    <p style="font-size:.8em">The proven dispatch loop: orchestrator owns branch + PR, roba does the code work. ~16 consecutive dispatched PRs shipped v0.5.0 itself -- zero spirals.</p>
+    <pre><code class="language-bash">roba --profile worker -C ~/code/repo -f /tmp/task.md --trace /tmp/t.jsonl</code></pre>
+    <ul style="font-size:.75em">
+      <li><code class="inline">--json-schema</code> for validated structured output</li>
+      <li><code class="inline">--mcp-config</code> for per-run tools (a pass-through, not a daemon)</li>
+      <li>piped stdin becomes context when a prompt is present: <code class="inline">cat err.log | roba "what's wrong here?"</code></li>
+    </ul>
+    <p class="dive">exit codes as recovery signals</p>
+  </section>
+  <section>
+    <p class="kick">echo $?</p>
+    <h2>Exit codes are recovery signals</h2>
+    <table style="font-size:.6em">
+      <tr><th>Signal</th><th>The orchestrator's move</th></tr>
+      <tr><td><code class="inline">2</code> auth</td><td>halt the whole fleet and re-auth -- nothing else will succeed</td></tr>
+      <tr><td><code class="inline">4</code> timeout / transient <code class="inline">1</code></td><td>re-fire the same task (<code class="inline">--no-retry</code> hands the retry decision to you)</td></tr>
+      <tr><td><code class="inline">1</code> at a rail</td><td>under-scoped: raise <code class="inline">--max-turns</code> / <code class="inline">--max-budget-usd</code>, or split the task</td></tr>
+      <tr><td><span class="ok">0</span> + <code class="inline">refusal: true</code></td><td>not success -- branch on the field, never the code alone</td></tr>
+    </table>
+    <p class="foot-note">And the real verdict is downstream anyway: the worker is graded on its artifact -- a commit, a PR, green CI -- not its exit code.</p>
+  </section>
+</section>
+
+<!-- ============ 10 :: install + close ============ -->
+<section>
+  <p class="kick">roba doctor</p>
+  <h2>Install</h2>
+  <table>
+    <tr><th>Source</th><th>How</th></tr>
+    <tr><td>crates.io</td><td><code class="inline">cargo install roba</code></td></tr>
+    <tr><td>Homebrew</td><td><code class="inline">brew install joshrotenberg/brew/roba</code></td></tr>
+    <tr><td>Binaries</td><td>macOS arm64/x86_64, Linux arm64/x86_64, Windows -- shell + PowerShell installers on the latest release</td></tr>
+  </table>
+  <ul style="margin-top:.9em; font-size:.8em">
+    <li><strong>v0.5.0</strong> -- CLI surface intended stable across 0.x</li>
+    <li>~430 unit + 110 mechanical tests; daily live CI against the real API</li>
+    <li>Docs: README + <code class="inline">roba --help</code> + parse-tested config sample. The documentation is the skill.</li>
+  </ul>
+  <p class="hint" style="margin-top:1.4em">github.com/joshrotenberg/roba<span class="dim"> -- MIT OR Apache-2.0</span></p>
+</section>
+
+</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/highlight.js"></script>
+<script>
+  Reveal.initialize({
+    hash: true,
+    transition: 'fade',
+    transitionSpeed: 'fast',
+    controls: true,
+    progress: true,
+    slideNumber: 'c/t',
+    plugins: [ RevealHighlight ],
+  });
+</script>
+</body>
+</html>
