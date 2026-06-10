@@ -1732,14 +1732,15 @@ fn home_with_complete_session(answer: &str) -> (tempfile::TempDir, String) {
 #[test]
 fn show_wait_timeout_errors_cleanly() {
     // A session that never appears must time out cleanly (not panic, not
-    // hang). --timeout 1 bounds the wait to ~1-2s.
+    // hang). --timeout 1 bounds the wait to ~1-2s. The wait-timeout maps
+    // to exit 4 (the documented `4 timeout` code), not the generic 1.
     let home = tempfile::tempdir().expect("home");
     let start = std::time::Instant::now();
     roba()
         .args(["show", "never-appears", "--wait", "--timeout", "1"])
         .env("HOME", home.path())
         .assert()
-        .failure()
+        .code(4)
         .stderr(predicate::str::contains("waited 1s"))
         .stderr(predicate::str::contains("never-appears"));
     assert!(
