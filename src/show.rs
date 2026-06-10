@@ -103,10 +103,19 @@ fn wait_for_complete(root: &HistoryRoot, args: &crate::cli::ShowArgs) -> Result<
         if let Some(deadline) = deadline
             && Instant::now() >= deadline
         {
-            bail!(
-                "waited {timeout_secs}s for session `{}` to complete",
-                args.session_id
-            );
+            // Surface the wait-timeout as a `claude_wrapper::Error::Timeout`
+            // so `classify_exit_code` downcasts it to the documented `4
+            // timeout` exit (and `--json` reports `kind: "timeout"`),
+            // rather than the generic `1` a plain `bail!` would yield.
+            return Err(anyhow::Error::new(claude_wrapper::Error::Timeout {
+                timeout_seconds: timeout_secs,
+            }))
+            .with_context(|| {
+                format!(
+                    "waited {timeout_secs}s for session `{}` to complete",
+                    args.session_id
+                )
+            });
         }
         std::thread::sleep(POLL_INTERVAL);
     }
