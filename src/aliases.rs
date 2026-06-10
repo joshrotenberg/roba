@@ -329,6 +329,12 @@ pub fn expand_template(template: &str, schema: &[String], args: &[String]) -> Re
                 '(' => {
                     if let Some(close) = find_matching_paren(&chars, i + 1) {
                         let cmd: String = chars[i + 2..close].iter().collect();
+                        // Expand ${...}/$$/nested $() inside the command
+                        // BEFORE handing it to the shell, so an alias arg
+                        // like `$(gh pr diff ${pr})` sees the real value.
+                        // `$$` stays the escape for shell-side `$`
+                        // (`$(echo $$HOME)` reaches sh as `echo $HOME`).
+                        let cmd = expand_template(&cmd, schema, args)?;
                         out.push_str(&run_shell(&cmd)?);
                         i = close + 1;
                         continue;
@@ -546,10 +552,31 @@ mod tests {
 
     #[test]
     fn expand_template_shell_substitution_uses_args() {
-        // The positional arg flows into the shell command via ${1}
-        // substitution happening before the $(...) is evaluated... but
-        // here we verify nested parens in a command don't break the
-        // matcher.
+        // The positional arg flows into the shell command: ${1} is
+        // substituted BEFORE the $(...) is handed to the shell (#247).
+        let out = expand_template("$(echo ${1})", &[], &["foo".into()]).unwrap();
+        assert_eq!(out, "foo");
+    }
+
+    #[test]
+    fn expand_template_shell_substitution_uses_named_args() {
+        // The canonical sample-alias shape: $(gh pr diff ${pr}).
+        let out = expand_template("$(echo pr=${pr})", &["pr".into()], &["42".into()]).unwrap();
+        assert_eq!(out, "pr=42");
+    }
+
+    #[test]
+    fn expand_template_shell_substitution_dollar_escape() {
+        // $$ inside $(...) reaches the shell as a single $, so shell
+        // variables stay expressible: $(X=hi; echo $$X) -> sh sees $X.
+        let out = expand_template("$(X=hi; echo $$X)", &[], &[]).unwrap();
+        assert_eq!(out, "hi");
+    }
+
+    #[test]
+    fn expand_template_nested_parens_in_shell() {
+        // Nested parens don't break the matcher; the inner $() is
+        // expanded by the recursive pass, the outer by the shell.
         let out = expand_template("$(echo $(echo nested))", &[], &[]).unwrap();
         assert_eq!(out, "nested");
     }
