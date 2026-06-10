@@ -612,6 +612,15 @@ pub struct AskArgs {
     #[arg(long, value_name = "MODEL", help_heading = "Model")]
     pub model: Option<String>,
 
+    /// Fall back to this model if the primary is overloaded.
+    ///
+    /// Passes claude's own `--fallback-model` through. Accepts an alias
+    /// (`sonnet`, `opus`, `haiku`) or a full model ID. When the primary
+    /// `--model` is overloaded, claude retries the call on this model
+    /// instead of failing -- a resilience knob for unattended runs.
+    #[arg(long, value_name = "MODEL", help_heading = "Model")]
+    pub fallback_model: Option<String>,
+
     /// Effort level: the cost/quality tradeoff for this call.
     ///
     /// `low` is fast and cheap; `max` is most thorough.
@@ -727,6 +736,15 @@ pub struct AskArgs {
     #[arg(long, value_name = "NAME", help_heading = "Sessions")]
     pub agent: Option<String>,
 
+    /// Run without writing a session record to disk.
+    ///
+    /// Passes claude's own `--no-session-persistence` through. The run
+    /// executes normally but leaves no resumable session on disk -- so it
+    /// won't appear in `roba history` and can't be `-c`/`--resume`d later.
+    /// For one-off, stateless calls where a session record is just noise.
+    #[arg(long, help_heading = "Sessions")]
+    pub no_session_persistence: bool,
+
     // ----- Permissions ------------------------------------------------------
     /// Set claude's own `--permission-mode`.
     ///
@@ -756,6 +774,15 @@ pub struct AskArgs {
     /// Deny a tool or tool pattern (repeatable).
     #[arg(long = "deny-tool", value_name = "TOOL", help_heading = "Permissions")]
     pub deny_tool: Vec<String>,
+
+    /// Grant tool access to an additional directory (repeatable).
+    ///
+    /// Passes claude's own `--add-dir <DIR>` through, once per path. By
+    /// default claude's file tools are scoped to the cwd; each `--add-dir`
+    /// widens that scope to another directory. roba forwards the path
+    /// verbatim -- claude resolves and reads it.
+    #[arg(long = "add-dir", value_name = "DIR", help_heading = "Permissions")]
+    pub add_dir: Vec<String>,
 
     /// Preview the resolved allow/deny set and exit (no claude call).
     ///
@@ -1416,6 +1443,68 @@ mod tests {
         let cli = Cli::try_parse_from(["roba", "prompt"]).unwrap();
         assert!(cli.ask.mcp_config.is_empty());
         assert!(!cli.ask.strict_mcp_config);
+    }
+
+    #[test]
+    fn add_dir_collects_repeated_values() {
+        // Repeatable list flag: each --add-dir pushes onto the Vec.
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "roba",
+            "--add-dir",
+            "/extra/a",
+            "--add-dir",
+            "/extra/b",
+            "prompt",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.ask.add_dir,
+            vec!["/extra/a".to_string(), "/extra/b".to_string()]
+        );
+        assert_eq!(cli.ask.prompt.as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn add_dir_omitted_is_empty() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "prompt"]).unwrap();
+        assert!(cli.ask.add_dir.is_empty());
+    }
+
+    #[test]
+    fn fallback_model_parses() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--fallback-model", "haiku", "prompt"]).unwrap();
+        assert_eq!(cli.ask.fallback_model.as_deref(), Some("haiku"));
+        assert_eq!(cli.ask.prompt.as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn no_session_persistence_parses() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--no-session-persistence", "prompt"]).unwrap();
+        assert!(cli.ask.no_session_persistence);
+        assert_eq!(cli.ask.prompt.as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn medtier_flags_compose() {
+        // All three med-tier pass-throughs together, the unattended case.
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "roba",
+            "--add-dir",
+            "/extra",
+            "--fallback-model",
+            "sonnet",
+            "--no-session-persistence",
+            "prompt",
+        ])
+        .unwrap();
+        assert_eq!(cli.ask.add_dir, vec!["/extra".to_string()]);
+        assert_eq!(cli.ask.fallback_model.as_deref(), Some("sonnet"));
+        assert!(cli.ask.no_session_persistence);
     }
 
     #[test]

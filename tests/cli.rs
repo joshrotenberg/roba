@@ -956,6 +956,29 @@ fn mcp_config_flags_parse_and_accept() {
 }
 
 #[test]
+fn medtier_flags_parse_and_accept() {
+    // --add-dir (repeatable) + --fallback-model + --no-session-persistence
+    // parse cleanly alongside a real prompt. Pair with --show-permissions so
+    // the run short-circuits before any claude call: a clean exit proves all
+    // three flags parse and compose without conflict. roba forwards add_dir
+    // paths verbatim and never reads them, so non-existent dirs are fine here.
+    roba()
+        .args([
+            "foo",
+            "--add-dir",
+            "/extra/a",
+            "--add-dir",
+            "/extra/b",
+            "--fallback-model",
+            "haiku",
+            "--no-session-persistence",
+            "--show-permissions",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
 fn max_turns_rejects_non_numeric_value() {
     roba()
         .args(["foo", "--max-turns", "abc"])

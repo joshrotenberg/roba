@@ -31,11 +31,14 @@
 # full_auto  = true               # bypass ALL tool checks (sandbox only)
 # allow_tool = ["Bash(git:*)"]    # add specific tool patterns (repeatable)
 # deny_tool  = ["WebFetch"]       # block patterns (deny wins over allow)
+# add_dir    = ["../shared"]      # extra tool-access dirs (claude --add-dir;
+#                                 #   forwarded verbatim, claude resolves them)
 # permission_mode = "plan"        # claude's own mode: plan | acceptEdits
 #                                 #   | dontAsk | auto | bypassPermissions | default
 
 # --- Model / effort / system prompt ---
 # model  = "haiku"                # alias (sonnet/opus/haiku) or full id
+# fallback_model = "haiku"        # model to retry on if the primary is overloaded
 # effort = "high"                 # low | medium | high | xhigh | max
 # system_prompt = "..."           # replace the system prompt for the call
 # append_system_prompt = "..."    # add to the default system prompt
@@ -47,6 +50,7 @@
 #                                 #   (claude --session-id; rarely set in config)
 # worktree = true                 # run in a fresh git worktree
 # agent    = "reviewer"           # pin a claude-code subagent for the call
+# no_session_persistence = true   # run without writing a resumable session record
 
 # --- Output / rendering ---
 # json  = true                    # structured --json envelope on stdout

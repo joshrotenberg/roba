@@ -122,9 +122,14 @@ roba "explain this"                      # read-only (default)
 roba --writable "rename foo to bar"      # add Edit + Write
 roba --allow-tool "Bash(git:*)" "..."    # add one specific pattern
 roba --deny-tool WebFetch "..."          # block one (deny wins)
+roba --add-dir ../shared "..."           # widen file-tool scope to another dir
 roba --full-auto "..."                   # bypass every check (sandbox only)
 roba --show-permissions --profile review # preview the resolved set, then exit
 ```
+
+`--add-dir` (repeatable) is a thin pass-through to claude's own
+`--add-dir` -- claude's file tools are scoped to the cwd by default, and
+each `--add-dir` grants access to one more directory.
 
 This came from a real "oops" -- a streaming run quietly let claude
 create a git branch when the user just wanted a chat. The default
@@ -194,6 +199,11 @@ than `claude -p`:
 - **Unattended guardrails:** `--max-turns N` caps the agentic turn count
   and `--max-budget-usd USD` caps total spend -- the rails an unbounded
   loop needs. Hitting either cap errors the run (generic exit `1`).
+- **Resilience and statelessness:** `--fallback-model MODEL` retries on a
+  second model when the primary is overloaded, and
+  `--no-session-persistence` runs without writing a resumable session
+  record (so the call leaves no trace in `roba history`). Both are thin
+  pass-throughs to claude's own flags.
 
 For an agent that *invokes* roba, [`skills/use-roba/SKILL.md`](skills/use-roba/SKILL.md)
 documents this contract in agent-readable form -- copy it to

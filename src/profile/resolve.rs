@@ -306,6 +306,21 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     {
         args.strict_mcp_config = v;
     }
+    // add_dir is a list: the CLI list (if any) replaces the profile's,
+    // matching mcp_config / --allow-tool's per-layer replace semantics.
+    if args.add_dir.is_empty() {
+        args.add_dir = std::mem::take(&mut profile.add_dir);
+    }
+    if args.fallback_model.is_none()
+        && let Some(m) = profile.fallback_model.take()
+    {
+        args.fallback_model = Some(m);
+    }
+    if let Some(v) = profile.no_session_persistence
+        && !args.no_session_persistence
+    {
+        args.no_session_persistence = v;
+    }
 }
 
 /// Convert a profile-layer `PermissionModeConfig` to the CLI's
@@ -996,6 +1011,81 @@ mod tests {
         assert!(
             args.strict_mcp_config,
             "CLI --strict-mcp-config survives a profile strict_mcp_config=false"
+        );
+    }
+
+    // -- med-tier pass-throughs (add_dir / fallback_model / no_session_persistence) --
+
+    #[test]
+    fn merge_add_dir_applies_when_cli_empty() {
+        let mut args = empty_args();
+        let profile = Profile {
+            add_dir: vec!["/extra/a".to_string(), "/extra/b".to_string()],
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(
+            args.add_dir,
+            vec!["/extra/a".to_string(), "/extra/b".to_string()]
+        );
+    }
+
+    #[test]
+    fn merge_add_dir_cli_replaces_profile() {
+        let mut args = args_with(&["--add-dir", "/cli/dir"]);
+        let profile = Profile {
+            add_dir: vec!["/profile/dir".to_string()],
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.add_dir, vec!["/cli/dir".to_string()]);
+    }
+
+    #[test]
+    fn merge_fallback_model_applies_when_cli_unset() {
+        let mut args = empty_args();
+        let profile = Profile {
+            fallback_model: Some("haiku".to_string()),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.fallback_model.as_deref(), Some("haiku"));
+    }
+
+    #[test]
+    fn merge_fallback_model_cli_wins_over_profile() {
+        let mut args = args_with(&["--fallback-model", "opus"]);
+        let profile = Profile {
+            fallback_model: Some("haiku".to_string()),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.fallback_model.as_deref(), Some("opus"));
+    }
+
+    #[test]
+    fn merge_no_session_persistence_applies_when_cli_unset() {
+        let mut args = empty_args();
+        let profile = Profile {
+            no_session_persistence: Some(true),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert!(args.no_session_persistence);
+    }
+
+    #[test]
+    fn merge_no_session_persistence_cli_already_set_is_unaffected() {
+        let mut args = args_with(&["--no-session-persistence"]);
+        assert!(args.no_session_persistence);
+        let profile = Profile {
+            no_session_persistence: Some(false),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert!(
+            args.no_session_persistence,
+            "CLI --no-session-persistence survives a profile false"
         );
     }
 
