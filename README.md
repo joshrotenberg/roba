@@ -73,6 +73,8 @@ and adds:
   `roba show <SESSION_ID>` prints a stored session's result from its
   JSONL (`--json` envelope, optional `--metrics`) -- reconstructed, so
   `duration_ms` is null and `cost_usd` / `num_turns` are derived.
+  `--wait [--timeout SECS]` polls until the run finishes (best-effort
+  completion heuristic over the session log), then renders.
 - **A stable ABI.** Typed exit codes, a versioned `--json` envelope, a
   clean stream split. Pin a contract instead of scraping prose. (See
   [For agents & scripts](#for-agents--scripts).)
