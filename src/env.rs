@@ -30,14 +30,47 @@
 //! override an explicit CLI flag.
 
 use crate::cli::{AskArgs, EffortLevel, PermMode};
+use anyhow::{Result, bail};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Apply env-var overrides to fields the user didn't set on the
 /// command line. Reads from the process environment.
-pub fn apply_env_overrides(args: &mut AskArgs) {
+///
+/// Errors only if the environment carries a conflict the CLI layer would
+/// have rejected (`ROBA_SESSION` together with `ROBA_SESSION_ID`); the
+/// per-field fills themselves never error (an invalid value is silently
+/// ignored).
+pub fn apply_env_overrides(args: &mut AskArgs) -> Result<()> {
     let env: HashMap<String, String> = std::env::vars().collect();
+    check_env_session_conflict(args, &env)?;
     apply_env_overrides_from(args, &env);
+    Ok(())
+}
+
+/// Mirror the CLI-level `--session` / `--session-id` mutual exclusion at
+/// the env layer.
+///
+/// clap rejects `--session` together with `--session-id`, but the env
+/// layer applies `ROBA_SESSION` and `ROBA_SESSION_ID` independently, so
+/// setting both (when the CLI set neither) would silently resolve to one
+/// rather than surfacing the conflict. Detect that and bail with a message
+/// naming both vars. If the CLI set either selector it wins, so the env
+/// pair is not in play and no conflict is raised.
+///
+/// This is the env layer's only hard error -- every other env value is
+/// best-effort (invalid values are ignored, never fatal).
+fn check_env_session_conflict(args: &AskArgs, env: &HashMap<String, String>) -> Result<()> {
+    if args.session.is_none()
+        && args.session_id.is_none()
+        && read_string(env, "ROBA_SESSION").is_some()
+        && read_string(env, "ROBA_SESSION_ID").is_some()
+    {
+        bail!(
+            "ROBA_SESSION and ROBA_SESSION_ID are mutually exclusive (same as --session / --session-id)"
+        );
+    }
+    Ok(())
 }
 
 /// Same as [`apply_env_overrides`] but reads from a provided map.
@@ -638,6 +671,64 @@ mod tests {
         let mut args = empty_args();
         apply_env_overrides_from(&mut args, &env_with(&[("ROBA_SESSION_ID", "")]));
         assert!(args.session_id.is_none());
+    }
+
+    // -- session / session_id env conflict (#272) --------------------------
+
+    #[test]
+    fn env_both_session_vars_set_is_a_conflict() {
+        let args = empty_args();
+        let err = check_env_session_conflict(
+            &args,
+            &env_with(&[("ROBA_SESSION", "meta"), ("ROBA_SESSION_ID", "some-uuid")]),
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("ROBA_SESSION"), "got: {msg}");
+        assert!(msg.contains("ROBA_SESSION_ID"), "got: {msg}");
+    }
+
+    #[test]
+    fn env_session_alone_is_not_a_conflict() {
+        let args = empty_args();
+        assert!(check_env_session_conflict(&args, &env_with(&[("ROBA_SESSION", "meta")])).is_ok());
+    }
+
+    #[test]
+    fn env_session_id_alone_is_not_a_conflict() {
+        let args = empty_args();
+        assert!(
+            check_env_session_conflict(&args, &env_with(&[("ROBA_SESSION_ID", "some-uuid")]))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn env_session_conflict_suppressed_when_cli_set_session() {
+        // CLI presence wins: a `--session` on the CLI means the env pair is
+        // not in play, so both env vars set is not a conflict.
+        let mut args = empty_args();
+        args.session = Some("cli-name".into());
+        assert!(
+            check_env_session_conflict(
+                &args,
+                &env_with(&[("ROBA_SESSION", "meta"), ("ROBA_SESSION_ID", "some-uuid")]),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn env_session_conflict_suppressed_when_cli_set_session_id() {
+        let mut args = empty_args();
+        args.session_id = Some("cli-uuid".into());
+        assert!(
+            check_env_session_conflict(
+                &args,
+                &env_with(&[("ROBA_SESSION", "meta"), ("ROBA_SESSION_ID", "some-uuid")]),
+            )
+            .is_ok()
+        );
     }
 
     // -- json_schema -------------------------------------------------------

@@ -55,10 +55,11 @@ pub fn run_detached(args: &AskArgs) -> Result<()> {
     // that -- bytes we'd lose -- while letting benign non-TTY stdin through
     // (a closed/EOF pipe, /dev/null, an agent's null stdin), so an
     // orchestrator can fire `roba --detach -f task.md` without a TTY. The
-    // data classification is unix-only (see `stdin_would_lose_data`); other
-    // platforms proceed. An unexpected classification error proceeds rather
-    // than block a caller on a stat hiccup -- the common loss cases (a pipe
-    // with bytes, a non-empty redirect) classify cleanly.
+    // unix path peeks for actual bytes; Windows is conservative and blocks
+    // any pipe on stdin (see `stdin_would_lose_data`). An unexpected
+    // classification error proceeds rather than block a caller on a stat
+    // hiccup -- the common loss cases (a pipe with bytes, a non-empty
+    // redirect) classify cleanly.
     if stdin_would_lose_data().unwrap_or(false) {
         bail!(
             "--detach cannot read piped stdin (the detached run's stdin is /dev/null); \
@@ -198,10 +199,9 @@ fn rails_nudge_needed(args: &AskArgs) -> bool {
 /// - char device (/dev/null) / socket / anything else / closed fd -> `false`
 ///
 /// The single byte is read ONLY on the `true` (we're about to error and exit)
-/// path, so the proceed path never consumes stdin. Unix-only; the
-/// `cfg(not(unix))` stub returns `false` (the data check is not yet
-/// implemented on Windows -- the child still gets a null stdin, we just don't
-/// detect input that would be lost).
+/// path, so the proceed path never consumes stdin. The Windows counterpart
+/// (`cfg(not(unix))`) is coarser: it classifies by handle TYPE only (a pipe
+/// is treated as data, a console / `NUL` is not) and never peeks.
 #[cfg(unix)]
 fn stdin_would_lose_data() -> std::io::Result<bool> {
     use std::os::unix::io::AsRawFd;
@@ -275,12 +275,42 @@ fn fifo_has_pending_data(fd: std::os::unix::io::RawFd) -> std::io::Result<bool> 
     }
 }
 
-/// Windows stub: the piped-data classification is unix-only for now, so we
-/// never block here. The detached child still gets a null stdin; we simply
-/// don't yet detect piped input that would be lost.
+/// Windows piped-data classification.
+///
+/// Unlike the unix path (which peeks for actual bytes), Windows classifies
+/// by handle TYPE only, via `GetFileType` on stdin:
+/// - `FILE_TYPE_PIPE`  -> `true` (an anonymous/named pipe -- `echo ... |
+///   roba --detach`; treat as data the child would lose, no peek)
+/// - `FILE_TYPE_CHAR` (a console or `NUL`), a disk file, or an
+///   unknown/erroring type -> `false` (proceed)
+///
+/// This is conservative on pipes -- it blocks `echo x | roba --detach`
+/// rather than silently dropping the input -- while letting an interactive
+/// console or a benign `NUL` stdin through. It does not peek (so a closed,
+/// data-less pipe is still blocked, unlike unix); the trade is no false
+/// data-loss on the common console/redirect cases.
 #[cfg(not(unix))]
 fn stdin_would_lose_data() -> std::io::Result<bool> {
-    Ok(false)
+    use std::os::windows::io::AsRawHandle;
+    Ok(handle_is_pipe(std::io::stdin().as_raw_handle()))
+}
+
+/// True iff the Windows handle is an anonymous/named pipe
+/// (`FILE_TYPE_PIPE`). The testable core of the Windows
+/// [`stdin_would_lose_data`].
+#[cfg(not(unix))]
+fn handle_is_pipe(handle: std::os::windows::io::RawHandle) -> bool {
+    // GetFileType (kernel32) returns the type of a file handle. We only need
+    // to single out a pipe, so declare the one call rather than depend on a
+    // full Win32 bindings crate.
+    const FILE_TYPE_PIPE: u32 = 0x0003;
+    // SAFETY: GetFileType only reads the handle value and has no other side
+    // effects; any handle is a valid argument (an invalid one yields
+    // FILE_TYPE_UNKNOWN, which is correctly treated as "not a pipe").
+    unsafe extern "system" {
+        fn GetFileType(handle: *mut core::ffi::c_void) -> u32;
+    }
+    unsafe { GetFileType(handle) == FILE_TYPE_PIPE }
 }
 
 /// Put the spawned child in its own process group / detached session so it
