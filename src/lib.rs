@@ -28,6 +28,7 @@ pub mod rates;
 pub mod render;
 pub mod session;
 pub mod show;
+pub mod stdin_probe;
 pub mod stream;
 pub mod worktree;
 
@@ -341,6 +342,11 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         }
     };
     let prompt = apply_vars(prompt, &args.var);
+    // Surface likely-typo'd `--var` keys (an unsubstituted `{{NAME}}` would
+    // otherwise ship silently). Ungated like the `--attach matched no files`
+    // warning -- it is a correctness signal, most valuable in a quiet
+    // automated run, not decorative metadata.
+    prompt::warn_unsubstituted_placeholders(&prompt);
 
     if args.echo && !args.quiet {
         eprintln!("{prompt}");
