@@ -269,6 +269,36 @@ pub enum AliasAction {
     },
     /// Print which files contribute aliases, in walk-up order.
     Path,
+    /// Draft a new alias from a plain-language description.
+    ///
+    /// Sends DESCRIPTION to claude with the bundled alias schema, parses
+    /// the result with roba's real deserializer (a hallucinated key is
+    /// rejected exactly as a hand-written config would be), and prints
+    /// the canonical `[alias.NAME]` block on stdout -- byte-clean, so it
+    /// pipes straight to `>> roba.toml`. Everything else (collision
+    /// warnings, where-it-wrote) goes to stderr. There is NO retry loop:
+    /// an invalid draft fails loud with the deserializer error.
+    Draft(AliasDraftArgs),
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct AliasDraftArgs {
+    /// Plain-language description of the verb you want.
+    pub description: String,
+
+    /// Append the drafted block to a config file instead of only printing.
+    ///
+    /// Bare `--write` targets your user config (`~/.config/roba.toml`);
+    /// `--write PATH` targets an explicit file (created if absent). A
+    /// duplicate `[alias.NAME]` already in the target is a hard error --
+    /// it would break the next config load. The block still prints on
+    /// stdout in either case.
+    #[arg(long, num_args = 0..=1, value_name = "PATH")]
+    pub write: Option<Option<PathBuf>>,
+
+    /// Model override for the generation call (alias or full id).
+    #[arg(long, value_name = "NAME")]
+    pub model: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1851,5 +1881,67 @@ mod tests {
         let cli = Cli::try_parse_from(["roba", "commit-msg"]).unwrap();
         assert!(cli.command.is_none());
         assert_eq!(cli.ask.prompt.as_deref(), Some("commit-msg"));
+    }
+
+    #[test]
+    fn alias_draft_parses_description() {
+        use clap::Parser;
+        let cli =
+            Cli::try_parse_from(["roba", "alias", "draft", "a read-only review verb"]).unwrap();
+        match cli.command {
+            Some(SubCommand::Alias {
+                action: AliasAction::Draft(args),
+            }) => {
+                assert_eq!(args.description, "a read-only review verb");
+                assert!(args.write.is_none());
+                assert!(args.model.is_none());
+            }
+            other => panic!("expected alias draft, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn alias_draft_write_without_path() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "alias", "draft", "desc", "--write"]).unwrap();
+        match cli.command {
+            Some(SubCommand::Alias {
+                action: AliasAction::Draft(args),
+            }) => assert!(matches!(args.write, Some(None))),
+            other => panic!("expected alias draft, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn alias_draft_write_with_path() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "alias", "draft", "desc", "--write", "/tmp/r.toml"])
+            .unwrap();
+        match cli.command {
+            Some(SubCommand::Alias {
+                action: AliasAction::Draft(args),
+            }) => assert_eq!(args.write, Some(Some(PathBuf::from("/tmp/r.toml")))),
+            other => panic!("expected alias draft, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn alias_draft_accepts_model() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "roba",
+            "alias",
+            "draft",
+            "desc",
+            "--model",
+            "claude-haiku-4-5",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(SubCommand::Alias {
+                action: AliasAction::Draft(args),
+            }) => assert_eq!(args.model.as_deref(), Some("claude-haiku-4-5")),
+            other => panic!("expected alias draft, got {other:?}"),
+        }
     }
 }

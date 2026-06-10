@@ -43,10 +43,13 @@
 //!   `--readonly` vs `--full-auto`) conflict and error rather than
 //!   silently override.
 
+use std::path::Path;
+
 use anyhow::{Context, Result, bail};
+use claude_wrapper::{Claude, QueryCommand};
 use serde::{Deserialize, Serialize};
 
-use crate::cli::{AliasAction, AskArgs};
+use crate::cli::{AliasAction, AliasDraftArgs, AskArgs};
 use crate::profile::{self, Pool};
 
 /// Built-in subcommand names. A user alias matching one of these is
@@ -97,6 +100,9 @@ pub fn run(action: AliasAction) -> Result<()> {
         AliasAction::List => run_list(),
         AliasAction::Show { name } => run_show(&name),
         AliasAction::Path => run_path(),
+        // `draft` makes an async claude call and is routed through
+        // [`run_draft`] by [`crate::dispatch`], never here.
+        AliasAction::Draft(_) => unreachable!("alias draft is dispatched via run_draft"),
     }
 }
 
@@ -219,6 +225,213 @@ fn render_alias_toml(name: &str, alias: &Alias) -> Result<String> {
     inner.insert(name.to_string(), alias.clone());
     wrapper.insert("alias".to_string(), inner);
     toml::to_string_pretty(&wrapper).context("re-serializing alias")
+}
+
+// ---------------------------------------------------------------------------
+// Draft: claude-assisted, parse-validated alias generation
+// ---------------------------------------------------------------------------
+
+/// Run `roba alias draft DESCRIPTION`.
+///
+/// Deterministic bookends around one generation: build a prompt from the
+/// bundled (parse-tested) alias schema + the user's words, make a single
+/// lean claude call, then validate the output with roba's REAL `Alias`
+/// deserializer (`deny_unknown_fields`) and normalize it back through
+/// `render_alias_toml`. stdout gets only the canonical block; collision
+/// warnings and write confirmations go to stderr. No retry loop.
+pub async fn run_draft(args: AliasDraftArgs) -> Result<()> {
+    // 1. Deterministic prompt: schema-by-example + the user's description.
+    let prompt = draft_prompt(&args.description);
+
+    // 2. One lean claude call -- NOT routed through `run_ask`. Read-only
+    //    default tool posture (generation needs no tools), no session kept
+    //    (a draft is not a thread worth resuming), stdin-fed, optional
+    //    model override.
+    let claude = Claude::builder().build()?;
+    let mut cmd = QueryCommand::new(prompt)
+        .name("roba: alias draft")
+        .prompt_via_stdin(true)
+        .no_session_persistence();
+    if let Some(model) = &args.model {
+        cmd = cmd.model(model.clone());
+    }
+    let result = cmd.execute_json(&claude).await?;
+
+    // 3. Validate with the real deserializer; require exactly one entry.
+    let (name, alias) = parse_drafted_alias(&result.result)?;
+
+    // 4. Normalize so stdout is canonical regardless of model formatting.
+    let block = render_alias_toml(&name, &alias)?;
+
+    let is_builtin = BUILTIN_SUBCOMMANDS.contains(&name.as_str());
+    match &args.write {
+        Some(target) => {
+            let path = match target {
+                Some(p) => p.clone(),
+                None => profile::user_config_path().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--write: cannot locate your user config; pass an explicit path (`--write PATH`)"
+                    )
+                })?,
+            };
+            // A built-in name is unreachable as a verb -- hard error.
+            if is_builtin {
+                bail!(
+                    "alias `{name}` collides with a built-in subcommand and would be unreachable; pick another name"
+                );
+            }
+            // A duplicate `[alias.NAME]` table in the target would hard-break
+            // the next config load -- hard error.
+            if file_defines_alias(&path, &name)? {
+                bail!(
+                    "{} already defines [alias.{name}]; refusing to append a duplicate (it would break the next config load)",
+                    path.display()
+                );
+            }
+            append_alias_block(&path, &block)?;
+            eprintln!("wrote [alias.{name}] to {}", path.display());
+        }
+        None => {
+            // Print mode: collisions are warnings, not errors.
+            if is_builtin {
+                eprintln!(
+                    "warning: alias `{name}` collides with a built-in subcommand; the built-in wins, so the alias would be unreachable"
+                );
+            } else if profile::load_pool()?.aliases.contains_key(&name) {
+                eprintln!(
+                    "warning: alias `{name}` already exists in your config pool; this draft would shadow or duplicate it"
+                );
+            }
+        }
+    }
+
+    // stdout = the block only, byte-clean (pipeable to `>> roba.toml`).
+    print!("{block}");
+    Ok(())
+}
+
+/// Build the deterministic generation prompt: the bundled alias schema
+/// (by example, so it cannot drift from the real deserializer) + the
+/// user's description + firm single-block output instructions.
+fn draft_prompt(description: &str) -> String {
+    let schema = alias_sample_section();
+    format!(
+        "You are generating a single roba alias definition in TOML.\n\n\
+         roba aliases are user-defined verbs. Here is the alias schema, \
+         documented by example -- this is the ONLY allowed shape, do not \
+         invent fields:\n\n\
+         {schema}\n\n\
+         The user wants an alias for: {description}\n\n\
+         Output requirements (follow exactly):\n\
+         - Produce EXACTLY ONE `[alias.NAME]` TOML block and nothing else.\n\
+         - Pick a short, memorable kebab-case or single-word NAME from the description.\n\
+         - Use ONLY the fields shown above (description, agent, template, flags, args).\n\
+         - The block must be valid TOML that parses against that schema.\n\
+         - Do NOT wrap the output in markdown code fences.\n\
+         - Do NOT include any prose, comments, or explanation -- only the TOML block."
+    )
+}
+
+/// Slice the Aliases section out of the bundled, parse-tested sample
+/// config (the `# Aliases` banner through the start of `# Named
+/// sessions`). Falls back to the whole sample if those markers move, so
+/// a future sample reshuffle degrades to "embed everything" rather than
+/// silently shipping an empty schema.
+fn alias_sample_section() -> String {
+    const SAMPLE: &str = crate::profile::STARTER_CONFIG_TOML;
+    let start = SAMPLE.find("# Aliases");
+    let end = SAMPLE.find("# Named sessions");
+    match (start, end) {
+        (Some(s), Some(e)) if s < e => SAMPLE[s..e].trim_end().to_string(),
+        _ => SAMPLE.trim_end().to_string(),
+    }
+}
+
+/// Parse a drafted alias block. Strip optional markdown fences (a model
+/// may add them despite instructions), deserialize via the real
+/// `{ alias: { NAME = Alias } }` shape so `deny_unknown_fields` on
+/// [`Alias`] polices hallucinated keys, and require EXACTLY one entry.
+/// On any failure, the error carries the raw model output for stderr.
+fn parse_drafted_alias(raw: &str) -> Result<(String, Alias)> {
+    use std::collections::HashMap;
+    #[derive(Deserialize)]
+    struct Wrapper {
+        #[serde(default)]
+        alias: HashMap<String, Alias>,
+    }
+    let cleaned = strip_code_fences(raw);
+    let wrapper: Wrapper = toml::from_str(&cleaned).map_err(|e| {
+        anyhow::anyhow!("drafted alias did not parse: {e}\n\n--- raw model output ---\n{raw}")
+    })?;
+    let mut entries: Vec<(String, Alias)> = wrapper.alias.into_iter().collect();
+    match entries.len() {
+        1 => Ok(entries.pop().expect("len checked == 1")),
+        0 => {
+            bail!("drafted output defined no [alias.NAME] block\n\n--- raw model output ---\n{raw}")
+        }
+        n => bail!(
+            "drafted output defined {n} alias blocks (expected exactly one)\n\n--- raw model output ---\n{raw}"
+        ),
+    }
+}
+
+/// Strip a single surrounding markdown code fence if present, so output
+/// wrapped in ```toml ... ``` still parses. Fence-free input is returned
+/// trimmed but otherwise untouched.
+fn strip_code_fences(s: &str) -> String {
+    let trimmed = s.trim();
+    if !trimmed.starts_with("```") {
+        return trimmed.to_string();
+    }
+    let mut lines: Vec<&str> = trimmed.lines().collect();
+    lines.remove(0); // opening ``` or ```toml
+    if lines
+        .last()
+        .is_some_and(|l| l.trim_start().starts_with("```"))
+    {
+        lines.pop(); // closing ```
+    }
+    lines.join("\n")
+}
+
+/// True when `path` already defines `[alias.name]`. A missing file
+/// defines nothing. Unknown top-level tables (profiles, sessions) are
+/// ignored -- only the alias map is probed -- but malformed TOML surfaces
+/// as an error rather than a silent "no".
+fn file_defines_alias(path: &Path, name: &str) -> Result<bool> {
+    use std::collections::HashMap;
+    #[derive(Deserialize)]
+    struct Probe {
+        #[serde(default)]
+        alias: HashMap<String, Alias>,
+    }
+    if !path.exists() {
+        return Ok(false);
+    }
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading --write target {}", path.display()))?;
+    let probe: Probe = toml::from_str(&text)
+        .with_context(|| format!("--write target {} is not valid TOML", path.display()))?;
+    Ok(probe.alias.contains_key(name))
+}
+
+/// Append a blank line + the block to `path`, creating the file (and any
+/// missing parent dirs) if absent.
+fn append_alias_block(path: &Path, block: &str) -> Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating parent directory for {}", path.display()))?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("opening {} for append", path.display()))?;
+    write!(file, "\n{block}").with_context(|| format!("writing to {}", path.display()))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -660,6 +873,98 @@ mod tests {
         let pool = Pool::default();
         let msg = unknown_alias_message("zzzzzzzz", &pool);
         assert_eq!(msg, "no built-in or alias named `zzzzzzzz`");
+    }
+
+    #[test]
+    fn strip_code_fences_unwraps_toml_fence() {
+        let raw = "```toml\n[alias.x]\ndescription = \"hi\"\n```";
+        assert_eq!(strip_code_fences(raw), "[alias.x]\ndescription = \"hi\"");
+    }
+
+    #[test]
+    fn strip_code_fences_leaves_plain_input() {
+        let raw = "[alias.x]\ndescription = \"hi\"\n";
+        assert_eq!(strip_code_fences(raw), "[alias.x]\ndescription = \"hi\"");
+    }
+
+    #[test]
+    fn parse_drafted_alias_accepts_one_block() {
+        let (name, alias) =
+            parse_drafted_alias("[alias.echo]\ndescription = \"echo it\"\ntemplate = \"say ${@}\"")
+                .unwrap();
+        assert_eq!(name, "echo");
+        assert_eq!(alias.description.as_deref(), Some("echo it"));
+        assert_eq!(alias.template.as_deref(), Some("say ${@}"));
+    }
+
+    #[test]
+    fn parse_drafted_alias_strips_fences_first() {
+        let (name, _) =
+            parse_drafted_alias("```toml\n[alias.echo]\ndescription = \"e\"\n```").unwrap();
+        assert_eq!(name, "echo");
+    }
+
+    #[test]
+    fn parse_drafted_alias_rejects_zero_entries() {
+        let err = parse_drafted_alias("# nothing here").unwrap_err();
+        assert!(
+            format!("{err:#}").contains("no [alias.NAME] block"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn parse_drafted_alias_rejects_two_entries() {
+        let raw = "[alias.a]\ndescription = \"a\"\n[alias.b]\ndescription = \"b\"";
+        let err = parse_drafted_alias(raw).unwrap_err();
+        assert!(format!("{err:#}").contains("2 alias blocks"), "{err:#}");
+    }
+
+    #[test]
+    fn parse_drafted_alias_rejects_unknown_field() {
+        // `deny_unknown_fields` on `Alias` rejects a hallucinated key; the
+        // raw output is echoed for the user.
+        let raw = "[alias.x]\ndescription = \"x\"\nmade_up_key = true";
+        let err = parse_drafted_alias(raw).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("did not parse"), "{msg}");
+        assert!(msg.contains("made_up_key"), "{msg}");
+        assert!(msg.contains("raw model output"), "{msg}");
+    }
+
+    #[test]
+    fn alias_sample_section_includes_schema_examples() {
+        let section = alias_sample_section();
+        assert!(section.contains("[alias.review]"), "got:\n{section}");
+        assert!(section.contains("${pr}"), "got:\n{section}");
+        // Sliced before the named-sessions block.
+        assert!(!section.contains("Named sessions"), "got:\n{section}");
+    }
+
+    #[test]
+    fn file_defines_alias_detects_duplicate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roba.toml");
+        std::fs::write(
+            &path,
+            "[profile.x]\nreadonly = true\n\n[alias.review]\ndescription = \"r\"\n",
+        )
+        .unwrap();
+        assert!(file_defines_alias(&path, "review").unwrap());
+        assert!(!file_defines_alias(&path, "nope").unwrap());
+    }
+
+    #[test]
+    fn file_defines_alias_missing_file_is_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("absent.toml");
+        assert!(!file_defines_alias(&path, "anything").unwrap());
+    }
+
+    #[test]
+    fn builtin_collision_is_detectable() {
+        assert!(BUILTIN_SUBCOMMANDS.contains(&"history"));
+        assert!(!BUILTIN_SUBCOMMANDS.contains(&"my-custom-verb"));
     }
 
     #[test]

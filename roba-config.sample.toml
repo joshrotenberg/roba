@@ -168,6 +168,16 @@ description = "Quick read-only review preset"
 agent = "reviewer"
 flags = ["--readonly"]
 
+# Self-hosted "draft an alias" verb (pure config form).  ->  roba draft "..."
+# The built-in `roba alias draft "..."` is the VALIDATED form -- it parses the
+# generation against the real schema before printing. This config alias is the
+# unvalidated shortcut: it just asks claude, pipes nothing back through the
+# deserializer. Reach for the built-in when you want the safety rail.
+[alias.draft]
+description = "Draft a roba alias from a description (unvalidated; see `roba alias draft`)"
+flags = ["--quiet"]
+template = "Write one roba `[alias.NAME]` TOML block for: ${@}. Fields: description, agent, template, flags, args. Output only the TOML block, no fences, no prose."
+
 # ===========================================================================
 # Named sessions -- bind a stable handle to a claude session id, then resume
 # it with `roba --session NAME` (or ROBA_SESSION=NAME). roba only READS this

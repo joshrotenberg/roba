@@ -137,6 +137,19 @@ fn missing_claude_prints_install_hint_on_stderr() {
 }
 
 #[test]
+fn alias_draft_reaches_claude_call() {
+    // With PATH cleared, `roba alias draft` wires through to the claude
+    // call and fails with the normal claude-missing error -- proving the
+    // verb dispatches without needing the API.
+    roba()
+        .env("PATH", "")
+        .args(["alias", "draft", "a verb that echoes its argument"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found on PATH"));
+}
+
+#[test]
 fn dash_with_empty_stdin_errors() {
     roba()
         .arg("-")
