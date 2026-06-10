@@ -1438,6 +1438,65 @@ fn cost_by_project_shows_cost_column() {
 }
 
 // ---------------------------------------------------------------------------
+// roba show (read-only result handle, reconstructed envelope) -- refs #220
+// ---------------------------------------------------------------------------
+
+/// Seed a `$HOME/.claude/projects/<slug>/<id>.jsonl` with one user + one
+/// assistant entry. The assistant carries a text content block (so the
+/// answer reconstructs) plus `model` + `usage` (so the cost rollup can
+/// compute a figure). Returns `(home, session_id)`.
+fn home_with_text_session(answer: &str) -> (tempfile::TempDir, String) {
+    let home = tempfile::tempdir().expect("home");
+    let proj = home.path().join(".claude/projects/-tmp-proj");
+    std::fs::create_dir_all(&proj).expect("mkdir projects");
+    let session_id = "show-sess-1";
+    let user =
+        r#"{"type":"user","timestamp":"2026-06-01T10:00:00.000Z","message":{"content":"hi"}}"#;
+    let assistant = format!(
+        r#"{{"type":"assistant","timestamp":"2026-06-01T10:00:01.000Z","message":{{"model":"claude-sonnet-4-6","content":[{{"type":"text","text":"{answer}"}}],"usage":{{"input_tokens":1000000,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#
+    );
+    std::fs::write(
+        proj.join(format!("{session_id}.jsonl")),
+        format!("{user}\n{assistant}\n"),
+    )
+    .expect("write session");
+    (home, session_id.to_string())
+}
+
+#[test]
+fn show_json_reconstructs_envelope() {
+    let (home, id) = home_with_text_session("the reconstructed answer");
+    let out = roba()
+        .args(["show", &id, "--json"])
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("stdout is JSON");
+    assert_eq!(v["version"], 1);
+    assert_eq!(v["result"]["result"], "the reconstructed answer");
+    assert_eq!(v["result"]["session_id"], "show-sess-1");
+    // num_turns is the DERIVED count of assistant entries (one here).
+    assert_eq!(v["result"]["num_turns"], 1);
+    // duration_ms is always null in the reconstructed envelope.
+    assert!(v["result"]["duration_ms"].is_null());
+    assert_eq!(v["refusal"], false);
+}
+
+#[test]
+fn show_not_found_errors_cleanly() {
+    let (home, _id) = home_with_text_session("ignored");
+    roba()
+        .args(["show", "does-not-exist"])
+        .env("HOME", home.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+// ---------------------------------------------------------------------------
 // --no-agent-check / agent frontmatter permission check (#123)
 // ---------------------------------------------------------------------------
 

@@ -46,6 +46,7 @@ fn wants_json(cli: &Cli) -> bool {
         Some(SubCommand::Worktree {
             cmd: WorktreeCmd::List(args),
         }) => args.json,
+        Some(SubCommand::Show(args)) => args.json,
         _ => false,
     }
 }
