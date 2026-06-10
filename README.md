@@ -58,7 +58,7 @@ exit. roba keeps that model and adds:
 | **Composable input** | `-f` file, piped stdin (the prompt, or context when a prompt is given), `-e` editor, `--prepend` / `--append`, `--attach` globs, `--git-diff` / `--git-log` / `--git-status`, `--var` template vars |
 | **Pipe-clean output** | stdout is the answer; all metadata (footer, spinner, tool lines, warnings) goes to stderr -- piping to `jq` sees a clean stream |
 | **TTY rendering** | markdown, spinner, color while it runs; `--plain` / `NO_COLOR` turns it off |
-| **Session re-entry** | `-c` continue, `-c ID` resume, `--fork`, `--pick` chooser, `--session-id` mints a caller-chosen id; `roba history` / `roba last` browse past runs |
+| **Session re-entry** | `-c` continue, `-c ID` resume, `--fork`, `--pick` chooser, `--session-id` mints a caller-chosen id, `--session NAME` resumes a named handle (`[session]` in roba.toml); `roba history` / `roba last` browse past runs |
 | **Read-only inspection** | `roba show <ID>` prints a stored run's result (`--metrics`, `--wait`); `roba worktree list`; `roba history --worktree NAME` finds a runner's session |
 | **A stable scripting ABI** | typed exit codes, versioned `--json` envelope, clean stream split -- see [For agents & scripts](#for-agents--scripts) |
 
@@ -125,7 +125,8 @@ file tools are cwd-scoped by default; each `--add-dir` adds one directory.
 The read-only start does not regress. `--permission-mode` additionally
 sets claude's own approval mode (`plan`, `acceptEdits`, ...), orthogonal
 to the allow-list. Precedence across all layers: **CLI flag > `ROBA_*`
-env > profile > built-in default**, and deny always wins over allow.
+env > profile > top-level config keys > built-in default**, and deny
+always wins over allow.
 
 To give claude extra tools from an MCP server for one run, point it at
 a server config file:
@@ -168,9 +169,10 @@ failure: { "version": 1, "error": { kind, message, exit_code, chain } }    (stde
 ```
 
 The read-only management commands (`cost`, `history`, `doctor`,
-`worktree list`, `show`) emit the same `{ "version": 1, "result": ... }`
-shape (minus the ask-only `refusal`), so one parser handles every
-`--json` output. Pin `version` and you've pinned the shape.
+`worktree list`) emit the same `{ "version": 1, "result": ... }` shape
+(minus the ask-only `refusal`); `roba show` reconstructs the full ask
+envelope, `refusal` included. One parser handles every `--json` output.
+Pin `version` and you've pinned the shape.
 
 Reading the envelope:
 

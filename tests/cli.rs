@@ -45,7 +45,7 @@ fn help_long_trailer_is_byte_clean_off_tty() {
     // Sanity: the styled sections are still present as plain text.
     assert!(stdout.contains("Examples -- for humans"));
     assert!(stdout.contains("Examples -- for agents & scripts"));
-    assert!(stdout.contains("Dispatch modes"));
+    assert!(stdout.contains("Unattended workers"));
     assert!(stdout.contains("Environment variables:"));
     assert!(stdout.contains("Configuration (roba.toml):"));
 }
