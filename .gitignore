@@ -1,1 +1,4 @@
 /target
+
+# maintainer-private agent context (auto-loaded locally, never tracked)
+CLAUDE.local.md
