@@ -178,7 +178,16 @@ pub async fn run_streaming(
         } else {
             crate::rates::Rates::resolve(args.rates_file.as_deref()).ok()
         };
-        crate::render::print_meta(&format_footer(qr, rates.as_ref(), args.no_dollars), &style);
+        crate::render::print_meta(
+            &format_footer(
+                qr,
+                rates.as_ref(),
+                args.no_dollars,
+                args.model.as_deref(),
+                args.effort.map(|e| e.as_str()),
+            ),
+            &style,
+        );
     }
     Ok(None)
 }

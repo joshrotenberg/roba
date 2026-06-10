@@ -85,16 +85,24 @@ pub fn extract_code_blocks(text: &str, lang_filter: Option<&str>) -> String {
 }
 
 /// Single-line footer summarizing a [`QueryResult`]: tokens, cost,
-/// duration, session id (first 8 chars).
+/// duration, model (+ effort), session id (first 8 chars).
 ///
 /// The dollar figure prefers claude's own authoritative `total_cost_usd`
 /// when present; otherwise, if `rates` is supplied and the call's model
 /// is in the table, it is computed from the rate table. `no_dollars`
 /// suppresses the figure entirely.
+///
+/// The model/effort segment slots between duration and session.
+/// `model_override` is the resolved `--model` (after env/profile merge),
+/// used as a fallback when claude's `modelUsage` is absent; `effort` is
+/// the resolved client-side effort label, appended only when a model is
+/// shown. See `format_model_segment`.
 pub fn format_footer(
     r: &QueryResult,
     rates: Option<&crate::rates::Rates>,
     no_dollars: bool,
+    model_override: Option<&str>,
+    effort: Option<&str>,
 ) -> String {
     let mut parts = Vec::new();
     if let Some((input, output)) = extract_tokens(&r.extra) {
@@ -110,9 +118,62 @@ pub fn format_footer(
     if let Some(ms) = r.duration_ms {
         parts.push(format_duration(ms));
     }
+    if let Some(seg) = format_model_segment(&r.extra, model_override, effort) {
+        parts.push(seg);
+    }
     let id = r.session_id.get(..8).unwrap_or(&r.session_id);
     parts.push(format!("session {id}"));
     parts.join(" . ")
+}
+
+/// The `model[+N][/effort]` footer segment, or `None` when no model is
+/// known (in which case effort is dropped too -- a bare `/high` is noise).
+///
+/// Model comes from the result's `modelUsage` map (the authoritative
+/// per-run record claude emits, keyed by real model ids). One key -> that
+/// model; multiple keys (a `--fallback-model` fired) -> the model with the
+/// largest output-token usage plus `+N` counting the rest. When
+/// `modelUsage` is absent or empty, falls back to `model_override` (the
+/// resolved `--model`). The `claude-` prefix is stripped for density.
+/// `effort` is client-side only and appended as `/effort` only when a
+/// model is shown.
+fn format_model_segment(
+    extra: &HashMap<String, serde_json::Value>,
+    model_override: Option<&str>,
+    effort: Option<&str>,
+) -> Option<String> {
+    let mut seg = model_segment_base(extra, model_override)?;
+    if let Some(e) = effort {
+        seg.push('/');
+        seg.push_str(e);
+    }
+    Some(seg)
+}
+
+/// The bare model portion of the footer segment (no effort suffix).
+fn model_segment_base(
+    extra: &HashMap<String, serde_json::Value>,
+    model_override: Option<&str>,
+) -> Option<String> {
+    if let Some(map) = extra.get("modelUsage").and_then(|v| v.as_object())
+        && !map.is_empty()
+    {
+        let output = |v: &serde_json::Value| v.get("outputTokens").and_then(|x| x.as_u64());
+        let primary = map.iter().max_by_key(|(_, v)| output(v).unwrap_or(0))?.0;
+        let mut s = strip_claude_prefix(primary).to_string();
+        let extras = map.len() - 1;
+        if extras > 0 {
+            s.push_str(&format!("+{extras}"));
+        }
+        return Some(s);
+    }
+    model_override.map(|m| strip_claude_prefix(m).to_string())
+}
+
+/// Strip a leading `claude-` for display density (`claude-opus-4-8` ->
+/// `opus-4-8`); pass anything else through unchanged.
+fn strip_claude_prefix(model: &str) -> &str {
+    model.strip_prefix("claude-").unwrap_or(model)
 }
 
 /// Resolve the footer's dollar figure: claude's authoritative
@@ -507,7 +568,7 @@ mod tests {
             "usage": {"input_tokens": 6, "output_tokens": 14},
         }))
         .expect("build QueryResult fixture");
-        let footer = format_footer(&result, None, false);
+        let footer = format_footer(&result, None, false, None, None);
         assert!(footer.contains("tokens 6/14"));
         // Authoritative claude cost is shown as a bare `$X` segment.
         assert!(footer.contains("$0.0192"));
@@ -526,7 +587,7 @@ mod tests {
             "usage": {"input_tokens": 6, "output_tokens": 14},
         }))
         .expect("build QueryResult fixture");
-        let footer = format_footer(&result, None, true);
+        let footer = format_footer(&result, None, true, None, None);
         assert!(footer.contains("tokens 6/14"));
         assert!(
             !footer.contains('$'),
@@ -548,7 +609,7 @@ mod tests {
         }))
         .expect("build QueryResult fixture");
         let rates = crate::rates::Rates::bundled().unwrap();
-        let footer = format_footer(&result, Some(&rates), false);
+        let footer = format_footer(&result, Some(&rates), false, None, None);
         // 1M sonnet input @ $3/MTok = $3.0000.
         assert!(footer.contains("$3.0000"), "got: {footer}");
     }
@@ -564,7 +625,7 @@ mod tests {
         }))
         .expect("build QueryResult fixture");
         let rates = crate::rates::Rates::bundled().unwrap();
-        let footer = format_footer(&result, Some(&rates), false);
+        let footer = format_footer(&result, Some(&rates), false, None, None);
         assert!(
             !footer.contains('$'),
             "unknown model must omit cost: {footer}"
@@ -579,10 +640,93 @@ mod tests {
             "is_error": false,
         }))
         .expect("build QueryResult fixture");
-        let footer = format_footer(&result, None, false);
+        let footer = format_footer(&result, None, false, None, None);
         assert!(!footer.contains("tokens"));
         assert!(!footer.contains('$'));
         assert!(footer.contains("session deadbeef"));
+    }
+
+    /// Build a minimal result carrying just a `modelUsage` map.
+    fn result_with_model_usage(usage: serde_json::Value) -> QueryResult {
+        serde_json::from_value(serde_json::json!({
+            "result": "ok",
+            "session_id": "deadbeef",
+            "is_error": false,
+            "modelUsage": usage,
+        }))
+        .expect("build QueryResult fixture")
+    }
+
+    #[test]
+    fn footer_segment_single_model_strips_claude_prefix() {
+        let result = result_with_model_usage(serde_json::json!({
+            "claude-opus-4-8": {"outputTokens": 100},
+        }));
+        let footer = format_footer(&result, None, false, None, None);
+        assert_eq!(footer, "opus-4-8 . session deadbeef", "got: {footer}");
+    }
+
+    #[test]
+    fn footer_segment_multi_model_picks_largest_output_plus_n() {
+        // sonnet has the larger output usage -> it is primary, +1 for opus.
+        let result = result_with_model_usage(serde_json::json!({
+            "claude-opus-4-8": {"outputTokens": 10},
+            "claude-sonnet-4-6": {"outputTokens": 900},
+        }));
+        let footer = format_footer(&result, None, false, None, None);
+        assert!(footer.contains("sonnet-4-6+1"), "got: {footer}");
+    }
+
+    #[test]
+    fn footer_segment_appends_effort_when_set() {
+        let result = result_with_model_usage(serde_json::json!({
+            "claude-haiku-4-5": {"outputTokens": 5},
+        }));
+        let footer = format_footer(&result, None, false, None, Some("high"));
+        assert!(footer.contains("haiku-4-5/high"), "got: {footer}");
+    }
+
+    #[test]
+    fn footer_segment_no_effort_suffix_when_unset() {
+        let result = result_with_model_usage(serde_json::json!({
+            "claude-haiku-4-5": {"outputTokens": 5},
+        }));
+        let footer = format_footer(&result, None, false, None, None);
+        assert!(footer.contains("haiku-4-5"), "got: {footer}");
+        assert!(!footer.contains('/'), "got: {footer}");
+    }
+
+    #[test]
+    fn footer_segment_falls_back_to_model_override() {
+        // No modelUsage in the result; the resolved --model fills in.
+        let result: QueryResult = serde_json::from_value(serde_json::json!({
+            "result": "ok",
+            "session_id": "deadbeef",
+            "is_error": false,
+        }))
+        .expect("build QueryResult fixture");
+        let footer = format_footer(&result, None, false, Some("claude-opus-4-8"), None);
+        assert!(footer.contains("opus-4-8"), "got: {footer}");
+    }
+
+    #[test]
+    fn footer_segment_omitted_when_no_model_anywhere() {
+        let result: QueryResult = serde_json::from_value(serde_json::json!({
+            "result": "ok",
+            "session_id": "deadbeef",
+            "is_error": false,
+        }))
+        .expect("build QueryResult fixture");
+        // Effort set but no model -> the whole segment (and effort) is dropped.
+        let footer = format_footer(&result, None, false, None, Some("high"));
+        assert_eq!(footer, "session deadbeef", "got: {footer}");
+    }
+
+    #[test]
+    fn footer_segment_empty_model_usage_falls_back_to_override() {
+        let result = result_with_model_usage(serde_json::json!({}));
+        let footer = format_footer(&result, None, false, Some("claude-haiku-4-5"), None);
+        assert!(footer.contains("haiku-4-5"), "got: {footer}");
     }
 
     #[test]
