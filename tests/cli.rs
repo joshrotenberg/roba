@@ -935,6 +935,27 @@ fn limits_flags_parse_and_accept() {
 }
 
 #[test]
+fn mcp_config_flags_parse_and_accept() {
+    // --mcp-config (repeatable) + --strict-mcp-config parse cleanly
+    // alongside a real prompt. Pair with --show-permissions so the run
+    // short-circuits before any claude call: a clean exit proves both
+    // flags parse and compose without conflict. roba forwards the paths
+    // verbatim and never reads them, so non-existent files are fine here.
+    roba()
+        .args([
+            "foo",
+            "--mcp-config",
+            "a.json",
+            "--mcp-config",
+            "b.json",
+            "--strict-mcp-config",
+            "--show-permissions",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
 fn max_turns_rejects_non_numeric_value() {
     roba()
         .args(["foo", "--max-turns", "abc"])

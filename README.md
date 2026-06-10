@@ -133,6 +133,19 @@ approval mode (`plan`, `acceptEdits`, ...), orthogonal to the
 allow-list. Precedence across all layers: **CLI flag > `ROBA_*` env >
 profile > built-in default**, and deny always wins over allow.
 
+To give claude extra tools from an MCP server for one run, point it at
+a server config file:
+
+```bash
+roba --mcp-config mcp.json "..."                  # add those servers' tools
+roba --mcp-config mcp.json --strict-mcp-config .. # use ONLY those servers
+```
+
+`--mcp-config` (repeatable) is a thin pass-through to claude's own
+`--mcp-config` -- roba forwards the path and claude reads the file.
+This is *not* a roba MCP server; it just wires per-run MCP servers into
+the `claude -p` call.
+
 ## Configuration: profiles & aliases
 
 A `roba.toml` lets you stop retyping flags and define your own verbs.
