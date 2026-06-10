@@ -321,6 +321,34 @@ fn live_session_resume_fork_new_id() {
     );
 }
 
+#[test]
+#[ignore]
+fn live_session_id_assigns() {
+    // --session-id assigns a caller-chosen UUID to the new session.
+    // Assert the mechanics (the flag plumbs through and the returned
+    // session id EQUALS what we supplied), not model behavior. A fixed
+    // valid UUID keeps the run deterministic.
+    let dir = fresh_dir();
+    let chosen = "5f3c1a2b-4d6e-4f80-9a1b-2c3d4e5f6071";
+
+    let out = roba_in(dir.path())
+        .args([
+            "--json",
+            "--session-id",
+            chosen,
+            "respond with the single word: assigned",
+        ])
+        .output()
+        .expect("session-id run");
+    let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let returned = parsed["result"]["session_id"].as_str().expect("session_id");
+
+    assert_eq!(
+        returned, chosen,
+        "expected the returned session id to equal the supplied --session-id"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // streaming + tool use
 // ---------------------------------------------------------------------------

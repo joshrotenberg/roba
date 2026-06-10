@@ -12,10 +12,21 @@ use crate::cli::{AskArgs, EffortLevel, PermMode};
 /// override (--model), the subagent override (--agent), and then
 /// permission-related flags. Returns the configured QueryCommand.
 pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
-    match &args.continue_session {
-        None => {}                                      // fresh session
-        Some(None) => cmd = cmd.continue_session(),     // most recent in cwd
-        Some(Some(id)) => cmd = cmd.resume(id.clone()), // specific id
+    // Session selection. clap's conflicts guarantee at most one of
+    // {continue/resume, --session-id} is set, so these are mutually
+    // exclusive arms: continue/resume picks up an existing session;
+    // --session-id assigns a caller-chosen UUID to a new one. The
+    // auto-derived `.name(...)` (display label) is applied elsewhere and
+    // coexists with either -- name (display) and session-id (UUID) are
+    // independent.
+    if let Some(id) = &args.session_id {
+        cmd = cmd.session_id(id.clone());
+    } else {
+        match &args.continue_session {
+            None => {}                                      // fresh session
+            Some(None) => cmd = cmd.continue_session(),     // most recent in cwd
+            Some(Some(id)) => cmd = cmd.resume(id.clone()), // specific id
+        }
     }
     if args.fork {
         cmd = cmd.fork_session();
