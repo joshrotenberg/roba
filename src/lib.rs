@@ -21,6 +21,7 @@ pub mod draft;
 pub mod env;
 pub mod error;
 pub mod history;
+pub mod lint;
 pub mod output;
 pub mod profile;
 pub mod prompt;
@@ -80,6 +81,12 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         // onto the project), so it is async like the draft verbs.
         Some(SubCommand::Config { cmd }) => match cmd {
             crate::cli::ConfigCmd::Init(args) => config::run_init(args).await,
+            // Static config checks: print findings (or a `--json`
+            // envelope), exit 0/1. Read-only, no claude call.
+            crate::cli::ConfigCmd::Lint(args) => {
+                let code = lint::run(args)?;
+                std::process::exit(code);
+            }
         },
         // Read-only inspection of the repo's git worktrees. Shells to
         // `git worktree list` via claude-wrapper; no claude call.

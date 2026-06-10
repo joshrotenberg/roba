@@ -200,6 +200,85 @@ fn config_init_write_refuses_existing_target_before_claude_call() {
 }
 
 #[test]
+fn config_lint_shadowing_alias_exits_1_with_finding() {
+    // A pool with a built-in-shadowing alias. lint reports it on stdout
+    // (the verb's output IS the report) and exits 1. XDG_CONFIG_HOME is
+    // isolated to an empty dir so the real user config can't leak in.
+    let project = make_dir_with_files(&[
+        (".git/HEAD", ""),
+        ("roba.toml", "[alias.cost]\ntemplate = \"x ${@}\"\n"),
+    ]);
+    let user_home = tempfile::tempdir().expect("user home");
+    roba()
+        .args(["-C", project.path().to_str().unwrap(), "config", "lint"])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("builtin-shadow"))
+        .stdout(predicate::str::contains("cost"));
+}
+
+#[test]
+fn config_lint_clean_config_exits_0() {
+    let project = make_dir_with_files(&[
+        (".git/HEAD", ""),
+        (
+            "roba.toml",
+            "readonly = true\n\n[profile.review]\ngit_diff = true\n",
+        ),
+    ]);
+    let user_home = tempfile::tempdir().expect("user home");
+    roba()
+        .args(["-C", project.path().to_str().unwrap(), "config", "lint"])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no issues found"));
+}
+
+#[test]
+fn config_lint_json_emits_versioned_envelope() {
+    // --json: the uniform { version: 1, result: { findings, ok } } envelope
+    // on stdout, even when findings exist (exit 1).
+    let project = make_dir_with_files(&[
+        (".git/HEAD", ""),
+        ("roba.toml", "[alias.show]\ntemplate = \"x ${@}\"\n"),
+    ]);
+    let user_home = tempfile::tempdir().expect("user home");
+    let assert = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "config",
+            "lint",
+            "--json",
+        ])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .assert()
+        .code(1);
+    let out = &assert.get_output().stdout;
+    let json: serde_json::Value = serde_json::from_slice(out).expect("valid JSON");
+    assert_eq!(json["version"], 1, "top-level version must be 1");
+    assert_eq!(json["result"]["ok"], false, "got: {json}");
+    let findings = json["result"]["findings"]
+        .as_array()
+        .expect("findings is an array");
+    assert_eq!(findings.len(), 1, "got: {json}");
+    assert_eq!(findings[0]["rule"], "builtin-shadow");
+}
+
+#[test]
+fn config_lint_missing_path_errors() {
+    // A single named PATH that doesn't exist is a clean error (exit 1),
+    // not a panic.
+    roba()
+        .args(["config", "lint", "/no/such/roba.toml"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no such config file"));
+}
+
+#[test]
 fn dash_with_empty_stdin_errors() {
     roba()
         .arg("-")
