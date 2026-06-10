@@ -203,6 +203,20 @@ pub enum SubCommand {
         #[command(subcommand)]
         cmd: WorktreeCmd,
     },
+    /// Show a stored session's result (read-only).
+    ///
+    /// Reconstructs a result from a session's on-disk JSONL: the answer
+    /// is the last assistant message, found by id across all projects.
+    /// Read-only -- it reads the session log and reports; it never writes
+    /// under `.claude/`.
+    ///
+    /// The `--json` envelope is RECONSTRUCTED, not replayed: it is
+    /// structurally identical to a live `roba --json` envelope but NOT
+    /// byte-identical. `duration_ms` is always null (claude does not
+    /// persist per-run wall time) and `cost_usd` / `num_turns` are
+    /// DERIVED from the log (a token rollup and a count of assistant
+    /// turns), not the original run's reported values.
+    Show(ShowArgs),
     /// Generate a shell completion script (bash, zsh, fish, ...).
     ///
     /// Prints the script for SHELL to stdout; pipe or redirect it into
@@ -250,6 +264,31 @@ pub enum WorktreeCmd {
 #[derive(ClapArgs, Debug)]
 pub struct WorktreeListArgs {
     /// Emit JSON instead of a human table.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct ShowArgs {
+    /// Session id (UUID) to show. Located across all projects.
+    ///
+    /// `read_session` walks every project directory looking for
+    /// `<id>.jsonl`, so no project-scoping flag is needed.
+    pub session_id: String,
+
+    /// Also print the per-model token + cost breakdown for the session.
+    ///
+    /// The breakdown goes to stderr (so a `--json` stdout stays a clean
+    /// envelope). Costs come from the bundled rate table; an uncosted
+    /// model shows `-`.
+    #[arg(long)]
+    pub metrics: bool,
+
+    /// Emit the reconstructed success envelope as JSON.
+    ///
+    /// Structurally identical to a live `roba --json` envelope but NOT
+    /// byte-identical: `duration_ms` is null and `cost_usd` / `num_turns`
+    /// are derived from the log.
     #[arg(long)]
     pub json: bool,
 }
@@ -1565,6 +1604,53 @@ mod tests {
         // `-C/--cwd` is a global flag, so it attaches to the subcommand.
         use clap::Parser;
         let cli = Cli::try_parse_from(["roba", "worktree", "list", "-C", "/some/repo"]).unwrap();
+        assert_eq!(cli.cwd.as_deref(), Some(std::path::Path::new("/some/repo")));
+    }
+
+    #[test]
+    fn show_parses_session_id() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "show", "abc-123"]).unwrap();
+        match cli.command {
+            Some(SubCommand::Show(args)) => {
+                assert_eq!(args.session_id, "abc-123");
+                assert!(!args.metrics);
+                assert!(!args.json);
+            }
+            other => panic!("expected show, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn show_parses_metrics_flag() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "show", "abc-123", "--metrics"]).unwrap();
+        match cli.command {
+            Some(SubCommand::Show(args)) => {
+                assert_eq!(args.session_id, "abc-123");
+                assert!(args.metrics);
+            }
+            other => panic!("expected show --metrics, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn show_parses_json_flag() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "show", "abc-123", "--json", "--metrics"]).unwrap();
+        match cli.command {
+            Some(SubCommand::Show(args)) => {
+                assert!(args.json);
+                assert!(args.metrics);
+            }
+            other => panic!("expected show --json --metrics, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn show_honors_global_cwd() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "show", "abc-123", "-C", "/some/repo"]).unwrap();
         assert_eq!(cli.cwd.as_deref(), Some(std::path::Path::new("/some/repo")));
     }
 
