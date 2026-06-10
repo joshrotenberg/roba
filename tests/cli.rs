@@ -261,6 +261,72 @@ fn empty_piped_stdin_with_positional_still_composes() {
 }
 
 // ---------------------------------------------------------------------------
+// --detach guards (all fail before any spawn -- claude-free)
+// ---------------------------------------------------------------------------
+//
+// The detach branch runs three guards in order: promptless -> stdin
+// data-loss -> claude preflight. A promptless call hits the "needs a prompt"
+// guard; a call with real piped DATA hits the "can't read piped stdin" guard;
+// a benign non-TTY stdin (a closed/empty pipe, as an orchestrator supplies)
+// passes the data-loss gate and reaches the claude preflight. Every failure
+// here must leave stdout EMPTY -- that is the proof nothing was spawned.
+
+#[test]
+fn detach_promptless_errors_without_spawning() {
+    // No prompt source at all: the detached child could never resolve a
+    // prompt, so roba refuses up front. No handle on stdout.
+    roba()
+        .arg("--detach")
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("explicit prompt"));
+}
+
+#[test]
+#[cfg(unix)] // the piped-data stdin gate is unix-only by design;
+// windows proceeds to the preflight (documented in src/detach.rs)
+fn detach_piped_stdin_errors_without_spawning() {
+    // A prompt is present, but stdin is a (non-TTY) pipe -- the detached
+    // child's stdin is /dev/null, so the piped input would vanish. roba
+    // rejects it and prints NO handle (proving no spawn happened).
+    roba()
+        .arg("--detach")
+        .arg("say ok")
+        .write_stdin("piped context that would be lost\n")
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("piped stdin"));
+}
+
+#[test]
+fn detach_benign_nontty_stdin_passes_gate() {
+    // A benign non-TTY stdin (here an empty/closed pipe, the shape an
+    // orchestrator firing `roba --detach -f task.md` supplies) carries no
+    // data, so the data-loss gate lets it through. With PATH cleared, the run
+    // proceeds PAST the stdin gate to the claude preflight and fails there --
+    // proving the gate no longer blocks non-TTY callers. The failure is the
+    // claude-missing error, NOT the stdin error, and stdout stays empty
+    // (no handle, no spawn).
+    //
+    // (A true `< file` redirect is not cleanly expressible via assert_cmd's
+    // pipe-based stdin; the regular-file empty/non-empty classification is
+    // covered by the `data_loss` unit tests in src/detach.rs.)
+    roba()
+        .env("PATH", "")
+        .arg("--detach")
+        .arg("-f")
+        .arg("Cargo.toml")
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("not found on PATH"))
+        .stderr(predicate::str::contains("piped stdin").not());
+}
+
+// ---------------------------------------------------------------------------
 // conflict matrix (clap rejects with exit 2 by convention)
 // ---------------------------------------------------------------------------
 

@@ -994,6 +994,45 @@ pub struct AskArgs {
     )]
     pub session_id: Option<String>,
 
+    /// Fire the run detached: print the session handle and exit, leaving
+    /// the run to outlive this process.
+    ///
+    /// roba mints a v4 session UUID (unless `--session-id` was given),
+    /// re-execs itself with the same arguments minus `--detach`, in a new
+    /// process group with all stdio detached, and exits 0. The minted (or
+    /// given) UUID is the ONLY thing printed to stdout -- the handle IS the
+    /// answer, so `id=$(roba --detach ...)` captures it. A re-attach hint
+    /// goes to stderr. Re-attach from any later shell:
+    ///   id=$(roba --detach -C repo -f task.md --trace /tmp/t.jsonl)
+    ///   roba show "$id" --wait --timeout 600
+    ///
+    /// This is `nohup` baked in, not a daemon: roba owns NOTHING after the
+    /// spawn (no supervisor, no socket, no resume machinery). Observe the
+    /// run with `roba show --wait` / `--trace`; its state lives in claude's
+    /// own session records.
+    ///
+    /// Requires an explicit prompt source (positional / `-p` / `-f`): the
+    /// detached child's stdin is /dev/null, so stdin that carries data
+    /// (a pipe with bytes, a non-empty `< file` redirect) is rejected rather
+    /// than silently lost, while a benign non-TTY stdin (a closed/empty pipe
+    /// or /dev/null from an orchestrator) passes through; this data check is
+    /// unix-only for now. roba also verifies the claude binary resolves
+    /// BEFORE detaching -- a dead-on-arrival child behind a printed handle is
+    /// just silence.
+    ///
+    /// CLI-only by design: detaching is a deliberate per-invocation act, so
+    /// there is no `ROBA_DETACH` env var and no profile key (same as `-e`
+    /// and `--pick`). Conflicts with the output-consuming / interactive
+    /// flags that imply attachment (`--json`, `--stream`, `--code`,
+    /// `--show-thinking`, `-e`, `--pick`); `-o`/`--out` and `--trace` stay
+    /// allowed (the detached child writes them).
+    #[arg(
+        long,
+        conflicts_with_all = ["json", "stream", "code", "show_thinking", "editor", "pick"],
+        help_heading = "Sessions"
+    )]
+    pub detach: bool,
+
     /// Run in a fresh git worktree (optionally named: `-w NAME`).
     ///
     /// With no value claude generates the name; `-w NAME` (or `-w=NAME`)
@@ -2145,6 +2184,72 @@ mod tests {
                 action: ProfileAction::Draft(args),
             }) => assert_eq!(args.model.as_deref(), Some("claude-haiku-4-5")),
             other => panic!("expected profile draft, got {other:?}"),
+        }
+    }
+
+    // -- --detach ----------------------------------------------------------
+
+    #[test]
+    fn detach_parses_alone() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--detach", "prompt"]).unwrap();
+        assert!(cli.ask.detach);
+        assert_eq!(cli.ask.prompt.as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn detach_omitted_is_false() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "prompt"]).unwrap();
+        assert!(!cli.ask.detach);
+    }
+
+    #[test]
+    fn detach_composes_with_session_id_and_out_and_trace() {
+        // --session-id, -o/--out, and --trace stay allowed under --detach
+        // (the detached child uses/writes them).
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "roba",
+            "--detach",
+            "--session-id",
+            "11111111-1111-4111-8111-111111111111",
+            "--out",
+            "/tmp/a.txt",
+            "--trace",
+            "/tmp/t.jsonl",
+            "prompt",
+        ])
+        .unwrap();
+        assert!(cli.ask.detach);
+        assert!(cli.ask.session_id.is_some());
+        assert_eq!(
+            cli.ask.out.as_deref(),
+            Some(std::path::Path::new("/tmp/a.txt"))
+        );
+        assert!(cli.ask.trace.is_some());
+    }
+
+    #[test]
+    fn detach_conflicts_with_attachment_flags() {
+        // Each output-consuming / interactive flag must reject --detach at
+        // the parse level.
+        use clap::Parser;
+        for conflicting in [
+            vec!["--json"],
+            vec!["--stream"],
+            vec!["--code"],
+            vec!["--show-thinking"],
+            vec!["--editor"],
+            vec!["--pick"],
+        ] {
+            let mut argv = vec!["roba", "--detach"];
+            argv.extend(conflicting.iter().copied());
+            argv.push("prompt");
+            assert!(
+                Cli::try_parse_from(&argv).is_err(),
+                "expected --detach to conflict with {conflicting:?}"
+            );
         }
     }
 }

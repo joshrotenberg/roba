@@ -15,6 +15,7 @@ pub mod aliases;
 pub mod cli;
 pub mod config;
 pub mod cost;
+pub mod detach;
 pub mod doctor;
 pub mod draft;
 pub mod env;
@@ -204,6 +205,15 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
             Some(None) => bail!("--fork requires an explicit session id; use `-c=ID --fork`"),
             None => bail!("--fork requires `-c=ID`"),
         }
+    }
+    // --detach fires the run disowned and returns its session handle. Branch
+    // here -- after the env/profile merge + session resolution (so the
+    // rails-nudge predicate and the handle see resolved values) and before
+    // prompt resolution (the detached child re-resolves the prompt itself).
+    // The child re-execs the full argv minus `--detach`, so anything below
+    // this seam runs in the child, not the parent.
+    if args.detach {
+        return detach::run_detached(&args);
     }
     // --json-schema names a PATH to a JSON Schema file. Resolve it here,
     // after the full CLI > env > profile merge, by reading the file and

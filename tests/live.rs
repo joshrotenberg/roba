@@ -1328,6 +1328,68 @@ fn live_config_init() {
 }
 
 // ---------------------------------------------------------------------------
+// detach: fire-and-survive round-trip
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn live_detach_roundtrip() {
+    // The #258 survivable-hand-off recipe, automated: `--detach` fires a
+    // disowned run and prints the session handle; `show <id> --wait` then
+    // re-attaches from a fresh process and renders the answer.
+    //
+    // `--detach` refuses a non-TTY stdin (piped input would be lost on the
+    // detached child), and assert_cmd always pipes stdin -- so this test
+    // drives the binary via std::process with stdin INHERITED. Run it from a
+    // real terminal: `cargo test --test live -- --ignored live_detach_`.
+    use std::process::{Command as StdCommand, Stdio};
+
+    let dir = fresh_dir();
+    let bin = assert_cmd::cargo::cargo_bin("roba");
+
+    let out = StdCommand::new(&bin)
+        .args([
+            "-C",
+            dir.path().to_str().expect("utf-8 tempdir path"),
+            "--model",
+            "haiku",
+            "--detach",
+            "respond with the single word: pong",
+        ])
+        .stdin(Stdio::inherit()) // a real TTY when run from a terminal
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn roba --detach");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "--detach should exit 0 after spawning (stdin must be a TTY); stderr:\n{stderr}"
+    );
+    let handle = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    // Handle is the ONLY thing on stdout, and is a v4-UUID-shaped line.
+    assert_eq!(handle.len(), 36, "handle should be a UUID, got: {handle:?}");
+    assert_eq!(
+        handle.matches('-').count(),
+        4,
+        "handle should be a UUID, got: {handle:?}"
+    );
+
+    // Re-attach from a fresh process and wait for the detached run to finish.
+    let show = Command::cargo_bin("roba")
+        .expect("cargo-built roba binary")
+        .args(["show", &handle, "--wait", "--timeout", "90"])
+        .assert()
+        .success();
+    let rendered = String::from_utf8_lossy(&show.get_output().stdout);
+    assert!(
+        !rendered.trim().is_empty(),
+        "show --wait should render a non-empty result for the detached run"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // INTENTIONALLY UNTESTED (high cost / low signal, or no fixture path yet)
 // ---------------------------------------------------------------------------
 //
