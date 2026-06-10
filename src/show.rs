@@ -15,6 +15,7 @@
 
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use claude_wrapper::history::{HistoryEntry, HistoryRoot, SessionLog};
 use claude_wrapper::types::QueryResult;
@@ -26,17 +27,104 @@ use crate::output::{format_count, looks_like_refusal, truncate_arg};
 use crate::rates::Rates;
 use crate::render;
 
+/// Default `--wait` timeout, in seconds. Bounds every wait so `--wait`
+/// can never hang indefinitely unless the user explicitly asks for it
+/// with `--timeout 0`.
+const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 600;
+
+/// How often `--wait` re-reads the session JSONL. A small constant;
+/// not configurable for v1.
+const POLL_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Implementation of `roba show`.
 pub fn run(args: &crate::cli::ShowArgs) -> Result<()> {
     let root = HistoryRoot::home().context("locating ~/.claude/projects")?;
-    // `read_session` only fails when no `<id>.jsonl` exists anywhere, so
-    // map any failure to a clean not-found error (never a panic).
-    let log = match root.read_session(&args.session_id) {
-        Ok(log) => log,
-        Err(_) => bail!("session `{}` not found", args.session_id),
+
+    let log = if args.wait {
+        // `--wait` gates WHEN we render: poll until the run completes (or
+        // the timeout fires), then fall through to the normal render
+        // path below. A not-yet-written session is treated as "not
+        // started yet" rather than an immediate not-found error.
+        wait_for_complete(&root, args)?
+    } else {
+        // `read_session` only fails when no `<id>.jsonl` exists anywhere,
+        // so map any failure to a clean not-found error (never a panic).
+        match root.read_session(&args.session_id) {
+            Ok(log) => log,
+            Err(_) => bail!("session `{}` not found", args.session_id),
+        }
     };
 
-    let (result_text, num_turns) = reconstruct_answer(&log);
+    render_session(&root, &log, args)
+}
+
+/// Poll the session's on-disk JSONL until it both exists AND looks
+/// complete (see [`is_complete`]), then return the parsed log. Bounded
+/// by `args.timeout` (default [`DEFAULT_WAIT_TIMEOUT_SECS`]; `0` waits
+/// indefinitely) so it never hangs unbounded -- including the case where
+/// the session hasn't written its JSONL yet.
+fn wait_for_complete(root: &HistoryRoot, args: &crate::cli::ShowArgs) -> Result<SessionLog> {
+    let timeout_secs = args.timeout.unwrap_or(DEFAULT_WAIT_TIMEOUT_SECS);
+    let deadline = (timeout_secs != 0).then(|| Instant::now() + Duration::from_secs(timeout_secs));
+
+    loop {
+        // A missing session under `--wait` means "not started yet", not
+        // an error: keep polling until it appears or the timeout fires.
+        if let Ok(log) = root.read_session(&args.session_id)
+            && is_complete(&log)
+        {
+            return Ok(log);
+        }
+        if let Some(deadline) = deadline
+            && Instant::now() >= deadline
+        {
+            bail!(
+                "waited {timeout_secs}s for session `{}` to complete",
+                args.session_id
+            );
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// Best-effort completion heuristic over claude's session log.
+///
+/// There is no explicit "done" marker persisted to the JSONL, so this
+/// reads the most reliable in-band signal: the LAST `assistant` entry's
+/// `message.stop_reason`. A terminal reason (`end_turn`, `stop_sequence`,
+/// `max_tokens` -- anything that is not `tool_use`) means the turn
+/// finished; `tool_use` means a tool call is pending and more entries are
+/// coming (a tool_result, then another assistant turn). A null/missing
+/// `stop_reason`, or no assistant entry at all, is treated as not-yet-
+/// complete. Trailing non-assistant entries (`agent-name`, summaries)
+/// land in `HistoryEntry::Other` and are skipped -- we look past them to
+/// the last real assistant turn.
+///
+/// This is more reliable than file-mtime quiescence, which falsely fires
+/// during a long tool call (a 30s build writes nothing to the JSONL, so
+/// mtime goes quiet mid-run). It is still best-effort, not a guarantee --
+/// consistent with how the reconstructed envelope is documented.
+fn is_complete(log: &SessionLog) -> bool {
+    let last_assistant = log.entries.iter().rev().find_map(|e| match e {
+        HistoryEntry::Assistant { message, .. } => Some(message),
+        _ => None,
+    });
+    match last_assistant
+        .and_then(|m| m.get("stop_reason"))
+        .and_then(|v| v.as_str())
+    {
+        Some("tool_use") => false,
+        Some(_) => true,
+        None => false,
+    }
+}
+
+/// Reconstruct + render a parsed session log -- the existing `show`
+/// output path, unchanged by `--wait` (which only gates when we get
+/// here). Reused by both the immediate and the poll-until-complete entry
+/// points so the rendering logic lives in exactly one place.
+fn render_session(root: &HistoryRoot, log: &SessionLog, args: &crate::cli::ShowArgs) -> Result<()> {
+    let (result_text, num_turns) = reconstruct_answer(log);
 
     // Per-model token rollup, read from the same JSONL the summary came
     // from. Best-effort: an unreadable file yields an empty rollup, which
@@ -184,6 +272,30 @@ mod tests {
         }
     }
 
+    /// Assistant entry carrying an explicit `stop_reason` (the
+    /// completion signal `is_complete` reads).
+    fn assistant_stop(reason: Option<&str>) -> HistoryEntry {
+        let message = match reason {
+            Some(r) => json!({"content": [{"type": "text", "text": "hi"}], "stop_reason": r}),
+            None => json!({"content": [{"type": "text", "text": "hi"}]}),
+        };
+        HistoryEntry::Assistant {
+            uuid: None,
+            timestamp: None,
+            message,
+            rest: Map::new(),
+        }
+    }
+
+    /// A trailing non-assistant metadata entry (e.g. `agent-name`),
+    /// which lands in `HistoryEntry::Other`.
+    fn other(tag: &str) -> HistoryEntry {
+        HistoryEntry::Other {
+            type_tag: tag.to_string(),
+            raw: json!({"type": tag}),
+        }
+    }
+
     fn user() -> HistoryEntry {
         HistoryEntry::User {
             uuid: None,
@@ -231,5 +343,62 @@ mod tests {
         let (text, turns) = reconstruct_answer(&log(vec![]));
         assert_eq!(text, "");
         assert_eq!(turns, 0);
+    }
+
+    #[test]
+    fn is_complete_terminal_stop_reason_is_true() {
+        let l = log(vec![user(), assistant_stop(Some("end_turn"))]);
+        assert!(is_complete(&l));
+    }
+
+    #[test]
+    fn is_complete_tool_use_is_false() {
+        // A pending tool call means more entries are coming.
+        let l = log(vec![user(), assistant_stop(Some("tool_use"))]);
+        assert!(!is_complete(&l));
+    }
+
+    #[test]
+    fn is_complete_trailing_user_entry_is_false() {
+        // A trailing user/tool_result with no following assistant turn
+        // (e.g. interrupted mid-tool-call) is not complete.
+        let l = log(vec![assistant_stop(Some("tool_use")), user()]);
+        assert!(!is_complete(&l));
+    }
+
+    #[test]
+    fn is_complete_empty_log_is_false() {
+        assert!(!is_complete(&log(vec![])));
+    }
+
+    #[test]
+    fn is_complete_missing_stop_reason_is_false() {
+        let l = log(vec![user(), assistant_stop(None)]);
+        assert!(!is_complete(&l));
+    }
+
+    #[test]
+    fn is_complete_looks_past_trailing_other_metadata() {
+        // Trailing `agent-name`/summary entries land in Other and must
+        // not hide the terminal assistant turn behind them.
+        let l = log(vec![
+            user(),
+            assistant_stop(Some("end_turn")),
+            other("agent-name"),
+        ]);
+        assert!(is_complete(&l));
+    }
+
+    #[test]
+    fn is_complete_uses_last_assistant_turn() {
+        // Last assistant is mid-tool-call even though an earlier turn
+        // ended -- not complete.
+        let l = log(vec![
+            user(),
+            assistant_stop(Some("end_turn")),
+            user(),
+            assistant_stop(Some("tool_use")),
+        ]);
+        assert!(!is_complete(&l));
     }
 }
