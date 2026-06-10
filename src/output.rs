@@ -84,6 +84,26 @@ pub fn extract_code_blocks(text: &str, lang_filter: Option<&str>) -> String {
     blocks.join("\n")
 }
 
+/// Body for the default text path (not `--json`, not `--code`): the
+/// textual `result.result` when it has content, otherwise the validated
+/// `structured_output` rendered as pretty JSON.
+///
+/// `--json-schema` lands the answer in `structured_output` (which
+/// flattens into `result.extra`) and leaves the textual `result` empty.
+/// Without this fallback the default path prints a blank line and exits
+/// 0 -- the answer was computed and paid for but never shown. The pretty
+/// JSON stays pipeable: `roba --json-schema s.json "..." | jq` sees the
+/// object. Returns empty only when both are absent.
+pub fn default_body(result: &QueryResult) -> String {
+    if !result.result.is_empty() {
+        return result.result.clone();
+    }
+    match result.extra.get("structured_output") {
+        Some(value) if !value.is_null() => serde_json::to_string_pretty(value).unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
 /// Single-line footer summarizing a [`QueryResult`]: tokens, cost,
 /// duration, model (+ effort), session id (first 8 chars).
 ///
@@ -427,6 +447,62 @@ mod tests {
     fn extract_unclosed_block_is_dropped() {
         let md = "```rust\nfn open() {\n";
         assert_eq!(extract_code_blocks(md, None), "");
+    }
+
+    #[test]
+    fn default_body_prefers_textual_result() {
+        // A normal answer: textual result present, structured_output
+        // ignored even when both are set.
+        let result: QueryResult = serde_json::from_value(serde_json::json!({
+            "result": "the answer is 42",
+            "session_id": "s1",
+            "is_error": false,
+            "structured_output": {"answer": "42"},
+        }))
+        .expect("build QueryResult fixture");
+        assert_eq!(default_body(&result), "the answer is 42");
+    }
+
+    #[test]
+    fn default_body_renders_structured_output_when_result_empty() {
+        // The --json-schema default path: empty textual result, answer
+        // in structured_output -> render it as pretty JSON.
+        let result: QueryResult = serde_json::from_value(serde_json::json!({
+            "result": "",
+            "session_id": "s1",
+            "is_error": false,
+            "structured_output": {"answer": "Paris"},
+        }))
+        .expect("build QueryResult fixture");
+        let body = default_body(&result);
+        let value: serde_json::Value = serde_json::from_str(&body).expect("body parses as JSON");
+        assert_eq!(value["answer"], "Paris");
+        assert!(body.contains('\n'), "pretty-printed JSON is multi-line");
+    }
+
+    #[test]
+    fn default_body_empty_when_both_absent() {
+        let result: QueryResult = serde_json::from_value(serde_json::json!({
+            "result": "",
+            "session_id": "s1",
+            "is_error": false,
+        }))
+        .expect("build QueryResult fixture");
+        assert_eq!(default_body(&result), "");
+    }
+
+    #[test]
+    fn default_body_empty_when_structured_output_is_null() {
+        // A `null` structured_output is treated as absent, not rendered
+        // as the literal string "null".
+        let result: QueryResult = serde_json::from_value(serde_json::json!({
+            "result": "",
+            "session_id": "s1",
+            "is_error": false,
+            "structured_output": null,
+        }))
+        .expect("build QueryResult fixture");
+        assert_eq!(default_body(&result), "");
     }
 
     #[test]

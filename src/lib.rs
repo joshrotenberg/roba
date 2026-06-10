@@ -34,7 +34,8 @@ pub mod worktree;
 use crate::cli::{AskArgs, Cli, SubCommand};
 use crate::history::{pick_session_interactive, run_history, run_last};
 use crate::output::{
-    extract_code_blocks, format_footer, looks_like_refusal, path_is_json, should_show_footer,
+    default_body, extract_code_blocks, format_footer, looks_like_refusal, path_is_json,
+    should_show_footer,
 };
 use crate::prompt::{
     apply_vars, collect_attachments, collect_git_context, compose_prompt, merge_optional,
@@ -340,7 +341,7 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         };
         extract_code_blocks(&result.result, lang)
     } else {
-        result.result.clone()
+        default_body(&result)
     };
     let style = render::Style::detect(&args);
     // --out always also writes stdout; redirect to /dev/null to suppress.
