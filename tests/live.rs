@@ -1025,6 +1025,31 @@ fn live_limits_flags_accepted() {
 }
 
 // ---------------------------------------------------------------------------
+// mcp: per-run MCP server config pass-through (--mcp-config)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn live_mcp_config_accepted() {
+    // --mcp-config plumbs through and a normal short run completes. Assert
+    // MECHANICS only: the flag is accepted, no server starts, the run
+    // succeeds. We use a MINIMAL config with NO servers ({"mcpServers":{}})
+    // so nothing real is launched -- asserting actual MCP tools would need a
+    // live server and would be flaky. roba forwards the path; claude reads it.
+    let dir = fresh_dir();
+    let cfg_path = dir.path().join("mcp.json");
+    std::fs::write(&cfg_path, r#"{"mcpServers":{}}"#).expect("write mcp config");
+
+    roba_in(dir.path())
+        .arg("--mcp-config")
+        .arg(&cfg_path)
+        .arg("respond with the single word: mcp")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("mcp"));
+}
+
+// ---------------------------------------------------------------------------
 // INTENTIONALLY UNTESTED (high cost / low signal, or no fixture path yet)
 // ---------------------------------------------------------------------------
 //

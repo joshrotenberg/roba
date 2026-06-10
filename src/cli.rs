@@ -796,6 +796,26 @@ pub struct AskArgs {
     #[clap(skip)]
     pub permission_mode_source: Option<String>,
 
+    // ----- MCP --------------------------------------------------------------
+    /// Load MCP servers from a JSON config file for this run (repeatable).
+    ///
+    /// Passes claude's own `--mcp-config <FILE>` through, once per path. The
+    /// servers in the file provide additional tools for the call. This is the
+    /// THIN pass-through -- it points the existing `claude -p` at MCP server
+    /// JSON for one run. It is NOT the headless MCP *server* ("roba serve",
+    /// closed as a separate tool); don't confuse the two. roba forwards the
+    /// path verbatim and never reads the file -- claude reads it.
+    #[arg(long, value_name = "FILE", help_heading = "MCP")]
+    pub mcp_config: Vec<String>,
+
+    /// Use only the `--mcp-config` servers, ignoring all other MCP config.
+    ///
+    /// Passes claude's own `--strict-mcp-config` through. Without it, the
+    /// `--mcp-config` servers are added on top of any MCP servers claude
+    /// already has configured; with it, only the `--mcp-config` ones are used.
+    #[arg(long, help_heading = "MCP")]
+    pub strict_mcp_config: bool,
+
     // ----- Profiles ---------------------------------------------------------
     /// Apply a named profile (user, project, or env source).
     #[arg(long, value_name = "NAME", help_heading = "Profiles")]
@@ -1353,6 +1373,49 @@ mod tests {
         .unwrap();
         assert_eq!(cli.ask.max_turns, Some(5));
         assert_eq!(cli.ask.max_budget_usd, Some(10.0));
+    }
+
+    #[test]
+    fn mcp_config_collects_repeated_values() {
+        // Repeatable list flag: each --mcp-config pushes onto the Vec.
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "roba",
+            "--mcp-config",
+            "a.json",
+            "--mcp-config",
+            "b.json",
+            "prompt",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.ask.mcp_config,
+            vec!["a.json".to_string(), "b.json".to_string()]
+        );
+        assert_eq!(cli.ask.prompt.as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn strict_mcp_config_parses() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "roba",
+            "--mcp-config",
+            "a.json",
+            "--strict-mcp-config",
+            "prompt",
+        ])
+        .unwrap();
+        assert_eq!(cli.ask.mcp_config, vec!["a.json".to_string()]);
+        assert!(cli.ask.strict_mcp_config);
+    }
+
+    #[test]
+    fn mcp_config_omitted_is_empty() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "prompt"]).unwrap();
+        assert!(cli.ask.mcp_config.is_empty());
+        assert!(!cli.ask.strict_mcp_config);
     }
 
     #[test]
