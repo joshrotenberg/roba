@@ -18,12 +18,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Re-checking macos-latest (aliased to macos-15): it
-        # previously shipped a broken `rustup` (the `rustup-init`
-        # bootstrap stub intercepted `cargo clippy` and exited 1),
-        # which forced a macos-14 pin. This run tests whether the
-        # upstream image is fixed; if the macOS clippy job is green,
-        # the pin is no longer needed (see #274).
+        # macos-latest (macOS 15). Previously pinned to macos-14
+        # because the macos-15 image shipped a broken `rustup` (the
+        # `rustup-init` stub intercepted `cargo clippy` and exited 1);
+        # verified fixed upstream and un-pinned (#274).
         os: [ubuntu-latest, macos-latest, windows-latest]
         rust: [stable, beta]
         exclude:
