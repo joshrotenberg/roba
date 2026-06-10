@@ -498,6 +498,37 @@ pub enum ConfigCmd {
     /// is NO retry loop: an invalid draft fails loud with the deserializer
     /// error and the raw output.
     Init(ConfigInitArgs),
+    /// Static checks over roba config (read-only).
+    ///
+    /// Runs every STATICALLY-knowable check over the discovered config
+    /// pool (default) or a single PATH, and reports findings with a typed
+    /// exit: 0 when clean, 1 when any finding. For each file it parses via
+    /// roba's real deserializer (a parse error is itself a finding), then
+    /// flags built-in-shadowing aliases, pinned agents that don't resolve,
+    /// and (best-effort) a pinned agent whose declared tools exceed the
+    /// posture the entry's own flags would grant.
+    ///
+    /// Honest limits: lint-clean now does not guarantee warning-free at
+    /// run time elsewhere -- agent files, the surrounding pool, and env
+    /// differ by machine, and `$(...)` in aliases evaluates at expansion.
+    /// The linter is a tripwire, not a proof.
+    Lint(ConfigLintArgs),
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct ConfigLintArgs {
+    /// Lint a single named config file instead of the discovered pool.
+    ///
+    /// With no PATH, every `roba.toml` in the walk (plus your user
+    /// config) is checked. With a PATH, only that file is checked.
+    pub path: Option<PathBuf>,
+
+    /// Emit JSON instead of a human findings list.
+    ///
+    /// Output is the uniform `{ version: 1, result: { findings, ok } }`
+    /// envelope. Exit is 0 when clean, 1 when any finding -- in both modes.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -1368,6 +1399,48 @@ mod tests {
             args.write,
             Some(Some(std::path::PathBuf::from("custom.toml")))
         );
+    }
+
+    #[test]
+    fn config_lint_no_path_no_json() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "config", "lint"]).unwrap();
+        let Some(SubCommand::Config {
+            cmd: ConfigCmd::Lint(args),
+        }) = cli.command
+        else {
+            panic!("expected config lint");
+        };
+        assert!(args.path.is_none());
+        assert!(!args.json);
+    }
+
+    #[test]
+    fn config_lint_with_path() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "config", "lint", "some/roba.toml"]).unwrap();
+        let Some(SubCommand::Config {
+            cmd: ConfigCmd::Lint(args),
+        }) = cli.command
+        else {
+            panic!("expected config lint");
+        };
+        assert_eq!(args.path, Some(std::path::PathBuf::from("some/roba.toml")));
+        assert!(!args.json);
+    }
+
+    #[test]
+    fn config_lint_json_flag() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "config", "lint", "--json"]).unwrap();
+        let Some(SubCommand::Config {
+            cmd: ConfigCmd::Lint(args),
+        }) = cli.command
+        else {
+            panic!("expected config lint");
+        };
+        assert!(args.json);
+        assert!(args.path.is_none());
     }
 
     #[test]

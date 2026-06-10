@@ -138,11 +138,33 @@ fn parse_tools_from_frontmatter(frontmatter: &str) -> Option<Vec<String>> {
 // Coverage check
 // ---------------------------------------------------------------------------
 
-/// Build the effective allowlist from the resolved `AskArgs`.
+/// The permission knobs that determine the effective tool allowlist:
+/// the three a posture's coverage actually depends on. Extracted so the
+/// coverage check runs against either a live [`AskArgs`] (run time) or a
+/// config profile/alias's resolved flags (lint time, via
+/// [`crate::lint`]).
+pub struct Posture {
+    pub writable: bool,
+    pub full_auto: bool,
+    pub allow_tool: Vec<String>,
+}
+
+impl Posture {
+    /// The posture implied by a resolved invocation.
+    pub fn from_args(args: &AskArgs) -> Self {
+        Self {
+            writable: args.writable,
+            full_auto: args.full_auto,
+            allow_tool: args.allow_tool.clone(),
+        }
+    }
+}
+
+/// Build the effective allowlist from a [`Posture`].
 /// Mirrors the logic in [`crate::session::apply_permissions`].
-fn effective_allowlist(args: &AskArgs) -> Vec<String> {
+fn effective_allowlist(posture: &Posture) -> Vec<String> {
     let mut allow: Vec<String> = vec!["Read".to_string(), "Glob".to_string(), "Grep".to_string()];
-    if args.writable {
+    if posture.writable {
         if !allow.iter().any(|s| s == "Edit") {
             allow.push("Edit".to_string());
         }
@@ -150,7 +172,7 @@ fn effective_allowlist(args: &AskArgs) -> Vec<String> {
             allow.push("Write".to_string());
         }
     }
-    for t in &args.allow_tool {
+    for t in &posture.allow_tool {
         if !allow.iter().any(|s| s == t) {
             allow.push(t.clone());
         }
@@ -170,20 +192,28 @@ fn is_covered(tool: &str, allowlist: &[String]) -> bool {
         .any(|entry| entry == tool || entry.starts_with(&format!("{tool}(")))
 }
 
-/// Return the subset of `declared` tools NOT covered by the resolved
-/// allowlist.
-///
-/// Returns an empty vec when `--full-auto` is set (all tools covered).
-pub fn find_missing_tools(declared: &[String], args: &AskArgs) -> Vec<String> {
-    if args.full_auto {
+/// Return the subset of `declared` tools NOT covered by `posture`'s
+/// effective allowlist. Empty when `full_auto` is set (all tools
+/// covered). The posture-based entry point shared by the run-time
+/// [`find_missing_tools`] and the lint-time check in [`crate::lint`].
+pub fn missing_tools_for_posture(declared: &[String], posture: &Posture) -> Vec<String> {
+    if posture.full_auto {
         return Vec::new();
     }
-    let allowlist = effective_allowlist(args);
+    let allowlist = effective_allowlist(posture);
     declared
         .iter()
         .filter(|tool| !is_covered(tool, &allowlist))
         .cloned()
         .collect()
+}
+
+/// Return the subset of `declared` tools NOT covered by the resolved
+/// allowlist.
+///
+/// Returns an empty vec when `--full-auto` is set (all tools covered).
+pub fn find_missing_tools(declared: &[String], args: &AskArgs) -> Vec<String> {
+    missing_tools_for_posture(declared, &Posture::from_args(args))
 }
 
 /// Return true when a single tool implies file mutation:
