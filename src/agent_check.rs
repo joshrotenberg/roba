@@ -186,17 +186,47 @@ pub fn find_missing_tools(declared: &[String], args: &AskArgs) -> Vec<String> {
         .collect()
 }
 
+/// Return true when a single tool implies file mutation:
+/// `Edit`, `Write`, `MultiEdit`, or `Bash` (bare or granular `Bash(...)`).
+fn is_write_tool(tool: &str) -> bool {
+    matches!(tool, "Edit" | "Write" | "MultiEdit" | "Bash") || tool.starts_with("Bash(")
+}
+
 /// Return true when any declared tool implies file mutation:
 /// `Edit`, `Write`, `MultiEdit`, or `Bash` (bare or granular `Bash(...)`).
 pub fn declares_write_tools(declared: &[String]) -> bool {
-    declared.iter().any(|t| {
-        matches!(t.as_str(), "Edit" | "Write" | "MultiEdit" | "Bash") || t.starts_with("Bash(")
-    })
+    declared.iter().any(|t| is_write_tool(t))
 }
 
-/// Return true when the resolved args represent "default" permission mode --
-/// no explicit permissive flag: no `--full-auto`, no `--writable`, and no
-/// `--permission-mode` with a permissive value.
+/// Return true when the agent declares write tools AND those write tools are
+/// **resolved into the effective allowlist** (granted via `--writable`,
+/// `--allow-tool`, or `--full-auto`).
+///
+/// This is the real stall hazard (Key Lesson 11): a write tool that claude is
+/// permitted to use but a default permission mode won't auto-approve, so the
+/// first write attempt awaits approval and the dispatch hangs.
+///
+/// A *declared-but-unresolved* write tool cannot stall -- it is absent from the
+/// allowlist, so claude simply works without it. Those surface in the
+/// missing-tools warning instead (the two warnings are mutually exclusive). The
+/// resolution mirrors [`find_missing_tools`]: a declared write tool counts as
+/// resolved exactly when it is NOT in that missing set.
+pub fn declares_resolved_write_tools(declared: &[String], args: &AskArgs) -> bool {
+    let missing = find_missing_tools(declared, args);
+    declared
+        .iter()
+        .filter(|t| is_write_tool(t))
+        .any(|t| !missing.iter().any(|m| m == t))
+}
+
+/// Return true when the resolved args leave the **permission mode** at its
+/// default -- the mode that prompts for (rather than auto-approves) writes.
+///
+/// This keys ONLY off `--permission-mode` (and `--full-auto`, which bypasses
+/// permissions entirely). It deliberately does NOT consider `--writable`:
+/// `--writable` grants write *tools* into the allowlist but sets no permission
+/// mode, so under it a write still stalls in default mode -- that is precisely
+/// the hazard the stall warning guards.
 ///
 /// Permissive `--permission-mode` values (returns false):
 ///   AcceptEdits, Auto, BypassPermissions, DontAsk
@@ -204,7 +234,7 @@ pub fn declares_write_tools(declared: &[String]) -> bool {
 /// Non-permissive (returns true, same as None):
 ///   Default, Plan
 pub fn is_default_permission_mode(args: &AskArgs) -> bool {
-    if args.full_auto || args.writable {
+    if args.full_auto {
         return false;
     }
     match args.permission_mode {
@@ -258,13 +288,17 @@ pub fn maybe_warn(args: &AskArgs, cwd: &Path) {
             "[roba] warning: agent '{agent_name}' declares tools not in the resolved allowlist: [{tools_str}]"
         );
         eprintln!(
-            "  hint: pass --full-auto, --allow-tool 'Bash(...)', or --no-agent-check to suppress"
+            "  hint: intentional? --no-agent-check suppresses; otherwise --allow-tool 'Bash(...)' or --full-auto"
         );
     }
 
-    // Permission-mode check: warn when agent declares write tools but the
-    // permission mode is default (dispatch will stall at first write).
-    if declares_write_tools(&declared) && is_default_permission_mode(args) {
+    // Permission-mode check: warn only when the agent declares write tools that
+    // are RESOLVED into the allowlist (e.g. via --writable) AND the permission
+    // mode is default. That is the real stall hazard -- the first write awaits
+    // approval. Unresolved write tools cannot stall (they surface in the
+    // missing-tools warning above instead), so the two warnings are mutually
+    // exclusive.
+    if declares_resolved_write_tools(&declared, args) && is_default_permission_mode(args) {
         eprintln!(
             "[roba] warning: agent '{agent_name}' declares write tools (Edit/Write) but permission mode is default"
         );
@@ -435,7 +469,7 @@ mod tests {
     // -- permission-mode check -----------------------------------------------
 
     #[test]
-    fn agent_check_warns_on_write_tools_in_default_mode() {
+    fn write_tools_detected() {
         let declared = vec!["Edit".to_string(), "Write".to_string()];
         assert!(
             declares_write_tools(&declared),
@@ -443,6 +477,8 @@ mod tests {
         );
         let args = args_from(&[]);
         assert!(is_default_permission_mode(&args), "no flags = default mode");
+        // But with no grant the write tools are unresolved, so no stall (see
+        // stall_false_positive_under_readonly).
     }
 
     #[test]
@@ -457,13 +493,59 @@ mod tests {
     }
 
     #[test]
-    fn agent_check_no_warn_when_writable() {
-        let declared = vec!["Edit".to_string()];
-        assert!(declares_write_tools(&declared));
+    fn stall_false_positive_under_readonly() {
+        // The #264 repro: a write-declaring agent run read-only. The write
+        // tools are NOT resolved (absent from the allowlist), so there is no
+        // stall hazard -- they surface in the missing-tools warning instead.
+        let declared = vec!["Edit".to_string(), "Write".to_string()];
+        let args = args_from(&[]);
+        assert!(is_default_permission_mode(&args), "no flags = default mode");
+        assert!(
+            !declares_resolved_write_tools(&declared, &args),
+            "unresolved write tools must NOT count as a stall hazard"
+        );
+        // The stall predicate is therefore false even though the agent
+        // declares writes and the mode is default.
+        assert!(
+            !(declares_resolved_write_tools(&declared, &args) && is_default_permission_mode(&args))
+        );
+    }
+
+    #[test]
+    fn stall_fires_when_writable_in_default_mode() {
+        // --writable grants Edit/Write into the allowlist but sets no
+        // permission mode, so the first write still awaits approval: stall.
+        let declared = vec!["Edit".to_string(), "Write".to_string()];
         let args = args_from(&["--writable"]);
         assert!(
+            is_default_permission_mode(&args),
+            "--writable sets no permission mode -> still default mode"
+        );
+        assert!(
+            declares_resolved_write_tools(&declared, &args),
+            "--writable resolves Edit/Write into the allowlist"
+        );
+        assert!(
+            declares_resolved_write_tools(&declared, &args) && is_default_permission_mode(&args)
+        );
+    }
+
+    #[test]
+    fn stall_silent_when_writable_and_accept_edits() {
+        // --writable resolves the write tools, but accept-edits auto-approves
+        // them, so there is no stall.
+        let declared = vec!["Edit".to_string(), "Write".to_string()];
+        let args = args_from(&["--writable", "--permission-mode", "accept-edits"]);
+        assert!(
+            declares_resolved_write_tools(&declared, &args),
+            "--writable still resolves the write tools"
+        );
+        assert!(
             !is_default_permission_mode(&args),
-            "--writable should not be default mode"
+            "accept-edits is a permissive permission mode"
+        );
+        assert!(
+            !(declares_resolved_write_tools(&declared, &args) && is_default_permission_mode(&args))
         );
     }
 
