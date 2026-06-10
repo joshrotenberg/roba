@@ -725,6 +725,34 @@ fn live_compose_var_substitution() {
     );
 }
 
+#[test]
+#[ignore]
+fn live_compose_stdin_with_prompt() {
+    // Piped stdin + a positional prompt: the stdin merges in as a context
+    // block instead of being dropped. Assert on roba's OWN echoed
+    // resolved prompt (stderr, printed before the model call) -- this is
+    // deterministic, not model compliance.
+    //
+    // Note: `--echo` is gated on `!quiet`, so `-q` would suppress it;
+    // `--echo --plain` is the right combo for observing the resolved
+    // prompt.
+    let dir = fresh_dir();
+    let out = roba_in(dir.path())
+        .args(["--echo", "--plain", "what is the marker?"])
+        .write_stdin("MARKER LINE 42")
+        .output()
+        .expect("run roba --echo with piped stdin");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("MARKER LINE 42"),
+        "echoed prompt should contain the piped marker, got stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("what is the marker?"),
+        "echoed prompt should contain the positional question, got stderr: {stderr}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // profiles + env-var layer
 // ---------------------------------------------------------------------------
