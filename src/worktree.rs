@@ -34,7 +34,10 @@ fn run_list(args: WorktreeListArgs) -> Result<()> {
         .context("listing git worktrees")?;
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&worktrees)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&crate::VersionedResult::new(&worktrees))?
+        );
         return Ok(());
     }
 
