@@ -304,6 +304,32 @@ pub struct ShowArgs {
     /// are derived from the log.
     #[arg(long)]
     pub json: bool,
+
+    /// Poll until the session finishes, then render its result.
+    ///
+    /// Bare `show` errors immediately if the session isn't found yet.
+    /// With `--wait`, roba instead polls the session's on-disk JSONL
+    /// (~1s interval) and renders once the run completes -- and treats a
+    /// not-yet-written session as "not started yet", waiting for it to
+    /// appear rather than erroring. Composes with `--json` / `--metrics`
+    /// (those render once complete).
+    ///
+    /// Completion is a BEST-EFFORT heuristic over claude's session log
+    /// (no explicit "done" marker is persisted): roba considers the run
+    /// finished when the last assistant turn's `stop_reason` is terminal
+    /// (`end_turn` / `stop_sequence` / `max_tokens`) rather than
+    /// `tool_use`. It is not a guaranteed "done" event. Always bounded by
+    /// `--timeout`.
+    #[arg(long)]
+    pub wait: bool,
+
+    /// Cap on how long `--wait` polls, in seconds (default 600).
+    ///
+    /// On timeout, roba exits non-zero with a clean error (never a
+    /// panic or unbounded hang). `0` waits indefinitely. Ignored without
+    /// `--wait`.
+    #[arg(long, value_name = "SECS")]
+    pub timeout: Option<u64>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -1703,6 +1729,33 @@ mod tests {
                 assert!(args.metrics);
             }
             other => panic!("expected show --json --metrics, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn show_parses_wait_flag() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "show", "abc-123", "--wait"]).unwrap();
+        match cli.command {
+            Some(SubCommand::Show(args)) => {
+                assert!(args.wait);
+                assert_eq!(args.timeout, None);
+            }
+            other => panic!("expected show --wait, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn show_parses_wait_with_timeout() {
+        use clap::Parser;
+        let cli =
+            Cli::try_parse_from(["roba", "show", "abc-123", "--wait", "--timeout", "30"]).unwrap();
+        match cli.command {
+            Some(SubCommand::Show(args)) => {
+                assert!(args.wait);
+                assert_eq!(args.timeout, Some(30));
+            }
+            other => panic!("expected show --wait --timeout 30, got {other:?}"),
         }
     }
 

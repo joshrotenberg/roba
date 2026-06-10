@@ -393,6 +393,43 @@ fn live_show_roundtrips() {
 
 #[test]
 #[ignore]
+fn live_show_wait_returns_completed_result() {
+    // A completed session is already terminal on disk by the time the
+    // seed call returns, so `show --wait` short-circuits its poll loop
+    // and renders immediately. Mechanics, not model compliance: assert
+    // the id roundtrips and the result is non-empty within the timeout.
+    let dir = fresh_dir();
+    let seed = roba_in(dir.path())
+        .args(["--json", "respond with the single word: waited"])
+        .output()
+        .expect("run roba --json");
+    assert!(seed.status.success(), "seed failed: {seed:?}");
+    let seed_json: serde_json::Value =
+        serde_json::from_slice(&seed.stdout).expect("seed stdout is JSON");
+    let id = seed_json["result"]["session_id"]
+        .as_str()
+        .expect("session_id");
+
+    let out = Command::cargo_bin("roba")
+        .expect("cargo-built roba binary")
+        .args(["show", id, "--wait", "--timeout", "60", "--json"])
+        .output()
+        .expect("run roba show --wait");
+    assert!(out.status.success(), "show --wait failed: {out:?}");
+    let shown: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("show stdout is JSON");
+    assert_eq!(shown["result"]["session_id"].as_str(), Some(id));
+    assert!(
+        !shown["result"]["result"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "waited reconstructed result must be non-empty"
+    );
+}
+
+#[test]
+#[ignore]
 fn live_json_schema_accepted() {
     // --json-schema constrains structured output. Assert MECHANICS only:
     // the flag is accepted, the run completes, and the --json envelope

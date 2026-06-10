@@ -1520,6 +1520,69 @@ fn show_not_found_errors_cleanly() {
         .stderr(predicate::str::contains("not found"));
 }
 
+/// Like `home_with_text_session` but the assistant entry carries a
+/// terminal `stop_reason` so `roba show --wait` sees it as complete.
+fn home_with_complete_session(answer: &str) -> (tempfile::TempDir, String) {
+    let home = tempfile::tempdir().expect("home");
+    let proj = home.path().join(".claude/projects/-tmp-proj");
+    std::fs::create_dir_all(&proj).expect("mkdir projects");
+    let session_id = "show-wait-sess-1";
+    let user =
+        r#"{"type":"user","timestamp":"2026-06-01T10:00:00.000Z","message":{"content":"hi"}}"#;
+    let assistant = format!(
+        r#"{{"type":"assistant","timestamp":"2026-06-01T10:00:01.000Z","message":{{"model":"claude-sonnet-4-6","stop_reason":"end_turn","content":[{{"type":"text","text":"{answer}"}}],"usage":{{"input_tokens":1000000,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#
+    );
+    std::fs::write(
+        proj.join(format!("{session_id}.jsonl")),
+        format!("{user}\n{assistant}\n"),
+    )
+    .expect("write session");
+    (home, session_id.to_string())
+}
+
+#[test]
+fn show_wait_timeout_errors_cleanly() {
+    // A session that never appears must time out cleanly (not panic, not
+    // hang). --timeout 1 bounds the wait to ~1-2s.
+    let home = tempfile::tempdir().expect("home");
+    let start = std::time::Instant::now();
+    roba()
+        .args(["show", "never-appears", "--wait", "--timeout", "1"])
+        .env("HOME", home.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("waited 1s"))
+        .stderr(predicate::str::contains("never-appears"));
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "show --wait --timeout 1 should return within ~1-2s, took {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn show_wait_already_complete_returns_immediately() {
+    // A session already complete on disk: --wait short-circuits and
+    // renders the result without waiting out the timeout.
+    let (home, id) = home_with_complete_session("the waited answer");
+    let start = std::time::Instant::now();
+    let out = roba()
+        .args(["show", &id, "--wait", "--timeout", "5", "--json"])
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("stdout is JSON");
+    assert_eq!(v["result"]["result"], "the waited answer");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(3),
+        "an already-complete session should not wait, took {:?}",
+        start.elapsed()
+    );
+}
+
 // ---------------------------------------------------------------------------
 // roba history --worktree (read-only worktree filter) -- closes #218
 // ---------------------------------------------------------------------------
