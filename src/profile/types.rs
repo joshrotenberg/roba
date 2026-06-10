@@ -134,6 +134,18 @@ pub struct Profile {
     /// (`--strict-mcp-config`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict_mcp_config: Option<bool>,
+    /// Additional tool-access directories (`--add-dir`, repeatable).
+    /// Forwarded verbatim to claude's own `--add-dir`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub add_dir: Vec<String>,
+    /// Fallback model when the primary is overloaded (`--fallback-model`).
+    /// Alias or full model id; passed through to claude's own flag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_model: Option<String>,
+    /// Run without writing a session record to disk
+    /// (`--no-session-persistence`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_session_persistence: Option<bool>,
 }
 
 /// Profile value for the `permission_mode` field. Serializes as a
@@ -219,6 +231,9 @@ impl Profile {
             && self.json_schema.is_none()
             && self.mcp_config.is_empty()
             && self.strict_mcp_config.is_none()
+            && self.add_dir.is_empty()
+            && self.fallback_model.is_none()
+            && self.no_session_persistence.is_none()
     }
 
     /// Merge `other` on top of `self`. Used to layer roba.toml files
@@ -268,6 +283,9 @@ impl Profile {
             json_schema,
             mut mcp_config,
             strict_mcp_config,
+            mut add_dir,
+            fallback_model,
+            no_session_persistence,
         } = other;
 
         self.prepend.append(&mut prepend);
@@ -374,6 +392,13 @@ impl Profile {
         self.mcp_config.append(&mut mcp_config);
         if strict_mcp_config.is_some() {
             self.strict_mcp_config = strict_mcp_config;
+        }
+        self.add_dir.append(&mut add_dir);
+        if fallback_model.is_some() {
+            self.fallback_model = fallback_model;
+        }
+        if no_session_persistence.is_some() {
+            self.no_session_persistence = no_session_persistence;
         }
     }
 }
