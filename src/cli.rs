@@ -53,6 +53,10 @@ Dispatch modes (firing roba as an unattended worker):
   ...add --worktree                run in an isolated git worktree, for
                                    parallel same-repo workers that must not
                                    share a branch
+  git worktree add <dir> -C <dir>  own the branch you'll PR from, for the
+                                   orchestrator-owns-the-branch case; roba's
+                                   --worktree makes a claude-managed worktree
+                                   instead
 
 Environment variables:
   Every long flag has a ROBA_<FLAG> override (uppercased, '-' -> '_'):
@@ -143,7 +147,7 @@ fn split_two_column(line: &str) -> Option<(&str, &str, &str)> {
     Some((indent, &body[..gap], &body[gap..]))
 }
 
-/// Single-prompt CLI runner built on claude-wrapper.
+/// A sharp, focused sugaring of claude -p -- pipeable, composable, safe-by-default, session-re-enterable.
 #[derive(Parser, Debug)]
 #[command(
     version,
@@ -181,6 +185,11 @@ pub enum SubCommand {
         action: ProfileAction,
     },
     /// Roll up token usage across session history.
+    ///
+    /// As of 2026-06-15 Anthropic meters programmatic usage (claude -p /
+    /// Agent SDK) separately from interactive Claude. Every roba call is
+    /// programmatic by construction, so these figures draw from that
+    /// programmatic allotment, not your interactive limit.
     Cost(CostArgs),
     /// Diagnose the claude boundary: binary, auth, config, rates.
     ///
