@@ -454,6 +454,19 @@ pub enum EffortLevel {
     Max,
 }
 
+impl EffortLevel {
+    /// Lowercase label for display (footer suffix) and wiring.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EffortLevel::Low => "low",
+            EffortLevel::Medium => "medium",
+            EffortLevel::High => "high",
+            EffortLevel::Xhigh => "xhigh",
+            EffortLevel::Max => "max",
+        }
+    }
+}
+
 impl LastKind {
     pub fn label(self) -> &'static str {
         match self {

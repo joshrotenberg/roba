@@ -114,23 +114,47 @@ fn run_list() -> Result<()> {
         }
         return Ok(());
     }
-    let mut names: Vec<&String> = pool.aliases.keys().collect();
+    print!("{}", render_alias_list(&pool.aliases));
+    Ok(())
+}
+
+/// Render the `alias list` table (assumes a non-empty map). The AGENT
+/// column -- header and per-row value -- is shown only when at least one
+/// alias pins an agent; with none, the table is just NAME / DESCRIPTION,
+/// since an all-`-` column is pure noise. The returned string ends with a
+/// trailing newline.
+fn render_alias_list(aliases: &std::collections::HashMap<String, Alias>) -> String {
+    let mut names: Vec<&String> = aliases.keys().collect();
     names.sort();
     let name_w = names.iter().map(|n| n.len()).max().unwrap_or(4).max(4);
     let desc_w = names
         .iter()
-        .map(|n| pool.aliases[*n].description.as_deref().unwrap_or("").len())
+        .map(|n| aliases[*n].description.as_deref().unwrap_or("").len())
         .max()
         .unwrap_or(11)
         .max(11);
-    println!("{:<name_w$}  {:<desc_w$}  AGENT", "NAME", "DESCRIPTION");
-    for name in names {
-        let alias = &pool.aliases[name];
-        let desc = alias.description.as_deref().unwrap_or("");
-        let agent = alias.agent.as_deref().unwrap_or("-");
-        println!("{name:<name_w$}  {desc:<desc_w$}  {agent}");
+    let show_agent = aliases.values().any(|a| a.agent.is_some());
+
+    let mut out = String::new();
+    if show_agent {
+        out.push_str(&format!(
+            "{:<name_w$}  {:<desc_w$}  AGENT\n",
+            "NAME", "DESCRIPTION"
+        ));
+    } else {
+        out.push_str(&format!("{:<name_w$}  {}\n", "NAME", "DESCRIPTION"));
     }
-    Ok(())
+    for name in names {
+        let alias = &aliases[name];
+        let desc = alias.description.as_deref().unwrap_or("");
+        if show_agent {
+            let agent = alias.agent.as_deref().unwrap_or("-");
+            out.push_str(&format!("{name:<name_w$}  {desc:<desc_w$}  {agent}\n"));
+        } else {
+            out.push_str(&format!("{name:<name_w$}  {desc}\n"));
+        }
+    }
+    out
 }
 
 fn run_show(name: &str) -> Result<()> {
@@ -496,6 +520,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
@@ -650,5 +675,51 @@ mod tests {
         assert!(rendered.contains("[alias.review]"));
         assert!(rendered.contains("reviewer"));
         assert!(rendered.contains("--readonly"));
+    }
+
+    #[test]
+    fn list_hides_agent_column_when_no_alias_pins_one() {
+        let mut aliases = HashMap::new();
+        aliases.insert(
+            "cm".to_string(),
+            Alias {
+                description: Some("Commit message".to_string()),
+                ..Alias::default()
+            },
+        );
+        let out = render_alias_list(&aliases);
+        assert!(out.contains("NAME"), "got:\n{out}");
+        assert!(out.contains("DESCRIPTION"), "got:\n{out}");
+        assert!(!out.contains("AGENT"), "got:\n{out}");
+        assert!(!out.contains(" -"), "no stray agent dash: \n{out}");
+    }
+
+    #[test]
+    fn list_shows_agent_column_when_one_alias_pins_one() {
+        let mut aliases = HashMap::new();
+        aliases.insert(
+            "cm".to_string(),
+            Alias {
+                description: Some("Commit message".to_string()),
+                ..Alias::default()
+            },
+        );
+        aliases.insert(
+            "review".to_string(),
+            Alias {
+                description: Some("Review a PR".to_string()),
+                agent: Some("reviewer".to_string()),
+                ..Alias::default()
+            },
+        );
+        let out = render_alias_list(&aliases);
+        assert!(out.contains("AGENT"), "got:\n{out}");
+        // The agented alias shows its agent; the agentless one shows `-`.
+        assert!(out.contains("reviewer"), "got:\n{out}");
+        assert!(
+            out.lines()
+                .any(|l| l.starts_with("cm") && l.trim_end().ends_with('-')),
+            "agentless row should fill with `-`:\n{out}"
+        );
     }
 }
