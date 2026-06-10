@@ -326,9 +326,17 @@ pub fn summarize_tool(name: &str, input: &serde_json::Value) -> String {
 /// else carries the layer that contributed it (`CLI`, `env`,
 /// `profile.<name>`, or `config`).
 ///
+/// A tool present in both the resolved allow and deny sets is annotated
+/// in the allow block as `[denied -- deny overrides allow]`, matching the
+/// deny-wins runtime semantics in [`apply_permissions`]. A `dirs:` section
+/// reports the tool-access scope: the working directory plus each
+/// `--add-dir` path, with the same provenance tags.
+///
 /// In `--full-auto` mode there are no allow/deny lists -- the result
 /// is a single line stating that everything is allowed and from where.
 /// The returned string has no trailing newline.
+///
+/// [`apply_permissions`]: crate::session::apply_permissions
 pub fn format_permissions(args: &AskArgs) -> String {
     if args.full_auto {
         let src = args.full_auto_source.as_deref().unwrap_or("CLI");
@@ -396,9 +404,18 @@ pub fn format_permissions(args: &AskArgs) -> String {
         .unwrap_or(0)
         + 1;
 
+    // Deny wins at runtime (see apply_permissions). Flag any allow entry
+    // whose tool also appears in deny so the operator reads the effective
+    // truth rather than the same tool silently sitting in both lists.
     out.push_str("allow:\n");
     for (name, src) in &allow {
-        out.push_str(&format!("  {name:<width$}[{src}]\n"));
+        if deny.iter().any(|(d, _)| d == name) {
+            out.push_str(&format!(
+                "  {name:<width$}[{src}] [denied -- deny overrides allow]\n"
+            ));
+        } else {
+            out.push_str(&format!("  {name:<width$}[{src}]\n"));
+        }
     }
     if !deny.is_empty() {
         out.push_str("deny:\n");
@@ -406,6 +423,35 @@ pub fn format_permissions(args: &AskArgs) -> String {
             out.push_str(&format!("  {name:<width$}[{src}]\n"));
         }
     }
+
+    // dirs: the tool-access scope. The cwd is always in scope; each
+    // --add-dir widens it. Only rendered when --add-dir contributed
+    // something, since the cwd alone is the implicit default.
+    if !args.add_dir.is_empty() {
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| ".".to_string());
+        let mut dirs: Vec<(String, String)> = vec![(cwd, "cwd".to_string())];
+        for (i, dir) in args.add_dir.iter().enumerate() {
+            let src = args
+                .add_dir_sources
+                .get(i)
+                .map(String::as_str)
+                .unwrap_or("default");
+            dirs.push((dir.clone(), src.to_string()));
+        }
+        let dwidth = dirs
+            .iter()
+            .map(|(path, _)| path.chars().count())
+            .max()
+            .unwrap_or(0)
+            + 1;
+        out.push_str("dirs:\n");
+        for (path, src) in &dirs {
+            out.push_str(&format!("  {path:<dwidth$}[{src}]\n"));
+        }
+    }
+
     out.truncate(out.trim_end().len());
     out
 }
@@ -981,5 +1027,59 @@ mod tests {
     fn permissions_no_deny_section_when_empty() {
         let out = format_permissions(&bare_args());
         assert!(!out.contains("deny:"), "got:\n{out}");
+    }
+
+    #[test]
+    fn permissions_no_dirs_section_when_no_add_dir() {
+        // The cwd alone is the implicit default -- nothing to surface.
+        let out = format_permissions(&bare_args());
+        assert!(!out.contains("dirs:"), "got:\n{out}");
+    }
+
+    #[test]
+    fn permissions_add_dir_shows_dirs_section_with_provenance() {
+        let mut args = bare_args();
+        args.add_dir = vec!["/tmp".to_string()];
+        args.add_dir_sources = vec!["CLI".to_string()];
+        let out = format_permissions(&args);
+        assert!(out.contains("dirs:"), "got:\n{out}");
+        assert!(out.contains("/tmp"), "got:\n{out}");
+        assert!(out.contains("[CLI]"), "got:\n{out}");
+        // The cwd is listed alongside, tagged as the implicit scope.
+        assert!(out.contains("[cwd]"), "got:\n{out}");
+    }
+
+    #[test]
+    fn permissions_add_dir_from_profile_layer() {
+        let mut args = bare_args();
+        args.add_dir = vec!["/extra".to_string()];
+        args.add_dir_sources = vec!["profile.review".to_string()];
+        let out = format_permissions(&args);
+        assert!(out.contains("/extra"), "got:\n{out}");
+        assert!(out.contains("[profile.review]"), "got:\n{out}");
+    }
+
+    #[test]
+    fn permissions_deny_overrides_allow_is_annotated() {
+        // --writable --deny-tool Write: Write lands in both lists; the
+        // allow entry must read as denied, not silently sit in both.
+        let mut args = bare_args();
+        args.writable = true;
+        args.writable_source = Some("CLI".to_string());
+        args.deny_tool = vec!["Write".to_string()];
+        args.deny_tool_sources = vec!["CLI".to_string()];
+        let out = format_permissions(&args);
+        assert!(
+            out.contains("Write [CLI] [denied -- deny overrides allow]"),
+            "got:\n{out}"
+        );
+        // Edit is allowed and NOT denied -- no annotation.
+        let edit_line = out
+            .lines()
+            .find(|l| l.contains("Edit "))
+            .unwrap_or_default();
+        assert!(!edit_line.contains("denied"), "got:\n{out}");
+        // Write still appears in the deny block as the source of truth.
+        assert!(out.contains("deny:"), "got:\n{out}");
     }
 }

@@ -310,6 +310,7 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     // matching mcp_config / --allow-tool's per-layer replace semantics.
     if args.add_dir.is_empty() {
         args.add_dir = std::mem::take(&mut profile.add_dir);
+        args.add_dir_sources = vec![source.to_string(); args.add_dir.len()];
     }
     if args.fallback_model.is_none()
         && let Some(m) = profile.fallback_model.take()
