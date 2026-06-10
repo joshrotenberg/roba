@@ -645,6 +645,24 @@ pub struct AskArgs {
     )]
     pub session: Option<String>,
 
+    /// Assign a caller-chosen UUID to this (new) session.
+    ///
+    /// Passes claude's own `--session-id <uuid>` through. The value must
+    /// be a valid UUID (claude validates it). Use it to mint a session
+    /// with an id you control on the FIRST turn, then `--resume`/`-c=ID`
+    /// that id on later turns -- the reliable scripted-multi-turn pattern,
+    /// since `claude -p --continue` no-ops in print mode. Conflicts with
+    /// the session selectors (`-c`/`--continue`, `--fork`, `--pick`,
+    /// `--session`), since those resume an existing session rather than
+    /// name a new one. Composes with `--fresh`.
+    #[arg(
+        long,
+        value_name = "UUID",
+        conflicts_with_all = ["continue_session", "fork", "pick", "session"],
+        help_heading = "Sessions"
+    )]
+    pub session_id: Option<String>,
+
     /// Run in a fresh git worktree (optionally named: `-w NAME`).
     ///
     /// With no value claude generates the name; `-w NAME` (or `-w=NAME`)
@@ -1114,6 +1132,53 @@ mod tests {
     fn fresh_conflicts_with_continue() {
         use clap::Parser;
         assert!(Cli::try_parse_from(["roba", "--fresh", "-c", "prompt"]).is_err());
+    }
+
+    #[test]
+    fn session_id_parses_alone() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "roba",
+            "--session-id",
+            "11111111-1111-4111-8111-111111111111",
+            "-p",
+            "hi",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.ask.session_id.as_deref(),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+        assert_eq!(cli.ask.prompt_flag.as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn session_id_conflicts_with_resume() {
+        // `-c=ID` is roba's resume form; assigning a new id while
+        // resuming an existing one is contradictory.
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["roba", "--session-id", "x", "-c=y", "-p", "hi"]).is_err());
+    }
+
+    #[test]
+    fn session_id_conflicts_with_pick_and_session() {
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["roba", "--session-id", "x", "--pick"]).is_err());
+        assert!(
+            Cli::try_parse_from(["roba", "--session-id", "x", "--session", "meta", "-p", "hi"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn session_id_composes_with_fresh() {
+        // --fresh (cancel auto-continue) and --session-id (name the new
+        // session) are not contradictory: both want a new session.
+        use clap::Parser;
+        let cli =
+            Cli::try_parse_from(["roba", "--session-id", "x", "--fresh", "-p", "hi"]).unwrap();
+        assert_eq!(cli.ask.session_id.as_deref(), Some("x"));
+        assert!(cli.ask.fresh);
     }
 
     #[test]

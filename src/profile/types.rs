@@ -110,6 +110,11 @@ pub struct Profile {
     /// Append to the default system prompt (`--append-system-prompt`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub append_system_prompt: Option<String>,
+    /// Assign a caller-chosen session UUID (`--session-id`). Conflicts
+    /// with the session selectors at the CLI layer; passed through to
+    /// claude's own `--session-id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// Profile value for the `permission_mode` field. Serializes as a
@@ -189,6 +194,7 @@ impl Profile {
             && self.permission_mode.is_none()
             && self.system_prompt.is_none()
             && self.append_system_prompt.is_none()
+            && self.session_id.is_none()
     }
 
     /// Merge `other` on top of `self`. Used to layer roba.toml files
@@ -232,6 +238,7 @@ impl Profile {
             permission_mode,
             system_prompt,
             append_system_prompt,
+            session_id,
         } = other;
 
         self.prepend.append(&mut prepend);
@@ -322,6 +329,9 @@ impl Profile {
         }
         if append_system_prompt.is_some() {
             self.append_system_prompt = append_system_prompt;
+        }
+        if session_id.is_some() {
+            self.session_id = session_id;
         }
     }
 }

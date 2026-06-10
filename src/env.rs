@@ -143,6 +143,15 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
         args.session = Some(s);
     }
 
+    // ROBA_SESSION_ID mirrors `--session-id UUID`: assign a
+    // caller-chosen session id. String flag, CLI wins. claude validates
+    // the UUID, so this layer just passes the value through.
+    if args.session_id.is_none()
+        && let Some(s) = read_string(env, "ROBA_SESSION_ID")
+    {
+        args.session_id = Some(s);
+    }
+
     // ----- Permissions -----
     if args.permission_mode.is_none()
         && let Some(s) = read_string(env, "ROBA_PERMISSION_MODE")
@@ -532,6 +541,36 @@ mod tests {
         let mut args = empty_args();
         apply_env_overrides_from(&mut args, &env_with(&[("ROBA_SESSION", "")]));
         assert!(args.session.is_none());
+    }
+
+    // -- session_id --------------------------------------------------------
+
+    #[test]
+    fn env_session_id_sets_from_roba_session_id_var() {
+        let mut args = empty_args();
+        apply_env_overrides_from(
+            &mut args,
+            &env_with(&[("ROBA_SESSION_ID", "11111111-1111-4111-8111-111111111111")]),
+        );
+        assert_eq!(
+            args.session_id.as_deref(),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+    }
+
+    #[test]
+    fn env_session_id_does_not_override_cli() {
+        let mut args = empty_args();
+        args.session_id = Some("cli-uuid".into());
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_SESSION_ID", "env-uuid")]));
+        assert_eq!(args.session_id.as_deref(), Some("cli-uuid"));
+    }
+
+    #[test]
+    fn env_session_id_ignores_empty() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_SESSION_ID", "")]));
+        assert!(args.session_id.is_none());
     }
 
     // -- usize -------------------------------------------------------------
