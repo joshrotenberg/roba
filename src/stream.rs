@@ -114,12 +114,15 @@ pub async fn run_streaming(
         // carries it. One line per dispatch so orchestrators and humans can
         // find the session JSONL without needing --trace. Not gated by TTY
         // (orchestrators running without a TTY still need it); gated by
-        // --quiet because it is metadata.
+        // --quiet because it is metadata. Routed through `print_meta` so it
+        // dims like every other meta line on a TTY (and stays byte-clean on
+        // a pipe, where color is off) -- otherwise it reads as conversation
+        // amid the streamed answer and tool-call markers.
         if !session_id_printed
             && !args.quiet
             && let Some(id) = event.session_id()
         {
-            eprintln!("[roba] session: {id}");
+            crate::render::print_meta(&format!("[roba] session: {id}"), &style);
             session_id_printed = true;
         }
         if event.is_result() {
