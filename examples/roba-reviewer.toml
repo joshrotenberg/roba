@@ -1,0 +1,31 @@
+# roba-reviewer.toml -- an ENFORCED read-only reviewer in a few lines of TOML.
+#
+# The "deterministic bookends" shape: a profile pins the setup AND the output
+# contract, leaving only the reasoning to the model. Nothing here is a request
+# the model can ignore -- the permission system BLOCKS writes, the caps fire
+# regardless of cooperation, and (when you add a schema) claude VALIDATES the
+# output. Contrast a "review skill" that merely ASKS the model to behave.
+
+[profile.review]
+# Read-only is ENFORCED by the permission system, not requested: this reviewer
+# physically cannot Edit/Write, no matter what the prompt says.
+readonly = true
+
+# The reviewer persona, injected verbatim (additive -- composes with roba's
+# own single-turn notice).
+append_system_prompt = """
+You are a code reviewer. Report concrete findings only -- bugs, risks, missing
+tests, security or dependency concerns -- each with a file:line and a one-line
+why. No praise, no restating the diff, no speculative refactors.
+"""
+
+# Blast-radius caps fire regardless of model cooperation.
+max_turns      = 20
+max_budget_usd = 2.0
+
+# To complete the bookends, point at a JSON Schema so claude VALIDATES the
+# output shape (the one part the model can't fudge):
+#   json_schema = "review-findings.schema.json"   # path resolved at invocation
+# With it, `roba --profile review --json "review this diff"` returns a
+# schema-checked findings object -- enforced setup AND enforced output, only
+# the reasoning left to the model.
