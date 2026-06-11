@@ -2431,3 +2431,48 @@ fn doctor_json_carries_version_result_and_consistent_exit() {
     );
     assert!(code == 0 || code == 1, "doctor exits 0 or 1, got {code}");
 }
+
+// ---------------------------------------------------------------------------
+// -c <prefix> -- git-style short session-id resolution (#304)
+// ---------------------------------------------------------------------------
+
+/// An ambiguous short prefix for `-c` errors with the candidate ids and
+/// never reaches claude (the bail happens during resolution, before any
+/// claude call). Unix-only: the project-slug encoding replaces `/` with
+/// `-`, which only matches the resolver's cwd encoding on Unix paths.
+#[cfg(unix)]
+#[test]
+fn continue_ambiguous_prefix_lists_candidates_and_fails() {
+    let home = tempfile::tempdir().expect("home");
+    let project = tempfile::tempdir().expect("project");
+    // The resolver scopes to the canonicalized-cwd project slug, so build
+    // the fixture dir from the same encoding the binary will compute.
+    let canonical = std::fs::canonicalize(project.path()).expect("canonicalize");
+    let slug = canonical.to_str().expect("utf8 cwd").replace('/', "-");
+    let proj = home.path().join(".claude/projects").join(&slug);
+    std::fs::create_dir_all(&proj).expect("mkdir project slug");
+
+    // Two sessions sharing the 8-char prefix `ef7de917` (the displayed
+    // footer form). Each needs >=1 message so it survives the empty-session
+    // filter the enumeration applies.
+    let user =
+        r#"{"type":"user","timestamp":"2026-06-01T10:00:00.000Z","message":{"content":"hi"}}"#;
+    let assistant = r#"{"type":"assistant","timestamp":"2026-06-01T10:00:01.000Z","message":{"model":"claude-haiku-4-5","content":[{"type":"text","text":"ok"}]}}"#;
+    let body = format!("{user}\n{assistant}\n");
+    let id_a = "ef7de917-aaaa-4aaa-8aaa-000000000001";
+    let id_b = "ef7de917-bbbb-4bbb-8bbb-000000000002";
+    std::fs::write(proj.join(format!("{id_a}.jsonl")), &body).expect("write a");
+    std::fs::write(proj.join(format!("{id_b}.jsonl")), &body).expect("write b");
+
+    roba()
+        .current_dir(project.path())
+        .env("HOME", home.path())
+        .args(["-c", "ef7de917", "hi"])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("ambiguous")
+                .and(predicate::str::contains(id_a))
+                .and(predicate::str::contains(id_b)),
+        );
+}
