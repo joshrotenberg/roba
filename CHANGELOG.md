@@ -14,6 +14,38 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-11
+
+### Added
+
+- roba config lint -- static config checks with typed exit (closes #266) ([#301](https://github.com/joshrotenberg/roba/pull/301))
+- resolve a short session-id prefix for -c/--resume, git-style (closes #304) ([#305](https://github.com/joshrotenberg/roba/pull/305))
+- default-on single-turn agent advisory + orchestrator hand-off docs (closes #302, #303) ([#306](https://github.com/joshrotenberg/roba/pull/306))
+
+
+### Fixed
+
+- agent-check stall warning requires resolved write tools (closes #264) ([#265](https://github.com/joshrotenberg/roba/pull/265))
+- derive builtin-subcommand names from the clap tree (closes #268) ([#277](https://github.com/joshrotenberg/roba/pull/277))
+- audit batch -- four verified findings (closes #269, #272, #273, #275) ([#278](https://github.com/joshrotenberg/roba/pull/278))
+- shell-quote alias args interpolated into $() regions -- SECURITY (closes #287) ([#290](https://github.com/joshrotenberg/roba/pull/290))
+- render structured output on the --json-schema default path (closes #280) ([#291](https://github.com/joshrotenberg/roba/pull/291))
+- validate --session-id; document + explain the optional-value swallow (closes #284, #285) ([#292](https://github.com/joshrotenberg/roba/pull/292))
+- --quiet suppresses the spinner, matching its contract (closes #282) ([#293](https://github.com/joshrotenberg/roba/pull/293))
+- dim the [roba] session: line so it reads as metadata, not conversation (closes #294) ([#295](https://github.com/joshrotenberg/roba/pull/295))
+- prompt.rs robustness -- idle-stdin hang, {{VAR}} warn, attach size-guard (closes #288, #286, #271) ([#296](https://github.com/joshrotenberg/roba/pull/296))
+- --show-permissions surfaces --add-dir and resolves allow/deny conflicts (closes #283) ([#297](https://github.com/joshrotenberg/roba/pull/297))
+- remove session_id from the Profile schema -- per-invocation only (closes #270) ([#298](https://github.com/joshrotenberg/roba/pull/298)) (BREAKING)
+- show --wait timeout exits 4, not generic 1 (closes #289) ([#299](https://github.com/joshrotenberg/roba/pull/299))
+
+
+### Maintenance
+
+- untrack the local roba.toml swept in by #278; ignore project-local config ([#279](https://github.com/joshrotenberg/roba/pull/279))
+- un-pin macOS CI -- macos-latest rustup verified fixed (closes #274) ([#300](https://github.com/joshrotenberg/roba/pull/300))
+
+
+
 ## [0.6.0] - 2026-06-10
 
 ### Added
