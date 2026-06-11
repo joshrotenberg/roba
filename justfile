@@ -25,6 +25,12 @@ preflight:
 live: preflight
     cargo test --test live -- --ignored --nocapture --test-threads=2
 
+# Scenario suite: end-to-end autonomous-work journeys. Calls real claude
+# (haiku); the pre-release regression gate. Single-threaded -- scenarios
+# thread output between dispatches and run their own detached children.
+scenario: preflight
+    cargo test --test scenarios -- --ignored --nocapture --test-threads=1
+
 # Smoke: the minimum to know roba's main paths still work. A few tests, fast and cheap.
 live-smoke: preflight
     cargo test --test live -- --ignored --nocapture --test-threads=2 \
