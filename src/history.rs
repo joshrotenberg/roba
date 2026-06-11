@@ -460,6 +460,36 @@ pub fn last_n_assistant_texts_in_cwd(n: usize) -> Result<Vec<String>> {
     Ok(texts[start..].to_vec())
 }
 
+/// Enumerate the session ids of the current cwd's project, most-recent
+/// first. Used to expand a git-style short session-id prefix for
+/// `-c <prefix>` (see [`crate::session::resolve_session_prefix`]).
+///
+/// Scoped to the current project slug, since sessions are per-project
+/// and the displayed (and thus copy-pasted) short id only needs to be
+/// unique within the project the user is resuming in. Returns an empty
+/// vec when the cwd can't be encoded as a project slug; a genuine
+/// history-read error propagates, and the caller treats either as "no
+/// candidates, pass the value through unchanged" so a probe failure
+/// never blocks a resume.
+pub fn current_project_session_ids() -> Result<Vec<String>> {
+    use claude_wrapper::history::{HistoryRoot, ListOptions, ListSort};
+
+    let Some(slug) = current_project_slug() else {
+        return Ok(Vec::new());
+    };
+    let root = HistoryRoot::home().context("locating ~/.claude/projects")?;
+    let opts = ListOptions {
+        limit: None,
+        offset: 0,
+        include_empty: false,
+        sort: ListSort::RecencyDesc,
+    };
+    let sessions = root
+        .list_sessions_with(Some(&slug), &opts)
+        .context("reading session history")?;
+    Ok(sessions.into_iter().map(|s| s.session_id).collect())
+}
+
 /// `--pick`: open a fuzzy-filter picker over the 50 most recent
 /// sessions and return the selected session id. Requires a TTY.
 pub fn pick_session_interactive() -> Result<String> {

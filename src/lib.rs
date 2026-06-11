@@ -283,6 +283,13 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         eprintln!("resuming session {}", id.get(..8).unwrap_or(&id));
         args.continue_session = Some(Some(id));
     }
+    // Expand a git-style short session-id prefix for `-c <value>` against
+    // this project's sessions, so the truncated id roba prints in its
+    // footer is directly usable as a resume handle (#304). Runs after
+    // every session selector has settled (`--session`, `--fresh`,
+    // `--pick`) and uses the effective cwd (`dispatch` already applied
+    // `-C/--cwd`), since session ids are per-project.
+    expand_continue_prefix(&mut args)?;
     // Agent frontmatter permission check: warn if the agent declares
     // tools that are not in the resolved allowlist. Best-effort and
     // non-blocking -- dispatch still proceeds.
@@ -482,6 +489,50 @@ fn resolve_session(
             bail!("no session named '{name}' in config (known: {known})")
         }
     }
+}
+
+/// Expand a `-c <value>` (`--continue=VALUE`) that carried an explicit
+/// value, treating it as a git-style short session-id prefix and
+/// resolving it to a full UUID against the current project's sessions
+/// before it reaches [`apply_session`] (-> claude's `--resume`).
+///
+/// Three outcomes (see [`session::resolve_session_prefix`]):
+/// - a unique prefix is expanded in place to the full id;
+/// - an ambiguous prefix is a hard error listing the candidates -- never
+///   silently pick one;
+/// - no match is left UNCHANGED, so claude's own session-TITLE resume
+///   (and any cross-project full id) still works.
+///
+/// A failure to enumerate the project's sessions (no project dir yet, an
+/// unreadable history root) is swallowed: the value passes through
+/// unchanged so a probe error never blocks an otherwise-valid resume.
+///
+/// Only the value form (`Some(Some(_))`) is touched; bare `-c`
+/// ("most recent", `Some(None)`) and a fresh session (`None`) are
+/// untouched. `--session-id` is deliberately NOT routed here -- it keeps
+/// its strict-UUID parse-time validation (#284); this is the lenient
+/// resume side.
+fn expand_continue_prefix(args: &mut AskArgs) -> Result<()> {
+    let Some(Some(value)) = &args.continue_session else {
+        return Ok(());
+    };
+    let value = value.clone();
+    let Ok(ids) = history::current_project_session_ids() else {
+        return Ok(());
+    };
+    match session::resolve_session_prefix(&value, &ids) {
+        session::Resolution::Unique(full) => {
+            args.continue_session = Some(Some(full));
+        }
+        session::Resolution::Ambiguous(candidates) => {
+            let listed = candidates.join("\n  ");
+            bail!(
+                "session id prefix `{value}` is ambiguous; it matches:\n  {listed}\npass more characters to disambiguate"
+            );
+        }
+        session::Resolution::NoMatch => {} // leave unchanged: title resume / cross-project id
+    }
+    Ok(())
 }
 
 /// Map an anyhow error chain to a stable exit code:

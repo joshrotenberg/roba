@@ -203,9 +203,158 @@ pub fn derive_session_name(prompt: &str) -> String {
     }
 }
 
+/// Outcome of resolving a user-supplied `-c <value>` against the known
+/// session ids of a project. See [`resolve_session_prefix`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum Resolution {
+    /// Exactly one session id matched (a full id, or a unique prefix);
+    /// holds the full id to hand to claude's `--resume`.
+    Unique(String),
+    /// More than one known session id shares the prefix; holds the
+    /// candidates so the caller can list them in an error.
+    Ambiguous(Vec<String>),
+    /// No known session id has `input` as a prefix. The caller passes the
+    /// value through to claude UNCHANGED -- preserving claude's own
+    /// session-TITLE resume (roba sets `--name roba...`) and any full id
+    /// that belongs to a different project.
+    NoMatch,
+}
+
+/// Resolve `input` as a git-style session-id prefix against the
+/// project's known `available_ids`.
+///
+/// - unique (case-insensitive) prefix match -> `Unique(full)`;
+/// - a full UUID present in the list -> `Unique(itself)` (it is the only
+///   id with that 36-char prefix, since all ids share a length);
+/// - more than one prefix match -> `Ambiguous(candidates)`;
+/// - no prefix match (or empty input) -> `NoMatch`.
+///
+/// UUID hex is case-insensitive, so matching is too. A non-hex input (a
+/// session TITLE) won't prefix any UUID and falls through as `NoMatch`.
+///
+/// Deliberately lenient, in contrast to `--session-id`'s strict UUID
+/// validation (`parse_session_id`, #284): `--session-id` ASSIGNS a new
+/// id and must be a well-formed UUID; `-c <prefix>` RESUMES and treats
+/// the value as a convenience handle, so a non-matching value is passed
+/// on rather than rejected.
+pub fn resolve_session_prefix(input: &str, available_ids: &[String]) -> Resolution {
+    if input.is_empty() {
+        return Resolution::NoMatch;
+    }
+    let needle = input.to_ascii_lowercase();
+    let matches: Vec<String> = available_ids
+        .iter()
+        .filter(|id| id.to_ascii_lowercase().starts_with(&needle))
+        .cloned()
+        .collect();
+    match matches.len() {
+        0 => Resolution::NoMatch,
+        1 => Resolution::Unique(matches.into_iter().next().unwrap()),
+        _ => Resolution::Ambiguous(matches),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn prefix_unique_match_expands_to_full() {
+        let available = ids(&[
+            "ef7de917-1234-4abc-8def-000000000001",
+            "a1b2c3d4-5678-4abc-8def-000000000002",
+        ]);
+        assert_eq!(
+            resolve_session_prefix("ef7de917", &available),
+            Resolution::Unique("ef7de917-1234-4abc-8def-000000000001".to_string())
+        );
+    }
+
+    #[test]
+    fn prefix_ambiguous_returns_all_candidates() {
+        let available = ids(&[
+            "ef7de917-1234-4abc-8def-000000000001",
+            "ef7de917-9999-4abc-8def-000000000002",
+            "00000000-0000-4abc-8def-000000000003",
+        ]);
+        match resolve_session_prefix("ef7de917", &available) {
+            Resolution::Ambiguous(candidates) => {
+                assert_eq!(candidates.len(), 2);
+                assert!(candidates.contains(&"ef7de917-1234-4abc-8def-000000000001".to_string()));
+                assert!(candidates.contains(&"ef7de917-9999-4abc-8def-000000000002".to_string()));
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prefix_no_match_falls_through() {
+        let available = ids(&["ef7de917-1234-4abc-8def-000000000001"]);
+        // A value that prefixes nothing (a different id / a title) is a
+        // pass-through, not an error.
+        assert_eq!(
+            resolve_session_prefix("deadbeef", &available),
+            Resolution::NoMatch
+        );
+    }
+
+    #[test]
+    fn prefix_full_uuid_present_matches_itself() {
+        let full = "ef7de917-1234-4abc-8def-000000000001";
+        let available = ids(&[full, "a1b2c3d4-5678-4abc-8def-000000000002"]);
+        assert_eq!(
+            resolve_session_prefix(full, &available),
+            Resolution::Unique(full.to_string())
+        );
+    }
+
+    #[test]
+    fn prefix_title_like_input_no_match() {
+        // claude's session-TITLE resume passes a non-hex string; it must
+        // never prefix a UUID and so falls through unchanged.
+        let available = ids(&["ef7de917-1234-4abc-8def-000000000001"]);
+        assert_eq!(
+            resolve_session_prefix("the real prompt", &available),
+            Resolution::NoMatch
+        );
+    }
+
+    #[test]
+    fn prefix_eight_char_displayed_form_resolves() {
+        // The exact form roba prints in its footer (`session ef7de917`).
+        let available = ids(&[
+            "ef7de917-1234-4abc-8def-000000000001",
+            "ffffffff-5678-4abc-8def-000000000002",
+        ]);
+        assert_eq!(
+            resolve_session_prefix("ef7de917", &available),
+            Resolution::Unique("ef7de917-1234-4abc-8def-000000000001".to_string())
+        );
+    }
+
+    #[test]
+    fn prefix_is_case_insensitive() {
+        let available = ids(&["ABCDEF12-1234-4abc-8def-000000000001"]);
+        assert_eq!(
+            resolve_session_prefix("abcdef12", &available),
+            Resolution::Unique("ABCDEF12-1234-4abc-8def-000000000001".to_string())
+        );
+    }
+
+    #[test]
+    fn prefix_empty_input_no_match() {
+        let available = ids(&["ef7de917-1234-4abc-8def-000000000001"]);
+        assert_eq!(resolve_session_prefix("", &available), Resolution::NoMatch);
+    }
+
+    #[test]
+    fn prefix_empty_id_list_no_match() {
+        assert_eq!(resolve_session_prefix("ef7de917", &[]), Resolution::NoMatch);
+    }
 
     #[test]
     fn name_short_prompt_passes_through() {
