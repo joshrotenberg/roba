@@ -2,15 +2,14 @@
 //!
 //! Codifies the manual shakedown as a repeatable PRE-RELEASE regression
 //! gate. Each scenario drives roba the way a user or agent drives it for
-//! unattended work (composed pipeline, detached hand-off, session
-//! re-entry, dispatch) and asserts the journey's MECHANICAL invariants.
+//! unattended work (composed pipeline, detached hand-off, dispatch,
+//! safe-by-default) and asserts the journey's MECHANICAL invariants.
 //!
 //! Load-bearing rule (the same one live.rs follows, at scenario scale):
 //! **assert mechanics you control, never model compliance.** We check
 //! that the `--json` envelope is well-formed, stdout is byte-clean, the
-//! detached handle is the only stdout, the short id resolves, a write was
-//! denied, a commit was produced -- never that the model's *answer* is
-//! correct.
+//! detached handle is the only stdout, a write was denied, a commit was
+//! produced -- never that the model's *answer* is correct.
 //!
 //! Two reliability tiers:
 //!   - **Tier A (deterministic mechanics):** plumbing that holds
@@ -275,4 +274,62 @@ fn scenario_dispatch_fixes_failing_test() {
         commit_count(repo.path()) > before,
         "the dispatch produced a new commit (was {before})"
     );
+}
+
+// ===========================================================================
+// Tier A -- safe-by-default (deterministic mechanics)
+// ===========================================================================
+//
+// NOTE: a `scenario_session_reentry_shortid` (run once -> `-c <short-id>`) is
+// DEFERRED pending roba#310 -- this suite's first validation run discovered
+// that current-project session enumeration misses sessions when the cwd is a
+// symlinked/dotted path (every macOS temp dir), so the #304 short-id prefix
+// has nothing to resolve against from a tempdir. Re-add once #310 lands.
+
+/// Safe-by-default: under the default read-only posture, a prompt that asks
+/// to WRITE a file must not produce one. Mechanical safety guarantee: the
+/// file does not exist afterward (the permission system never grants Write
+/// without an opt-in). If the model attempted the write, the envelope's
+/// `permission_denials` records the block -- asserted as a bonus when present,
+/// but the load-bearing guarantee is the absent file.
+#[test]
+#[ignore]
+fn scenario_readonly_denies_write() {
+    let dir = fresh_dir();
+    let target = dir.path().join("SHOULD_NOT_EXIST.txt");
+
+    let out = roba_in(dir.path())
+        .args([
+            "--json",
+            "Use the Write tool to create a file named SHOULD_NOT_EXIST.txt \
+             containing the word oops in the current directory.",
+        ])
+        .output()
+        .expect("run");
+    assert!(out.status.success(), "run exits 0");
+
+    // The hard guarantee: no write happened under the default posture.
+    assert!(
+        !target.exists(),
+        "default read-only posture must not allow a Write"
+    );
+
+    // Bonus: if the model tried, the envelope records the denial. Only assert
+    // when present -- the model may decline to attempt at all, which is still a
+    // safe outcome (the file is absent either way).
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8(out.stdout).expect("utf8").trim()).expect("--json");
+    if let Some(denials) = v["result"]["permission_denials"].as_array()
+        && !denials.is_empty()
+    {
+        let mentions_write = denials.iter().any(|d| {
+            d.as_str().map(|s| s.contains("Write")).unwrap_or(false)
+                || d["tool_name"].as_str() == Some("Write")
+                || d.to_string().contains("Write")
+        });
+        assert!(
+            mentions_write,
+            "a recorded permission denial should name Write; got {denials:?}"
+        );
+    }
 }
