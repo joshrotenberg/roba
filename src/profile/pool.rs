@@ -207,6 +207,29 @@ mod tests {
         f
     }
 
+    /// Every shipped `examples/roba-*.toml` bundle must parse through the real
+    /// `deny_unknown_fields` deserializer, so a schema change can never leave a
+    /// published example broken (the #308 "tested setups" guarantee).
+    #[test]
+    fn example_bundles_parse() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).expect("examples/ dir exists") {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).unwrap();
+            parse_config_str(&content)
+                .unwrap_or_else(|e| panic!("example {} failed to parse: {e:#}", path.display()));
+            checked += 1;
+        }
+        assert!(
+            checked >= 2,
+            "expected the shipped example bundles, found {checked}"
+        );
+    }
+
     fn write_file(dir: &Path, rel: &str, content: &str) {
         let path = dir.join(rel);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

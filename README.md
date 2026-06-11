@@ -162,6 +162,12 @@ documents every key with worked examples; `roba profile init` drops it
 in your project. Inspect with `roba profile {list,show,active}` and
 `roba alias {list,show}`.
 
+For ready-to-copy setups, [`examples/`](examples/) carries vetted bundles
+(each parse-tested in CI): [`roba-rust-dispatch.toml`](examples/roba-rust-dispatch.toml)
+-- a worker-dispatch config proven on a real backlog run, with `fix` and
+`design` aliases -- and [`roba-reviewer.toml`](examples/roba-reviewer.toml),
+an enforced read-only, schema-validated reviewer in a few lines of TOML.
+
 ## For agents & scripts
 
 The contract: **stdout is the answer, stderr is everything else**, and
