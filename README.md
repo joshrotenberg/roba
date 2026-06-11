@@ -244,6 +244,24 @@ roba show <id> --wait
 Never bare fire-and-forget: an orphaned branch and an empty draft PR are
 the signature of that failure.
 
+The orchestrator side of the same rule: if you orchestrate *from inside*
+`roba -p`, you get exactly ONE turn. When the model stops calling tools
+and writes its final response, the process exits -- there is no
+re-invocation and no cross-turn background-completion notification (that
+is a persistent-harness feature, not a `-p` one). So either block
+in-foreground (`roba show <id> --wait`) or hand the session handle back
+to your caller explicitly; never background a task and stop expecting to
+auto-resume. roba injects this as a system-prompt advisory by default
+(disable with `--no-agent-notice`, replace with `--agent-notice`).
+
+Address a session by a STABLE handle, not `-c`. `roba -c` continues the
+*most recent* session in the project, which silently drifts when an
+orchestrator spawns its own roba sub-invocations (a detached worker, a
+`roba show`, a `roba profile init`) in the same directory -- the newest
+one out-ranks the session you meant to resume. Pin it instead: pass the
+short session id (roba resolves a unique prefix) or a named `[session]`
+handle from your `roba.toml`.
+
 > [!NOTE]
 > As of 2026-06-15 Anthropic meters programmatic usage (claude -p / Agent SDK) separately from interactive Claude. Every roba call is programmatic by construction, so all roba usage -- and the figures `roba cost` reports -- draws from that programmatic allotment, not your interactive limit.
 

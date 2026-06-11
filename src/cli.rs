@@ -970,6 +970,25 @@ pub struct AskArgs {
     #[arg(long, value_name = "TEXT", help_heading = "System prompt")]
     pub append_system_prompt: Option<String>,
 
+    /// Don't inject the built-in single-turn advisory into the system prompt.
+    ///
+    /// By default roba appends a short note orienting the agent to its
+    /// `claude -p` execution context: one non-interactive turn, with no
+    /// cross-turn background-completion notifications. This suppresses it.
+    /// To change the text instead, use `--agent-notice` or the
+    /// `agent_notice` config key. The notice composes with (never clobbers)
+    /// your own `--append-system-prompt`.
+    #[arg(long, help_heading = "System prompt")]
+    pub no_agent_notice: bool,
+
+    /// Replace the built-in single-turn advisory text.
+    ///
+    /// roba appends a short advisory to the system prompt by default (see
+    /// `--no-agent-notice`). Set this to substitute your own text; an empty
+    /// string injects nothing (a config-level disable).
+    #[arg(long, value_name = "TEXT", help_heading = "System prompt")]
+    pub agent_notice: Option<String>,
+
     // ----- Sessions ---------------------------------------------------------
     /// Continue a session: bare `-c` = most recent here, `-c ID` = specific.
     ///
@@ -2354,6 +2373,22 @@ mod tests {
             Some(std::path::Path::new("/tmp/a.txt"))
         );
         assert!(cli.ask.trace.is_some());
+    }
+
+    #[test]
+    fn no_agent_notice_parses_alone() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--no-agent-notice", "prompt"]).unwrap();
+        assert!(cli.ask.no_agent_notice);
+        assert!(cli.ask.agent_notice.is_none());
+    }
+
+    #[test]
+    fn agent_notice_parses_with_text() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--agent-notice", "custom text", "prompt"]).unwrap();
+        assert_eq!(cli.ask.agent_notice.as_deref(), Some("custom text"));
+        assert!(!cli.ask.no_agent_notice);
     }
 
     #[test]

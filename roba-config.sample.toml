@@ -44,6 +44,11 @@
 # effort = "high"                 # low | medium | high | xhigh | max
 # system_prompt = "..."           # replace the system prompt for the call
 # append_system_prompt = "..."    # add to the default system prompt
+# agent_notice = "..."            # replace the built-in single-turn advisory
+#                                 #   text (roba injects it by default; disable
+#                                 #   with --no-agent-notice or no_agent_notice).
+#                                 #   "" injects nothing
+# no_agent_notice = true          # suppress the built-in single-turn advisory
 
 # --- Sessions ---
 # continue = true                 # auto-continue the most recent session here

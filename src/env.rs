@@ -302,6 +302,18 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
         args.no_agent_check = true;
     }
 
+    // ROBA_NO_AGENT_NOTICE mirrors --no-agent-notice: truthy bool that can
+    // only enable. ROBA_AGENT_NOTICE mirrors --agent-notice: replacement
+    // text, CLI wins (only fills when unset; empty values ignored).
+    if !args.no_agent_notice && read_truthy(env, "ROBA_NO_AGENT_NOTICE") {
+        args.no_agent_notice = true;
+    }
+    if args.agent_notice.is_none()
+        && let Some(s) = read_string(env, "ROBA_AGENT_NOTICE")
+    {
+        args.agent_notice = Some(s);
+    }
+
     // ----- Failure modes -----
     if !args.no_retry && read_truthy(env, "ROBA_NO_RETRY") {
         args.no_retry = true;
@@ -1291,5 +1303,64 @@ mod tests {
             args.no_session_persistence,
             "CLI true should survive env false"
         );
+    }
+
+    // -- agent notice (no_agent_notice / agent_notice) ---------------------
+
+    #[test]
+    fn env_no_agent_notice_truthy_enables() {
+        for val in ["1", "true", "yes", "on", "TRUE", "Yes"] {
+            let mut args = empty_args();
+            apply_env_overrides_from(&mut args, &env_with(&[("ROBA_NO_AGENT_NOTICE", val)]));
+            assert!(
+                args.no_agent_notice,
+                "env value {val:?} should enable no_agent_notice"
+            );
+        }
+    }
+
+    #[test]
+    fn env_no_agent_notice_ignores_falsy_or_garbage() {
+        for val in ["0", "false", "no", "off", "", "garbage"] {
+            let mut args = empty_args();
+            apply_env_overrides_from(&mut args, &env_with(&[("ROBA_NO_AGENT_NOTICE", val)]));
+            assert!(
+                !args.no_agent_notice,
+                "env value {val:?} should leave no_agent_notice off"
+            );
+        }
+    }
+
+    #[test]
+    fn env_no_agent_notice_does_not_clear_cli() {
+        let mut args = empty_args();
+        args.no_agent_notice = true;
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_NO_AGENT_NOTICE", "0")]));
+        assert!(args.no_agent_notice, "CLI true should survive env false");
+    }
+
+    #[test]
+    fn env_agent_notice_sets_from_roba_var() {
+        let mut args = empty_args();
+        apply_env_overrides_from(
+            &mut args,
+            &env_with(&[("ROBA_AGENT_NOTICE", "single-turn, careful")]),
+        );
+        assert_eq!(args.agent_notice.as_deref(), Some("single-turn, careful"));
+    }
+
+    #[test]
+    fn env_agent_notice_does_not_override_cli() {
+        let mut args = empty_args();
+        args.agent_notice = Some("cli-notice".to_string());
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_AGENT_NOTICE", "env-notice")]));
+        assert_eq!(args.agent_notice.as_deref(), Some("cli-notice"));
+    }
+
+    #[test]
+    fn env_agent_notice_ignores_empty() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_AGENT_NOTICE", "")]));
+        assert!(args.agent_notice.is_none());
     }
 }

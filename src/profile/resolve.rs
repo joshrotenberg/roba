@@ -317,6 +317,16 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     {
         args.no_session_persistence = v;
     }
+    if let Some(v) = profile.no_agent_notice
+        && !args.no_agent_notice
+    {
+        args.no_agent_notice = v;
+    }
+    if args.agent_notice.is_none()
+        && let Some(s) = profile.agent_notice.take()
+    {
+        args.agent_notice = Some(s);
+    }
 }
 
 /// Convert a profile-layer `PermissionModeConfig` to the CLI's
@@ -1102,6 +1112,56 @@ mod tests {
         };
         merge_into_args(&mut args, profile, "profile.test");
         assert_eq!(args.max_budget_usd, Some(4.0));
+    }
+
+    // -- agent notice (no_agent_notice / agent_notice) ---------------------
+
+    #[test]
+    fn merge_no_agent_notice_applies_when_cli_unset() {
+        let mut args = empty_args();
+        let profile = Profile {
+            no_agent_notice: Some(true),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert!(args.no_agent_notice);
+    }
+
+    #[test]
+    fn merge_no_agent_notice_cli_already_set_is_unaffected() {
+        let mut args = args_with(&["--no-agent-notice"]);
+        assert!(args.no_agent_notice);
+        let profile = Profile {
+            no_agent_notice: Some(false),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert!(
+            args.no_agent_notice,
+            "CLI --no-agent-notice survives a profile false"
+        );
+    }
+
+    #[test]
+    fn merge_agent_notice_applies_when_cli_unset() {
+        let mut args = empty_args();
+        let profile = Profile {
+            agent_notice: Some("custom".to_string()),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.agent_notice.as_deref(), Some("custom"));
+    }
+
+    #[test]
+    fn merge_agent_notice_cli_wins_over_profile() {
+        let mut args = args_with(&["--agent-notice", "cli"]);
+        let profile = Profile {
+            agent_notice: Some("profile".to_string()),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.agent_notice.as_deref(), Some("cli"));
     }
 
     // -- Path expansion ----------------------------------------------------
