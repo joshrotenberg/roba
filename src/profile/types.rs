@@ -141,6 +141,14 @@ pub struct Profile {
     /// (`--no-session-persistence`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub no_session_persistence: Option<bool>,
+    /// Suppress the built-in single-turn agent advisory
+    /// (`--no-agent-notice`). The advisory is injected by default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_agent_notice: Option<bool>,
+    /// Replace the built-in single-turn agent advisory text
+    /// (`--agent-notice`). An empty string injects nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_notice: Option<String>,
 }
 
 /// Profile value for the `permission_mode` field. Serializes as a
@@ -228,6 +236,8 @@ impl Profile {
             && self.add_dir.is_empty()
             && self.fallback_model.is_none()
             && self.no_session_persistence.is_none()
+            && self.no_agent_notice.is_none()
+            && self.agent_notice.is_none()
     }
 
     /// Merge `other` on top of `self`. Used to layer roba.toml files
@@ -279,6 +289,8 @@ impl Profile {
             mut add_dir,
             fallback_model,
             no_session_persistence,
+            no_agent_notice,
+            agent_notice,
         } = other;
 
         self.prepend.append(&mut prepend);
@@ -389,6 +401,12 @@ impl Profile {
         }
         if no_session_persistence.is_some() {
             self.no_session_persistence = no_session_persistence;
+        }
+        if no_agent_notice.is_some() {
+            self.no_agent_notice = no_agent_notice;
+        }
+        if agent_notice.is_some() {
+            self.agent_notice = agent_notice;
         }
     }
 }

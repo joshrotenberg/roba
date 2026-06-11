@@ -58,8 +58,12 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     if let Some(ref text) = args.system_prompt {
         cmd = cmd.system_prompt(text.clone());
     }
-    if let Some(ref text) = args.append_system_prompt {
-        cmd = cmd.append_system_prompt(text.clone());
+    // Append the user's `--append-system-prompt` and the built-in agent
+    // notice as ONE combined value (claude-wrapper's append_system_prompt
+    // is a setter, so a second call would clobber the first -- see
+    // compose_append_system_prompt).
+    if let Some(text) = compose_append_system_prompt(args) {
+        cmd = cmd.append_system_prompt(text);
     }
     if args.show_thinking && (args.stream || args.trace.is_some()) {
         cmd = cmd.include_partial_messages();
@@ -173,6 +177,62 @@ fn permission_mode_to_cw(mode: PermMode) -> PermissionMode {
 fn push_unique(list: &mut Vec<String>, item: &str) {
     if !list.iter().any(|s| s == item) {
         list.push(item.to_string());
+    }
+}
+
+/// The built-in advisory roba injects into the agent's system prompt by
+/// default. It states roba's execution truth: the spawned agent is a
+/// single, non-interactive `claude -p` turn, not a persistent harness, so
+/// there are no cross-turn background-completion notifications. On by
+/// default; suppressed with `--no-agent-notice`, replaced with
+/// `--agent-notice` / the `agent_notice` config key. See issue #302.
+pub const BUILTIN_AGENT_NOTICE: &str = "You are running as a single, \
+non-interactive `claude -p` turn via roba -- not an interactive or persistent \
+session. When you stop calling tools and produce your final response, this \
+process exits: you will not be re-invoked, and you will not receive \
+background-task-completion notifications across turns. If you start \
+asynchronous work (for example a detached `roba --detach` worker), either \
+block on it synchronously within this turn (`roba show <id> --wait` in the \
+foreground), or end your turn by explicitly handing the session handle back \
+to the caller. Never background a task and then stop while expecting to be \
+auto-resumed.";
+
+/// Resolve the agent-notice text to inject, honoring the disable flag and
+/// the content override. Returns `None` when the notice is suppressed
+/// (`--no-agent-notice`) or the resolved content is empty
+/// (`agent_notice = ""` -- a config-level disable).
+fn resolve_agent_notice(args: &AskArgs) -> Option<String> {
+    if args.no_agent_notice {
+        return None;
+    }
+    let text = args.agent_notice.as_deref().unwrap_or(BUILTIN_AGENT_NOTICE);
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
+    }
+}
+
+/// Compose the final `--append-system-prompt` value: the user's own
+/// append text (if any) combined with the built-in agent notice (if
+/// enabled).
+///
+/// claude-wrapper's `append_system_prompt` is a SETTER -- a second call
+/// replaces the first -- so the two pieces are joined here (blank line
+/// between) and applied once. The notice never clobbers a user's
+/// `--append-system-prompt`, and vice versa. Returns `None` when neither
+/// piece is present.
+pub fn compose_append_system_prompt(args: &AskArgs) -> Option<String> {
+    let user = args
+        .append_system_prompt
+        .as_deref()
+        .filter(|s| !s.is_empty());
+    let notice = resolve_agent_notice(args);
+    match (user, notice) {
+        (Some(u), Some(n)) => Some(format!("{u}\n\n{n}")),
+        (Some(u), None) => Some(u.to_string()),
+        (None, Some(n)) => Some(n),
+        (None, None) => None,
     }
 }
 
@@ -419,6 +479,76 @@ mod tests {
             ])
             .contains("include_partial_messages: true")
         );
+    }
+
+    // -- agent notice (#302) -----------------------------------------------
+
+    fn ask(argv: &[&str]) -> AskArgs {
+        use crate::cli::Cli;
+        use clap::Parser;
+        Cli::try_parse_from(argv).unwrap().ask
+    }
+
+    #[test]
+    fn notice_injected_by_default() {
+        let composed = compose_append_system_prompt(&ask(&["roba", "prompt"])).unwrap();
+        assert!(
+            composed.contains("single, non-interactive"),
+            "got: {composed}"
+        );
+    }
+
+    #[test]
+    fn notice_absent_under_no_agent_notice() {
+        let args = ask(&["roba", "--no-agent-notice", "prompt"]);
+        assert!(compose_append_system_prompt(&args).is_none());
+    }
+
+    #[test]
+    fn notice_override_replaces_builtin() {
+        let mut args = ask(&["roba", "prompt"]);
+        args.agent_notice = Some("CUSTOM NOTICE".to_string());
+        let composed = compose_append_system_prompt(&args).unwrap();
+        assert_eq!(composed, "CUSTOM NOTICE");
+        assert!(!composed.contains("single, non-interactive"));
+    }
+
+    #[test]
+    fn notice_composes_with_user_append() {
+        let args = ask(&["roba", "--append-system-prompt", "Be terse.", "prompt"]);
+        let composed = compose_append_system_prompt(&args).unwrap();
+        assert!(composed.contains("Be terse."), "got: {composed}");
+        assert!(
+            composed.contains("single, non-interactive"),
+            "got: {composed}"
+        );
+    }
+
+    #[test]
+    fn notice_empty_override_injects_nothing() {
+        let mut args = ask(&["roba", "prompt"]);
+        args.agent_notice = Some(String::new());
+        assert!(compose_append_system_prompt(&args).is_none());
+    }
+
+    #[test]
+    fn notice_empty_override_keeps_user_append_only() {
+        let mut args = ask(&["roba", "--append-system-prompt", "Be terse.", "prompt"]);
+        args.agent_notice = Some(String::new());
+        assert_eq!(
+            compose_append_system_prompt(&args).as_deref(),
+            Some("Be terse.")
+        );
+    }
+
+    #[test]
+    fn apply_session_appends_notice_to_command() {
+        // End-to-end: the notice reaches the QueryCommand on the default path.
+        let dbg = format!(
+            "{:?}",
+            apply_session(QueryCommand::new("hi"), &ask(&["roba", "prompt"]))
+        );
+        assert!(dbg.contains("single, non-interactive"), "got: {dbg}");
     }
 
     #[test]
