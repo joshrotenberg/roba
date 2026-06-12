@@ -3,13 +3,15 @@
 //! Codifies the manual shakedown as a repeatable PRE-RELEASE regression
 //! gate. Each scenario drives roba the way a user or agent drives it for
 //! unattended work (composed pipeline, detached hand-off, dispatch,
-//! safe-by-default) and asserts the journey's MECHANICAL invariants.
+//! session re-entry, safe-by-default) and asserts the journey's MECHANICAL
+//! invariants.
 //!
 //! Load-bearing rule (the same one live.rs follows, at scenario scale):
 //! **assert mechanics you control, never model compliance.** We check
 //! that the `--json` envelope is well-formed, stdout is byte-clean, the
-//! detached handle is the only stdout, a write was denied, a commit was
-//! produced -- never that the model's *answer* is correct.
+//! detached handle is the only stdout, the short id resolves to the same
+//! session, a write was denied, a commit was produced -- never that the
+//! model's *answer* is correct.
 //!
 //! Two reliability tiers:
 //!   - **Tier A (deterministic mechanics):** plumbing that holds
@@ -277,14 +279,62 @@ fn scenario_dispatch_fixes_failing_test() {
 }
 
 // ===========================================================================
-// Tier A -- safe-by-default (deterministic mechanics)
+// Tier A -- session re-entry + safe-by-default (deterministic mechanics)
 // ===========================================================================
-//
-// NOTE: a `scenario_session_reentry_shortid` (run once -> `-c <short-id>`) is
-// DEFERRED pending roba#310 -- this suite's first validation run discovered
-// that current-project session enumeration misses sessions when the cwd is a
-// symlinked/dotted path (every macOS temp dir), so the #304 short-id prefix
-// has nothing to resolve against from a tempdir. Re-add once #310 lands.
+
+/// Session re-entry by the SHORT id roba displays. Run once, take the first 8
+/// chars of the session id (the footer/`show` form), and `-c <short>` it.
+/// Mechanical: the short id RESOLVES (no "not a UUID" reject, #304) and the
+/// run continues the SAME session -- the resumed envelope's session_id equals
+/// the original full id. We assert continuity of the handle, never that the
+/// model recalled anything.
+///
+/// This is the scenario whose first run found #310 (current-project enumeration
+/// missed sessions in symlinked/dotted cwds, so the short id had nothing to
+/// resolve against from a tempdir). Re-enabled now that #310 is fixed in
+/// claude-wrapper 0.12.0 (slug derivation canonicalizes + encodes `.`).
+#[test]
+#[ignore]
+fn scenario_session_reentry_shortid() {
+    let dir = fresh_dir();
+
+    // Run 1: establish a session; capture its full id from the envelope.
+    let out1 = roba_in(dir.path())
+        .args(["--json", "reply with the single token ONE"])
+        .output()
+        .expect("run 1");
+    assert!(out1.status.success(), "first run exits 0");
+    let v1: serde_json::Value =
+        serde_json::from_str(String::from_utf8(out1.stdout).expect("utf8").trim())
+            .expect("run 1 --json");
+    let full_id = v1["result"]["session_id"]
+        .as_str()
+        .expect("session_id present")
+        .to_string();
+    assert!(full_id.len() >= 8, "session id long enough to shorten");
+    let short = &full_id[..8];
+
+    // Run 2: continue via the SHORT id. #304 resolves the prefix against the
+    // project's sessions (which #310 made findable); no UUID reject.
+    let out2 = roba_in(dir.path())
+        .args(["--json", "-c", short, "reply with the single token TWO"])
+        .output()
+        .expect("run 2");
+    let stderr2 = String::from_utf8_lossy(&out2.stderr);
+    assert!(
+        !stderr2.contains("not a UUID") && !stderr2.contains("Invalid session"),
+        "short id `{short}` resolved (no UUID reject); stderr: {stderr2}"
+    );
+    assert!(out2.status.success(), "continue-by-short-id exits 0");
+    let v2: serde_json::Value =
+        serde_json::from_str(String::from_utf8(out2.stdout).expect("utf8").trim())
+            .expect("run 2 --json");
+    assert_eq!(
+        v2["result"]["session_id"].as_str(),
+        Some(full_id.as_str()),
+        "the short id resumed the SAME session (handle continuity)"
+    );
+}
 
 /// Safe-by-default: under the default read-only posture, a prompt that asks
 /// to WRITE a file must not produce one. Mechanical safety guarantee: the

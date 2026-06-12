@@ -2445,10 +2445,11 @@ fn doctor_json_carries_version_result_and_consistent_exit() {
 fn continue_ambiguous_prefix_lists_candidates_and_fails() {
     let home = tempfile::tempdir().expect("home");
     let project = tempfile::tempdir().expect("project");
-    // The resolver scopes to the canonicalized-cwd project slug, so build
-    // the fixture dir from the same encoding the binary will compute.
-    let canonical = std::fs::canonicalize(project.path()).expect("canonicalize");
-    let slug = canonical.to_str().expect("utf8 cwd").replace('/', "-");
+    // The resolver scopes to the canonicalized-cwd project slug. Derive the
+    // fixture dir via the SAME wrapper function the binary uses (canonicalize
+    // + encode '/' AND '.'), so they can't drift -- tempdir names contain a
+    // `.` (the `.tmpXXXX` prefix), which the old `/`-only encoding missed.
+    let slug = claude_wrapper::history::HistoryRoot::project_slug(project.path());
     let proj = home.path().join(".claude/projects").join(&slug);
     std::fs::create_dir_all(&proj).expect("mkdir project slug");
 

@@ -1169,6 +1169,27 @@ fn live_exit_model_not_found_is_failure_not_auth() {
 
 #[test]
 #[ignore]
+fn live_exit_max_turns_returns_5() {
+    // A task that needs >=2 sequential turns (read a file, THEN report it)
+    // cannot finish in one turn, so --max-turns 1 trips the cap. claude-wrapper
+    // 0.12.0 surfaces that as MaxTurnsExceeded (detected via the --json result
+    // event), which roba maps to the recoverable exit code 5 -- distinct from a
+    // generic failure so an orchestrator can finish the lifecycle. (#309)
+    let dir = fresh_dir();
+    std::fs::write(dir.path().join("marker.txt"), "sentinel-42").expect("seed marker");
+    roba_in(dir.path())
+        .args([
+            "--json",
+            "--max-turns",
+            "1",
+            "Read the file marker.txt and report its exact contents.",
+        ])
+        .assert()
+        .code(5);
+}
+
+#[test]
+#[ignore]
 fn live_exit_bare_missing_key_is_auth() {
     // --bare authenticates via ANTHROPIC_API_KEY only. With the key removed,
     // claude-wrapper 0.11.1 (#633) surfaces the missing key as an auth failure,

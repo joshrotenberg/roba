@@ -403,14 +403,18 @@ pub fn resolve_project_scope(
     }
 }
 
-/// Encode the current cwd as a Claude Code project slug. The
-/// convention is: canonicalize the cwd, then replace `/` with `-`.
-/// Returns `None` if cwd can't be read or isn't valid UTF-8.
+/// Encode the current cwd as a Claude Code project slug, delegating to
+/// `claude_wrapper`'s `project_slug` so the encoding matches the CLI
+/// EXACTLY: canonicalize the cwd (resolving symlinks, e.g. `/var` ->
+/// `/private/var`) and replace every `/` AND `.` with `-`. roba used to
+/// derive this itself and missed the `.`-encoding, so enumeration found
+/// nothing for a cwd under a symlinked root or with a `.` in a segment
+/// (every macOS temp dir) -- the #310 bug. The derivation is claude-domain
+/// knowledge; it belongs in the wrapper. Returns `None` only when the cwd
+/// can't be read.
 pub fn current_project_slug() -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
-    let canonical = cwd.canonicalize().unwrap_or(cwd);
-    let s = canonical.to_str()?;
-    Some(s.replace('/', "-"))
+    Some(claude_wrapper::history::HistoryRoot::project_slug(&cwd))
 }
 
 /// Fetch up to `n` recent assistant text responses from the most

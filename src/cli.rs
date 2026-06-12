@@ -46,8 +46,9 @@ Examples -- for agents & scripts (deterministic, pipe-clean):
   roba --no-retry \"...\"; echo \"exit=$?\"                typed exit codes
   roba --session ci-bot \"follow up\"                    resume a named session
   roba --full-auto -C repo -f task.md                  fire an unattended worker
-  Exit codes: 0 ok (refusals included), 1 failure (incl. --max-turns /
-  --max-budget-usd cap hits), 2 auth, 3 budget, 4 timeout.
+  Exit codes: 0 ok (refusals included), 1 failure (incl. --max-budget-usd
+  cap hits), 2 auth, 3 budget, 4 timeout, 5 max-turns (recoverable --
+  finish the lifecycle).
 
 Unattended workers (composing the primitives):
   --full-auto -C <dir> -f <file>   edit the current checkout in place; the
