@@ -14,6 +14,25 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-06-12
+
+### Added
+
+- tested example config bundles -- rust-dispatch + reviewer (closes #308) ([#312](https://github.com/joshrotenberg/roba/pull/312))
+- consume claude-wrapper 0.12.0 -- max-turns exit code ([#309](https://github.com/joshrotenberg/roba/pull/309)) + slug fix ([#310](https://github.com/joshrotenberg/roba/pull/310)) ([#315](https://github.com/joshrotenberg/roba/pull/315))
+
+
+### Fixed
+
+- bump claude-wrapper to 0.11.1 -- correct auth/404 exit-code classification (closes #281) ([#314](https://github.com/joshrotenberg/roba/pull/314))
+
+
+### Tests
+
+- local-only scenario suite -- the codified shakedown (closes #307) ([#311](https://github.com/joshrotenberg/roba/pull/311))
+
+
+
 ## [0.7.0] - 2026-06-11
 
 ### Added
