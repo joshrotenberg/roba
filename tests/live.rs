@@ -1141,6 +1141,49 @@ fn live_bare_succeeds() {
 }
 
 // ---------------------------------------------------------------------------
+// exit: typed exit codes for failure classes (claude-wrapper 0.11.1, #281)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn live_exit_model_not_found_is_failure_not_auth() {
+    // A bogus model 404s. claude-wrapper 0.11.1 (#633) no longer misclassifies
+    // that as auth, so roba returns the generic failure code 1 -- NOT the
+    // auth/usage code 2 (which an orchestrator reads as "halt the fleet").
+    // Deterministic: an unknown model always 404s. Built without `roba_in`
+    // because `--model` rejects multiple occurrences (its haiku default would
+    // collide and produce a usage error, not the 404).
+    let dir = fresh_dir();
+    Command::cargo_bin("roba")
+        .expect("cargo-built roba")
+        .args([
+            "-C",
+            dir.path().to_str().expect("utf-8 path"),
+            "--model",
+            "totally-not-a-model-xyz",
+            "hi",
+        ])
+        .assert()
+        .code(1);
+}
+
+#[test]
+#[ignore]
+fn live_exit_bare_missing_key_is_auth() {
+    // --bare authenticates via ANTHROPIC_API_KEY only. With the key removed,
+    // claude-wrapper 0.11.1 (#633) surfaces the missing key as an auth failure,
+    // so roba returns the auth/usage code 2 -- not the generic 1 it used to.
+    let dir = fresh_dir();
+    let user = empty_user_home();
+    roba_in(dir.path())
+        .env("XDG_CONFIG_HOME", user.path())
+        .env_remove("ANTHROPIC_API_KEY")
+        .args(["--bare", "hi"])
+        .assert()
+        .code(2);
+}
+
+// ---------------------------------------------------------------------------
 // limits: unattended guardrails (--max-turns / --max-budget-usd)
 // ---------------------------------------------------------------------------
 
