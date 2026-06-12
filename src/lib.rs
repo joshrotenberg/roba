@@ -547,6 +547,12 @@ pub fn classify_exit_code(err: &anyhow::Error) -> i32 {
             claude_wrapper::Error::Auth { .. } => 2,
             claude_wrapper::Error::BudgetExceeded { .. } => 3,
             claude_wrapper::Error::Timeout { .. } => 4,
+            // A --max-turns cap-hit is recoverable, not a hard failure: the
+            // tree is usually complete and just needs the lifecycle finished
+            // (gates + commit). A distinct code lets an orchestrator tell that
+            // apart from a generic failure without parsing the trace. (#309;
+            // claude-wrapper 0.12.0 surfaces the typed variant.)
+            claude_wrapper::Error::MaxTurnsExceeded { .. } => 5,
             _ => 1,
         }
     } else {
@@ -612,6 +618,16 @@ mod tests {
             timeout_seconds: 30,
         };
         assert_eq!(classify_exit_code(&anyhow::Error::new(err)), 4);
+    }
+
+    #[test]
+    fn classify_max_turns_returns_5() {
+        let err = claude_wrapper::Error::MaxTurnsExceeded {
+            command: "claude --print".to_string(),
+            exit_code: 1,
+            max_turns: Some(40),
+        };
+        assert_eq!(classify_exit_code(&anyhow::Error::new(err)), 5);
     }
 
     #[test]
