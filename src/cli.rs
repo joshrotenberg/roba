@@ -89,9 +89,17 @@ Configuration (roba.toml):
   `roba profile` and `roba alias` subcommands.";
 
 /// The blurb shown when `roba` is run with no resolvable prompt on a TTY.
-/// Single-sourced from `AFTER_HELP` so the examples never drift.
+///
+/// The header is single-sourced from `CARGO_PKG_DESCRIPTION` so it stays
+/// consistent with the `about` line shown by `-h`/`--help`, and the
+/// examples from `AFTER_HELP` so they never drift. `No prompt given.` sits
+/// on its own line so it reads as the error it is, not as part of the
+/// tagline.
 pub(crate) fn no_prompt_blurb() -> String {
-    format!("roba -- ad-hoc Claude from your shell. No prompt given.\n\n{AFTER_HELP}")
+    format!(
+        "{}\n\nNo prompt given.\n\n{AFTER_HELP}",
+        env!("CARGO_PKG_DESCRIPTION")
+    )
 }
 
 /// Build the styled `--help` trailer from [`AFTER_LONG_HELP`].

@@ -788,6 +788,17 @@ mod tests {
             blurb.contains("roba --help"),
             "expected a `roba --help` pointer, got:\n{blurb}"
         );
+        // The header is single-sourced from the package description, so it
+        // matches the `about` line shown by `-h`/`--help`.
+        assert!(
+            blurb.starts_with(env!("CARGO_PKG_DESCRIPTION")),
+            "expected the blurb to lead with the package description, got:\n{blurb}"
+        );
+        // `No prompt given.` sits on its own line so it reads as the error.
+        assert!(
+            blurb.contains("\nNo prompt given.\n"),
+            "expected `No prompt given.` on its own line, got:\n{blurb}"
+        );
     }
 
     // -- editor preamble + scissors strip ----------------------------------
