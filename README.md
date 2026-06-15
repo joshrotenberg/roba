@@ -217,6 +217,25 @@ system event (`status_category` + `status_detail`) -- a usable done /
 what-happened signal, but it is claude's event passed through, not part
 of roba's versioned ABI.
 
+### Several tasks in one run
+
+roba runs exactly one `claude -p` turn, and a turn can hold many tasks.
+Inside a single invocation the agent loops over tools until it is done,
+so a prompt that lists several tasks gets worked sequentially in that one
+turn -- there is no chaining flag and no special mode. Size the rails to
+the batch: `--max-turns` and `--max-budget-usd` are per-run caps, so
+multi-task work needs more runway than a single edit (a change that
+cascades across files can easily want `--max-turns 80`, not the default).
+A `[profile.worker]` in your `roba.toml` is the usual home for those caps.
+
+What roba does *not* do is span turns. There is no
+fire-a-task / end-the-turn / get-woken-when-it-finishes loop -- that is a
+persistent harness, not `claude -p`. So "many tasks" means
+*synchronously, inside the turn*. The moment your model needs to watch
+async work and react to it across a turn boundary, that is orchestration
+-- a skill, or an external driver firing N roba invocations -- and a
+different tool. In that picture roba is the worker, not the orchestrator.
+
 ### Work that must outlive the caller
 
 A run owns nothing once it returns -- any sub-work still in flight dies
