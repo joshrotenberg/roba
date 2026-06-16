@@ -37,7 +37,7 @@ use crate::cli::{AskArgs, Cli, SubCommand};
 use crate::history::{pick_session_interactive, run_history, run_last};
 use crate::output::{
     default_body, extract_code_blocks, format_footer, looks_like_refusal, path_is_json,
-    should_show_footer,
+    should_show_footer, surface_structured_output,
 };
 use crate::prompt::{
     apply_vars, collect_attachments, collect_git_context, compose_prompt, merge_optional,
@@ -377,7 +377,7 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
 
     let pre_style = render::Style::detect(&args);
     let spinner = pre_style.spinner.then(render::spinner);
-    let result = if args.trace.is_some() {
+    let mut result = if args.trace.is_some() {
         // --trace without --stream: drive the streaming pipeline so the
         // event log can be captured, but suppress all live display and
         // render the final answer exactly as the non-streaming path
@@ -397,6 +397,15 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     };
     if let Some(pb) = spinner {
         pb.finish_and_clear();
+    }
+
+    // #317: with --json-schema, claude returns the schema-constrained answer
+    // as a fenced JSON block in `result.result` and leaves `structured_output`
+    // unset. Surface it cleanly so `--json` consumers get a real
+    // `.result.structured_output` and an unfenced `.result.result`. Gated on
+    // `--json-schema` so a normal answer containing a code block is untouched.
+    if args.json_schema.is_some() {
+        surface_structured_output(&mut result);
     }
 
     let file_path = args.out.as_deref();

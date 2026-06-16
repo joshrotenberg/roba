@@ -460,6 +460,46 @@ fn live_json_schema_accepted() {
 
 #[test]
 #[ignore]
+fn live_json_schema_structured_output_clean() {
+    // #317: with --json --json-schema, roba surfaces the structured answer
+    // cleanly. Assert MECHANICS roba controls: `.result.result` is not a
+    // raw fenced code block, and if `.result.structured_output` is present
+    // it parses as a JSON value (object/array). We do NOT assert the model
+    // obeyed the schema -- only that whatever it returned is delivered
+    // un-fenced and addressable.
+    let dir = fresh_dir();
+    let schema_path = dir.path().join("schema.json");
+    std::fs::write(
+        &schema_path,
+        r#"{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}"#,
+    )
+    .expect("write schema");
+
+    let out = roba_in(dir.path())
+        .args(["--json", "--json-schema"])
+        .arg(&schema_path)
+        .arg("capital of France?")
+        .output()
+        .expect("json-schema run");
+
+    assert!(out.status.success(), "roba failed: {out:?}");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("--json produced non-JSON stdout");
+    let body = parsed["result"]["result"].as_str().unwrap_or_default();
+    assert!(
+        !body.trim_start().starts_with("```"),
+        "result body should be unfenced, got: {body}"
+    );
+    if let Some(so) = parsed["result"].get("structured_output") {
+        assert!(
+            so.is_object() || so.is_array(),
+            "structured_output should be a JSON value, got: {so}"
+        );
+    }
+}
+
+#[test]
+#[ignore]
 fn live_json_schema_default_render() {
     // --json-schema with NO --json: the validated answer lands in
     // structured_output (the textual result is empty), and roba's default

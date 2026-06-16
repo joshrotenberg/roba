@@ -203,7 +203,7 @@ Worker flags:
 
 | Flag | Does |
 |---|---|
-| `--json-schema PATH` | schema-validated model output; roba reads the file and inlines it (claude's flag wants inline JSON); surfaces under `.result.*`, no extra output flag needed |
+| `--json-schema PATH` | schema-validated model output; roba reads the file and inlines it (claude's flag wants inline JSON). With `--json`, the answer is surfaced clean: `.result.structured_output` holds the parsed object and `.result.result` is unfenced -- no `\| jq '.result.result' \| sed ... \| jq` fence-stripping needed |
 | `--max-turns N`, `--max-budget-usd USD` | rails for unattended loops; hitting a cap errors the run (exit `1`) |
 | `--no-retry` | surface transient failures immediately; the caller owns retry |
 | `--trace PATH` | the spawned session's events as JSONL -- watch a run in flight |
