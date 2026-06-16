@@ -225,7 +225,7 @@ mod tests {
             checked += 1;
         }
         assert!(
-            checked >= 2,
+            checked >= 3,
             "expected the shipped example bundles, found {checked}"
         );
     }

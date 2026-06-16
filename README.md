@@ -165,8 +165,11 @@ in your project. Inspect with `roba profile {list,show,active}` and
 For ready-to-copy setups, [`examples/`](examples/) carries vetted bundles
 (each parse-tested in CI): [`roba-rust-dispatch.toml`](examples/roba-rust-dispatch.toml)
 -- a worker-dispatch config proven on a real backlog run, with `fix` and
-`design` aliases -- and [`roba-reviewer.toml`](examples/roba-reviewer.toml),
-an enforced read-only, schema-validated reviewer in a few lines of TOML.
+`design` aliases; [`roba-reviewer.toml`](examples/roba-reviewer.toml), an
+enforced read-only, schema-validated reviewer in a few lines of TOML; and
+[`roba-multi-task-worker.toml`](examples/roba-multi-task-worker.toml), a
+worker sized to chew through a task list in one run (the one-turn-many-tasks
+pattern).
 
 ## For agents & scripts
 
