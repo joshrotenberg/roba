@@ -11,10 +11,28 @@
 //! warn on the unused ones.
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use tempfile::TempDir;
+
+/// Run `roba` against `dir` via `-C`, defaulting to the haiku model.
+/// Tests that need a specific model can append `--model <id>` later;
+/// clap's last-occurrence-wins semantics applies.
+pub fn roba_in(dir: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("roba").expect("cargo-built roba binary");
+    cmd.args([
+        "-C",
+        dir.to_str().expect("utf-8 tempdir path"),
+        "--model",
+        "haiku",
+    ]);
+    cmd
+}
+
+pub fn fresh_dir() -> tempfile::TempDir {
+    tempfile::tempdir().expect("create test tempdir")
+}
 
 /// A synthetic project on disk with an isolated config environment.
 ///

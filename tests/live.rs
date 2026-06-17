@@ -29,25 +29,9 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
-use std::path::Path;
 
-/// Run `roba` against `dir` via `-C`, defaulting to the haiku model.
-/// Tests that need a specific model can append `--model <id>` later;
-/// clap's last-occurrence-wins semantics applies.
-fn roba_in(dir: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("roba").expect("cargo-built roba binary");
-    cmd.args([
-        "-C",
-        dir.to_str().expect("utf-8 tempdir path"),
-        "--model",
-        "haiku",
-    ]);
-    cmd
-}
-
-fn fresh_dir() -> tempfile::TempDir {
-    tempfile::tempdir().expect("create test tempdir")
-}
+mod common;
+use common::{fresh_dir, roba_in};
 
 /// Make a tempdir pre-seeded with a `roba.toml`. Adds a `.git`
 /// marker so the config walk-up stops at the tempdir boundary

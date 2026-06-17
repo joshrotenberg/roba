@@ -47,19 +47,8 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::Path;
 
-/// Run `roba` against `dir` via `-C`, defaulting to the haiku model.
-/// For the ask path (a prompt). Subcommands (`show`, etc.) reject
-/// `--model`, so use [`roba_sub`] for those.
-fn roba_in(dir: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("roba").expect("cargo-built roba binary");
-    cmd.args([
-        "-C",
-        dir.to_str().expect("utf-8 tempdir path"),
-        "--model",
-        "haiku",
-    ]);
-    cmd
-}
+mod common;
+use common::{fresh_dir, roba_in};
 
 /// Run a roba *subcommand* against `dir` via `-C` (no `--model`, which
 /// only the ask path accepts). Use for `show`, `history`, etc.
@@ -67,10 +56,6 @@ fn roba_sub(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("roba").expect("cargo-built roba binary");
     cmd.args(["-C", dir.to_str().expect("utf-8 tempdir path")]);
     cmd
-}
-
-fn fresh_dir() -> tempfile::TempDir {
-    tempfile::tempdir().expect("create test tempdir")
 }
 
 /// True if `s` looks like a v4-shaped UUID (`8-4-4-4-12` hex). Used to
