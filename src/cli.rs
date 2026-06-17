@@ -1173,6 +1173,20 @@ pub struct AskArgs {
     )]
     pub worktree: Option<Option<String>>,
 
+    /// Force worktree OFF for this run, overriding a config-set worktree.
+    ///
+    /// A config (top-level or profile) `worktree = true` otherwise applies
+    /// to every run with no per-run escape -- `--worktree`/`-w` and
+    /// `ROBA_WORKTREE` only turn it ON. This is that escape: it nulls any
+    /// config/env-set worktree so the run uses the main checkout. Conflicts
+    /// with `--worktree`/`-w`. Also settable via `ROBA_NO_WORKTREE` (truthy).
+    #[arg(
+        long = "no-worktree",
+        conflicts_with = "worktree",
+        help_heading = "Sessions"
+    )]
+    pub no_worktree: bool,
+
     /// Pin a specific claude-code subagent for this run.
     ///
     /// The named subagent must exist in `.claude/agents/NAME.md` in the
@@ -1523,6 +1537,22 @@ mod tests {
         use clap::Parser;
         let cli = Cli::try_parse_from(["roba", "do thing"]).unwrap();
         assert!(cli.ask.worktree.is_none());
+    }
+
+    #[test]
+    fn no_worktree_alone_parses() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--no-worktree", "do thing"]).unwrap();
+        assert!(cli.ask.no_worktree);
+        assert!(cli.ask.worktree.is_none());
+    }
+
+    #[test]
+    fn no_worktree_conflicts_with_worktree() {
+        use clap::Parser;
+        // --worktree and --no-worktree are mutually exclusive.
+        assert!(Cli::try_parse_from(["roba", "--worktree", "--no-worktree", "do thing"]).is_err());
+        assert!(Cli::try_parse_from(["roba", "-w", "--no-worktree", "do thing"]).is_err());
     }
 
     #[test]
