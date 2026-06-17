@@ -14,6 +14,47 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-17
+
+### Added
+
+- warn when -c/--resume resolves with an anonymous --worktree (closes #328) ([#331](https://github.com/joshrotenberg/roba/pull/331))
+- roba config show -- merged-pool view (refs #330) ([#334](https://github.com/joshrotenberg/roba/pull/334))
+- roba config show --sources -- effective config + per-key provenance (closes #330) ([#335](https://github.com/joshrotenberg/roba/pull/335))
+- --no-worktree to override a config-set worktree off (closes #332) ([#339](https://github.com/joshrotenberg/roba/pull/339))
+- config lint -- warn on top-level loaded guns + a warning severity tier (closes #340) ([#341](https://github.com/joshrotenberg/roba/pull/341))
+
+
+### Changed
+
+- de-dup roba_in/fresh_dir onto the shared tests/common builder (refs #337) ([#342](https://github.com/joshrotenberg/roba/pull/342))
+
+
+### Documentation
+
+- name the multi-task limitation -- one turn, many tasks ([#322](https://github.com/joshrotenberg/roba/pull/322))
+- add multi-task worker example bundle (closes #323) ([#326](https://github.com/joshrotenberg/roba/pull/326))
+
+
+### Fixed
+
+- consistent no-prompt blurb header, error on its own line ([#319](https://github.com/joshrotenberg/roba/pull/319))
+- surface --json-schema structured output cleanly (closes #317) ([#325](https://github.com/joshrotenberg/roba/pull/325))
+- lead claude-command-failed errors with the cause; preflight --worktree in non-git dirs (closes #327) ([#333](https://github.com/joshrotenberg/roba/pull/333))
+- config init -- steer off top-level loaded guns + plan-as-aliases, inject inherited pool (closes #329) ([#336](https://github.com/joshrotenberg/roba/pull/336))
+
+
+### Maintenance
+
+- bump claude-wrapper to 0.12.1 (closes #321) ([#324](https://github.com/joshrotenberg/roba/pull/324))
+
+
+### Tests
+
+- pretend-project fixture builder + mechanical config-show scenarios (refs #337) ([#338](https://github.com/joshrotenberg/roba/pull/338))
+
+
+
 ## [0.7.1] - 2026-06-12
 
 ### Added

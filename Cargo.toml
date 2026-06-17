@@ -1,6 +1,6 @@
 [package]
 name = "roba"
-version = "0.7.1"
+version = "0.8.0"
 edition = "2024"
 # No rust-version floor: roba is a binary (nobody depends on it as a
 # library), so it tracks recent stable rather than carrying an MSRV.
