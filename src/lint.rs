@@ -4,23 +4,30 @@
 //! *parses*; lint extends the bar toward "wouldn't immediately warn." It
 //! runs every STATICALLY-knowable check over the discovered config pool
 //! (default) or a single named file, and reports findings with a typed
-//! exit (0 clean / 1 any finding) in both human and `--json` modes.
+//! exit (0 when no ERROR findings -- warnings are advisory and pass; 1 on
+//! any error) in both human and `--json` modes.
 //!
 //! The checks, per config file in scope:
 //!
-//! 1. **Parse** -- through roba's REAL per-file deserializer
+//! 1. **Parse** (error) -- through roba's REAL per-file deserializer
 //!    ([`profile::pool::parse_config_str`], `deny_unknown_fields` on every
 //!    section). A parse error IS a finding; the remaining checks are
 //!    skipped for that file.
-//! 2. **Built-in shadowing** -- an `[alias.NAME]` whose NAME is a built-in
-//!    subcommand is shadowed by the built-in and never dispatches.
-//! 3. **Pinned-agent existence** -- an `agent = "NAME"` in a `[profile.*]`
-//!    or `[alias.*]` whose agent file does not resolve locally.
-//! 4. **Pinned-agent tool mismatch (best-effort)** -- a pinned agent that
-//!    declares tools (Bash/Edit/Write/...) beyond what the entry's own
+//! 2. **Built-in shadowing** (error) -- an `[alias.NAME]` whose NAME is a
+//!    built-in subcommand is shadowed by the built-in and never dispatches.
+//! 3. **Pinned-agent existence** (error) -- an `agent = "NAME"` in a
+//!    `[profile.*]` or `[alias.*]` whose agent file does not resolve
+//!    locally.
+//! 4. **Pinned-agent tool mismatch** (error, best-effort) -- a pinned agent
+//!    that declares tools (Bash/Edit/Write/...) beyond what the entry's own
 //!    flags would grant, surfaced with the intent-respecting hint. For a
 //!    profile the posture maps from its typed fields; for an alias it is
 //!    parsed from its `flags` (skipped when those flags don't parse).
+//! 5. **Top-level loaded guns** (warning) -- a top-level `worktree` or
+//!    `full_auto` is a task-scoped knob that auto-applies to every run
+//!    (top-level `worktree` also silently defeats `-c`/`--resume`); it
+//!    belongs in a named `[profile.NAME]`. Advisory -- the config parses
+//!    and works, so this does NOT fail the exit code.
 //!
 //! # Honest limits
 //!
@@ -37,26 +44,49 @@ use serde::Serialize;
 use crate::agent_check::{self, Posture};
 use crate::aliases::{self, Alias};
 use crate::cli::ConfigLintArgs;
-use crate::profile::{self, Profile};
+use crate::profile::{self, Profile, WorktreeSetting};
 
-/// One lint finding: which file, which rule, a human-readable message,
-/// and an optional actionable hint. Serialized into the `--json`
-/// envelope; the hint is omitted when absent.
+/// Finding severity. `Error` fails the lint (exit 1); `Warning` is an
+/// advisory that is surfaced but still passes (exit 0), mirroring how
+/// `roba doctor` treats warnings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Severity {
+    Error,
+    Warning,
+}
+
+/// One lint finding: which file, which rule, its severity, a
+/// human-readable message, and an optional actionable hint. Serialized
+/// into the `--json` envelope; the hint is omitted when absent.
 #[derive(Debug, Serialize)]
 struct Finding {
     file: String,
     rule: &'static str,
+    severity: Severity,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     hint: Option<String>,
 }
 
 /// The `--json` `result` payload: the findings plus a top-level `ok`
-/// flag (true exactly when there are no findings).
+/// flag. `ok` tracks the EXIT -- true exactly when there are no ERROR
+/// findings, so it can be true while advisory warnings are present (lint
+/// passed with advisories).
 #[derive(Debug, Serialize)]
 struct Report {
     findings: Vec<Finding>,
     ok: bool,
+}
+
+/// The process exit code for a finding set: 1 iff any finding is an
+/// `Error`, else 0 (clean or warnings-only).
+fn exit_code(findings: &[Finding]) -> i32 {
+    if findings.iter().any(|f| f.severity == Severity::Error) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Run `roba config lint [PATH] [--json]`. Returns the process exit code
@@ -78,8 +108,10 @@ pub fn run(args: ConfigLintArgs) -> Result<i32> {
     for file in &files {
         lint_file(file, &cwd, &mut findings);
     }
-    let ok = findings.is_empty();
-    let exit = if ok { 0 } else { 1 };
+    let exit = exit_code(&findings);
+    // `ok` tracks the EXIT (no error findings), so it stays true when only
+    // advisory warnings are present.
+    let ok = exit == 0;
 
     if args.json {
         let report = Report { findings, ok };
@@ -118,6 +150,7 @@ fn lint_file(path: &Path, cwd: &Path, findings: &mut Vec<Finding>) {
             findings.push(Finding {
                 file,
                 rule: "read",
+                severity: Severity::Error,
                 message: format!("could not read file: {e}"),
                 hint: None,
             });
@@ -133,12 +166,46 @@ fn lint_file(path: &Path, cwd: &Path, findings: &mut Vec<Finding>) {
             findings.push(Finding {
                 file,
                 rule: "parse",
+                severity: Severity::Error,
                 message: format!("{e:#}"),
                 hint: Some("fix the TOML / remove the unknown key so the file loads".to_string()),
             });
             return;
         }
     };
+
+    // Check 5 (advisory): top-level loaded guns. A `worktree`/`full_auto`
+    // at the TOP LEVEL (`cfg.defaults`) auto-applies to every run in the
+    // repo; the same key inside a `[profile.*]`/`[alias.*]` is fine (and is
+    // not inspected here -- we only read `cfg.defaults`). Warnings, not
+    // errors: the config parses and works, so this never fails the exit.
+    if matches!(
+        cfg.defaults.worktree,
+        Some(WorktreeSetting::Enabled(true)) | Some(WorktreeSetting::Named(_))
+    ) {
+        findings.push(Finding {
+            file: file.clone(),
+            rule: "top-level-worktree",
+            severity: Severity::Warning,
+            message: "top-level `worktree` auto-applies to every run and silently defeats `-c`/`--resume`; move it to a named [profile.NAME]".to_string(),
+            hint: Some(
+                "e.g. put `worktree = true` under `[profile.worker]` and opt in with `--profile worker`"
+                    .to_string(),
+            ),
+        });
+    }
+    if cfg.defaults.full_auto == Some(true) {
+        findings.push(Finding {
+            file: file.clone(),
+            rule: "top-level-full-auto",
+            severity: Severity::Warning,
+            message: "top-level `full_auto` bypasses all permission checks on every run (safe-by-default off); move it to a named [profile.NAME]".to_string(),
+            hint: Some(
+                "e.g. put `full_auto = true` under `[profile.worker]` and opt in with `--profile worker`"
+                    .to_string(),
+            ),
+        });
+    }
 
     // Check 2: built-in shadowing -- an alias whose name is a built-in
     // subcommand is unreachable as a verb (the built-in wins the lookup).
@@ -149,6 +216,7 @@ fn lint_file(path: &Path, cwd: &Path, findings: &mut Vec<Finding>) {
             findings.push(Finding {
                 file: file.clone(),
                 rule: "builtin-shadow",
+                severity: Severity::Error,
                 message: format!(
                     "alias `{name}` is shadowed by the built-in `{name}` subcommand; it never dispatches"
                 ),
@@ -206,6 +274,7 @@ fn check_pinned_agent(
         findings.push(Finding {
             file: file.to_string(),
             rule: "missing-agent",
+            severity: Severity::Error,
             message: format!("{source}: pinned agent `{agent}` not found"),
             hint: Some(
                 "check the name, or that the agent exists under .claude/agents/ (project or ~)"
@@ -230,6 +299,7 @@ fn check_pinned_agent(
         findings.push(Finding {
             file: file.to_string(),
             rule: "agent-tool-mismatch",
+            severity: Severity::Error,
             message: format!(
                 "{source}: agent `{agent}` declares tools not granted by this entry's flags: [{}]",
                 missing.join(", ")
@@ -287,14 +357,35 @@ fn render_human(findings: &[Finding], files: &[PathBuf]) {
             println!("{}", f.file);
             current = Some(f.file.as_str());
         }
-        println!("  [{}] {}", f.rule, f.message);
+        let sev = match f.severity {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+        };
+        println!("  {sev}: [{}] {}", f.rule, f.message);
         if let Some(hint) = &f.hint {
             println!("    hint: {hint}");
         }
     }
+
     let n = findings.len();
+    let errors = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Error)
+        .count();
+    let warnings = n - errors;
     let plural = if n == 1 { "" } else { "s" };
-    println!("\n{n} issue{plural} found");
+    let breakdown = format!(
+        "{errors} error{}, {warnings} warning{}",
+        if errors == 1 { "" } else { "s" },
+        if warnings == 1 { "" } else { "s" }
+    );
+    if errors == 0 {
+        // Warnings-only: lint passes (exit 0); say so explicitly.
+        let noun = if n == 1 { "advisory" } else { "advisories" };
+        println!("\n{n} {noun} found ({breakdown}); no errors -- lint passes");
+    } else {
+        println!("\n{n} issue{plural} found ({breakdown})");
+    }
 }
 
 #[cfg(test)]
@@ -457,6 +548,96 @@ mod tests {
             ..Alias::default()
         };
         assert!(alias_posture(&alias).is_none());
+    }
+
+    #[test]
+    fn top_level_worktree_true_is_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let findings = findings_for(dir.path(), "worktree = true\n");
+        assert_eq!(findings.len(), 1, "got: {findings:?}");
+        assert_eq!(findings[0].rule, "top-level-worktree");
+        assert_eq!(findings[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn top_level_named_worktree_is_also_flagged() {
+        let dir = tempfile::tempdir().unwrap();
+        let findings = findings_for(dir.path(), "worktree = \"mybranch\"\n");
+        assert_eq!(findings.len(), 1, "got: {findings:?}");
+        assert_eq!(findings[0].rule, "top-level-worktree");
+        assert_eq!(findings[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn nested_worktree_in_profile_is_not_flagged() {
+        let dir = tempfile::tempdir().unwrap();
+        let findings = findings_for(dir.path(), "[profile.worker]\nworktree = true\n");
+        assert!(
+            findings.iter().all(|f| f.rule != "top-level-worktree"),
+            "nested worktree must not be flagged: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn top_level_full_auto_is_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let findings = findings_for(dir.path(), "full_auto = true\n");
+        assert_eq!(findings.len(), 1, "got: {findings:?}");
+        assert_eq!(findings[0].rule, "top-level-full-auto");
+        assert_eq!(findings[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn nested_full_auto_in_profile_is_not_flagged() {
+        let dir = tempfile::tempdir().unwrap();
+        let findings = findings_for(dir.path(), "[profile.worker]\nfull_auto = true\n");
+        assert!(
+            findings.iter().all(|f| f.rule != "top-level-full-auto"),
+            "nested full_auto must not be flagged: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn top_level_full_auto_false_is_not_flagged() {
+        let dir = tempfile::tempdir().unwrap();
+        let findings = findings_for(dir.path(), "full_auto = false\n");
+        assert!(
+            findings.iter().all(|f| f.rule != "top-level-full-auto"),
+            "a top-level false is pointless but not a loaded gun: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn exit_code_distinguishes_errors_warnings_and_clean() {
+        // Empty -> clean -> 0.
+        assert_eq!(exit_code(&[]), 0);
+        // Warnings-only -> still passes -> 0.
+        let warnings = vec![Finding {
+            file: "f".to_string(),
+            rule: "top-level-worktree",
+            severity: Severity::Warning,
+            message: "w".to_string(),
+            hint: None,
+        }];
+        assert_eq!(exit_code(&warnings), 0);
+        // Any error -> 1.
+        let with_error = vec![
+            Finding {
+                file: "f".to_string(),
+                rule: "top-level-worktree",
+                severity: Severity::Warning,
+                message: "w".to_string(),
+                hint: None,
+            },
+            Finding {
+                file: "f".to_string(),
+                rule: "parse",
+                severity: Severity::Error,
+                message: "e".to_string(),
+                hint: None,
+            },
+        ];
+        assert_eq!(exit_code(&with_error), 1);
     }
 
     #[test]

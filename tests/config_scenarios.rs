@@ -139,3 +139,21 @@ fn a2_sources_surfaces_top_level_worktree_footgun() {
         "worktree should attribute to the project file: {worktree}"
     );
 }
+
+#[test]
+fn a3_lint_warns_on_top_level_worktree_but_still_passes() {
+    // The verification-side complement to A2 (#340): `config lint` flags the
+    // same top-level `worktree` footgun as an ADVISORY warning -- surfaced on
+    // stdout, but exit 0 (the config parses and works, so a suggestion must
+    // not fail CI; mirrors `roba doctor`).
+    project()
+        .project_toml("worktree = true\n")
+        .build()
+        .roba()
+        .args(["config", "lint"])
+        .env_remove("ROBA_WORKTREE")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("top-level-worktree"))
+        .stdout(predicate::str::contains("lint passes"));
+}

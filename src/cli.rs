@@ -511,11 +511,14 @@ pub enum ConfigCmd {
     ///
     /// Runs every STATICALLY-knowable check over the discovered config
     /// pool (default) or a single PATH, and reports findings with a typed
-    /// exit: 0 when clean, 1 when any finding. For each file it parses via
-    /// roba's real deserializer (a parse error is itself a finding), then
-    /// flags built-in-shadowing aliases, pinned agents that don't resolve,
-    /// and (best-effort) a pinned agent whose declared tools exceed the
-    /// posture the entry's own flags would grant.
+    /// exit: 0 when no ERROR findings (warnings are advisory and pass), 1
+    /// on any error. For each file it parses via roba's real deserializer
+    /// (a parse error is itself a finding), then flags built-in-shadowing
+    /// aliases, pinned agents that don't resolve, and (best-effort) a
+    /// pinned agent whose declared tools exceed the posture the entry's own
+    /// flags would grant. As an advisory WARNING, it also flags a top-level
+    /// `worktree`/`full_auto` -- a task-scoped loaded gun that belongs in a
+    /// named `[profile.NAME]`, not auto-applied to every run.
     ///
     /// Honest limits: lint-clean now does not guarantee warning-free at
     /// run time elsewhere -- agent files, the surrounding pool, and env
@@ -558,7 +561,9 @@ pub struct ConfigLintArgs {
     /// Emit JSON instead of a human findings list.
     ///
     /// Output is the uniform `{ version: 1, result: { findings, ok } }`
-    /// envelope. Exit is 0 when clean, 1 when any finding -- in both modes.
+    /// envelope; each finding carries a `severity` (`error`/`warning`).
+    /// Exit is 0 when no error findings (warnings pass), 1 on any error --
+    /// in both modes.
     #[arg(long)]
     pub json: bool,
 }
