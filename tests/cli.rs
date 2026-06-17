@@ -347,6 +347,180 @@ fn config_show_json_emits_versioned_envelope() {
 }
 
 #[test]
+fn config_show_sources_attributes_each_key_to_its_winning_layer() {
+    // EFFECTIVE view: a user file sets full_auto, a project file overrides
+    // model (closer wins over the farther user file), and the auto-applied
+    // [profile.default] sets max_turns. Each line is attributed to the
+    // layer that won it.
+    let user_home = tempfile::tempdir().expect("user home");
+    std::fs::write(
+        user_home.path().join("roba.toml"),
+        "full_auto = true\nmodel = \"sonnet\"\n",
+    )
+    .expect("write user config");
+    let project = make_dir_with_files(&[
+        (".git/HEAD", ""),
+        (
+            "roba.toml",
+            "model = \"opus\"\n\n[profile.default]\nmax_turns = 80\n",
+        ),
+    ]);
+    let assert = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "config",
+            "show",
+            "--sources",
+        ])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .env_remove("ROBA_MODEL")
+        .env_remove("ROBA_FULL_AUTO")
+        .env_remove("ROBA_MAX_TURNS")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+
+    // full_auto: only the farther user file set it.
+    let full_auto = stdout
+        .lines()
+        .find(|l| l.starts_with("full_auto ="))
+        .unwrap_or_else(|| panic!("no full_auto line in:\n{stdout}"));
+    assert!(full_auto.contains("full_auto = true"), "{full_auto}");
+    assert!(
+        full_auto.contains(&user_home.path().display().to_string()),
+        "full_auto should attribute to the user file: {full_auto}"
+    );
+
+    // model: the closer project file wins over the farther user file.
+    let model = stdout
+        .lines()
+        .find(|l| l.starts_with("model ="))
+        .unwrap_or_else(|| panic!("no model line in:\n{stdout}"));
+    assert!(model.contains("model = \"opus\""), "{model}");
+    assert!(
+        model.contains(&project.path().display().to_string()),
+        "model should attribute to the closer project file: {model}"
+    );
+
+    // max_turns: from the auto-applied profile.
+    assert!(
+        stdout.contains("max_turns = 80  # [profile.default]"),
+        "got:\n{stdout}"
+    );
+}
+
+#[test]
+fn config_show_sources_single_key_prints_only_that_key() {
+    let user_home = tempfile::tempdir().expect("user home");
+    let project = make_dir_with_files(&[
+        (".git/HEAD", ""),
+        ("roba.toml", "readonly = true\nmodel = \"opus\"\n"),
+    ]);
+    roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "config",
+            "show",
+            "--sources",
+            "model",
+        ])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .env_remove("ROBA_MODEL")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("model = \"opus\""))
+        // Only the requested key prints.
+        .stdout(predicate::str::contains("readonly").not());
+}
+
+#[test]
+fn config_show_sources_attributes_env_layer() {
+    // A ROBA_* env override is the highest config layer and is attributed
+    // to `env (ROBA_X)`.
+    let user_home = tempfile::tempdir().expect("user home");
+    let project = make_dir_with_files(&[(".git/HEAD", "")]);
+    roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "config",
+            "show",
+            "--sources",
+        ])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .env("ROBA_WORKTREE", "1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "worktree = true  # env (ROBA_WORKTREE)",
+        ));
+}
+
+#[test]
+fn config_show_sources_unset_key_reports_to_stderr() {
+    // A key set by no layer is genuinely unset (claude's own default
+    // applies): a stderr note, byte-clean stdout, exit 0.
+    let user_home = tempfile::tempdir().expect("user home");
+    let project = make_dir_with_files(&[(".git/HEAD", ""), ("roba.toml", "readonly = true\n")]);
+    roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "config",
+            "show",
+            "--sources",
+            "max_budget_usd",
+        ])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "max_budget_usd is not set by any config layer",
+        ));
+}
+
+#[test]
+fn config_show_sources_json_emits_versioned_envelope() {
+    let user_home = tempfile::tempdir().expect("user home");
+    let project = make_dir_with_files(&[
+        (".git/HEAD", ""),
+        ("roba.toml", "readonly = true\nmodel = \"opus\"\n"),
+    ]);
+    let assert = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "config",
+            "show",
+            "--sources",
+            "--json",
+        ])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .env_remove("ROBA_MODEL")
+        .assert()
+        .success();
+    let out = &assert.get_output().stdout;
+    let json: serde_json::Value = serde_json::from_slice(out).expect("valid JSON");
+    assert_eq!(json["version"], 1);
+    assert_eq!(json["result"]["effective"]["model"]["value"], "opus");
+    assert!(
+        json["result"]["effective"]["model"]["source"]
+            .as_str()
+            .unwrap()
+            .contains("roba.toml"),
+        "got: {json}"
+    );
+}
+
+#[test]
 fn dash_with_empty_stdin_errors() {
     roba()
         .arg("-")

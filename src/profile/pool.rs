@@ -195,6 +195,36 @@ pub fn load_pool() -> Result<Pool> {
     load_pool_from(&cwd)
 }
 
+/// The ordered config layers (source path + parsed file) for `cwd`,
+/// lowest precedence first -- the SAME order [`load_pool_from`] merges
+/// (user config, then the project chain farther-from-cwd first).
+///
+/// Exposed for `roba config show --sources`, which needs PER-FILE
+/// attribution that the merged [`Pool`] has lost: knowing a key's final
+/// value is not enough, you also have to know which file set it.
+pub(crate) fn load_layers_from(cwd: &Path) -> Result<Vec<(PathBuf, ConfigFile)>> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    if let Some(user) = user_config_path()
+        && user.is_file()
+    {
+        paths.push(user);
+    }
+    paths.extend(discover_project_configs(cwd));
+
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        let cfg = load_file(&path)?;
+        out.push((path, cfg));
+    }
+    Ok(out)
+}
+
+/// Convenience: load the per-file layers keyed off the current cwd.
+pub(crate) fn load_layers() -> Result<Vec<(PathBuf, ConfigFile)>> {
+    let cwd = std::env::current_dir().context("getting current dir")?;
+    load_layers_from(&cwd)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

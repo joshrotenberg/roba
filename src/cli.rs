@@ -524,15 +524,24 @@ pub enum ConfigCmd {
     Lint(ConfigLintArgs),
     /// Show the merged config for the cwd (read-only).
     ///
-    /// Prints the whole config pool -- your user config plus every
-    /// `roba.toml` walking up to the git root, closer-to-cwd winning --
-    /// merged into one canonical roba.toml: the top-level defaults first,
-    /// then every `[profile.NAME]`, `[alias.NAME]`, and a `[session]`
-    /// table when non-empty. The "what you'd have if the whole pool were
-    /// one file" view, so you stop merging several files in your head.
+    /// Default (the STRUCTURAL view): prints the whole config pool -- your
+    /// user config plus every `roba.toml` walking up to the git root,
+    /// closer-to-cwd winning -- merged into one canonical roba.toml: the
+    /// top-level defaults first, then every `[profile.NAME]`,
+    /// `[alias.NAME]`, and a `[session]` table when non-empty. The "what
+    /// you'd have if the whole pool were one file" view, so you stop
+    /// merging several files in your head.
     ///
-    /// stdout is the merged TOML only (byte-clean, re-parseable); a short
-    /// header naming the auto-applied profile and the source files goes to
+    /// `--sources` (the EFFECTIVE view): instead prints the final
+    /// top-level knob values a bare `roba "..."` in this cwd would start
+    /// from, after collapsing every config layer (each file's top-level
+    /// keys, then the auto-applied profile, then `ROBA_*` env), with each
+    /// line annotated by the layer that won it. `--sources KEY` narrows it
+    /// to a single key (the "why is worktree on?" answer). Only keys some
+    /// layer actually set are shown.
+    ///
+    /// stdout is the body only (byte-clean, re-parseable); a short header
+    /// naming the auto-applied profile and the source files goes to
     /// stderr. `--json` emits the uniform `{ version: 1, result }`
     /// envelope on stdout instead.
     Show(ConfigShowArgs),
@@ -556,11 +565,24 @@ pub struct ConfigLintArgs {
 
 #[derive(ClapArgs, Debug)]
 pub struct ConfigShowArgs {
+    /// Show the effective top-level config with per-key provenance.
+    ///
+    /// Bare `--sources` prints every set top-level knob as
+    /// `key = value  # <source>`, where the source names the layer that
+    /// won it (a specific `roba.toml`, the auto-applied `[profile.NAME]`,
+    /// or `env (ROBA_X)`). `--sources KEY` prints just that one key (and
+    /// reports to stderr when KEY is set by no layer). Without this flag,
+    /// `config show` prints the structural merged-pool view instead.
+    #[arg(long, num_args = 0..=1, value_name = "KEY")]
+    pub sources: Option<Option<String>>,
+
     /// Emit the merged config as JSON instead of canonical TOML.
     ///
-    /// Output is the uniform `{ version: 1, result }` envelope, where
-    /// `result` carries the active profile, the source files, the merged
-    /// defaults, and the merged profile/alias/session maps. stdout only.
+    /// Output is the uniform `{ version: 1, result }` envelope. For the
+    /// default view `result` carries the active profile, the source files,
+    /// the merged defaults, and the merged profile/alias/session maps. With
+    /// `--sources` it carries `{ effective: { KEY: { value, source } } }`.
+    /// stdout only.
     #[arg(long)]
     pub json: bool,
 }
