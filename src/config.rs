@@ -18,15 +18,16 @@
 //! everything else goes to stderr. No retry loop: an invalid draft fails
 //! loud with the deserializer error plus the raw model output.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
+use toml::Value;
 
 use crate::aliases::{self, Alias};
 use crate::cli::{ConfigInitArgs, ConfigShowArgs};
-use crate::profile::{self, Pool, Profile};
+use crate::profile::{self, ConfigFile, Pool, Profile};
 
 /// Run `roba config init [DESCRIPTION] [--write [PATH]] [--model NAME]`.
 pub async fn run_init(args: ConfigInitArgs) -> Result<()> {
@@ -77,10 +78,14 @@ pub async fn run_init(args: ConfigInitArgs) -> Result<()> {
 /// `--json` swaps the TOML body for the uniform `{ version: 1, result }`
 /// envelope on stdout.
 ///
-/// Part 1 of #330 -- the structural/merged view only. Per-key provenance
-/// (`--sources`) and an effective-collapse-with-env depth are deferred to
-/// part 2.
+/// With `--sources`, the EFFECTIVE/provenance view is produced by
+/// `run_show_sources` instead (part 2 of #330). Without it, this is the
+/// part-1 structural/merged view.
 pub fn run_show(args: ConfigShowArgs) -> Result<()> {
+    if args.sources.is_some() {
+        return run_show_sources(args);
+    }
+
     let pool = profile::load_pool()?;
     let active = profile::cmd::active_profile(&pool)?;
 
@@ -88,9 +93,16 @@ pub fn run_show(args: ConfigShowArgs) -> Result<()> {
         return emit_json(&pool, active.map(|(name, _)| name));
     }
 
-    // Header is METADATA -> stderr, so stdout stays a clean, pipeable
-    // roba.toml (`roba config show > roba.toml` is valid).
-    match &active {
+    print_show_header(&active, &pool);
+    print!("{}", render_merged_pool(&pool)?);
+    Ok(())
+}
+
+/// Print the shared `config show` header to STDERR (metadata, so stdout
+/// stays a clean, pipeable body). Names the auto-applied profile and the
+/// source files that contributed.
+fn print_show_header(active: &Option<(String, &'static str)>, pool: &Pool) {
+    match active {
         Some((name, reason)) => eprintln!("active profile: {name} ({reason})"),
         None => eprintln!("no profile auto-applies"),
     }
@@ -102,9 +114,326 @@ pub fn run_show(args: ConfigShowArgs) -> Result<()> {
             eprintln!("  {}", s.display());
         }
     }
+}
 
-    print!("{}", render_merged_pool(&pool)?);
+/// Run `roba config show --sources [KEY]`: the EFFECTIVE top-level config
+/// with per-key provenance (part 2 of #330).
+///
+/// Collapses every config layer -- each file's top-level keys (farther-
+/// from-cwd first), then the auto-applied `[profile.NAME]`, then the
+/// `ROBA_*` env overrides -- into the final value a bare `roba "..."` in
+/// this cwd would start from, annotating each key with the layer that won
+/// it. Bare `--sources` prints all set keys; `--sources KEY` prints one.
+fn run_show_sources(args: ConfigShowArgs) -> Result<()> {
+    let key_filter = args.sources.clone().flatten();
+
+    let pool = profile::load_pool()?;
+    let active = profile::cmd::active_profile(&pool)?;
+    let layers = profile::pool::load_layers()?;
+    let env: HashMap<String, String> = std::env::vars().collect();
+
+    let (effective, unattributed) = compute_effective(&layers, &active, &pool, &env)?;
+
+    if args.json {
+        return emit_sources_json(&effective, key_filter.as_deref());
+    }
+
+    print_show_header(&active, &pool);
+    if !unattributed.is_empty() {
+        eprintln!(
+            "note: env vars set but not attributed per-key: {}",
+            unattributed.join(", ")
+        );
+    }
+
+    match key_filter {
+        Some(key) => match effective.get(&key) {
+            Some((value, source)) => print!("{}", render_key_line(&key, value, source)?),
+            // Genuinely unset by any layer -> claude's own default applies.
+            None => eprintln!("{key} is not set by any config layer"),
+        },
+        None => {
+            for (key, (value, source)) in &effective {
+                print!("{}", render_key_line(key, value, source)?);
+            }
+        }
+    }
     Ok(())
+}
+
+/// One precedence-layer entry: the toml key, its value, and a human label
+/// for the layer that set it. Kept flat (rather than per-layer tables) so
+/// the env layer -- whose every key carries its own `ROBA_X` label -- fits
+/// the same shape as the file/profile layers.
+type LayerEntry = (String, Value, String);
+
+/// The effective top-level config: each key some layer set, mapped to its
+/// final `(value, winning source label)`, sorted for stable output.
+type Effective = BTreeMap<String, (Value, String)>;
+
+/// Collapse the ordered config layers into the effective top-level config
+/// with provenance: a sorted map `key -> (value, winning source label)`
+/// over the union of keys ANY layer set, plus the list of `ROBA_*` vars
+/// that were set but could not be cleanly attributed to a single key.
+///
+/// Layers are walked lowest-precedence first (each file's top-level keys
+/// farther-from-cwd first, then the auto-applied profile, then env), so a
+/// later layer that sets a key overwrites the record -- the highest setter
+/// wins, exactly as the real resolver collapses them.
+fn compute_effective(
+    layers: &[(PathBuf, ConfigFile)],
+    active: &Option<(String, &'static str)>,
+    pool: &Pool,
+    env: &HashMap<String, String>,
+) -> Result<(Effective, Vec<String>)> {
+    let mut entries: Vec<LayerEntry> = Vec::new();
+
+    // 1. Each file's top-level defaults, farther-from-cwd first.
+    for (path, cfg) in layers {
+        let label = format!("{} (top-level)", path.display());
+        for (k, v) in profile_table(&cfg.defaults)? {
+            entries.push((k, v, label.clone()));
+        }
+    }
+
+    // 2. The auto-applied profile (merged across files), overlaid on top.
+    if let Some((name, _)) = active
+        && let Some(profile) = pool.get(name)
+    {
+        let label = format!("[profile.{name}]");
+        for (k, v) in profile_table(profile)? {
+            entries.push((k, v, label.clone()));
+        }
+    }
+
+    // 3. The ROBA_* env overrides (highest config layer).
+    let mut unattributed = Vec::new();
+    entries.extend(env_entries(env, &mut unattributed));
+
+    let mut effective: BTreeMap<String, (Value, String)> = BTreeMap::new();
+    for (k, v, label) in entries {
+        effective.insert(k, (v, label));
+    }
+    Ok((effective, unattributed))
+}
+
+/// Serialize a [`Profile`] to its TOML table. Only SET fields appear
+/// (every field is `skip_serializing_if`), so a key's PRESENCE here means
+/// this layer set it -- the generic per-key walk that avoids hand-matching
+/// every field.
+fn profile_table(profile: &Profile) -> Result<toml::Table> {
+    match Value::try_from(profile).context("serializing a config layer")? {
+        Value::Table(t) => Ok(t),
+        _ => Ok(toml::Table::new()),
+    }
+}
+
+/// Render one effective key as `key = value  # source`, reusing TOML's own
+/// scalar/array formatting (so strings stay quoted, bools/numbers bare, and
+/// the line is still valid TOML with a trailing comment).
+fn render_key_line(key: &str, value: &Value, source: &str) -> Result<String> {
+    let mut t = toml::Table::new();
+    t.insert(key.to_string(), value.clone());
+    let body = toml::to_string(&t).context("serializing an effective key")?;
+    Ok(format!("{}  # {source}\n", body.trim_end_matches('\n')))
+}
+
+/// Emit the effective view as the uniform `{ version: 1, result }` JSON
+/// envelope, where `result` is `{ effective: { KEY: { value, source } } }`.
+/// Filtered to one KEY when `key_filter` is set (an unset KEY yields an
+/// empty `effective` map, never an error).
+fn emit_sources_json(effective: &Effective, key_filter: Option<&str>) -> Result<()> {
+    #[derive(Serialize)]
+    struct KeyProvenance<'a> {
+        value: &'a Value,
+        source: &'a str,
+    }
+    #[derive(Serialize)]
+    struct Report<'a> {
+        effective: BTreeMap<&'a str, KeyProvenance<'a>>,
+    }
+
+    let mut map: BTreeMap<&str, KeyProvenance> = BTreeMap::new();
+    for (k, (v, s)) in effective {
+        if key_filter.is_some_and(|f| f != k) {
+            continue;
+        }
+        map.insert(
+            k.as_str(),
+            KeyProvenance {
+                value: v,
+                source: s,
+            },
+        );
+    }
+    let report = Report { effective: map };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&crate::VersionedResult::new(&report))?
+    );
+    Ok(())
+}
+
+/// How a `ROBA_*` env var's string value maps to a TOML value for the
+/// effective view. Mirrors the value semantics in [`crate::env`] so the
+/// provenance view agrees with what the env layer actually applies.
+#[derive(Clone, Copy)]
+enum EnvKind {
+    /// Truthy-only bool: a truthy value sets `true`, anything else is no-op.
+    Bool,
+    /// Any non-empty string.
+    Str,
+    /// Comma-separated list of strings.
+    List,
+    /// Non-negative integer (invalid values ignored).
+    Uint,
+    /// Floating-point number (invalid values ignored).
+    Float,
+    /// `-c`-style: truthy -> `true`, falsy -> unset, else a specific id.
+    Continue,
+    /// `-w`-style: truthy -> `true`, falsy -> unset, else a pinned name.
+    Worktree,
+    /// One of a fixed set (case-insensitive); an unrecognized value is
+    /// left unattributed rather than guessed.
+    Choice(&'static [&'static str]),
+}
+
+/// The `ROBA_*` env var -> Profile-key mapping, by the [`crate::env`]
+/// naming convention. Covers every single-field knob; the per-key `vars`
+/// map (`ROBA_VAR_*`) and the selection vars (`ROBA_PROFILE`/`SESSION`/
+/// `SESSION_ID`) are intentionally absent -- they are not top-level config
+/// knobs, and `vars` is surfaced via the unattributed note instead.
+const ENV_MAP: &[(&str, &str, EnvKind)] = &[
+    ("ROBA_PREPEND", "prepend", EnvKind::List),
+    ("ROBA_APPEND", "append", EnvKind::List),
+    ("ROBA_ATTACH", "attach", EnvKind::List),
+    ("ROBA_GIT_DIFF", "git_diff", EnvKind::Bool),
+    ("ROBA_GIT_LOG", "git_log", EnvKind::Uint),
+    ("ROBA_GIT_STATUS", "git_status", EnvKind::Bool),
+    ("ROBA_READONLY", "readonly", EnvKind::Bool),
+    ("ROBA_WRITABLE", "writable", EnvKind::Bool),
+    ("ROBA_FULL_AUTO", "full_auto", EnvKind::Bool),
+    ("ROBA_CONTINUE", "continue", EnvKind::Continue),
+    ("ROBA_ALLOW_TOOL", "allow_tool", EnvKind::List),
+    ("ROBA_DENY_TOOL", "deny_tool", EnvKind::List),
+    ("ROBA_MODEL", "model", EnvKind::Str),
+    (
+        "ROBA_EFFORT",
+        "effort",
+        EnvKind::Choice(&["low", "medium", "high", "xhigh", "max"]),
+    ),
+    ("ROBA_AGENT", "agent", EnvKind::Str),
+    ("ROBA_STREAM", "stream", EnvKind::Bool),
+    ("ROBA_SHOW_THINKING", "show_thinking", EnvKind::Bool),
+    ("ROBA_ECHO", "echo", EnvKind::Bool),
+    ("ROBA_PLAIN", "plain", EnvKind::Bool),
+    ("ROBA_QUIET", "quiet", EnvKind::Bool),
+    ("ROBA_JSON", "json", EnvKind::Bool),
+    ("ROBA_EDITOR_HISTORY", "editor_history", EnvKind::Uint),
+    ("ROBA_WORKTREE", "worktree", EnvKind::Worktree),
+    ("ROBA_NO_RETRY", "no_retry", EnvKind::Bool),
+    ("ROBA_BARE", "bare", EnvKind::Bool),
+    ("ROBA_TRACE", "trace", EnvKind::Str),
+    ("ROBA_RATES_FILE", "rates_file", EnvKind::Str),
+    ("ROBA_NO_DOLLARS", "no_dollars", EnvKind::Bool),
+    ("ROBA_NO_AGENT_CHECK", "no_agent_check", EnvKind::Bool),
+    (
+        "ROBA_PERMISSION_MODE",
+        "permission_mode",
+        EnvKind::Choice(&[
+            "acceptEdits",
+            "auto",
+            "bypassPermissions",
+            "default",
+            "dontAsk",
+            "plan",
+        ]),
+    ),
+    ("ROBA_SYSTEM_PROMPT", "system_prompt", EnvKind::Str),
+    (
+        "ROBA_APPEND_SYSTEM_PROMPT",
+        "append_system_prompt",
+        EnvKind::Str,
+    ),
+    ("ROBA_MAX_TURNS", "max_turns", EnvKind::Uint),
+    ("ROBA_MAX_BUDGET_USD", "max_budget_usd", EnvKind::Float),
+    ("ROBA_JSON_SCHEMA", "json_schema", EnvKind::Str),
+    ("ROBA_MCP_CONFIG", "mcp_config", EnvKind::List),
+    ("ROBA_STRICT_MCP_CONFIG", "strict_mcp_config", EnvKind::Bool),
+    ("ROBA_ADD_DIR", "add_dir", EnvKind::List),
+    ("ROBA_FALLBACK_MODEL", "fallback_model", EnvKind::Str),
+    (
+        "ROBA_NO_SESSION_PERSISTENCE",
+        "no_session_persistence",
+        EnvKind::Bool,
+    ),
+    ("ROBA_NO_AGENT_NOTICE", "no_agent_notice", EnvKind::Bool),
+    ("ROBA_AGENT_NOTICE", "agent_notice", EnvKind::Str),
+];
+
+fn env_truthy(v: &str) -> bool {
+    matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+}
+
+fn env_falsy(v: &str) -> bool {
+    matches!(
+        v.to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
+/// Build the env-layer entries from the environment, mirroring
+/// [`crate::env`]'s value semantics. Pushes any set-but-unmappable
+/// `ROBA_*` var name onto `unattributed` (an unrecognized `Choice` value,
+/// or the per-key `ROBA_VAR_*` map) rather than guessing.
+fn env_entries(env: &HashMap<String, String>, unattributed: &mut Vec<String>) -> Vec<LayerEntry> {
+    let mut out = Vec::new();
+    for &(var, key, kind) in ENV_MAP {
+        let raw = match env.get(var) {
+            Some(s) if !s.is_empty() => s,
+            _ => continue,
+        };
+        let value = match kind {
+            EnvKind::Bool => env_truthy(raw).then_some(Value::Boolean(true)),
+            EnvKind::Str => Some(Value::String(raw.clone())),
+            EnvKind::List => {
+                let items: Vec<Value> = raw
+                    .split(',')
+                    .map(|p| p.trim())
+                    .filter(|p| !p.is_empty())
+                    .map(|p| Value::String(p.to_string()))
+                    .collect();
+                (!items.is_empty()).then_some(Value::Array(items))
+            }
+            EnvKind::Uint => raw.parse::<u64>().ok().map(|n| Value::Integer(n as i64)),
+            EnvKind::Float => raw.parse::<f64>().ok().map(Value::Float),
+            EnvKind::Continue | EnvKind::Worktree => {
+                if env_truthy(raw) {
+                    Some(Value::Boolean(true))
+                } else if env_falsy(raw) {
+                    None
+                } else {
+                    Some(Value::String(raw.clone()))
+                }
+            }
+            EnvKind::Choice(allowed) => {
+                match allowed.iter().find(|a| a.eq_ignore_ascii_case(raw)) {
+                    Some(canon) => Some(Value::String((*canon).to_string())),
+                    None => {
+                        unattributed.push(var.to_string());
+                        None
+                    }
+                }
+            }
+        };
+        if let Some(v) = value {
+            out.push((key.to_string(), v, format!("env ({var})")));
+        }
+    }
+    if env.keys().any(|k| k.starts_with("ROBA_VAR_")) {
+        unattributed.push("ROBA_VAR_* (per-key vars)".to_string());
+    }
+    out
 }
 
 /// Render the merged pool as one canonical, re-parseable roba.toml.
@@ -517,5 +846,174 @@ mod tests {
         // An empty pool -> empty stdout (no header, no stray newline).
         let pool = Pool::default();
         assert_eq!(render_merged_pool(&pool).unwrap(), "");
+    }
+
+    // -- Effective view / per-key provenance (#330 part 2) -----------------
+
+    fn file_layer(path: &str, defaults: Profile) -> (PathBuf, ConfigFile) {
+        (
+            PathBuf::from(path),
+            ConfigFile {
+                defaults,
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn compute_effective_highest_layer_wins() {
+        // farther file: readonly + model; closer file overrides model; the
+        // auto-applied profile sets max_turns; env sets worktree.
+        let layers = vec![
+            file_layer(
+                "/repo/roba.toml",
+                Profile {
+                    readonly: Some(true),
+                    model: Some("sonnet".into()),
+                    ..Default::default()
+                },
+            ),
+            file_layer(
+                "/repo/sub/roba.toml",
+                Profile {
+                    model: Some("opus".into()),
+                    ..Default::default()
+                },
+            ),
+        ];
+        let mut pool = Pool::default();
+        pool.profiles.insert(
+            "worker".to_string(),
+            Profile {
+                max_turns: Some(80),
+                ..Default::default()
+            },
+        );
+        let active = Some(("worker".to_string(), "auto-applied"));
+        let env = HashMap::from([("ROBA_WORKTREE".to_string(), "1".to_string())]);
+
+        let (eff, unattributed) = compute_effective(&layers, &active, &pool, &env).unwrap();
+
+        // readonly: only the farther file set it.
+        let (v, src) = &eff["readonly"];
+        assert_eq!(v, &Value::Boolean(true));
+        assert!(src.contains("/repo/roba.toml"), "{src}");
+        // model: closer file wins over farther.
+        let (v, src) = &eff["model"];
+        assert_eq!(v, &Value::String("opus".into()));
+        assert!(src.contains("/repo/sub/roba.toml"), "{src}");
+        // max_turns: from the auto-applied profile.
+        let (v, src) = &eff["max_turns"];
+        assert_eq!(v, &Value::Integer(80));
+        assert_eq!(src, "[profile.worker]");
+        // worktree: env wins (highest layer).
+        let (v, src) = &eff["worktree"];
+        assert_eq!(v, &Value::Boolean(true));
+        assert_eq!(src, "env (ROBA_WORKTREE)");
+        assert!(unattributed.is_empty());
+    }
+
+    #[test]
+    fn compute_effective_profile_overrides_top_level() {
+        // A key set by BOTH a top-level file and the active profile is won
+        // by the profile (it overlays on top of top-level keys).
+        let layers = vec![file_layer(
+            "/repo/roba.toml",
+            Profile {
+                model: Some("sonnet".into()),
+                ..Default::default()
+            },
+        )];
+        let mut pool = Pool::default();
+        pool.profiles.insert(
+            "p".to_string(),
+            Profile {
+                model: Some("opus".into()),
+                ..Default::default()
+            },
+        );
+        let active = Some(("p".to_string(), "auto-applied"));
+        let (eff, _) = compute_effective(&layers, &active, &pool, &HashMap::new()).unwrap();
+        let (v, src) = &eff["model"];
+        assert_eq!(v, &Value::String("opus".into()));
+        assert_eq!(src, "[profile.p]");
+    }
+
+    #[test]
+    fn compute_effective_only_shows_set_keys() {
+        // No layer sets `writable`, so it never appears (no built-in-default
+        // row for unset knobs).
+        let layers = vec![file_layer(
+            "/repo/roba.toml",
+            Profile {
+                readonly: Some(true),
+                ..Default::default()
+            },
+        )];
+        let (eff, _) =
+            compute_effective(&layers, &None, &Pool::default(), &HashMap::new()).unwrap();
+        assert!(eff.contains_key("readonly"));
+        assert!(!eff.contains_key("writable"));
+    }
+
+    #[test]
+    fn env_entries_value_semantics() {
+        let mut un = Vec::new();
+        let env = HashMap::from([
+            ("ROBA_READONLY".to_string(), "yes".to_string()),
+            ("ROBA_GIT_DIFF".to_string(), "garbage".to_string()), // falsy/garbage -> no-op
+            ("ROBA_ALLOW_TOOL".to_string(), "Edit, Write".to_string()),
+            ("ROBA_MAX_TURNS".to_string(), "40".to_string()),
+            ("ROBA_MODEL".to_string(), "opus".to_string()),
+        ]);
+        let entries = env_entries(&env, &mut un);
+        let by_key: HashMap<&str, &Value> =
+            entries.iter().map(|(k, v, _)| (k.as_str(), v)).collect();
+        assert_eq!(by_key["readonly"], &Value::Boolean(true));
+        assert!(!by_key.contains_key("git_diff")); // garbage bool ignored
+        assert_eq!(
+            by_key["allow_tool"],
+            &Value::Array(vec![
+                Value::String("Edit".into()),
+                Value::String("Write".into())
+            ])
+        );
+        assert_eq!(by_key["max_turns"], &Value::Integer(40));
+        assert_eq!(by_key["model"], &Value::String("opus".into()));
+        assert!(un.is_empty());
+    }
+
+    #[test]
+    fn env_entries_unattributed_choice_and_vars() {
+        let mut un = Vec::new();
+        let env = HashMap::from([
+            ("ROBA_EFFORT".to_string(), "ludicrous".to_string()), // not a known effort
+            ("ROBA_VAR_TICKET".to_string(), "ABC-123".to_string()),
+        ]);
+        let entries = env_entries(&env, &mut un);
+        assert!(entries.iter().all(|(k, _, _)| k != "effort"));
+        assert!(un.iter().any(|s| s.contains("ROBA_EFFORT")), "{un:?}");
+        assert!(un.iter().any(|s| s.contains("ROBA_VAR_")), "{un:?}");
+    }
+
+    #[test]
+    fn render_key_line_formats_scalars_and_arrays() {
+        assert_eq!(
+            render_key_line("model", &Value::String("opus".into()), "[profile.worker]").unwrap(),
+            "model = \"opus\"  # [profile.worker]\n"
+        );
+        assert_eq!(
+            render_key_line("full_auto", &Value::Boolean(true), "env (ROBA_FULL_AUTO)").unwrap(),
+            "full_auto = true  # env (ROBA_FULL_AUTO)\n"
+        );
+        assert_eq!(
+            render_key_line(
+                "allow_tool",
+                &Value::Array(vec![Value::String("Edit".into())]),
+                "/repo/roba.toml (top-level)"
+            )
+            .unwrap(),
+            "allow_tool = [\"Edit\"]  # /repo/roba.toml (top-level)\n"
+        );
     }
 }
