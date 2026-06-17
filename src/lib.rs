@@ -368,6 +368,21 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         eprintln!("---");
         eprintln!();
     }
+    // --worktree needs a git repository (claude creates the worktree under
+    // `.git`). Preflight here -- after the prompt resolves, before the
+    // claude spawn -- so a non-git dir fails with a clean, actionable error
+    // instead of claude's stderr buried behind the full argv echo (#327).
+    // The effective working dir is already the process cwd: `dispatch`
+    // applied any `-C/--cwd` before reaching here.
+    if args.worktree.is_some() {
+        let dir = std::env::current_dir().unwrap_or_default();
+        if !is_in_git_repo(&dir) {
+            bail!(
+                "--worktree needs a git repository, but {} is not one; run `git init` or drop --worktree",
+                dir.display()
+            );
+        }
+    }
     let claude = Claude::builder().build()?;
 
     if args.stream {
@@ -459,6 +474,21 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Walk UP from `dir` looking for a `.git` entry, returning true as
+/// soon as one is found. The entry may be a directory (a normal repo)
+/// OR a file (a linked worktree's `.git` is a file pointing at the
+/// gitdir), so `exists()` is the right test. No subprocess.
+fn is_in_git_repo(dir: &std::path::Path) -> bool {
+    let mut cur = Some(dir);
+    while let Some(d) = cur {
+        if d.join(".git").exists() {
+            return true;
+        }
+        cur = d.parent();
+    }
+    false
 }
 
 /// Fail fast when an interactive-only flag is set without a TTY on
@@ -599,6 +629,28 @@ mod tests {
         let sessions = std::collections::HashMap::new();
         let err = resolve_session("meta", &sessions).unwrap_err();
         assert!(err.to_string().contains("(none configured)"), "got: {err}");
+    }
+
+    #[test]
+    fn is_in_git_repo_false_without_dot_git() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_in_git_repo(dir.path()));
+    }
+
+    #[test]
+    fn is_in_git_repo_true_with_dot_git_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        assert!(is_in_git_repo(dir.path()));
+    }
+
+    #[test]
+    fn is_in_git_repo_walks_up_to_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        let nested = dir.path().join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert!(is_in_git_repo(&nested));
     }
 
     #[test]

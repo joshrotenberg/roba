@@ -147,6 +147,46 @@ pub fn see_also_for(err: &anyhow::Error) -> Vec<String> {
     }
 }
 
+/// Human-facing render of the top-level error. Special-cases
+/// `claude_wrapper::Error::CommandFailed` to LEAD with the cause
+/// (claude's stderr, VERBATIM) + exit code + working dir, and DROP the
+/// full `command` argv -- roba-constructed noise made huge by the
+/// always-on #302 advisory. Never parses or rewords claude's stderr.
+/// Every other error falls back to the anyhow chain (`{err:#}`).
+pub fn render_human_error(err: &anyhow::Error) -> String {
+    if let Some(claude_wrapper::Error::CommandFailed {
+        exit_code,
+        stdout,
+        stderr,
+        working_dir,
+        ..
+    }) = err.downcast_ref::<claude_wrapper::Error>()
+    {
+        let mut out = format!("claude failed (exit {exit_code})");
+        if let Some(dir) = working_dir {
+            out.push_str(&format!(" (in {})", dir.display()));
+        }
+        out.push_str(": ");
+        // Lead with the cause, VERBATIM. Prefer stderr; fall back to
+        // stdout; then to a placeholder. If both streams carry output
+        // (rare), append stdout after the stderr cause, clearly labeled.
+        if !stderr.is_empty() {
+            out.push_str(stderr);
+            if !stdout.is_empty() {
+                out.push_str("\nstdout: ");
+                out.push_str(stdout);
+            }
+        } else if !stdout.is_empty() {
+            out.push_str(stdout);
+        } else {
+            out.push_str("(no output)");
+        }
+        out
+    } else {
+        format!("{err:#}")
+    }
+}
+
 /// Build the envelope from an error + the already-computed exit code.
 /// `message` is the top of the anyhow chain (the most recent context
 /// call), matching what `{err}` would print without `:#`.
@@ -345,6 +385,42 @@ mod tests {
             .expect("NotFound must populate see_also");
         assert_eq!(see_also.len(), 1);
         assert_eq!(see_also[0], "https://github.com/anthropics/claude-code");
+    }
+
+    #[test]
+    fn render_human_command_failed_leads_with_cause_drops_argv() {
+        let argv =
+            "claude --print --append-system-prompt 'a very long #302 advisory ...' --worktree";
+        let err = anyhow::Error::from(claude_wrapper::Error::CommandFailed {
+            command: argv.to_string(),
+            exit_code: 1,
+            stdout: String::new(),
+            stderr:
+                "Error: Can only use --worktree in a git repository, but /x is not a git repository."
+                    .to_string(),
+            working_dir: Some("/x".into()),
+        });
+        let rendered = render_human_error(&err);
+        assert!(
+            rendered.starts_with("claude failed (exit 1)"),
+            "got: {rendered}"
+        );
+        assert!(
+            rendered.contains(
+                "Error: Can only use --worktree in a git repository, but /x is not a git repository."
+            ),
+            "cause must appear verbatim, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains(argv),
+            "the command argv must be dropped, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn render_human_non_command_failed_falls_back_to_chain() {
+        let err = anyhow::anyhow!("boom");
+        assert_eq!(render_human_error(&err), "boom");
     }
 
     #[test]
