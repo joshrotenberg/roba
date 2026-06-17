@@ -607,6 +607,29 @@ fn worktree_alone_parses_and_fails_at_runtime_not_clap() {
 }
 
 #[test]
+fn worktree_in_non_git_dir_preflight_fails_without_spawning_claude() {
+    // -w in a directory that is not a git repo bails BEFORE the claude
+    // spawn with a clean, actionable message on stderr (#327). PATH is
+    // cleared so any spawn attempt would be a NotFound error -- the
+    // preflight message proves we never got that far. XDG_CONFIG_HOME is
+    // isolated so the real user config can't inject a default that changes
+    // the outcome.
+    let dir = tempfile::tempdir().expect("non-git tempdir");
+    let user_home = tempfile::tempdir().expect("user home");
+    roba()
+        .args(["-C", dir.path().to_str().unwrap(), "-w", "-p", "hi"])
+        .env("PATH", "")
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env_remove("ROBA_PROFILE")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--worktree needs a git repository",
+        ))
+        .stderr(predicate::str::contains("git init"));
+}
+
+#[test]
 fn worktree_named_with_equals_parses() {
     // -w=NAME + missing prepend file: parse must succeed (clap
     // accepts the `=` form), failure is the runtime read error.

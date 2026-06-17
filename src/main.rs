@@ -19,7 +19,7 @@ async fn main() {
             } else {
                 Style::detect_for_error()
             };
-            roba::render::print_error(&format!("{err:#}"), &style);
+            roba::render::print_error(&roba::error::render_human_error(&err), &style);
             // Additive: an actionable hint for the detectable
             // first-run failures (claude missing / unauthenticated).
             // Printed after the primary error, never instead of it.
