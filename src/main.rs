@@ -51,6 +51,9 @@ fn wants_json(cli: &Cli) -> bool {
         Some(SubCommand::Config {
             cmd: ConfigCmd::Lint(args),
         }) => args.json,
+        Some(SubCommand::Config {
+            cmd: ConfigCmd::Show(args),
+        }) => args.json,
         _ => false,
     }
 }

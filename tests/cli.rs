@@ -279,6 +279,74 @@ fn config_lint_missing_path_errors() {
 }
 
 #[test]
+fn config_show_prints_merged_pool_to_stdout() {
+    // The merged top-level keys + every [profile.NAME] land on STDOUT
+    // (byte-clean, pipeable), while the active-profile + sources header
+    // is METADATA on STDERR. XDG_CONFIG_HOME is isolated so the real user
+    // config can't leak in.
+    let project = make_dir_with_files(&[
+        (".git/HEAD", ""),
+        (
+            "roba.toml",
+            "readonly = true\n\n\
+             [profile.default]\ngit_diff = true\n\n\
+             [profile.review]\nwritable = true\n",
+        ),
+    ]);
+    let user_home = tempfile::tempdir().expect("user home");
+    roba()
+        .args(["-C", project.path().to_str().unwrap(), "config", "show"])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .assert()
+        .success()
+        // The merged body on stdout.
+        .stdout(predicate::str::contains("readonly = true"))
+        .stdout(predicate::str::contains("[profile.default]"))
+        .stdout(predicate::str::contains("[profile.review]"))
+        // The header must NOT leak into stdout.
+        .stdout(predicate::str::contains("active profile:").not())
+        // The header IS on stderr (a `default` profile auto-applies).
+        .stderr(predicate::str::contains(
+            "active profile: default (auto-applied)",
+        ))
+        .stderr(predicate::str::contains("sources:"));
+}
+
+#[test]
+fn config_show_json_emits_versioned_envelope() {
+    // --json: the uniform { version: 1, result } envelope on stdout, with
+    // the merged profile names under result.profiles. stdout is byte-clean
+    // JSON (no header leakage).
+    let project = make_dir_with_files(&[
+        (".git/HEAD", ""),
+        (
+            "roba.toml",
+            "readonly = true\n\n[profile.review]\nwritable = true\n",
+        ),
+    ]);
+    let user_home = tempfile::tempdir().expect("user home");
+    let assert = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "config",
+            "show",
+            "--json",
+        ])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .assert()
+        .success();
+    let out = &assert.get_output().stdout;
+    let json: serde_json::Value = serde_json::from_slice(out).expect("valid JSON");
+    assert_eq!(json["version"], 1, "top-level version must be 1");
+    assert_eq!(json["result"]["defaults"]["readonly"], true, "got: {json}");
+    assert!(
+        json["result"]["profiles"]["review"].is_object(),
+        "got: {json}"
+    );
+}
+
+#[test]
 fn dash_with_empty_stdin_errors() {
     roba()
         .arg("-")

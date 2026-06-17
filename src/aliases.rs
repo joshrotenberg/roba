@@ -252,7 +252,7 @@ fn run_path() -> Result<()> {
 
 /// Re-serialize one alias back to its `[alias.NAME]` TOML block for
 /// `roba alias show`.
-fn render_alias_toml(name: &str, alias: &Alias) -> Result<String> {
+pub(crate) fn render_alias_toml(name: &str, alias: &Alias) -> Result<String> {
     use std::collections::HashMap;
     let mut wrapper: HashMap<String, HashMap<String, Alias>> = HashMap::new();
     let mut inner: HashMap<String, Alias> = HashMap::new();

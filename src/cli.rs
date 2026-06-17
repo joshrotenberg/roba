@@ -522,6 +522,20 @@ pub enum ConfigCmd {
     /// differ by machine, and `$(...)` in aliases evaluates at expansion.
     /// The linter is a tripwire, not a proof.
     Lint(ConfigLintArgs),
+    /// Show the merged config for the cwd (read-only).
+    ///
+    /// Prints the whole config pool -- your user config plus every
+    /// `roba.toml` walking up to the git root, closer-to-cwd winning --
+    /// merged into one canonical roba.toml: the top-level defaults first,
+    /// then every `[profile.NAME]`, `[alias.NAME]`, and a `[session]`
+    /// table when non-empty. The "what you'd have if the whole pool were
+    /// one file" view, so you stop merging several files in your head.
+    ///
+    /// stdout is the merged TOML only (byte-clean, re-parseable); a short
+    /// header naming the auto-applied profile and the source files goes to
+    /// stderr. `--json` emits the uniform `{ version: 1, result }`
+    /// envelope on stdout instead.
+    Show(ConfigShowArgs),
 }
 
 #[derive(ClapArgs, Debug)]
@@ -536,6 +550,17 @@ pub struct ConfigLintArgs {
     ///
     /// Output is the uniform `{ version: 1, result: { findings, ok } }`
     /// envelope. Exit is 0 when clean, 1 when any finding -- in both modes.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct ConfigShowArgs {
+    /// Emit the merged config as JSON instead of canonical TOML.
+    ///
+    /// Output is the uniform `{ version: 1, result }` envelope, where
+    /// `result` carries the active profile, the source files, the merged
+    /// defaults, and the merged profile/alias/session maps. stdout only.
     #[arg(long)]
     pub json: bool,
 }
