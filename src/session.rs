@@ -8,6 +8,17 @@ use claude_wrapper::{Effort, PermissionMode, QueryCommand, RetryPolicy};
 
 use crate::cli::{AskArgs, EffortLevel, PermMode};
 
+/// True when a continue/resume request will be silently defeated by an
+/// anonymous (unnamed) worktree: the worktree mints a fresh dir every
+/// run, so `-c` finds no prior session there. A NAMED worktree is stable
+/// and composes fine, so it is excluded. `--session-id` takes precedence
+/// over continue, so it is excluded too.
+pub fn continue_defeated_by_anon_worktree(args: &AskArgs) -> bool {
+    args.session_id.is_none()
+        && args.continue_session.is_some()
+        && matches!(args.worktree, Some(None))
+}
+
 /// Apply session-related flags (-c / -c=ID, --fork), the model
 /// override (--model), the subagent override (--agent), and then
 /// permission-related flags. Returns the configured QueryCommand.
@@ -50,6 +61,12 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
         cmd = cmd.agent(name.clone());
     }
     if let Some(name) = &args.worktree {
+        if continue_defeated_by_anon_worktree(args) {
+            // Warn-not-block (stderr only; stdout/--json stay byte-clean).
+            eprintln!(
+                "warning: -c/--resume with an anonymous --worktree starts a fresh worktree each run, so there is no prior session to continue. Use a named worktree (-w NAME) or drop --worktree."
+            );
+        }
         cmd = match name {
             Some(n) => cmd.worktree_named(n.clone()),
             None => cmd.worktree(),
@@ -549,6 +566,74 @@ mod tests {
             apply_session(QueryCommand::new("hi"), &ask(&["roba", "prompt"]))
         );
         assert!(dbg.contains("single, non-interactive"), "got: {dbg}");
+    }
+
+    // -- anonymous-worktree continue/resume guard (#328) ------------------
+
+    #[test]
+    fn anon_worktree_defeats_continue_most_recent() {
+        // `-c` (most recent) + bare `-w` (anonymous) -> true.
+        assert!(continue_defeated_by_anon_worktree(&ask(&[
+            "roba", "-c", "-w", "-p", "prompt"
+        ])));
+    }
+
+    #[test]
+    fn anon_worktree_defeats_resume_specific() {
+        // `-c=ID` (resume specific) + bare `-w` (anonymous) -> true.
+        assert!(continue_defeated_by_anon_worktree(&ask(&[
+            "roba",
+            "-c=abc123",
+            "-w",
+            "-p",
+            "prompt"
+        ])));
+    }
+
+    #[test]
+    fn named_worktree_does_not_defeat_continue() {
+        // `-c` + named `-w=NAME` (stable dir) -> false.
+        assert!(!continue_defeated_by_anon_worktree(&ask(&[
+            "roba",
+            "-c",
+            "-w=mybranch",
+            "-p",
+            "prompt"
+        ])));
+    }
+
+    #[test]
+    fn anon_worktree_alone_is_fine() {
+        // bare `-w` with no continue/resume -> false.
+        assert!(!continue_defeated_by_anon_worktree(&ask(&[
+            "roba", "-w", "-p", "prompt"
+        ])));
+    }
+
+    #[test]
+    fn continue_alone_is_fine() {
+        // `-c` with no worktree -> false.
+        assert!(!continue_defeated_by_anon_worktree(&ask(&[
+            "roba", "-c", "-p", "prompt"
+        ])));
+    }
+
+    #[test]
+    fn session_id_takes_precedence_over_continue() {
+        // `--session-id` wins over continue (apply_session arms it first),
+        // so even with continue set the guard must NOT fire. clap forbids
+        // `--session-id` together with `-c`, so set continue_session by hand
+        // to model the precedence path.
+        let mut args = ask(&[
+            "roba",
+            "--session-id",
+            "ef7de917-1234-4abc-8def-000000000001",
+            "-w",
+            "-p",
+            "prompt",
+        ]);
+        args.continue_session = Some(None);
+        assert!(!continue_defeated_by_anon_worktree(&args));
     }
 
     #[test]
