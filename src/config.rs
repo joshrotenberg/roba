@@ -41,20 +41,30 @@ pub async fn run_init(args: ConfigInitArgs) -> Result<()> {
         }
     }
 
-    // 1. Deterministic prompt: the whole bundled schema + optional steer.
-    let prompt = init_prompt(args.description.as_deref());
+    // 1. Load the config ALREADY inherited by this cwd (user config + any
+    //    upstream `roba.toml`). The project file being drafted does not
+    //    exist yet (a `--write` clobber is refused above), so the pool is
+    //    exactly "what is inherited". Render it as canonical roba.toml; an
+    //    empty pool renders blank, in which case we inject nothing.
+    let pool = profile::load_pool()?;
+    let rendered = render_merged_pool(&pool)?;
+    let inherited = (!rendered.trim().is_empty()).then_some(rendered);
 
-    // 2. One lean claude call with a read-only window onto the project,
+    // 2. Deterministic prompt: the whole bundled schema + optional steer +
+    //    the inherited pool (so the draft is a delta, not a re-statement).
+    let prompt = init_prompt(args.description.as_deref(), inherited.as_deref());
+
+    // 3. One lean claude call with a read-only window onto the project,
     //    bounded turns. NOT routed through `run_ask`.
     let raw = crate::draft::generate_inspecting(prompt, args.model.as_deref(), "roba: config init")
         .await?;
 
-    // 3. Validate the WHOLE file through the real per-file deserializer.
+    // 4. Validate the WHOLE file through the real per-file deserializer.
     //    Comments are preserved (we print the cleaned text, not a
     //    re-serialization), so a starter file stays human-readable.
     let content = validate_config(&raw)?;
 
-    // 4. Optional write -- never clobbering an existing config.
+    // 5. Optional write -- never clobbering an existing config.
     if let Some(target) = &args.write {
         let path = write_no_clobber(target, &content)?;
         eprintln!("wrote {}", path.display());
@@ -538,11 +548,28 @@ fn emit_json(pool: &Pool, active_profile: Option<String>) -> Result<()> {
 
 /// Build the generation prompt: the ENTIRE bundled, parse-tested sample
 /// config (for a whole file the whole schema is the right grounding) +
-/// drafting instructions + the user's steer when given.
-fn init_prompt(description: Option<&str>) -> String {
+/// drafting instructions + the user's steer when given + the config the
+/// cwd ALREADY inherits (so the draft is a project-specific delta).
+///
+/// `inherited` is the rendered, merged inherited pool (user config + any
+/// upstream `roba.toml`) when non-empty, else `None`; when `None` the
+/// inherited-config section is omitted cleanly (no dangling heading).
+fn init_prompt(description: Option<&str>, inherited: Option<&str>) -> String {
     let sample = crate::profile::STARTER_CONFIG_TOML;
     let steering = match description {
         Some(d) => format!("\n\nThe user added this steer; weave it into the draft:\n{d}"),
+        None => String::new(),
+    };
+    let inherited_section = match inherited {
+        Some(text) => format!(
+            "\n\nThis config is ALREADY inherited by this project (the user \
+             config plus any `roba.toml` in a parent directory); roba merges \
+             it into every run here automatically:\n\n\
+             {text}\n\n\
+             Emit only the project-specific DELTA: do NOT re-state keys that \
+             are already inherited, and do NOT override an inherited key \
+             unless there is a clear project-specific reason to.",
+        ),
         None => String::new(),
     };
     format!(
@@ -554,13 +581,35 @@ fn init_prompt(description: Option<&str>) -> String {
          schema -- every valid key appears and is commented. Use ONLY keys that \
          appear here; do not invent fields:\n\n\
          {sample}\n\n\
+         The three config layers have distinct purposes -- place things in the \
+         right one:\n\
+         - top-level keys are AMBIENT, always-on knobs for the KIND of work in \
+         this scope; they merge per-key across the pool and auto-apply silently \
+         to every run, so put only SAFE things here.\n\
+         - `[profile.NAME]` is a named, opt-in-able MODE selected as a unit \
+         (`--profile NAME`); it is the home for loaded guns, named and deliberate.\n\
+         - `[alias.NAME]` is a profile PLUS a prompt template, invoked as a verb; \
+         only worth it when there is a template, args, or agent.\n\n\
          First, briefly inspect THIS project with the Read/Glob/Grep tools (the \
          README, the package manifest, the top-level layout) so the draft fits \
-         what you see. Skim, do not spelunk.\n\n\
+         what you see. Skim, do not spelunk.\
+         {inherited_section}\n\n\
          Then produce a starter project roba.toml that:\n\
-         - Opens with conservative top-level defaults appropriate to this project.\n\
+         - Opens with conservative, SAFE top-level defaults appropriate to this project.\n\
+         - NEVER puts `full_auto` or an anonymous `worktree` (`worktree = true`) at \
+         the TOP LEVEL -- those are loaded guns that would auto-apply silently to \
+         every run (and a top-level anonymous worktree silently defeats `-c`/`--resume`). \
+         If the steer asks for full-auto or worktree isolation, put them in a NAMED \
+         `[profile.NAME]` (e.g. `[profile.worker]`) so they are an explicit, named \
+         opt-in. Ship a SAFE default; NAME the loaded guns.\n\
          - Defines a couple of useful `[profile.NAME]` overlays fitted to the project.\n\
          - Defines AT MOST one or two `[alias.NAME]` shortcut verbs, and only if clearly useful.\n\
+         - Generates REUSABLE verbs, not a one-shot plan: an `[alias.NAME]` is for \
+         something run repeatedly (e.g. `roba review ${{pr}}`). Do NOT emit a numbered \
+         family of one-time build steps (`phase0`, `phase1`, ...) -- that is a PLAN, \
+         and a plan's home is GitHub issues driven by an orchestrator, not a config \
+         file. If the project has a phased roadmap, note it in a `#` comment rather \
+         than encoding the plan as aliases.\n\
          - Keeps every profile/permission posture READ-ONLY unless the steer below asks otherwise.\n\
          - Has a brief `#` comment on every key explaining what it does.\n\
          - Does NOT include a `[session]` table (session UUIDs are machine-local).\n\
@@ -771,7 +820,7 @@ mod tests {
 
     #[test]
     fn init_prompt_includes_steering_and_schema() {
-        let p = init_prompt(Some("focus on PR review and a docs-build verb"));
+        let p = init_prompt(Some("focus on PR review and a docs-build verb"), None);
         assert!(
             p.contains("focus on PR review and a docs-build verb"),
             "{p}"
@@ -784,10 +833,50 @@ mod tests {
 
     #[test]
     fn init_prompt_without_steering_is_clean() {
-        let p = init_prompt(None);
+        let p = init_prompt(None, None);
         assert!(p.contains("STARTER project"), "{p}");
         // No dangling "steer" sentence when none was given.
         assert!(!p.contains("The user added this steer"), "{p}");
+    }
+
+    #[test]
+    fn init_prompt_steers_off_top_level_loaded_guns_and_plans() {
+        let p = init_prompt(None, None);
+        // Never put full_auto / anonymous worktree at the top level.
+        assert!(p.contains("the TOP LEVEL"), "{p}");
+        assert!(p.contains("full_auto"), "{p}");
+        assert!(p.contains("worktree = true"), "{p}");
+        assert!(p.contains("NAME the loaded guns"), "{p}");
+        // Reusable verbs, not a one-shot plan.
+        assert!(p.contains("REUSABLE verbs"), "{p}");
+        assert!(p.contains("phase0"), "{p}");
+        assert!(p.contains("plan's home is GitHub issues"), "{p}");
+        // Per-layer purpose block.
+        assert!(p.contains("AMBIENT, always-on knobs"), "{p}");
+        assert!(p.contains("named, opt-in-able MODE"), "{p}");
+        assert!(p.contains("profile PLUS a prompt template"), "{p}");
+    }
+
+    #[test]
+    fn init_prompt_injects_inherited_pool_and_delta_instruction() {
+        let p = init_prompt(Some("PR review"), Some("readonly = true\n"));
+        // The inherited config text is embedded verbatim.
+        assert!(p.contains("readonly = true"), "{p}");
+        assert!(p.contains("ALREADY inherited by this project"), "{p}");
+        // The delta instruction is present.
+        assert!(p.contains("project-specific DELTA"), "{p}");
+        assert!(
+            p.contains("do NOT re-state keys that are already inherited"),
+            "{p}"
+        );
+    }
+
+    #[test]
+    fn init_prompt_omits_inherited_section_when_none() {
+        let p = init_prompt(None, None);
+        // No dangling inherited-config heading when nothing is inherited.
+        assert!(!p.contains("ALREADY inherited by this project"), "{p}");
+        assert!(!p.contains("project-specific DELTA"), "{p}");
     }
 
     #[test]
