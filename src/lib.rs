@@ -244,6 +244,11 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     if args.fresh {
         args.continue_session = None;
     }
+    // --no-worktree (or ROBA_NO_WORKTREE) forces worktree off for this
+    // run, overriding any config/env-set worktree. Runs after the env +
+    // profile merge so the CLI/env override wins over a filled-in value,
+    // and before `apply_session` reads `args.worktree`.
+    apply_no_worktree(&mut args);
     // --fork branches a *specific* session, so it needs an explicit
     // id. clap's `requires = "continue_session"` only enforces that
     // `-c` was passed at all; it can't tell the bare form (`-c`,
@@ -534,6 +539,19 @@ fn resolve_session(
     }
 }
 
+/// Force the worktree off when `--no-worktree` (or `ROBA_NO_WORKTREE`)
+/// is set, nulling any worktree value that a profile/top-level config or
+/// `ROBA_WORKTREE` filled in. `--no-worktree` is a per-run CLI/env
+/// override, not a stored config key, so it always wins -- and clap
+/// already excludes it from co-existing with `--worktree`/`-w`. Must run
+/// after the env + profile merge and before `apply_session` reads
+/// `args.worktree`.
+fn apply_no_worktree(args: &mut AskArgs) {
+    if args.no_worktree {
+        args.worktree = None;
+    }
+}
+
 /// Expand a `-c <value>` (`--continue=VALUE`) that carried an explicit
 /// value, treating it as a git-style short session-id prefix and
 /// resolving it to a full UUID against the current project's sessions
@@ -633,6 +651,37 @@ mod tests {
         let sessions = std::collections::HashMap::new();
         let err = resolve_session("meta", &sessions).unwrap_err();
         assert!(err.to_string().contains("(none configured)"), "got: {err}");
+    }
+
+    fn ask_args() -> AskArgs {
+        use clap::Parser;
+        Cli::try_parse_from(["roba", "placeholder"]).unwrap().ask
+    }
+
+    #[test]
+    fn apply_no_worktree_nulls_config_set_worktree() {
+        // Simulate a profile/top-level config (or ROBA_WORKTREE) having
+        // filled in a worktree value; --no-worktree forces it off.
+        let mut args = ask_args();
+        args.worktree = Some(Some("mybranch".to_string()));
+        args.no_worktree = true;
+        apply_no_worktree(&mut args);
+        assert!(args.worktree.is_none());
+
+        let mut anon = ask_args();
+        anon.worktree = Some(None); // anonymous worktree from config
+        anon.no_worktree = true;
+        apply_no_worktree(&mut anon);
+        assert!(anon.worktree.is_none());
+    }
+
+    #[test]
+    fn apply_no_worktree_leaves_worktree_when_flag_unset() {
+        let mut args = ask_args();
+        args.worktree = Some(Some("keep".to_string()));
+        args.no_worktree = false;
+        apply_no_worktree(&mut args);
+        assert_eq!(args.worktree, Some(Some("keep".to_string())));
     }
 
     #[test]

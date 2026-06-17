@@ -287,6 +287,13 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     if !args.no_dollars && read_truthy(env, "ROBA_NO_DOLLARS") {
         args.no_dollars = true;
     }
+    // ROBA_NO_WORKTREE mirrors --no-worktree: a truthy bool that only
+    // enables. It is the safe direction, so if both it and ROBA_WORKTREE
+    // are set it wins -- the force-off in `run_ask` (apply_no_worktree)
+    // is the backstop that nulls any worktree value regardless of order.
+    if !args.no_worktree && read_truthy(env, "ROBA_NO_WORKTREE") {
+        args.no_worktree = true;
+    }
     if args.worktree.is_none()
         && let Some(s) = env.get("ROBA_WORKTREE").filter(|s| !s.is_empty())
     {
@@ -1303,6 +1310,40 @@ mod tests {
             args.no_session_persistence,
             "CLI true should survive env false"
         );
+    }
+
+    // -- no-worktree (ROBA_NO_WORKTREE) ------------------------------------
+
+    #[test]
+    fn env_no_worktree_truthy_enables() {
+        for val in ["1", "true", "yes", "on", "TRUE", "Yes"] {
+            let mut args = empty_args();
+            apply_env_overrides_from(&mut args, &env_with(&[("ROBA_NO_WORKTREE", val)]));
+            assert!(
+                args.no_worktree,
+                "env value {val:?} should enable no_worktree"
+            );
+        }
+    }
+
+    #[test]
+    fn env_no_worktree_ignores_falsy_or_garbage() {
+        for val in ["0", "false", "no", "off", "", "garbage"] {
+            let mut args = empty_args();
+            apply_env_overrides_from(&mut args, &env_with(&[("ROBA_NO_WORKTREE", val)]));
+            assert!(
+                !args.no_worktree,
+                "env value {val:?} should leave no_worktree off"
+            );
+        }
+    }
+
+    #[test]
+    fn env_no_worktree_does_not_clear_cli() {
+        let mut args = empty_args();
+        args.no_worktree = true;
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_NO_WORKTREE", "0")]));
+        assert!(args.no_worktree, "CLI true should survive env false");
     }
 
     // -- agent notice (no_agent_notice / agent_notice) ---------------------
