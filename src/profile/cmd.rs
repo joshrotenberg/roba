@@ -7,7 +7,7 @@ use std::path::Path;
 
 use super::pool::{discover_project_configs, load_pool, user_config_path};
 use super::resolve::missing_profile_error;
-use super::types::Profile;
+use super::types::{Pool, Profile};
 
 // ---------------------------------------------------------------------------
 // Starter template + subcommand
@@ -87,34 +87,50 @@ fn run_init(force: bool) -> Result<()> {
     Ok(())
 }
 
-fn run_active() -> Result<()> {
-    let pool = load_pool()?;
+/// Resolve which profile auto-applies for the current env + pool, with a
+/// short human reason. The auto-apply order (mirrors `super::resolve`):
+/// `ROBA_PROFILE` wins (and is a HARD ERROR if it names a profile not in
+/// the pool), else a `default` profile if present, else none.
+///
+/// Shared by `profile active` and `config show` so the "what auto-applies"
+/// answer is computed in exactly one place.
+pub fn active_profile(pool: &Pool) -> Result<Option<(String, &'static str)>> {
     let env_name = std::env::var("ROBA_PROFILE").ok().filter(|s| !s.is_empty());
-
-    let (name, reason) = if let Some(name) = env_name {
+    if let Some(name) = env_name {
         if pool.get(&name).is_none() {
             bail!("ROBA_PROFILE={name} but no such profile in the pool");
         }
-        (name, "from ROBA_PROFILE env")
-    } else if pool.get("default").is_some() {
-        ("default".to_string(), "auto-applied")
-    } else {
-        eprintln!("no profile would auto-apply");
-        if pool.profiles.is_empty() {
-            eprintln!("hint: `roba profile init` to drop a starter file");
-        } else {
-            let mut names: Vec<&String> = pool.profiles.keys().collect();
-            names.sort();
-            eprintln!(
-                "available: {}",
-                names
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
+        return Ok(Some((name, "from ROBA_PROFILE env")));
+    }
+    if pool.get("default").is_some() {
+        return Ok(Some(("default".to_string(), "auto-applied")));
+    }
+    Ok(None)
+}
+
+fn run_active() -> Result<()> {
+    let pool = load_pool()?;
+
+    let (name, reason) = match active_profile(&pool)? {
+        Some(pair) => pair,
+        None => {
+            eprintln!("no profile would auto-apply");
+            if pool.profiles.is_empty() {
+                eprintln!("hint: `roba profile init` to drop a starter file");
+            } else {
+                let mut names: Vec<&String> = pool.profiles.keys().collect();
+                names.sort();
+                eprintln!(
+                    "available: {}",
+                    names
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            return Ok(());
         }
-        return Ok(());
     };
 
     let profile = pool.get(&name).cloned().expect("checked above");
@@ -155,8 +171,8 @@ fn run_path() -> Result<()> {
 }
 
 /// Render one named profile back to TOML for `profile show` / `active`
-/// / `draft`.
-fn render_named_profile(name: &str, profile: &Profile) -> Result<String> {
+/// / `draft` and the merged `config show` view.
+pub(crate) fn render_named_profile(name: &str, profile: &Profile) -> Result<String> {
     let mut wrapper: HashMap<String, HashMap<String, Profile>> = HashMap::new();
     let mut inner: HashMap<String, Profile> = HashMap::new();
     inner.insert(name.to_string(), profile.clone());
@@ -414,6 +430,49 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("absent.toml");
         assert!(!file_defines_profile(&path, "anything").unwrap());
+    }
+
+    #[test]
+    fn active_profile_resolution_order() {
+        // ROBA_PROFILE wins -> else `default` -> else None. The three
+        // branches live in one test so the process-global ROBA_PROFILE is
+        // mutated sequentially (no cross-test race).
+        let mut pool = Pool::default();
+        pool.profiles
+            .insert("worker".to_string(), Profile::default());
+        pool.profiles
+            .insert("default".to_string(), Profile::default());
+
+        // No env, `default` present -> default auto-applies.
+        unsafe {
+            std::env::remove_var("ROBA_PROFILE");
+        }
+        let (name, reason) = active_profile(&pool).unwrap().unwrap();
+        assert_eq!(name, "default");
+        assert_eq!(reason, "auto-applied");
+
+        // ROBA_PROFILE names a real profile -> it wins.
+        unsafe {
+            std::env::set_var("ROBA_PROFILE", "worker");
+        }
+        let (name, reason) = active_profile(&pool).unwrap().unwrap();
+        assert_eq!(name, "worker");
+        assert_eq!(reason, "from ROBA_PROFILE env");
+
+        // ROBA_PROFILE names a missing profile -> hard error.
+        unsafe {
+            std::env::set_var("ROBA_PROFILE", "nope");
+        }
+        assert!(active_profile(&pool).is_err());
+
+        // No env, no `default` -> None.
+        unsafe {
+            std::env::remove_var("ROBA_PROFILE");
+        }
+        let mut bare = Pool::default();
+        bare.profiles
+            .insert("worker".to_string(), Profile::default());
+        assert!(active_profile(&bare).unwrap().is_none());
     }
 
     #[test]

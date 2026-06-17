@@ -87,6 +87,10 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
                 let code = lint::run(args)?;
                 std::process::exit(code);
             }
+            // Merged-pool view: print the whole config pool merged into
+            // one canonical roba.toml (or a `--json` envelope). Read-only,
+            // no claude call.
+            crate::cli::ConfigCmd::Show(args) => config::run_show(args),
         },
         // Read-only inspection of the repo's git worktrees. Shells to
         // `git worktree list` via claude-wrapper; no claude call.

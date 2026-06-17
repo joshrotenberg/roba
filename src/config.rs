@@ -18,11 +18,15 @@
 //! everything else goes to stderr. No retry loop: an invalid draft fails
 //! loud with the deserializer error plus the raw model output.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
+use serde::Serialize;
 
-use crate::cli::ConfigInitArgs;
+use crate::aliases::{self, Alias};
+use crate::cli::{ConfigInitArgs, ConfigShowArgs};
+use crate::profile::{self, Pool, Profile};
 
 /// Run `roba config init [DESCRIPTION] [--write [PATH]] [--model NAME]`.
 pub async fn run_init(args: ConfigInitArgs) -> Result<()> {
@@ -60,6 +64,146 @@ pub async fn run_init(args: ConfigInitArgs) -> Result<()> {
 
     // stdout = the validated file only, byte-clean (pipeable to `> roba.toml`).
     print!("{content}");
+    Ok(())
+}
+
+/// Run `roba config show [--json]`.
+///
+/// The read-only merged-pool view: load the whole config pool for the cwd
+/// (user config + every `roba.toml` up to the git root, already merged by
+/// [`crate::profile::load_pool`]) and print it as one canonical roba.toml.
+/// A short header naming the auto-applied profile and the source files goes
+/// to STDERR so stdout stays byte-clean and re-parseable (principle #2).
+/// `--json` swaps the TOML body for the uniform `{ version: 1, result }`
+/// envelope on stdout.
+///
+/// Part 1 of #330 -- the structural/merged view only. Per-key provenance
+/// (`--sources`) and an effective-collapse-with-env depth are deferred to
+/// part 2.
+pub fn run_show(args: ConfigShowArgs) -> Result<()> {
+    let pool = profile::load_pool()?;
+    let active = profile::cmd::active_profile(&pool)?;
+
+    if args.json {
+        return emit_json(&pool, active.map(|(name, _)| name));
+    }
+
+    // Header is METADATA -> stderr, so stdout stays a clean, pipeable
+    // roba.toml (`roba config show > roba.toml` is valid).
+    match &active {
+        Some((name, reason)) => eprintln!("active profile: {name} ({reason})"),
+        None => eprintln!("no profile auto-applies"),
+    }
+    if pool.sources.is_empty() {
+        eprintln!("sources: (none)");
+    } else {
+        eprintln!("sources:");
+        for s in &pool.sources {
+            eprintln!("  {}", s.display());
+        }
+    }
+
+    print!("{}", render_merged_pool(&pool)?);
+    Ok(())
+}
+
+/// Render the merged pool as one canonical, re-parseable roba.toml.
+///
+/// Serialized SECTION BY SECTION and concatenated rather than as one
+/// flattened struct: in a single TOML document every scalar/array key must
+/// precede any `[table]`, so the top-level defaults block (which may end in
+/// a `[vars]` sub-table) is emitted first, then the `[profile.NAME]`,
+/// `[alias.NAME]`, and `[session]` tables. Each section is sorted by name
+/// for stable output.
+fn render_merged_pool(pool: &Pool) -> Result<String> {
+    let mut out = String::new();
+
+    // 1. Top-level defaults (scalar/array keys, plus a [vars] table when
+    //    set). Must precede every table below.
+    if !pool.defaults.is_empty() {
+        let block = toml::to_string_pretty(&pool.defaults).context("re-serializing defaults")?;
+        push_block(&mut out, &block);
+    }
+
+    // 2. [profile.NAME] blocks, sorted by name.
+    let mut profiles: Vec<&String> = pool.profiles.keys().collect();
+    profiles.sort();
+    for name in profiles {
+        let block = profile::cmd::render_named_profile(name, &pool.profiles[name])?;
+        push_block(&mut out, &block);
+    }
+
+    // 3. [alias.NAME] blocks, sorted by name.
+    let mut aliases: Vec<&String> = pool.aliases.keys().collect();
+    aliases.sort();
+    for name in aliases {
+        let block = aliases::render_alias_toml(name, &pool.aliases[name])?;
+        push_block(&mut out, &block);
+    }
+
+    // 4. A single [session] table when any handle is bound.
+    if !pool.sessions.is_empty() {
+        push_block(&mut out, &render_session_table(&pool.sessions)?);
+    }
+
+    Ok(out)
+}
+
+/// Append one serialized TOML block, separated from any prior block by a
+/// blank line. A blank block is skipped so an empty pool yields empty
+/// stdout.
+fn push_block(out: &mut String, block: &str) {
+    let block = block.trim_end_matches('\n');
+    if block.is_empty() {
+        return;
+    }
+    if !out.is_empty() {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    out.push_str(block);
+    out.push('\n');
+}
+
+/// Render the merged `[session]` NAME -> uuid map as a sorted TOML table.
+fn render_session_table(sessions: &std::collections::HashMap<String, String>) -> Result<String> {
+    let sorted: BTreeMap<&String, &String> = sessions.iter().collect();
+    let mut wrapper: BTreeMap<&str, BTreeMap<&String, &String>> = BTreeMap::new();
+    wrapper.insert("session", sorted);
+    toml::to_string_pretty(&wrapper).context("re-serializing sessions")
+}
+
+/// Emit the merged pool as the uniform `{ version: 1, result }` JSON
+/// envelope on stdout. Maps are sorted (BTreeMap) for stable output.
+fn emit_json(pool: &Pool, active_profile: Option<String>) -> Result<()> {
+    #[derive(Serialize)]
+    struct Report<'a> {
+        active_profile: Option<String>,
+        sources: Vec<String>,
+        defaults: &'a Profile,
+        profiles: BTreeMap<&'a String, &'a Profile>,
+        aliases: BTreeMap<&'a String, &'a Alias>,
+        sessions: BTreeMap<&'a String, &'a String>,
+    }
+
+    let report = Report {
+        active_profile,
+        sources: pool
+            .sources
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect(),
+        defaults: &pool.defaults,
+        profiles: pool.profiles.iter().collect(),
+        aliases: pool.aliases.iter().collect(),
+        sessions: pool.sessions.iter().collect(),
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&crate::VersionedResult::new(&report))?
+    );
     Ok(())
 }
 
@@ -315,5 +459,63 @@ mod tests {
         assert!(p.contains("STARTER project"), "{p}");
         // No dangling "steer" sentence when none was given.
         assert!(!p.contains("The user added this steer"), "{p}");
+    }
+
+    #[test]
+    fn render_merged_pool_round_trips() {
+        // A pool with all four section kinds renders to TOML that parses
+        // back through roba's real per-file deserializer, with values
+        // intact -- the byte-clean, re-parseable stdout contract.
+        let mut pool = Pool::default();
+        pool.defaults.readonly = Some(true);
+        pool.defaults
+            .vars
+            .insert("TEAM".to_string(), "core".to_string());
+        pool.profiles.insert(
+            "worker".to_string(),
+            Profile {
+                full_auto: Some(true),
+                max_turns: Some(80),
+                ..Default::default()
+            },
+        );
+        pool.aliases.insert(
+            "review".to_string(),
+            Alias {
+                description: Some("review a PR".to_string()),
+                ..Default::default()
+            },
+        );
+        pool.sessions.insert(
+            "meta".to_string(),
+            "11111111-1111-4111-8111-111111111111".to_string(),
+        );
+
+        let rendered = render_merged_pool(&pool).unwrap();
+        let cfg = crate::profile::pool::parse_config_str(&rendered)
+            .unwrap_or_else(|e| panic!("merged pool did not re-parse: {e:#}\n---\n{rendered}"));
+
+        assert_eq!(cfg.defaults.readonly, Some(true));
+        assert_eq!(
+            cfg.defaults.vars.get("TEAM").map(String::as_str),
+            Some("core")
+        );
+        assert_eq!(cfg.profile["worker"].full_auto, Some(true));
+        assert_eq!(cfg.profile["worker"].max_turns, Some(80));
+        assert_eq!(
+            cfg.alias["review"].description.as_deref(),
+            Some("review a PR")
+        );
+        assert_eq!(
+            cfg.session.get("meta").map(String::as_str),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+    }
+
+    #[test]
+    fn render_merged_pool_empty_is_blank() {
+        // An empty pool -> empty stdout (no header, no stray newline).
+        let pool = Pool::default();
+        assert_eq!(render_merged_pool(&pool).unwrap(), "");
     }
 }
