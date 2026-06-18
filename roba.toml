@@ -1,0 +1,14 @@
+# roba's own project config. The top level stays safe-by-default: no
+# full_auto, no anonymous worktree. A top-level worktree auto-applies to
+# every run and silently defeats `-c`/`--resume`, and a top-level
+# full_auto bypasses every permission check; both are task-scoped knobs
+# that belong in a named profile. See `roba config lint`.
+model = "opus"
+stream = true
+show_thinking = true
+
+[profile.worker]
+# Task-scoped dispatch posture: bypass tool checks and run in a fresh
+# git worktree. Opt in explicitly per run with `roba --profile worker`.
+full_auto = true
+worktree = true
