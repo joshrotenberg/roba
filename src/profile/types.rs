@@ -305,13 +305,14 @@ impl Profile {
         if git_status.is_some() {
             self.git_status = git_status;
         }
-        if readonly.is_some() {
+        // Permission posture is ONE mutually-exclusive knob expressed as three
+        // Option<bool> fields. An overlay that sets ANY of them replaces the base's
+        // posture wholesale, so the higher-precedence layer wins (a [profile.worker]
+        // `full_auto` overrides a top-level `readonly`, not the reverse). An overlay
+        // that sets NONE leaves the base posture intact.
+        if readonly.is_some() || writable.is_some() || full_auto.is_some() {
             self.readonly = readonly;
-        }
-        if writable.is_some() {
             self.writable = writable;
-        }
-        if full_auto.is_some() {
             self.full_auto = full_auto;
         }
         if continue_session.is_some() {
@@ -708,5 +709,57 @@ git_diff = true
         assert_eq!(a.vars["X"], "from_b"); // other won
         assert_eq!(a.vars["Y"], "from_a"); // kept from self
         assert_eq!(a.vars["Z"], "from_b"); // added by other
+    }
+
+    #[test]
+    fn merge_in_posture_overlay_full_auto_clears_base_readonly() {
+        // A [profile.worker] full_auto must override a top-level readonly:
+        // the overlay sets one posture knob, so all three are replaced.
+        let mut base = Profile {
+            readonly: Some(true),
+            ..Default::default()
+        };
+        let overlay = Profile {
+            full_auto: Some(true),
+            ..Default::default()
+        };
+        base.merge_in(overlay);
+        assert_eq!(base.readonly, None);
+        assert_eq!(base.writable, None);
+        assert_eq!(base.full_auto, Some(true));
+    }
+
+    #[test]
+    fn merge_in_posture_overlay_readonly_clears_base_writable() {
+        let mut base = Profile {
+            writable: Some(true),
+            ..Default::default()
+        };
+        let overlay = Profile {
+            readonly: Some(true),
+            ..Default::default()
+        };
+        base.merge_in(overlay);
+        assert_eq!(base.readonly, Some(true));
+        assert_eq!(base.writable, None);
+        assert_eq!(base.full_auto, None);
+    }
+
+    #[test]
+    fn merge_in_no_posture_overlay_leaves_base_posture_intact() {
+        // An overlay that touches no posture knob must not disturb the base's.
+        let mut base = Profile {
+            readonly: Some(true),
+            ..Default::default()
+        };
+        let overlay = Profile {
+            git_diff: Some(true),
+            ..Default::default()
+        };
+        base.merge_in(overlay);
+        assert_eq!(base.readonly, Some(true));
+        assert_eq!(base.writable, None);
+        assert_eq!(base.full_auto, None);
+        assert_eq!(base.git_diff, Some(true));
     }
 }
