@@ -14,6 +14,14 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-06-18
+
+### Fixed
+
+- a profile's full_auto/writable overrides a top-level readonly (closes #343) ([#344](https://github.com/joshrotenberg/roba/pull/344))
+
+
+
 ## [0.8.0] - 2026-06-17
 
 ### Added
