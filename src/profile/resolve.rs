@@ -453,6 +453,27 @@ mod tests {
     }
 
     #[test]
+    fn resolve_profile_full_auto_overrides_top_level_readonly() {
+        // The "safe default + named loaded gun" pattern: top-level readonly,
+        // a [profile.worker] full_auto. Resolving with worker active must
+        // escalate to full_auto -- the named gun wins, readonly is cleared.
+        let defaults = Profile {
+            readonly: Some(true),
+            ..Default::default()
+        };
+        let worker = Profile {
+            full_auto: Some(true),
+            ..Default::default()
+        };
+        let pool = pool_of(defaults, &[("worker", worker)]);
+        let args = args_with(&["--profile", "worker"]);
+        let resolved = resolve(&args, &pool).unwrap().unwrap();
+        assert_eq!(resolved.full_auto, Some(true));
+        assert_eq!(resolved.readonly, None);
+        assert_eq!(resolved.writable, None);
+    }
+
+    #[test]
     fn resolve_unknown_explicit_profile_errors() {
         let pool = Pool::default();
         let args = args_with(&["--profile", "nope"]);
