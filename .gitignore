@@ -2,8 +2,3 @@
 
 # maintainer-private agent context (auto-loaded locally, never tracked)
 CLAUDE.local.md
-
-# project-local dogfood config (the pool walk-up picks it up locally;
-# deliberately untracked -- remove this line if we ever decide to SHIP
-# a project roba.toml to cloners)
-roba.toml
