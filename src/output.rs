@@ -142,22 +142,34 @@ pub fn surface_structured_output(result: &mut QueryResult) {
 /// textual `result.result` when it has content, otherwise the validated
 /// `structured_output` rendered as pretty JSON.
 ///
-/// `--json-schema` puts the answer in `structured_output` -- either
-/// natively, or via [`surface_structured_output`], which also unfences
-/// `result.result` so the textual branch below already prints clean JSON.
-/// The `structured_output` fallback remains for any path that leaves the
-/// textual `result` empty: without it the default path would print a
-/// blank line and exit 0, the answer computed and paid for but never
-/// shown. The pretty JSON stays pipeable: `roba --json-schema s.json
-/// "..." | jq` sees the object. Returns empty only when both are absent.
-pub fn default_body(result: &QueryResult) -> String {
+/// `prefer_structured` is set when `--json-schema` is in play. In that
+/// mode the schema object is the authoritative answer, so it wins over a
+/// textual `result.result` -- claude now populates BOTH a prose `result`
+/// (e.g. `"Paris."`) and `structured_output` (`{"answer":"Paris."}`), and
+/// printing the prose would break the documented `roba --json-schema
+/// s.json "..." | jq` contract. Earlier claude versions left `result`
+/// empty under a schema; `prefer_structured` makes the contract hold
+/// regardless of which behavior the model exhibits.
+///
+/// Outside schema mode the textual `result.result` wins, and the
+/// `structured_output` rendering is only a fallback for a path that left
+/// `result` empty: without it the default path would print a blank line
+/// and exit 0, the answer computed and paid for but never shown. Returns
+/// empty only when both are absent.
+pub fn default_body(result: &QueryResult, prefer_structured: bool) -> String {
+    let structured = || match result.extra.get("structured_output") {
+        Some(value) if !value.is_null() => {
+            Some(serde_json::to_string_pretty(value).unwrap_or_default())
+        }
+        _ => None,
+    };
+    if prefer_structured && let Some(body) = structured() {
+        return body;
+    }
     if !result.result.is_empty() {
         return result.result.clone();
     }
-    match result.extra.get("structured_output") {
-        Some(value) if !value.is_null() => serde_json::to_string_pretty(value).unwrap_or_default(),
-        _ => String::new(),
-    }
+    structured().unwrap_or_default()
 }
 
 /// Single-line footer summarizing a [`QueryResult`]: tokens, cost,
@@ -553,8 +565,8 @@ mod tests {
 
     #[test]
     fn default_body_prefers_textual_result() {
-        // A normal answer: textual result present, structured_output
-        // ignored even when both are set.
+        // A normal answer (no schema): textual result present,
+        // structured_output ignored even when both are set.
         let result: QueryResult = serde_json::from_value(serde_json::json!({
             "result": "the answer is 42",
             "session_id": "s1",
@@ -562,13 +574,32 @@ mod tests {
             "structured_output": {"answer": "42"},
         }))
         .expect("build QueryResult fixture");
-        assert_eq!(default_body(&result), "the answer is 42");
+        assert_eq!(default_body(&result, false), "the answer is 42");
+    }
+
+    #[test]
+    fn default_body_schema_mode_prefers_structured_over_prose() {
+        // The --json-schema default path under claude 2.1.186+: claude
+        // populates BOTH a prose `result` and `structured_output`. Schema
+        // mode renders the structured object so `| jq` still works.
+        let result: QueryResult = serde_json::from_value(serde_json::json!({
+            "result": "Paris.",
+            "session_id": "s1",
+            "is_error": false,
+            "structured_output": {"answer": "Paris."},
+        }))
+        .expect("build QueryResult fixture");
+        let body = default_body(&result, true);
+        let value: serde_json::Value = serde_json::from_str(&body).expect("body parses as JSON");
+        assert_eq!(value["answer"], "Paris.");
+        assert!(body.contains('\n'), "pretty-printed JSON is multi-line");
     }
 
     #[test]
     fn default_body_renders_structured_output_when_result_empty() {
-        // The --json-schema default path: empty textual result, answer
-        // in structured_output -> render it as pretty JSON.
+        // The legacy --json-schema shape: empty textual result, answer
+        // in structured_output -> render it as pretty JSON. The fallback
+        // fires regardless of `prefer_structured`.
         let result: QueryResult = serde_json::from_value(serde_json::json!({
             "result": "",
             "session_id": "s1",
@@ -576,7 +607,7 @@ mod tests {
             "structured_output": {"answer": "Paris"},
         }))
         .expect("build QueryResult fixture");
-        let body = default_body(&result);
+        let body = default_body(&result, false);
         let value: serde_json::Value = serde_json::from_str(&body).expect("body parses as JSON");
         assert_eq!(value["answer"], "Paris");
         assert!(body.contains('\n'), "pretty-printed JSON is multi-line");
@@ -590,13 +621,15 @@ mod tests {
             "is_error": false,
         }))
         .expect("build QueryResult fixture");
-        assert_eq!(default_body(&result), "");
+        assert_eq!(default_body(&result, false), "");
+        // Schema mode with nothing to show is also empty, not "null".
+        assert_eq!(default_body(&result, true), "");
     }
 
     #[test]
     fn default_body_empty_when_structured_output_is_null() {
         // A `null` structured_output is treated as absent, not rendered
-        // as the literal string "null".
+        // as the literal string "null" -- even in schema mode.
         let result: QueryResult = serde_json::from_value(serde_json::json!({
             "result": "",
             "session_id": "s1",
@@ -604,7 +637,8 @@ mod tests {
             "structured_output": null,
         }))
         .expect("build QueryResult fixture");
-        assert_eq!(default_body(&result), "");
+        assert_eq!(default_body(&result, false), "");
+        assert_eq!(default_body(&result, true), "");
     }
 
     fn query_result_body(body: &str) -> QueryResult {
@@ -628,7 +662,7 @@ mod tests {
         );
         // result.result is unfenced so `.result.result` and default_body are clean.
         assert_eq!(result.result, "{\"answer\": \"Paris\"}");
-        assert_eq!(default_body(&result), "{\"answer\": \"Paris\"}");
+        assert_eq!(default_body(&result, false), "{\"answer\": \"Paris\"}");
     }
 
     #[test]

@@ -486,8 +486,10 @@ fn live_json_schema_structured_output_clean() {
 #[ignore]
 fn live_json_schema_default_render() {
     // --json-schema with NO --json: the validated answer lands in
-    // structured_output (the textual result is empty), and roba's default
-    // path renders it as pretty JSON on stdout instead of a blank line.
+    // structured_output, and roba's default path renders it as pretty JSON
+    // on stdout so the `| jq` contract holds. claude may ALSO return a prose
+    // `result` alongside the structured answer (it does as of 2.1.186);
+    // schema mode prefers the structured object regardless.
     // Assert MECHANICS: stdout is non-empty and parses as a JSON object.
     let dir = fresh_dir();
     let schema_path = dir.path().join("schema.json");
@@ -1402,11 +1404,13 @@ fn live_profile_draft() {
 #[test]
 #[ignore]
 fn live_config_init() {
-    // The per-project bootstrap. Assert MECHANICS: in a tiny fixture
-    // project, `roba config init` exits 0 and its stdout parses through
-    // the REAL per-file config deserializer (the exact path the pool
-    // loader uses). We do NOT assert anything about which profiles/keys
-    // were chosen -- that's model behavior, not roba's plumbing. The call
+    // The per-project bootstrap. Assert the MECHANIC roba owns -- the
+    // deterministic-bookend invariant -- WITHOUT asserting model
+    // compliance: `config init` validates the drafted config through the
+    // REAL per-file deserializer before exiting, so a clean exit implies a
+    // parseable config and a non-clean exit is a graceful validator
+    // rejection (not a crash). Either way roba's plumbing is sound; we do
+    // NOT require the model to emit a valid config every run. The call
     // carries its own `--model` (config init ignores roba_in's top-level).
     let dir = fresh_dir();
     // A minimal but realistic project: a git marker so the config walk
@@ -1437,17 +1441,26 @@ fn live_config_init() {
         ])
         .output()
         .expect("run roba config init");
-    assert!(
-        out.status.success(),
-        "config init should exit 0; stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
 
-    // Validate through the SAME deserializer the pool loader uses.
-    roba::profile::pool::parse_config_str(&stdout).unwrap_or_else(|e| {
-        panic!("config init stdout did not parse as a config: {e:#}\n{stdout}")
-    });
+    if out.status.success() {
+        // Exit 0 must IMPLY a parseable config -- roba only succeeds after
+        // its own deserializer accepted the draft. Validate through the
+        // SAME deserializer the pool loader uses.
+        roba::profile::pool::parse_config_str(&stdout).unwrap_or_else(|e| {
+            panic!("config init exited 0 but stdout did not parse: {e:#}\n{stdout}")
+        });
+    } else {
+        // A model slip (e.g. an alias-only key in a [profile.*] table) is
+        // caught deterministically by roba's validator. That is roba
+        // working CORRECTLY, not a roba bug -- assert the graceful
+        // rejection rather than failing on model behavior.
+        assert!(
+            stderr.contains("drafted config did not parse"),
+            "non-zero exit should be a clean validator rejection, not a crash; stderr:\n{stderr}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

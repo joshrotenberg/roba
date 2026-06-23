@@ -449,7 +449,7 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         };
         extract_code_blocks(&result.result, lang)
     } else {
-        default_body(&result)
+        default_body(&result, args.json_schema.is_some())
     };
     let style = render::Style::detect(&args);
     // --out always also writes stdout; redirect to /dev/null to suppress.
