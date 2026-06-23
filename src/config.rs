@@ -613,6 +613,9 @@ fn init_prompt(description: Option<&str>, inherited: Option<&str>) -> String {
          - Keeps every profile/permission posture READ-ONLY unless the steer below asks otherwise.\n\
          - Has a brief `#` comment on every key explaining what it does.\n\
          - Does NOT include a `[session]` table (session UUIDs are machine-local).\n\
+         - Keeps `template`, `args`, and `flags` to `[alias.NAME]` tables ONLY -- \
+         they are alias keys and a `[profile.NAME]` table will REJECT them (a profile \
+         that wants a prompt template, args, or extra flags is actually an alias).\n\
          - Uses ONLY keys from the schema above; the whole file must parse as valid TOML.\
          {steering}\n\n\
          Output requirements (follow exactly):\n\
@@ -855,6 +858,11 @@ mod tests {
         assert!(p.contains("AMBIENT, always-on knobs"), "{p}");
         assert!(p.contains("named, opt-in-able MODE"), "{p}");
         assert!(p.contains("profile PLUS a prompt template"), "{p}");
+        // Alias-only keys must not be steered into a [profile.NAME] table.
+        assert!(
+            p.contains("they are alias keys and a `[profile.NAME]` table will REJECT them"),
+            "{p}"
+        );
     }
 
     #[test]
