@@ -368,3 +368,100 @@ fn scenario_readonly_denies_write() {
         );
     }
 }
+
+// ===========================================================================
+// Tier B -- config/worktree footgun journeys (#337). The live confirmation
+// of the mechanical A2 / a3-lint proofs: with a SAFE config `-c` resumes
+// (B1, the positive orario contrast); with a top-level anonymous worktree
+// `-c` is silently defeated and roba warns (B2). Mechanics only.
+// ===========================================================================
+
+/// B1 -- session continuity under a safe config. Pin a session id on run 1,
+/// then `-c` (continue most recent) on run 2 resumes the SAME session: the
+/// resumed `--json` session_id equals the pinned id. No worktree in play, so
+/// `-c` finds the prior session -- the opposite of the orario footgun. We
+/// assert handle continuity, never that the model recalled anything.
+#[test]
+#[ignore]
+fn scenario_session_continuity_pinned_id() {
+    let dir = fresh_dir();
+    // A fixed v4-shaped id; the fresh tempdir gives it a unique project slug,
+    // so re-running never collides.
+    let pinned = "550e8400-e29b-41d4-a716-446655440000";
+
+    // Run 1: establish the session under the pinned id.
+    let out1 = roba_in(dir.path())
+        .args([
+            "--json",
+            "--session-id",
+            pinned,
+            "reply with the single token ONE",
+        ])
+        .output()
+        .expect("run 1");
+    assert!(
+        out1.status.success(),
+        "pinned-id run exits 0; stderr: {}",
+        String::from_utf8_lossy(&out1.stderr)
+    );
+    let v1: serde_json::Value =
+        serde_json::from_str(String::from_utf8(out1.stdout).expect("utf8").trim())
+            .expect("run 1 --json");
+    assert_eq!(
+        v1["result"]["session_id"].as_str(),
+        Some(pinned),
+        "run 1 used the pinned session id"
+    );
+
+    // Run 2: continue most-recent. With no worktree, it resolves to the
+    // pinned session. `-c` takes an optional value, so the prompt MUST go
+    // via `-p` -- a bare `-c "prompt"` would consume the prompt as a session
+    // id (#100).
+    let out2 = roba_in(dir.path())
+        .args(["--json", "-c", "-p", "reply with the single token TWO"])
+        .output()
+        .expect("run 2");
+    assert!(
+        out2.status.success(),
+        "continue run exits 0; stderr: {}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+    let v2: serde_json::Value =
+        serde_json::from_str(String::from_utf8(out2.stdout).expect("utf8").trim())
+            .expect("run 2 --json");
+    assert_eq!(
+        v2["result"]["session_id"].as_str(),
+        Some(pinned),
+        "the -c run resumed the SAME pinned session (handle continuity)"
+    );
+}
+
+/// B2 -- the worktree footgun, made observable. A top-level `worktree = true`
+/// config makes every run mint an anonymous worktree, so `-c` (continue most
+/// recent) is silently defeated. roba warns on stderr (#328) before the
+/// spawn; stdout stays clean (principle #2). Needs a REAL git repo so the
+/// `--worktree` preflight (#327) passes and `apply_session` -- where the
+/// warning lives -- is reached. We assert only the warning, so the worktree
+/// spawn's own outcome does not matter.
+#[test]
+#[ignore]
+fn scenario_worktree_continue_warns() {
+    let dir = fresh_dir();
+    git(dir.path(), &["init", "-q"]);
+    git(dir.path(), &["config", "user.email", "scenario@roba.test"]);
+    git(dir.path(), &["config", "user.name", "roba scenario"]);
+    std::fs::write(dir.path().join("roba.toml"), "worktree = true\n").expect("write roba.toml");
+
+    let out = roba_in(dir.path())
+        .args(["-c", "--max-turns", "1", "reply with the single token GO"])
+        .env_remove("ROBA_WORKTREE")
+        .output()
+        .expect("run -c with worktree=true");
+
+    // The #328 advisory must fire (stderr); the pipeable body stays clean.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("anonymous --worktree starts a fresh worktree each run"),
+        "the #328 advisory must fire on stderr; got:\n{stderr}"
+    );
+}

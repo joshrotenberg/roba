@@ -58,9 +58,22 @@ pub struct ProjectBuilder {
     user_config: Option<String>,
     project_toml: Option<String>,
     files: Vec<(String, String)>,
+    no_git: bool,
 }
 
 impl ProjectBuilder {
+    /// Skip the `.git` marker so the project is NOT a git repository.
+    ///
+    /// The builder normally drops an empty `.git` dir so the config walk-up
+    /// stops at the fixture. A few scenarios need the opposite -- the
+    /// `-w`/worktree preflight bails when cwd is not a git repo (#327) -- so
+    /// this opts out. (A bare temp dir under `/tmp` or `/var/folders` has no
+    /// git ancestor, so the preflight sees a non-repo, the same as the
+    /// `tests/cli.rs` proof.)
+    pub fn no_git(mut self) -> Self {
+        self.no_git = true;
+        self
+    }
     /// Contents of `$XDG_CONFIG_HOME/roba.toml` (the user-config layer). Not
     /// calling this leaves the user layer empty.
     pub fn user_config(mut self, toml: &str) -> Self {
@@ -88,8 +101,11 @@ impl ProjectBuilder {
 
         // The `.git` marker stops `discover_project_configs` walking up past
         // the fixture, so the config pool is deterministic. An empty dir is
-        // enough -- no real `git init` required.
-        std::fs::create_dir_all(root.path().join(".git")).expect("mkdir .git");
+        // enough -- no real `git init` required. `no_git()` opts out for the
+        // scenarios that need a non-repo cwd (the worktree preflight, #327).
+        if !self.no_git {
+            std::fs::create_dir_all(root.path().join(".git")).expect("mkdir .git");
+        }
 
         if let Some(toml) = &self.user_config {
             std::fs::write(config_home.path().join("roba.toml"), toml).expect("write user config");

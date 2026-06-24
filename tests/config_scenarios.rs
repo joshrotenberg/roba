@@ -1,11 +1,12 @@
-//! Mechanical "pretend project" scenarios over `roba config show` -- the
-//! free, CI-run regression tier for the config/worktree footgun cluster
-//! (#327-#330). `config show` is pure inspection: no claude is invoked.
+//! Mechanical "pretend project" scenarios for the config/worktree footgun
+//! cluster (#327-#340) -- the free, CI-run regression tier. Every scenario
+//! is pure inspection or a pre-spawn preflight: no claude is invoked.
 //!
 //! Each scenario builds an isolated synthetic project via the shared
-//! fixture builder, then asserts the EXACT stdout/stderr `config show`
-//! emits. Read `src/config.rs` (`run_show` / `render_merged_pool` /
-//! `run_show_sources`) for the formats these pin.
+//! fixture builder, then asserts the EXACT stdout/stderr roba emits. Read
+//! `src/config.rs` (`run_show` / `render_merged_pool` / `run_show_sources`)
+//! for the `config show` formats, and `src/lib.rs` (the `--worktree`
+//! preflight) for A3.
 
 mod common;
 
@@ -156,4 +157,30 @@ fn a3_lint_warns_on_top_level_worktree_but_still_passes() {
         .success()
         .stdout(predicate::str::contains("top-level-worktree"))
         .stdout(predicate::str::contains("lint passes"));
+}
+
+// ---------------------------------------------------------------------------
+// A3 -- `-w` in a non-git project bails at the preflight (#327) BEFORE the
+// claude spawn, with a clean actionable message. The fixture-tier form of
+// the `tests/cli.rs` proof, built on the shared `no_git()` project so the
+// footgun-cluster scenarios share one home.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a3_worktree_in_non_git_project_preflights_without_spawning() {
+    // PATH is cleared so a spawn attempt would fail as NotFound; the
+    // preflight message proves we never reached that point.
+    project()
+        .no_git()
+        .build()
+        .roba()
+        .args(["-w", "-p", "hi"])
+        .env("PATH", "")
+        .env_remove("ROBA_WORKTREE")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--worktree needs a git repository",
+        ))
+        .stderr(predicate::str::contains("git init"));
 }
