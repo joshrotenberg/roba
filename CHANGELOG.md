@@ -14,6 +14,25 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-24
+
+### Fixed
+
+- green the scheduled live-test run (json-schema default render + config-init) ([#349](https://github.com/joshrotenberg/roba/pull/349))
+
+
+### Maintenance
+
+- move roba.toml worktree/full_auto into [profile.worker] (closes #346) ([#347](https://github.com/joshrotenberg/roba/pull/347))
+- gitignore the local structured-tasks design doc ([#352](https://github.com/joshrotenberg/roba/pull/352))
+
+
+### Tests
+
+- finish #337 -- mechanical A3/A4 + live Tier-B journeys ([#351](https://github.com/joshrotenberg/roba/pull/351))
+
+
+
 ## [0.8.1] - 2026-06-18
 
 ### Fixed
