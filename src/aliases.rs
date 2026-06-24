@@ -461,7 +461,7 @@ pub fn bare_alias_candidate(ask: &AskArgs) -> Result<Option<String>> {
 /// (`worktrees` for `worktree`, `histroy` for `history`) is almost
 /// always a typo, not an intended prompt; left alone it fires a
 /// surprising, billable claude call (#353). When the token is a single
-/// edit (under [`damerau_osa`]) from a built-in subcommand, return a
+/// edit (under `damerau_osa`) from a built-in subcommand, return a
 /// "did you mean" message so [`crate::dispatch`] can bail instead of
 /// prompting.
 ///
@@ -470,7 +470,7 @@ pub fn bare_alias_candidate(ask: &AskArgs) -> Result<Option<String>> {
 /// has already won. Matches built-in names ONLY, never alias names:
 /// built-ins are a small fixed set unlikely to collide with an intended
 /// prompt, whereas user aliases can be short, prompt-like words. The
-/// threshold is one OSA edit -- tighter than [`unknown_alias_message`]'s
+/// threshold is one OSA edit -- tighter than `unknown_alias_message`'s
 /// Levenshtein 3 -- because the bare-word path has a high prior that the
 /// input is a real prompt; OSA keeps transposition typos (`histroy`)
 /// caught at distance 1 while leaving distance-2 lookalikes (`hello` vs
