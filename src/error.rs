@@ -405,6 +405,11 @@ mod tests {
             rendered.starts_with("claude failed (exit 1)"),
             "got: {rendered}"
         );
+        // The working dir is surfaced as a `(in DIR)` segment.
+        assert!(
+            rendered.contains("(in /x)"),
+            "working dir must appear as a segment, got: {rendered}"
+        );
         assert!(
             rendered.contains(
                 "Error: Can only use --worktree in a git repository, but /x is not a git repository."
@@ -415,6 +420,46 @@ mod tests {
             !rendered.contains(argv),
             "the command argv must be dropped, got: {rendered}"
         );
+    }
+
+    /// Generalize the `CommandFailed` render across the branches the field
+    /// hits: no working dir (no `(in ...)` segment), an empty-stderr
+    /// fallback to stdout, and the both-empty `(no output)` placeholder.
+    #[test]
+    fn render_human_command_failed_variants() {
+        // No working dir -> no `(in ...)` segment, exit code preserved.
+        let no_dir = anyhow::Error::from(claude_wrapper::Error::CommandFailed {
+            command: "claude --print".into(),
+            exit_code: 2,
+            stdout: String::new(),
+            stderr: "boom from claude".into(),
+            working_dir: None,
+        });
+        let r = render_human_error(&no_dir);
+        assert_eq!(r, "claude failed (exit 2): boom from claude", "got: {r}");
+        assert!(!r.contains("(in "), "no working dir means no segment: {r}");
+
+        // Empty stderr -> lead with stdout instead.
+        let stdout_only = anyhow::Error::from(claude_wrapper::Error::CommandFailed {
+            command: "claude --print".into(),
+            exit_code: 1,
+            stdout: "only-on-stdout".into(),
+            stderr: String::new(),
+            working_dir: None,
+        });
+        let r = render_human_error(&stdout_only);
+        assert_eq!(r, "claude failed (exit 1): only-on-stdout", "got: {r}");
+
+        // Both empty -> the placeholder, never a bare trailing colon.
+        let silent = anyhow::Error::from(claude_wrapper::Error::CommandFailed {
+            command: "claude --print".into(),
+            exit_code: 137,
+            stdout: String::new(),
+            stderr: String::new(),
+            working_dir: None,
+        });
+        let r = render_human_error(&silent);
+        assert_eq!(r, "claude failed (exit 137): (no output)", "got: {r}");
     }
 
     #[test]
