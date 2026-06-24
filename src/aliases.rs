@@ -452,6 +452,53 @@ pub fn bare_alias_candidate(ask: &AskArgs) -> Result<Option<String>> {
     }
 }
 
+/// Guard a lone bare word against being a *typo* of a built-in
+/// subcommand.
+///
+/// roba accepts bare-word prompts (`roba hello`), so a single token that
+/// is neither a subcommand nor a known alias normally becomes the
+/// prompt. But a close edit-distance miss of a real subcommand
+/// (`worktrees` for `worktree`, `histroy` for `history`) is almost
+/// always a typo, not an intended prompt; left alone it fires a
+/// surprising, billable claude call (#353). When the token is a single
+/// edit (under [`damerau_osa`]) from a built-in subcommand, return a
+/// "did you mean" message so [`crate::dispatch`] can bail instead of
+/// prompting.
+///
+/// Gated identically to [`bare_alias_candidate`] (single whitespace-free
+/// word, no `-f` / `-e`), and only reached after it -- so an exact alias
+/// has already won. Matches built-in names ONLY, never alias names:
+/// built-ins are a small fixed set unlikely to collide with an intended
+/// prompt, whereas user aliases can be short, prompt-like words. The
+/// threshold is one OSA edit -- tighter than [`unknown_alias_message`]'s
+/// Levenshtein 3 -- because the bare-word path has a high prior that the
+/// input is a real prompt; OSA keeps transposition typos (`histroy`)
+/// caught at distance 1 while leaving distance-2 lookalikes (`hello` vs
+/// `help`) as prompts. The `-p` escape hatch in the message keeps a
+/// genuine bare-word prompt recoverable (it sets the prompt flag, not
+/// the positional, so this guard does not fire on it).
+pub fn bare_subcommand_typo(ask: &AskArgs) -> Option<String> {
+    let prompt = ask.prompt.as_deref()?;
+    if prompt.is_empty() || prompt.chars().any(char::is_whitespace) {
+        return None;
+    }
+    if ask.file.is_some() || ask.editor {
+        return None;
+    }
+    // An exact built-in name is routed by clap and never reaches the
+    // bare-word path; guard defensively for direct callers/tests.
+    if is_builtin_subcommand(prompt) {
+        return None;
+    }
+    let suggestion = closest_matches(prompt, builtin_subcommands().to_vec(), damerau_osa, 1, 1)
+        .into_iter()
+        .next()?;
+    Some(format!(
+        "`{prompt}` is not a roba command; did you mean `{suggestion}`?\n       \
+         (to send it as a prompt: roba -p \"{prompt}\")"
+    ))
+}
+
 /// The argv tokens that follow `name` on the original command line.
 /// Used for the bare-word case, where clap parsed any trailing flags
 /// into the (discarded) first `AskArgs` rather than handing them back
@@ -747,22 +794,34 @@ fn preview_template(template: &str, schema: &[String]) -> String {
 // Unknown-alias diagnostics
 // ---------------------------------------------------------------------------
 
+/// Names from `candidates` within `max_dist` of `name` under the `dist`
+/// metric, closest first (ties broken alphabetically), capped at `take`.
+fn closest_matches(
+    name: &str,
+    candidates: impl IntoIterator<Item = String>,
+    dist: impl Fn(&str, &str) -> usize,
+    max_dist: usize,
+    take: usize,
+) -> Vec<String> {
+    let mut scored: Vec<(usize, String)> = candidates
+        .into_iter()
+        .map(|c| (dist(name, &c), c))
+        .collect();
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    scored
+        .into_iter()
+        .filter(|(d, _)| *d <= max_dist)
+        .take(take)
+        .map(|(_, c)| c)
+        .collect()
+}
+
 /// Build the "no built-in or alias named X" error, with up to three
 /// close matches (built-ins + aliases) by Levenshtein distance.
 fn unknown_alias_message(name: &str, pool: &Pool) -> String {
     let mut candidates: Vec<String> = builtin_subcommands().to_vec();
     candidates.extend(pool.aliases.keys().cloned());
-    let mut scored: Vec<(usize, String)> = candidates
-        .into_iter()
-        .map(|c| (levenshtein(name, &c), c))
-        .collect();
-    scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-    let suggestions: Vec<String> = scored
-        .into_iter()
-        .filter(|(d, _)| *d <= 3)
-        .take(3)
-        .map(|(_, c)| c)
-        .collect();
+    let suggestions = closest_matches(name, candidates, levenshtein, 3, 3);
     if suggestions.is_empty() {
         format!("no built-in or alias named `{name}`")
     } else {
@@ -771,6 +830,39 @@ fn unknown_alias_message(name: &str, pool: &Pool) -> String {
             suggestions.join(", ")
         )
     }
+}
+
+/// Optimal String Alignment distance: Levenshtein plus adjacent
+/// transposition as a single edit. A transposed pair (`histroy` vs
+/// `history`) costs 1 here but 2 under plain [`levenshtein`], which
+/// matters for the bare-word typo guard: it lets a threshold of 1 catch
+/// the common single-typo classes (insert / delete / substitute /
+/// transpose) without the distance-2 false positives plain Levenshtein
+/// would admit (`hello` is distance 2 from `help`).
+fn damerau_osa(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (n, m) = (a.len(), b.len());
+    let mut d = vec![vec![0usize; m + 1]; n + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=n {
+        for j in 1..=m {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            let mut v = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                v = v.min(d[i - 2][j - 2] + 1);
+            }
+            d[i][j] = v;
+        }
+    }
+    d[n][m]
 }
 
 /// Classic dynamic-programming Levenshtein edit distance.
@@ -1066,6 +1158,75 @@ mod tests {
         let pool = Pool::default();
         let msg = unknown_alias_message("zzzzzzzz", &pool);
         assert_eq!(msg, "no built-in or alias named `zzzzzzzz`");
+    }
+
+    #[test]
+    fn damerau_osa_counts_transposition_as_one() {
+        // The motivating distinction: a transposition is one OSA edit but
+        // two Levenshtein edits.
+        assert_eq!(damerau_osa("histroy", "history"), 1);
+        assert_eq!(levenshtein("histroy", "history"), 2);
+        // A deletion is one under both.
+        assert_eq!(damerau_osa("worktrees", "worktree"), 1);
+        // The false positive OSA-1 must NOT admit: hello vs help is 2.
+        assert_eq!(damerau_osa("hello", "help"), 2);
+    }
+
+    fn ask_from(args: &[&str]) -> AskArgs {
+        use clap::Parser;
+        crate::cli::Cli::try_parse_from(args)
+            .expect("parse cli")
+            .ask
+    }
+
+    #[test]
+    fn bare_subcommand_typo_flags_deletion_typo() {
+        let msg = bare_subcommand_typo(&ask_from(&["roba", "worktrees"]))
+            .expect("worktrees is one deletion from worktree");
+        assert!(msg.contains("`worktrees` is not a roba command"), "{msg}");
+        assert!(msg.contains("did you mean `worktree`"), "{msg}");
+        assert!(msg.contains("roba -p \"worktrees\""), "{msg}");
+    }
+
+    #[test]
+    fn bare_subcommand_typo_flags_transposition_typo() {
+        let msg = bare_subcommand_typo(&ask_from(&["roba", "histroy"]))
+            .expect("histroy is one transposition from history");
+        assert!(msg.contains("did you mean `history`"), "{msg}");
+    }
+
+    #[test]
+    fn bare_subcommand_typo_ignores_far_word() {
+        // A genuine bare-word prompt. `hello` is OSA-2 from `help`, so it
+        // must stay a prompt, not get hijacked into a suggestion.
+        assert!(bare_subcommand_typo(&ask_from(&["roba", "hello"])).is_none());
+    }
+
+    #[test]
+    fn bare_subcommand_typo_ignores_multiword_prompt() {
+        assert!(bare_subcommand_typo(&ask_from(&["roba", "explain this code"])).is_none());
+    }
+
+    #[test]
+    fn bare_subcommand_typo_ignores_exact_builtin() {
+        // Defensive: clap routes an exact name, but a direct caller must
+        // not get a self-suggestion. Build the AskArgs via a far word,
+        // then override the prompt (an exact name like `worktree` fails to
+        // parse on its own -- it needs a sub-action).
+        let mut ask = ask_from(&["roba", "hello"]);
+        ask.prompt = Some("worktree".to_string());
+        assert!(bare_subcommand_typo(&ask).is_none());
+    }
+
+    #[test]
+    fn bare_subcommand_typo_ignores_when_file_or_editor() {
+        let mut ask = ask_from(&["roba", "worktrees"]);
+        ask.file = Some("notes.txt".into());
+        assert!(bare_subcommand_typo(&ask).is_none());
+
+        let mut ask = ask_from(&["roba", "worktrees"]);
+        ask.editor = true;
+        assert!(bare_subcommand_typo(&ask).is_none());
     }
 
     #[test]

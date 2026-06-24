@@ -119,10 +119,14 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         }
         None => {
             // A bare single word may name a zero-arg alias
-            // (`roba commit-msg`). Otherwise it's a normal prompt.
+            // (`roba commit-msg`). Otherwise it's a normal prompt --
+            // unless it's a close typo of a subcommand (`worktrees`),
+            // in which case it's caught instead of silently prompting.
             if let Some(name) = aliases::bare_alias_candidate(&cli.ask)? {
                 let trailing = aliases::trailing_args_from_env(&name);
                 aliases::dispatch_alias(&name, &trailing).await
+            } else if let Some(msg) = aliases::bare_subcommand_typo(&cli.ask) {
+                anyhow::bail!(msg)
             } else {
                 run_ask(cli.ask).await
             }
