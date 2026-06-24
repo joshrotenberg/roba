@@ -237,6 +237,30 @@ fn config_lint_clean_config_exits_0() {
 }
 
 #[test]
+fn bare_word_subcommand_typo_errors_without_prompting() {
+    // `roba worktrees` (a one-edit typo of `worktree`) must bail with a
+    // suggestion instead of silently becoming a prompt + calling claude
+    // (#353). Isolated config (empty `.git` project + empty
+    // XDG_CONFIG_HOME) means no alias named `worktrees` exists. PATH is
+    // emptied as belt-and-suspenders: the guard bails before run_ask, so
+    // claude is never looked up -- a regression that fell through to a
+    // prompt would surface a different ("not found on PATH") error and
+    // fail these assertions.
+    let project = make_dir_with_files(&[(".git/HEAD", "")]);
+    let user_home = tempfile::tempdir().expect("user home");
+    roba()
+        .args(["-C", project.path().to_str().unwrap(), "worktrees"])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .env("PATH", "")
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("is not a roba command"))
+        .stderr(predicate::str::contains("did you mean `worktree`"))
+        .stderr(predicate::str::contains("roba -p"));
+}
+
+#[test]
 fn config_lint_json_emits_versioned_envelope() {
     // --json: the uniform { version: 1, result: { findings, ok } } envelope
     // on stdout, even when findings exist (exit 1).
