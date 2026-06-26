@@ -48,7 +48,7 @@ Examples -- for agents & scripts (deterministic, pipe-clean):
   roba --full-auto -C repo -f task.md                  fire an unattended worker
   Exit codes: 0 ok (refusals included), 1 failure (incl. --max-budget-usd
   cap hits), 2 auth, 3 budget, 4 timeout, 5 max-turns (recoverable --
-  finish the lifecycle).
+  finish the lifecycle), 6 no usable output (empty answer or is_error).
 
 Unattended workers (composing the primitives):
   --full-auto -C <dir> -f <file>   edit the current checkout in place; the

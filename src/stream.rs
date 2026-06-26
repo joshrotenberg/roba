@@ -192,6 +192,22 @@ pub async fn run_streaming(
             &style,
         );
     }
+    // Agree with the non-streaming path: a run that streamed nothing
+    // usable (no result event, an empty answer, or is_error) must not
+    // exit 0. Anything already streamed to stdout stays put; the exit
+    // code carries the failure signal. Only the Live path reaches here --
+    // Silent returns the result above for the caller to classify.
+    match &final_result {
+        Some(qr) => {
+            if let Some((code, note)) = crate::classify_result(qr) {
+                crate::exit_unusable(code, note);
+            }
+        }
+        None => crate::exit_unusable(
+            crate::EXIT_UNUSABLE_RESULT,
+            "no result event: the streaming run produced no usable output",
+        ),
+    }
     Ok(None)
 }
 
