@@ -7,8 +7,85 @@ model = "opus"
 stream = true
 show_thinking = true
 
+# ---------------------------------------------------------------------------
+# Single-issue lifecycle as one profile per phase. Each phase is a DISTINCT
+# roba run with its own permission posture (plan and review are read-only;
+# implement is the one that mutates). The sequencing -- plan, implement,
+# review, then watch/merge -- is composition you drive, not a chain baked
+# into config: roba is the per-phase worker, the orchestration lives a layer
+# up (a script, a skill, or you at the prompt). The watch/merge tail spans
+# turns (CI is wall-clock minutes), so it stays in `gh`, never an alias.
+# ---------------------------------------------------------------------------
+
+# PLAN -- read-only orientation against recent history. Produce an approach,
+# touch nothing.  ->  roba --profile plan "how should I approach X?"
+[profile.plan]
+readonly = true
+git_log = 10
+
+# IMPLEMENT -- task-scoped dispatch posture: bypass tool checks, run in a
+# fresh git worktree, capped so an unattended run self-arrests (the
+# cascade-needs-runway lesson). Opt in per run with `roba --profile worker`.
 [profile.worker]
-# Task-scoped dispatch posture: bypass tool checks and run in a fresh
-# git worktree. Opt in explicitly per run with `roba --profile worker`.
 full_auto = true
 worktree = true
+max_turns = 80
+max_budget_usd = 10.0
+
+# REVIEW -- read-only against the working-tree diff.
+#   roba --profile review "is this safe to merge?"
+[profile.review]
+readonly = true
+git_diff = true
+
+# ---------------------------------------------------------------------------
+# Lifecycle verbs. Each is ONE rich roba run (width), never a multi-step
+# chain (depth). `issue` and `review` are read-only and bring their own gh
+# context, so they take the bare `--readonly` posture rather than a
+# context-embedding profile; `fix` is the full_auto implement shot and
+# inherits the worker caps. Watch/merge stays in gh:
+#   roba fix 357 && gh pr checks <pr> --watch && gh pr merge <pr> --squash
+# ---------------------------------------------------------------------------
+
+# PLAN by issue number: summarize + propose an approach, write no code.
+#   roba issue 357
+[alias.issue]
+description = "Summarize a roba issue and propose an approach (read-only)"
+args = ["n"]
+flags = ["--readonly"]
+template = """
+Summarize roba issue #${n} and propose an implementation approach.
+Cite the files involved. Do not write code.
+
+$(gh issue view ${n})
+"""
+
+# IMPLEMENT an issue end-to-end in a worktree, then open a draft PR.
+# full_auto via the worker profile -- an explicit, named loaded gun.
+#   roba fix 357
+[alias.fix]
+description = "Implement a roba issue in a worktree, open a draft PR (full_auto)"
+args = ["n"]
+flags = ["--profile", "worker"]
+template = """
+Implement roba issue #${n}. Follow AGENTS.md: branch, implement, run the gates
+(cargo fmt --check, clippy -D warnings, test --lib, test --test cli, cargo doc),
+commit with a conventional-commit subject, and open a draft PR with the plan as
+the body. Surface anything that does not fit rather than forcing it.
+
+$(gh issue view ${n})
+"""
+
+# REVIEW a PR by number against its own diff (read-only).
+#   roba review 356
+[alias.review]
+description = "Review a roba PR by number (read-only)"
+args = ["pr"]
+flags = ["--readonly"]
+template = """
+Review PR #${pr} in roba for correctness and regressions. Cite file:line.
+Check it against AGENTS.md conventions. No style nits.
+
+Title: $(gh pr view ${pr} --json title -q '.title')
+$(gh pr diff ${pr})
+"""
