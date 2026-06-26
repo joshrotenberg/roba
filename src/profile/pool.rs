@@ -260,6 +260,37 @@ mod tests {
         );
     }
 
+    /// The worker-lifecycle bundle carries its three holes (`<GATE>` etc.) only
+    /// inside template strings, so it still deserializes through the real path.
+    /// Mirrors `sample_config_parses_and_documents_the_schema`: parse, then
+    /// assert the lifecycle profiles and verbs are present.
+    #[test]
+    fn worker_lifecycle_example_parses_and_documents_the_lifecycle() {
+        let toml = include_str!("../../examples/roba-worker-lifecycle.toml");
+        let cfg = parse_config_str(toml)
+            .expect("examples/roba-worker-lifecycle.toml must parse as a valid config");
+        for name in ["plan", "worker", "review"] {
+            assert!(
+                cfg.profile.contains_key(name),
+                "worker-lifecycle bundle is missing [profile.{name}]"
+            );
+        }
+        for name in ["issue", "ship", "revise", "review"] {
+            assert!(
+                cfg.alias.contains_key(name),
+                "worker-lifecycle bundle is missing [alias.{name}]"
+            );
+        }
+        // The holes live inside template strings, never as bare keys.
+        assert!(
+            cfg.alias["ship"]
+                .template
+                .as_deref()
+                .unwrap()
+                .contains("<GATE>")
+        );
+    }
+
     fn write_file(dir: &Path, rel: &str, content: &str) {
         let path = dir.join(rel);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

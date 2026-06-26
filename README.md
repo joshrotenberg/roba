@@ -171,6 +171,26 @@ enforced read-only, schema-validated reviewer in a few lines of TOML; and
 worker sized to chew through a task list in one run (the one-turn-many-tasks
 pattern).
 
+## Worker lifecycle
+
+A single issue moves through four verbs: `issue` (plan, read-only) ->
+`ship` (implement to a draft PR) -> `revise` (address feedback) ->
+`review` (post the verdict to the PR). You, or a thin loop, drive the
+sequence; the watch-and-merge tail stays in `gh`.
+
+Where to put a gate: the agent cooks freely through reversible work,
+including fetching the issue, planning, editing, and opening the draft
+PR. Gate only at the irreversible or outward edges (CI is green, the
+merge) and at flagged judgment that should not be made unilaterally. The
+verbs are the cook zone; the driver holds the gates.
+
+[`examples/roba-worker-lifecycle.toml`](examples/roba-worker-lifecycle.toml)
+is the copy-to-use bundle: fill its `<GATE>` / `<CONVENTIONS>` /
+`<CI-NOTE>` holes and go. Its comments carry the durable-context
+discipline (post the verdict via `gh pr comment --edit-last`, not
+`gh pr review`; write complete PR bodies; clarify on the issue rather
+than guess) and the driver loop.
+
 ## For agents & scripts
 
 The contract: **stdout is the answer, stderr is everything else**, and

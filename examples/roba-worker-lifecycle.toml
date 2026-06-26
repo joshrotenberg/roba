@@ -1,0 +1,189 @@
+# roba-worker-lifecycle.toml
+# ==========================
+# A generic single-issue lifecycle worker for driving roba on an issue
+# backlog. Copy to a project's roba.toml and fill the THREE holes:
+#
+#   <GATE>         the project's check command (the merge-blocking gate).
+#                  e.g. Rust:   cargo fmt --check && cargo clippy -D warnings && cargo test
+#                       Elixir: mix format --check-formatted && mix test && mix dialyzer
+#                       Node:   pnpm lint && pnpm test && pnpm typecheck
+#   <CONVENTIONS>  the invariants a change must preserve / a review must check.
+#                  e.g. "the {:ok, body} | {:error, reason} result shape",
+#                       "public API stability", "no new clippy allows".
+#   <CI-NOTE>      one line on why local-green is not the final word, if true
+#                  (e.g. the worker toolchain differs from CI). Optional.
+#
+# EVERYTHING ELSE IS GENERIC: the profiles, the verb structure, and the
+# durable-context discipline (post the verdict, complete PR body, clarify-
+# don't-guess) are language- and project-agnostic.
+#
+# GATE PLACEMENT (why the verbs stop where they stop): the agent cooks freely
+# up to the DRAFT PR -- every step there is cheap and reversible. The two
+# irreversible/outward edges (CI-green, merge) and any flagged judgment live
+# OUTSIDE the verbs, in the driver (you, a shell loop, or a roba orchestrator
+# making blocking sub-calls). Verbs are the stochastic work; the driver holds
+# the deterministic and human gates.
+
+# --- Safe top-level: read-only by default. No top-level loaded guns. ---
+readonly = true
+git_log = 10
+
+# === Lifecycle profiles: one posture per phase =============================
+
+# PLAN -- read-only orientation.
+[profile.plan]
+readonly = true
+git_log = 10
+
+# WORKER -- the dispatch posture (named loaded gun): bypass tool checks + caps.
+# worktree: false keeps the project's build cache warm for a fast gate and is
+# right for SERIAL one-at-a-time work; set true ONLY for parallel unattended
+# fan-out, and give each worktree a shared build/cache path first.
+[profile.worker]
+full_auto = true
+worktree = false
+max_turns = 60
+max_budget_usd = 8.0
+
+# REVIEW -- read-only against the working-tree diff.
+[profile.review]
+readonly = true
+git_diff = true
+
+# === Verbs: issue (plan) -> ship (shepherd) -> revise (fix) -> review (verdict)
+# Built-in subcommands cannot be shadowed.
+
+# PLAN by issue number, read-only. -> roba issue 42
+[alias.issue]
+description = "Summarize an issue and propose an approach (read-only)"
+args = ["n"]
+flags = ["--readonly"]
+template = """
+Summarize issue #${n} and propose an implementation approach. Cite the
+file(s) and line(s) the change will touch. Do not write code.
+
+$(gh issue view ${n})
+"""
+
+# SHIP: the shepherd. One run, plan -> implement -> gate -> commit -> draft PR.
+# STOPS at the draft PR; the CI-watch/merge tail is the driver's job. -> roba ship 42
+[alias.ship]
+description = "Shepherd an issue to a draft PR (full_auto)"
+args = ["n"]
+flags = ["--profile", "worker"]
+template = """
+Shepherd issue #${n} through our process, in this one run:
+
+PLAN     Read the issue; state the plan in one short paragraph. If the spec is
+         AMBIGUOUS (no clear file:line, two plausible fixes, an undecided
+         tradeoff), do NOT guess silently. POST the open question to the issue,
+         then proceed on a stated default:
+           gh issue comment ${n} --body "## Clarification needed
+           <one line: what is unresolved>
+           - Option A: <terse> -- <consequence>
+           - Option B: <terse> -- <consequence>
+           Proceeding with A unless redirected."
+BRANCH   git fetch origin && git switch -c fix/${n} origin/main
+IMPLEMENT Make the change. Preserve <CONVENTIONS>.
+TEST     Add or extend a test that proves the fix. No live/external calls.
+GATE     Run and pass, in order:  <GATE>
+COMMIT   One conventional-commit subject. No em dashes. No AI-attribution trailer.
+DRAFT PR Open a DRAFT PR with `closes #${n}` and this COMPLETE body (factual,
+         not wordy, no em dashes):
+           ## What     <the change, plainly>
+           ## Why      closes #${n}; <the problem, with file:line>
+           ## Decisions <each load-bearing choice + reason; include any
+                        clarification answered on the issue>
+           ## Tests    <the case(s) added and what they assert>
+           ## Gate     <GATE>: green locally. <CI-NOTE>
+
+STOP at the draft PR. Do NOT watch CI, mark ready, or merge -- that tail is
+cross-turn and driven outside this verb. Surface anything that does not fit
+rather than forcing it.
+
+$(gh issue view ${n})
+"""
+
+# REVISE: apply a CHANGES REQUESTED verdict to an open PR's branch. Posts NO
+# comment (commits are the record; review owns the rolling verdict). -> roba revise 77
+[alias.revise]
+description = "Apply review feedback to an open PR's branch and push (full_auto)"
+args = ["pr"]
+flags = ["--profile", "worker"]
+template = """
+Apply the review feedback on PR #${pr}, in this one run.
+
+CHECKOUT  gh pr checkout ${pr}
+ADDRESS   Read the latest **CHANGES REQUESTED** verdict (below) and address each
+          blocker. Preserve <CONVENTIONS>. If a finding is WRONG, say so rather
+          than silently comply.
+TEST      Extend test coverage for the fix. No live/external calls.
+GATE      Run and pass, in order:  <GATE>
+COMMIT    One conventional-commit subject. No em dashes. No AI-attribution trailer.
+PUSH      git push   (updates the open PR)
+
+Do NOT post a PR comment; the pushed commits ARE the record, and a later
+`roba review ${pr}` updates the rolling verdict. STOP after the push.
+
+Latest verdict and PR conversation:
+$(gh pr view ${pr} --comments)
+"""
+
+# REVIEW: read the diff, then POST the verdict to the PR (durable, not stdout).
+# Narrow gh grant: posts, never edits code. gh pr comment (not gh pr review):
+# the author cannot review their own PR (GitHub 422). -> roba review 77
+[alias.review]
+description = "Review a PR and post the verdict to the PR (read-only code; posts via gh)"
+args = ["pr"]
+flags = ["--readonly", "--allow-tool", "Bash(gh pr view:*)", "--allow-tool", "Bash(gh pr comment:*)"]
+template = """
+Review PR #${pr} for correctness and regressions, then POST your verdict as a
+comment ON THE PR. Do not change any code.
+
+Check (cite file:line; no style nits): that the change preserves <CONVENTIONS>,
+that it has a test proving the fix, and a clean conventional-commit subject.
+
+Post (or update) the single rolling verdict with:
+  gh pr comment ${pr} --edit-last --create-if-none --body "<your verdict>"
+
+The comment MUST start with EXACTLY one of:
+  **LGTM** -- one line of why
+  **CHANGES REQUESTED** -- one line of why
+followed by findings: each a file:line plus the concrete problem and fix. On
+LGTM, still state what you checked. The verdict lives on the PR as durable
+history; never let it exist only in this output. You authored this PR, so a
+formal approve/request-changes review is not possible; gh pr comment is correct.
+
+Title: $(gh pr view ${pr} --json title -q '.title')
+$(gh pr diff ${pr})
+"""
+
+# === THE DRIVER (NOT roba) =================================================
+# The verbs above are the stochastic cook zone (reversible work, no gates).
+# The driver holds the three gate types. It is you, a shell loop, or a roba
+# orchestrator making blocking Bash(roba ...) sub-calls. For one issue:
+#
+#   roba ship $N                              # cook -> draft PR  (reversible)
+#   pr=$(gh pr list --head fix/$N --json number -q '.[0].number')
+#   roba review $pr                           # cook -> posts verdict (reversible)
+#   verdict=$(gh pr view $pr --comments -q '.comments[-1].body' \
+#               | grep -oE 'LGTM|CHANGES REQUESTED' | head -1)
+#
+#   # HUMAN GATE: did ship flag a decision on the issue? pause for a person.
+#   # (stochastic judgment that should not be made unilaterally)
+#
+#   case $verdict in
+#     "CHANGES REQUESTED")
+#       roba revise $pr                       # cook again, then re-review
+#       # loop back to `roba review $pr`, bounded (~2-3 rounds) then escalate
+#       ;;
+#     "LGTM")
+#       gh pr checks $pr --watch \            # DETERMINISTIC GATE: CI is the
+#         || { echo "CI red -> revise or escalate"; exit 1; }  # authority
+#       gh pr ready $pr \                     # DETERMINISTIC + IRREVERSIBLE:
+#         && gh pr merge $pr --squash --delete-branch   # the merge edge
+#       ;;
+#   esac
+#
+# The placement rule, embodied: cook everywhere; gate only at the two edges
+# (CI fact, merge) and the one judgment escalation.
