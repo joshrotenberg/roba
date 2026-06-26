@@ -396,7 +396,17 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
             );
         }
     }
-    let claude = Claude::builder().build()?;
+    // A run-level wall-clock deadline lives on the Claude client, so it is
+    // enforced uniformly across both the streaming and non-streaming exec
+    // paths below (the wrapper kills + reaps the child and returns
+    // Error::Timeout, which classify_exit_code maps to exit 4). `0` disables.
+    let mut builder = Claude::builder();
+    if let Some(secs) = args.timeout
+        && secs > 0
+    {
+        builder = builder.timeout_secs(secs);
+    }
+    let claude = builder.build()?;
 
     if args.stream {
         run_streaming(&claude, prompt, &args, stream::DisplayMode::Live).await?;

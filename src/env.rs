@@ -337,6 +337,11 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     {
         args.max_budget_usd = Some(v);
     }
+    if args.timeout.is_none()
+        && let Some(n) = read_u64(env, "ROBA_TIMEOUT")
+    {
+        args.timeout = Some(n);
+    }
 
     // ----- Mode -----
     if !args.bare && read_truthy(env, "ROBA_BARE") {
@@ -421,6 +426,12 @@ fn read_usize(env: &HashMap<String, String>, key: &str) -> Option<usize> {
 }
 
 fn read_u32(env: &HashMap<String, String>, key: &str) -> Option<u32> {
+    env.get(key)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse().ok())
+}
+
+fn read_u64(env: &HashMap<String, String>, key: &str) -> Option<u64> {
     env.get(key)
         .filter(|s| !s.is_empty())
         .and_then(|s| s.parse().ok())
@@ -1173,6 +1184,28 @@ mod tests {
         let mut args = empty_args();
         apply_env_overrides_from(&mut args, &env_with(&[("ROBA_MAX_BUDGET_USD", "free")]));
         assert_eq!(args.max_budget_usd, None);
+    }
+
+    #[test]
+    fn env_timeout_sets_from_roba_var() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_TIMEOUT", "300")]));
+        assert_eq!(args.timeout, Some(300));
+    }
+
+    #[test]
+    fn env_timeout_does_not_override_cli() {
+        let mut args = empty_args();
+        args.timeout = Some(30);
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_TIMEOUT", "300")]));
+        assert_eq!(args.timeout, Some(30));
+    }
+
+    #[test]
+    fn env_timeout_ignores_invalid() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_TIMEOUT", "soon")]));
+        assert_eq!(args.timeout, None);
     }
 
     // -- system_prompt / append_system_prompt ------------------------------
