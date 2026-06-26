@@ -242,6 +242,57 @@ system event (`status_category` + `status_detail`) -- a usable done /
 what-happened signal, but it is claude's event passed through, not part
 of roba's versioned ABI.
 
+### Unattended / CI
+
+The flags above are the parts; this is how they assemble for a run with
+nobody watching. None of it is new behavior -- it is the existing ABI
+applied as one recipe.
+
+- **Read the envelope, not `$?`.** Run with `--json`, then check
+  `.error` is absent (or `.is_error`) and `.result.result` is non-empty
+  before acting on the answer. Exit `6` now catches the empty / `is_error`
+  case, so the exit code and the content agree -- but validating both is
+  the belt-and-suspenders an unattended run wants.
+- **`--bare` for reproducible runs.** Skips hooks, LSP, plugin sync,
+  CLAUDE.md auto-discovery, auto-memory, and keychain reads, so the run
+  depends only on the prompt and flags you passed (auth via
+  `ANTHROPIC_API_KEY`). Supply context explicitly with `--attach` /
+  `--prepend` / `-f` rather than relying on ambient discovery.
+- **The cap trio.** `--max-turns` and `--max-budget-usd` bound *work*;
+  `--timeout SECS` bounds *wall-clock* and is the only one that catches a
+  `claude -p` that hangs making no progress. Set all three for a run you
+  will not babysit; they compose as independent caps.
+- **`--trace PATH` to a timestamped file** (e.g.
+  `--trace "runs/$(date +%Y%m%dT%H%M%S).jsonl"`) so every run leaves a
+  replayable record of the spawned session's events.
+- **Branch on the typed exit code:**
+
+| Code | Meaning | Unattended response |
+|---|---|---|
+| `0` | ok (refusals included -- check the `refusal` field) | use `.result.result` |
+| `1` | generic failure (incl. `--max-budget-usd` cap hit) | fail the job |
+| `2` | auth | fail loudly; do not retry |
+| `3` | budget (wrapper `BudgetTracker`) | fail the job |
+| `4` | timeout (`--timeout` expired) | the run hung; retry or escalate |
+| `5` | max-turns (recoverable -- work may be committed) | inspect, finish the lifecycle |
+| `6` | no usable output (empty answer or `is_error`) | treat as failure, not success |
+
+A minimal guard:
+
+```bash
+out=$(roba --bare --json --max-turns 80 --max-budget-usd 10 --timeout 600 \
+  --trace "runs/$(date +%Y%m%dT%H%M%S).jsonl" -f task.md)
+code=$?
+if [ "$code" -ne 0 ]; then echo "roba failed: exit $code" >&2; exit "$code"; fi
+answer=$(printf '%s' "$out" | jq -er '.result.result') || { echo "empty answer" >&2; exit 1; }
+```
+
+If claude is configured to pause on an approval hook (its `defer`
+mechanism), the turn ends with no usable answer and roba returns. That is
+claude's gate, not roba's; resume the paused work in a later run by
+pinning the same handle (`--session-id` / a named `[session]`), exactly
+as for any other re-entry.
+
 ### Several tasks in one run
 
 roba runs exactly one `claude -p` turn, and a turn can hold many tasks.
