@@ -496,6 +496,13 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
             &style,
         );
     }
+    // A run that "succeeded" with no usable output (empty answer or
+    // is_error) must not exit 0 -- that is a silent failure for any caller
+    // that trusts `$?`. The body/envelope above already emitted (so
+    // `--json` stays byte-clean); the exit code carries the signal.
+    if let Some((code, note)) = classify_result(&result) {
+        exit_unusable(code, note);
+    }
     Ok(())
 }
 
@@ -610,12 +617,76 @@ fn expand_continue_prefix(args: &mut AskArgs) -> Result<()> {
     Ok(())
 }
 
+/// Exit code for a run that the wrapper returned as `Ok` but whose
+/// [`QueryResult`](claude_wrapper::types::QueryResult) is unusable -- an
+/// empty answer or `is_error: true`. Distinct from the `Err`-path codes
+/// in [`classify_exit_code`] (1-5) so an orchestrator can branch on "the
+/// call succeeded but produced nothing usable" without parsing output.
+pub const EXIT_UNUSABLE_RESULT: i32 = 6;
+
+/// Classify a successfully-returned [`QueryResult`] as usable or not.
+///
+/// The wrapper returns `Ok(QueryResult)` whenever claude exits 0, even
+/// when the payload carries `is_error: true` or an empty answer (a
+/// non-zero claude exit becomes an `Err` instead, handled by
+/// [`classify_exit_code`]). Without this check those "successful"
+/// non-answers exit 0, a silent failure for any scripted caller that
+/// trusts `$?`.
+///
+/// Returns `Some((code, note))` when the result is unusable -- the code
+/// to exit with and a clean one-line stderr note explaining why -- or
+/// `None` when there is a usable answer.
+///
+/// "Usable" means a non-empty textual `result` (after trim) OR a
+/// non-null `structured_output` (the `--json-schema` answer shape). A
+/// refusal is text, so it stays usable and exits 0 (a refusal is a valid
+/// answer; detect it via the envelope's `refusal` field, not the exit
+/// code). `is_error: true` is always unusable regardless of body.
+pub(crate) fn classify_result(
+    result: &claude_wrapper::types::QueryResult,
+) -> Option<(i32, &'static str)> {
+    if result.is_error {
+        return Some((
+            EXIT_UNUSABLE_RESULT,
+            "claude returned an error result (is_error: true)",
+        ));
+    }
+    let has_text = !result.result.trim().is_empty();
+    let has_structured = result
+        .extra
+        .get("structured_output")
+        .is_some_and(|v| !v.is_null());
+    if !has_text && !has_structured {
+        return Some((
+            EXIT_UNUSABLE_RESULT,
+            "empty result: the run produced no usable output",
+        ));
+    }
+    None
+}
+
+/// Print the clean stderr note for an unusable result and exit with
+/// `code`. stdout is flushed first so the already-rendered answer body
+/// or `--json` envelope is not lost behind the immediate exit -- the
+/// envelope still emits; the exit code carries the failure signal.
+pub(crate) fn exit_unusable(code: i32, note: &str) -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    eprintln!("roba: {note} (exit {code})");
+    std::process::exit(code);
+}
+
 /// Map an anyhow error chain to a stable exit code:
 /// - 0: ok (handled by the caller's happy path)
 /// - 1: generic failure
 /// - 2: authentication required / token invalid
 /// - 3: budget ceiling exceeded
 /// - 4: request timed out
+/// - 5: `--max-turns` cap hit (recoverable; finish the lifecycle)
+///
+/// Exit code 6 ([`EXIT_UNUSABLE_RESULT`]) is NOT produced here -- it is
+/// the `Ok`-path "empty / is_error result" signal set by
+/// `classify_result`, not an error-chain mapping.
 pub fn classify_exit_code(err: &anyhow::Error) -> i32 {
     if let Some(wrapper_err) = err.downcast_ref::<claude_wrapper::Error>() {
         match wrapper_err {
@@ -810,6 +881,74 @@ mod tests {
             is_error: false,
             extra: std::collections::HashMap::new(),
         }
+    }
+
+    #[test]
+    fn classify_result_usable_body_is_none() {
+        let r = query_result_with_body("Here is the answer.");
+        assert!(classify_result(&r).is_none());
+    }
+
+    #[test]
+    fn classify_result_refusal_stays_usable() {
+        // A refusal is text, so it is a usable answer (exit 0); the
+        // `refusal` field, not the exit code, is how callers detect it.
+        let r = query_result_with_body("I can't help with that request.");
+        assert!(
+            looks_like_refusal(&r.result),
+            "fixture must read as refusal"
+        );
+        assert!(classify_result(&r).is_none());
+    }
+
+    #[test]
+    fn classify_result_empty_body_is_unusable() {
+        let r = query_result_with_body("");
+        let (code, note) = classify_result(&r).expect("empty result is unusable");
+        assert_eq!(code, EXIT_UNUSABLE_RESULT);
+        assert!(note.contains("empty"), "got: {note}");
+    }
+
+    #[test]
+    fn classify_result_whitespace_only_body_is_unusable() {
+        let r = query_result_with_body("   \n\t  ");
+        assert_eq!(
+            classify_result(&r).map(|(c, _)| c),
+            Some(EXIT_UNUSABLE_RESULT)
+        );
+    }
+
+    #[test]
+    fn classify_result_is_error_is_unusable_even_with_body() {
+        // is_error wins regardless of body content.
+        let mut r = query_result_with_body("partial text before the error");
+        r.is_error = true;
+        let (code, note) = classify_result(&r).expect("is_error is unusable");
+        assert_eq!(code, EXIT_UNUSABLE_RESULT);
+        assert!(note.contains("is_error"), "got: {note}");
+    }
+
+    #[test]
+    fn classify_result_empty_body_with_structured_output_is_usable() {
+        // The --json-schema shape: empty textual result but a populated
+        // structured_output is still a usable answer.
+        let mut r = query_result_with_body("");
+        r.extra.insert(
+            "structured_output".to_string(),
+            serde_json::json!({"answer": "Paris"}),
+        );
+        assert!(classify_result(&r).is_none());
+    }
+
+    #[test]
+    fn classify_result_empty_body_with_null_structured_output_is_unusable() {
+        let mut r = query_result_with_body("");
+        r.extra
+            .insert("structured_output".to_string(), serde_json::Value::Null);
+        assert_eq!(
+            classify_result(&r).map(|(c, _)| c),
+            Some(EXIT_UNUSABLE_RESULT)
+        );
     }
 
     #[test]

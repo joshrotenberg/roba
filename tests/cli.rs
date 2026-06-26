@@ -2766,3 +2766,111 @@ fn continue_ambiguous_prefix_lists_candidates_and_fails() {
                 .and(predicate::str::contains(id_b)),
         );
 }
+
+// ---------------------------------------------------------------------------
+// #360: never exit 0 on an empty / is_error result.
+//
+// The wrapper returns Ok(QueryResult) whenever claude exits 0, even when the
+// payload is an empty answer or carries is_error: true. roba must map those
+// to a non-zero exit (6) so a non-answer never looks like success to a caller
+// that trusts $?. These drive a fake `claude` on PATH that prints a canned
+// JSON result and exits 0 -- no real claude call. Unix-only: the fake is a
+// /bin/sh script.
+// ---------------------------------------------------------------------------
+
+/// Write an executable `claude` shim that ignores its args/stdin and prints
+/// `json_stdout` followed by exit 0. Returns the dir to put on PATH.
+#[cfg(unix)]
+fn fake_claude(json_stdout: &str) -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("fake claude dir");
+    let path = dir.path().join("claude");
+    // A `--version` probe (should one ever fire) gets a version string; any
+    // other invocation prints the canned JSON. The heredoc is quoted so the
+    // JSON is emitted verbatim.
+    let script = format!(
+        "#!/bin/sh\ncase \"$*\" in\n  *--version*) echo '1.0.0 (fake)'; exit 0;;\nesac\ncat <<'ROBA_FAKE_EOF'\n{json_stdout}\nROBA_FAKE_EOF\n"
+    );
+    std::fs::write(&path, script).expect("write fake claude");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod fake claude");
+    dir
+}
+
+/// A roba command wired to a fake claude on PATH, isolated from any real
+/// roba.toml (HOME + XDG_CONFIG_HOME point at empty temp dirs).
+#[cfg(unix)]
+fn roba_with_fake_claude(
+    bin_dir: &std::path::Path,
+    home: &std::path::Path,
+    cfg: &std::path::Path,
+) -> Command {
+    // The fake dir leads so its `claude` wins the `which` lookup; the
+    // system bins follow so the shim's `/bin/sh` + `cat` resolve.
+    let path = format!("{}:/usr/bin:/bin", bin_dir.display());
+    let mut cmd = roba();
+    cmd.env("PATH", path)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", cfg)
+        .current_dir(home);
+    cmd
+}
+
+#[cfg(unix)]
+#[test]
+fn empty_result_exits_nonzero_with_clean_note() {
+    let bin = fake_claude(r#"{"result":"","session_id":"s1","is_error":false}"#);
+    let home = tempfile::tempdir().expect("home");
+    let cfg = tempfile::tempdir().expect("cfg");
+    roba_with_fake_claude(bin.path(), home.path(), cfg.path())
+        .arg("hello")
+        .assert()
+        .code(6)
+        .stderr(predicate::str::contains("empty result"));
+}
+
+#[cfg(unix)]
+#[test]
+fn is_error_result_exits_nonzero_with_clean_note() {
+    let bin = fake_claude(r#"{"result":"partial","session_id":"s1","is_error":true}"#);
+    let home = tempfile::tempdir().expect("home");
+    let cfg = tempfile::tempdir().expect("cfg");
+    roba_with_fake_claude(bin.path(), home.path(), cfg.path())
+        .arg("hello")
+        .assert()
+        .code(6)
+        .stderr(predicate::str::contains("is_error"));
+}
+
+#[cfg(unix)]
+#[test]
+fn empty_result_json_envelope_still_emits_and_exits_nonzero() {
+    // --json stays byte-clean: the success envelope is emitted on stdout and
+    // the exit code (6), not a missing envelope, carries the failure signal.
+    let bin = fake_claude(r#"{"result":"","session_id":"s1","is_error":false}"#);
+    let home = tempfile::tempdir().expect("home");
+    let cfg = tempfile::tempdir().expect("cfg");
+    let assert = roba_with_fake_claude(bin.path(), home.path(), cfg.path())
+        .args(["--json", "hello"])
+        .assert()
+        .code(6);
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout is a valid JSON envelope");
+    assert_eq!(value["version"], 1);
+    assert!(value.get("result").is_some(), "envelope carries result");
+}
+
+#[cfg(unix)]
+#[test]
+fn nonempty_result_exits_zero() {
+    // The happy path is untouched: a usable answer still exits 0.
+    let bin = fake_claude(r#"{"result":"the answer is 42","session_id":"s1","is_error":false}"#);
+    let home = tempfile::tempdir().expect("home");
+    let cfg = tempfile::tempdir().expect("cfg");
+    roba_with_fake_claude(bin.path(), home.path(), cfg.path())
+        .arg("hello")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("the answer is 42"));
+}

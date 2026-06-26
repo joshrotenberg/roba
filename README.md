@@ -195,7 +195,8 @@ Reading the envelope:
 | Metrics | nest under `.result`: `.result.duration_ms`, `.result.num_turns`, `.result.total_cost_usd` (serde rename of `cost_usd`); the top-level paths return `null` |
 | Top level | only `version`, `refusal`, and `result` |
 | Refusal | still exits `0` (the call succeeded) -- detect via the `refusal` field, not the exit code |
-| Exit codes | `0` ok, `1` generic (incl. `--max-turns` / `--max-budget-usd` cap hits), `2` auth, `3` budget, `4` timeout; the error `kind` maps the same way |
+| Exit codes | `0` ok, `1` generic (incl. `--max-budget-usd` cap hits), `2` auth, `3` budget, `4` timeout, `5` max-turns, `6` no usable output (empty answer or `is_error`); the error `kind` maps the same way |
+| Validate content, not just `$?` | exit `0` means the call returned, not that the answer is usable -- but exit `6` now catches the empty / `is_error` case so a non-answer never looks like success |
 | `see_also` | omitted when empty -- don't assume the key exists |
 
 ```bash
