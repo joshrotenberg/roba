@@ -286,6 +286,11 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     {
         args.max_budget_usd = Some(v);
     }
+    if args.timeout.is_none()
+        && let Some(n) = profile.timeout
+    {
+        args.timeout = Some(n);
+    }
     if args.json_schema.is_none()
         && let Some(s) = profile.json_schema.take()
     {
@@ -1133,6 +1138,28 @@ mod tests {
         };
         merge_into_args(&mut args, profile, "profile.test");
         assert_eq!(args.max_budget_usd, Some(4.0));
+    }
+
+    #[test]
+    fn merge_timeout_applies_when_cli_unset() {
+        let mut args = empty_args();
+        let profile = Profile {
+            timeout: Some(300),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.timeout, Some(300));
+    }
+
+    #[test]
+    fn merge_timeout_cli_wins_over_profile() {
+        let mut args = args_with(&["--timeout", "30"]);
+        let profile = Profile {
+            timeout: Some(300),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.timeout, Some(30));
     }
 
     // -- agent notice (no_agent_notice / agent_notice) ---------------------

@@ -367,6 +367,7 @@ const ENV_MAP: &[(&str, &str, EnvKind)] = &[
     ),
     ("ROBA_MAX_TURNS", "max_turns", EnvKind::Uint),
     ("ROBA_MAX_BUDGET_USD", "max_budget_usd", EnvKind::Float),
+    ("ROBA_TIMEOUT", "timeout", EnvKind::Uint),
     ("ROBA_JSON_SCHEMA", "json_schema", EnvKind::Str),
     ("ROBA_MCP_CONFIG", "mcp_config", EnvKind::List),
     ("ROBA_STRICT_MCP_CONFIG", "strict_mcp_config", EnvKind::Bool),

@@ -208,6 +208,7 @@ Worker flags:
 |---|---|
 | `--json-schema PATH` | schema-validated model output; roba reads the file and inlines it (claude's flag wants inline JSON). With `--json`, the answer is surfaced clean: `.result.structured_output` holds the parsed object and `.result.result` is unfenced -- no `\| jq '.result.result' \| sed ... \| jq` fence-stripping needed |
 | `--max-turns N`, `--max-budget-usd USD` | rails for unattended loops; hitting a cap errors the run (exit `1`) |
+| `--timeout SECS` | wall-clock deadline; on expiry roba kills the child and exits `4`. The rail for a `claude -p` that HANGS (where the turn/budget caps, which bound work not time, never trip). `0` disables; composes with the caps above |
 | `--no-retry` | surface transient failures immediately; the caller owns retry |
 | `--trace PATH` | the spawned session's events as JSONL -- watch a run in flight |
 | `--fallback-model MODEL` | retry on a second model when the primary is overloaded |

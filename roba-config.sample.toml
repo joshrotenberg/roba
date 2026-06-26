@@ -80,6 +80,9 @@
 # --- Limits (unattended guardrails; cap hit -> run errors, exit 1) ---
 # max_turns      = 20             # cap the agentic turn count
 # max_budget_usd = 5.0            # cap total spend in USD
+# timeout        = 300            # wall-clock deadline in seconds; kill + exit 4
+#                                 #   on expiry (the rail for a run that HANGS).
+#                                 #   0 disables. Composes with the caps above.
 
 # --- MCP servers (thin pass-through to claude --mcp-config; NOT a daemon) ---
 # mcp_config = ["mcp.json"]       # load MCP servers from JSON files (forwarded

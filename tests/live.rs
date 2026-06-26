@@ -1216,6 +1216,21 @@ fn live_exit_max_turns_returns_5() {
 
 #[test]
 #[ignore]
+fn live_exit_timeout_returns_4() {
+    // A 1-second wall-clock deadline cannot survive process spawn + auth +
+    // even one inference call, so the run is killed and roba exits the
+    // timeout code (4) -- the rail for a headless claude that hangs. This
+    // asserts the mechanism roba owns (kill-on-deadline -> exit 4), not any
+    // model behavior. (#359)
+    let dir = fresh_dir();
+    roba_in(dir.path())
+        .args(["--timeout", "1", "Write a 500-word essay about the ocean."])
+        .assert()
+        .code(4);
+}
+
+#[test]
+#[ignore]
 fn live_exit_bare_missing_key_is_auth() {
     // --bare authenticates via ANTHROPIC_API_KEY only. With the key removed,
     // claude-wrapper 0.11.1 (#633) surfaces the missing key as an auth failure,

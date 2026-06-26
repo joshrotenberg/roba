@@ -116,6 +116,10 @@ pub struct Profile {
     /// Cap total spend in USD (`--max-budget-usd`). Unattended guardrail.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_budget_usd: Option<f64>,
+    /// Wall-clock deadline in seconds (`--timeout`). On expiry the run is
+    /// killed and exits the timeout code (4). `0` disables.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
     /// Path to a JSON Schema file constraining structured output
     /// (`--json-schema`). roba reads the path and inlines the contents
     /// before passing them to claude's own `--json-schema`.
@@ -230,6 +234,7 @@ impl Profile {
             && self.append_system_prompt.is_none()
             && self.max_turns.is_none()
             && self.max_budget_usd.is_none()
+            && self.timeout.is_none()
             && self.json_schema.is_none()
             && self.mcp_config.is_empty()
             && self.strict_mcp_config.is_none()
@@ -283,6 +288,7 @@ impl Profile {
             append_system_prompt,
             max_turns,
             max_budget_usd,
+            timeout,
             json_schema,
             mut mcp_config,
             strict_mcp_config,
@@ -388,6 +394,9 @@ impl Profile {
         }
         if max_budget_usd.is_some() {
             self.max_budget_usd = max_budget_usd;
+        }
+        if timeout.is_some() {
+            self.timeout = timeout;
         }
         if json_schema.is_some() {
             self.json_schema = json_schema;

@@ -983,6 +983,18 @@ pub struct AskArgs {
     #[arg(long, value_name = "USD", help_heading = "Limits")]
     pub max_budget_usd: Option<f64>,
 
+    /// Wall-clock deadline for this run, in seconds.
+    ///
+    /// Bounds total elapsed time regardless of turns or spend: if the
+    /// run is still going when the deadline passes, roba kills the
+    /// claude child and exits the timeout code (4) with a clean stderr
+    /// message. This is the rail for a headless `claude -p` that hangs
+    /// making no progress, where `--max-turns` / `--max-budget-usd`
+    /// (which bound work, not time) never trip. Composes with both as an
+    /// independent cap. `0` disables (no deadline).
+    #[arg(long, value_name = "SECS", help_heading = "Limits")]
+    pub timeout: Option<u64>,
+
     // ----- Mode -------------------------------------------------------------
     /// Minimal-overhead mode (skip hooks, LSP, memory, keychain, etc.).
     ///
@@ -2049,7 +2061,7 @@ mod tests {
 
     #[test]
     fn limits_flags_compose() {
-        // Both guardrails together, the unattended-loop case.
+        // All three guardrails together, the unattended-loop case.
         use clap::Parser;
         let cli = Cli::try_parse_from([
             "roba",
@@ -2057,11 +2069,35 @@ mod tests {
             "5",
             "--max-budget-usd",
             "10",
+            "--timeout",
+            "300",
             "prompt",
         ])
         .unwrap();
         assert_eq!(cli.ask.max_turns, Some(5));
         assert_eq!(cli.ask.max_budget_usd, Some(10.0));
+        assert_eq!(cli.ask.timeout, Some(300));
+    }
+
+    #[test]
+    fn timeout_parses_valid_value() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--timeout", "300", "prompt"]).unwrap();
+        assert_eq!(cli.ask.timeout, Some(300));
+    }
+
+    #[test]
+    fn timeout_zero_parses_as_disable() {
+        // 0 is a valid value (disables the deadline); it must not error.
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--timeout", "0", "prompt"]).unwrap();
+        assert_eq!(cli.ask.timeout, Some(0));
+    }
+
+    #[test]
+    fn timeout_rejects_non_numeric() {
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["roba", "--timeout", "soon", "prompt"]).is_err());
     }
 
     #[test]

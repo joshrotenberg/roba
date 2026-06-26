@@ -99,7 +99,7 @@ pub fn run_detached(args: &AskArgs) -> Result<()> {
     // (5) Emit the handle (stdout = the answer) and metadata (stderr).
     if rails_nudge_needed(args) {
         eprintln!(
-            "warning: detached run has no --max-turns / --max-budget-usd cap; nothing is watching it"
+            "warning: detached run has no --max-turns / --max-budget-usd / --timeout cap; nothing is watching it"
         );
     }
     eprintln!("re-attach: roba show {handle} --wait");
@@ -176,10 +176,11 @@ where
     out
 }
 
-/// True when the detached run has no turn or budget cap. Nobody watches a
-/// detached run, so the guardrails matter more, not less -- one nudge.
+/// True when the detached run has no turn, budget, or wall-clock cap.
+/// Nobody watches a detached run, so the guardrails matter more, not
+/// less -- one nudge. Any one of the three caps silences it.
 fn rails_nudge_needed(args: &AskArgs) -> bool {
-    args.max_turns.is_none() && args.max_budget_usd.is_none()
+    args.max_turns.is_none() && args.max_budget_usd.is_none() && args.timeout.is_none()
 }
 
 /// Put the spawned child in its own process group / detached session so it
