@@ -98,7 +98,32 @@
 # Inspect with `roba profile {list,show,active,path}`.
 # ===========================================================================
 
-# Read-only review against the working-tree diff.
+# --- Single-issue lifecycle: one profile per phase ---------------------------
+# A common shape is to work an issue as distinct, separately-permissioned runs:
+# plan (read-only) -> implement (the one that mutates) -> review (read-only).
+# roba is the per-phase worker; the sequencing -- and the watch/merge tail,
+# which spans turns -- is composition you drive (a script or `gh`), not a chain
+# baked into config. A single multi-turn run is often simpler and more
+# reliable; reach for separate phases when you want distinct postures, a human
+# gate between them, or per-phase budget caps.
+
+# PLAN -- read-only orientation against recent history.
+#   roba --profile plan "how should I approach #357?"
+[profile.plan]
+readonly = true
+git_log = 10
+
+# IMPLEMENT -- the dispatch posture: bypass tool checks, isolate in a fresh
+# worktree, and CAP the run so an unattended worker self-arrests. A loaded gun
+# named explicitly, never a top-level default (see `roba config lint`).
+#   roba --profile worker -f task.md
+[profile.worker]
+full_auto = true
+worktree = true
+max_turns = 80
+max_budget_usd = 10.0
+
+# REVIEW -- read-only against the working-tree diff.
 #   roba --profile review "is this safe to merge?"
 [profile.review]
 readonly = true
@@ -160,6 +185,32 @@ $(gh pr view ${pr} --json title -q '.title')
 
 Diff:
 $(gh pr diff ${pr})
+"""
+
+# Summarize an issue + propose an approach, read-only.  ->  roba issue 357
+[alias.issue]
+description = "Summarize an issue and propose an approach (read-only)"
+args = ["n"]
+flags = ["--readonly"]
+template = """
+Summarize issue #${n} and propose an implementation approach.
+Cite the files involved. Do not write code.
+
+$(gh issue view ${n})
+"""
+
+# Implement an issue end-to-end, open a draft PR.  ->  roba fix 357
+# full_auto via the worker profile above -- an explicit, named loaded gun.
+[alias.fix]
+description = "Implement an issue in a worktree, open a draft PR (full_auto)"
+args = ["n"]
+flags = ["--profile", "worker"]
+template = """
+Implement issue #${n}. Branch, implement, run your project's gates, commit with
+a conventional-commit subject, and open a draft PR with the plan as the body.
+Surface anything that does not fit rather than forcing it.
+
+$(gh issue view ${n})
 """
 
 # Conventional-commit message from the staged diff.  ->  roba commit-msg
