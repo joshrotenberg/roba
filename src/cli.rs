@@ -48,7 +48,11 @@ Examples -- for agents & scripts (deterministic, pipe-clean):
   roba --full-auto -C repo -f task.md                  fire an unattended worker
   Exit codes: 0 ok (refusals included), 1 failure (incl. --max-budget-usd
   cap hits), 2 auth, 3 budget, 4 timeout, 5 max-turns (recoverable --
-  finish the lifecycle), 6 no usable output (empty answer or is_error).
+  finish the lifecycle), 6 no usable output (empty/is_error result, or a
+  streaming run with no result event). Under --json, codes 1-5 emit a
+  structured error envelope on stderr; code 6 never does -- the signal is
+  the exit code (the success envelope is on stdout for empty/is_error;
+  stdout is empty for the no-result-event case). Branch on $?.
   Unattended / CI recipe (--json + --bare + the cap trio + --trace, with
   exit-code branching): see the README \"For agents & scripts\" section.
 

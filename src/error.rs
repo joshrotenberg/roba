@@ -51,6 +51,20 @@
 //! So the whole `--json` surface is `{ version, result, [refusal] }` on
 //! success and `{ version, error }` on failure, uniformly.
 //!
+//! ## Exit 6 has no stderr error envelope (deliberate)
+//!
+//! The `{ version, error }` stderr envelope is emitted only on the
+//! `Err`-path nonzero exits (codes 1-5, via [`render_json`]). Exit 6
+//! ([`crate::EXIT_UNUSABLE_RESULT`]) never emits one -- the reliable
+//! signal is the exit code itself. What is on stdout depends on the
+//! subcase: for an empty / `is_error` `Ok`-path result the success-shaped
+//! `{ version, result }` envelope is already written there; for a
+//! streaming / `--trace` run that completed with no result event, exit 6
+//! happens before the envelope is rendered, so stdout is empty. A `--json`
+//! consumer branches on the exit code (and inspects `.result` /
+//! `.is_error` on the stdout envelope when present); it does not scrape
+//! stderr for an error envelope on code 6.
+//!
 //! Version 1 guarantees:
 //!
 //! - Top-level `version: 1` is present on every `--json` output.
