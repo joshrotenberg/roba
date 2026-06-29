@@ -373,7 +373,7 @@ fn config_show_json_emits_versioned_envelope() {
 #[test]
 fn config_explain_renders_human_layout() {
     // The human view: grouped sections, the auto-applied profile named, a
-    // top-level loaded gun flagged, and an alias invocation form -- all on
+    // top-level unsafe setting flagged, and an alias invocation form -- all on
     // stdout (explain is a stdout-only human view). --plain keeps it
     // byte-clean so the assertions are stable.
     let project = make_dir_with_files(&[
@@ -404,8 +404,8 @@ fn config_explain_renders_human_layout() {
         .stdout(predicate::str::contains(
             "Profiles (opt in with --profile NAME)",
         ))
-        // The [profile.default] loaded gun is flagged.
-        .stdout(predicate::str::contains("loaded gun"))
+        // The [profile.default] unsafe setting is flagged.
+        .stdout(predicate::str::contains("[!] unsafe:"))
         .stdout(predicate::str::contains("Aliases (verbs)"))
         .stdout(predicate::str::contains("roba review <pr>"))
         .stdout(predicate::str::contains("Sources (closest-to-cwd wins)"))

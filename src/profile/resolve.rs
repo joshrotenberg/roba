@@ -464,9 +464,9 @@ mod tests {
 
     #[test]
     fn resolve_profile_full_auto_overrides_top_level_readonly() {
-        // The "safe default + named loaded gun" pattern: top-level readonly,
+        // The "safe default + named unsafe setting" pattern: top-level readonly,
         // a [profile.worker] full_auto. Resolving with worker active must
-        // escalate to full_auto -- the named gun wins, readonly is cleared.
+        // escalate to full_auto -- the named setting wins, readonly is cleared.
         let defaults = Profile {
             readonly: Some(true),
             ..Default::default()

@@ -61,7 +61,7 @@ $(gh issue view ${n})
 """
 
 # IMPLEMENT an issue end-to-end in a worktree, then open a draft PR.
-# full_auto via the worker profile -- an explicit, named loaded gun.
+# full_auto via the worker profile -- an explicit, named unsafe setting.
 #   roba fix 357
 [alias.fix]
 description = "Implement a roba issue in a worktree, open a draft PR (full_auto)"

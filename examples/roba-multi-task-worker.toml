@@ -26,7 +26,7 @@
 # built-in read-only posture applies -- Read/Glob/Grep only), and the
 # POWERFUL posture is the NAMED `worker` profile -- an explicit opt-in
 # (`--profile worker`), never the auto-applied default. A committed config
-# makes the safe thing automatic and the loaded gun deliberate.
+# makes the safe thing automatic and the unsafe setting deliberate.
 
 [profile.worker]
 # A multi-task batch needs runway: each task can cascade across call sites,
