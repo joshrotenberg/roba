@@ -885,18 +885,29 @@ fn loaded_guns(table: &toml::Table) -> Vec<&'static str> {
 /// A compact one-line posture summary of a profile: each set knob as
 /// `key` (a true bool) or `key=value`, sorted, comma-joined. Empty profiles
 /// summarize as `(no overrides)`.
-fn posture_summary(table: &toml::Table) -> String {
+///
+/// Loaded-gun pieces ([`loaded_guns`]) are painted yellow and the rest dim,
+/// so a profile's risky knobs catch the eye inline on a color TTY. With color
+/// off it is byte-plain (the `[!] loaded gun:` text marker carries the signal),
+/// so the risk indicator never depends on color alone.
+fn posture_summary(table: &toml::Table, p: &Painter) -> String {
+    let guns = loaded_guns(table);
     let mut pieces: Vec<String> = Vec::new();
     for (k, v) in table {
-        match v {
-            Value::Boolean(true) => pieces.push(k.clone()),
-            _ => pieces.push(format!("{k}={}", format_toml_value(v))),
+        let piece = match v {
+            Value::Boolean(true) => k.clone(),
+            _ => format!("{k}={}", format_toml_value(v)),
+        };
+        if guns.contains(&k.as_str()) {
+            pieces.push(p.warn(&piece));
+        } else {
+            pieces.push(p.dim(&piece));
         }
     }
     if pieces.is_empty() {
-        "(no overrides)".to_string()
+        p.dim("(no overrides)")
     } else {
-        pieces.join(", ")
+        pieces.join(&p.dim(", "))
     }
 }
 
@@ -1004,7 +1015,15 @@ fn render_explain(
     } else {
         let guns = loaded_guns(&defaults);
         for (key, value) in &defaults {
-            let mut line = format!("  {} = {}", p.key(key), format_toml_value(value));
+            // Paint a loaded-gun knob yellow inline so risk catches the eye;
+            // a safe knob keeps the cyan key style. The `[!] loaded gun`
+            // marker below carries the same signal as text when color is off.
+            let painted_key = if guns.contains(&key.as_str()) {
+                p.warn(key)
+            } else {
+                p.key(key)
+            };
+            let mut line = format!("  {} = {}", painted_key, format_toml_value(value));
             if let Some(d) = desc_for(descs, key) {
                 line.push_str(&format!("  {}", p.dim(&format!("-- {d}"))));
             }
@@ -1040,7 +1059,7 @@ fn render_explain(
                 "  {}{}  {}\n",
                 p.key(name),
                 source_tag(p, prov.profiles.get(name).copied()),
-                p.dim(&posture_summary(&table))
+                posture_summary(&table, p)
             ));
             let guns = loaded_guns(&table);
             if !guns.is_empty() {
@@ -1553,14 +1572,55 @@ mod tests {
             max_turns: Some(80),
             ..Default::default()
         };
-        let s = posture_summary(&profile_table(&p).unwrap());
+        let painter = Painter { color: false };
+        let s = posture_summary(&profile_table(&p).unwrap(), &painter);
         assert!(s.contains("readonly"), "{s}");
         assert!(s.contains("max_turns=80"), "{s}");
         // An empty profile reads as no overrides.
         assert_eq!(
-            posture_summary(&profile_table(&Profile::default()).unwrap()),
+            posture_summary(&profile_table(&Profile::default()).unwrap(), &painter),
             "(no overrides)"
         );
+    }
+
+    #[test]
+    fn render_explain_paints_loaded_guns_yellow() {
+        let mut pool = Pool::default();
+        pool.defaults.readonly = Some(true); // safe -- keeps the cyan key style
+        pool.defaults.full_auto = Some(true); // a top-level loaded gun
+        pool.profiles.insert(
+            "worker".to_string(),
+            Profile {
+                full_auto: Some(true),
+                max_turns: Some(80),
+                ..Default::default()
+            },
+        );
+
+        // Color ON: the loaded-gun items wear the bold-yellow span, inline,
+        // at both the top level and inside the profile's posture summary.
+        let on = Painter { color: true };
+        let colored = render_explain(&pool, &None, &[], &knob_descriptions(), &on).unwrap();
+        assert!(
+            colored.contains("\x1b[1;33mfull_auto\x1b[0m"),
+            "loaded-gun item not painted yellow:\n{colored:?}"
+        );
+        // A safe knob is NOT yellow (it wears the cyan key style instead).
+        assert!(
+            !colored.contains("\x1b[1;33mreadonly"),
+            "safe knob wrongly painted yellow:\n{colored:?}"
+        );
+
+        // Color OFF: no ANSI escapes, but the text marker survives -- the risk
+        // signal never depends on color alone.
+        let off = Painter { color: false };
+        let plain = render_explain(&pool, &None, &[], &knob_descriptions(), &off).unwrap();
+        assert!(
+            !plain.contains('\x1b'),
+            "plain mode leaked ANSI:\n{plain:?}"
+        );
+        assert!(plain.contains("loaded gun at top level"), "{plain}");
+        assert!(plain.contains("[!] loaded gun:"), "{plain}");
     }
 
     #[test]
