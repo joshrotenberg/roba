@@ -807,11 +807,11 @@ impl Painter {
     fn warn(&self, s: &str) -> String {
         self.wrap(s, "\x1b[1;33m")
     }
-    /// A source-number cross-reference marker (`[N]`): magenta, so it stands
-    /// out from the dim secondary text it sits among and is easy to match
-    /// against the numbered Sources list.
+    /// A source-number cross-reference marker (`[N]`): blue (a reference/link
+    /// color, not error-red), so it stands out from the dim secondary text it
+    /// sits among and is easy to match against the numbered Sources list.
     fn num(&self, s: &str) -> String {
-        self.wrap(s, "\x1b[35m")
+        self.wrap(s, "\x1b[94m")
     }
     fn wrap(&self, s: &str, code: &str) -> String {
         if self.color {
@@ -975,7 +975,7 @@ fn compute_provenance(layers: &[(PathBuf, ConfigFile)]) -> Result<Provenance> {
     Ok(prov)
 }
 
-/// Render a trailing source marker `[N]` (magenta), or nothing when the item
+/// Render a trailing source marker `[N]` (blue), or nothing when the item
 /// has no attributed source. Placed right after the item's primary token and
 /// before any descriptive tail, uniformly across knobs, profiles, and aliases.
 fn source_tag(p: &Painter, num: Option<usize>) -> String {
@@ -1855,10 +1855,10 @@ mod tests {
         let p = Painter { color: true };
         let h = p.header("X");
         assert!(h.starts_with('\x1b') && h.ends_with("\x1b[0m"), "{h}");
-        // The source-number marker gets its own (magenta) color, distinct from
+        // The source-number marker gets its own (blue) color, distinct from
         // the dim secondary text, so [N] stands out as a cross-reference.
         let n = p.num("[1]");
-        assert!(n.contains("\x1b[35m") && n.contains("[1]"), "{n}");
+        assert!(n.contains("\x1b[94m") && n.contains("[1]"), "{n}");
         assert_ne!(n, p.dim("[1]"), "source number must differ from dim");
         // Plain painter leaves text untouched.
         let plain = Painter { color: false };
