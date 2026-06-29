@@ -1000,8 +1000,9 @@ pub struct AskArgs {
     /// Passes claude's own `--max-turns N` through. When the cap is hit
     /// the run errors rather than continuing -- a rail for unattended /
     /// Ralph loops that would otherwise run unbounded. claude-wrapper
-    /// does not distinguish a turn-cap failure from any other command
-    /// failure, so it surfaces as the generic failure exit code (1).
+    /// detects the turn-cap result and surfaces it as the recoverable
+    /// exit code 5 (distinct from the generic failure 1), so an unattended
+    /// caller can resume the session and finish the lifecycle.
     #[arg(long, value_name = "N", help_heading = "Limits")]
     pub max_turns: Option<u32>,
 
