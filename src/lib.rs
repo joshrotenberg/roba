@@ -91,6 +91,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             // one canonical roba.toml (or a `--json` envelope). Read-only,
             // no claude call.
             crate::cli::ConfigCmd::Show(args) => config::run_show(args),
+            // Human-readable narrated view of the merged pool. Read-only,
+            // no claude call; stdout-only, never machine-parsed.
+            crate::cli::ConfigCmd::Explain(args) => config::run_explain(args),
         },
         // Read-only inspection of the repo's git worktrees. Shells to
         // `git worktree list` via claude-wrapper; no claude call.

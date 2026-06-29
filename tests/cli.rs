@@ -371,6 +371,49 @@ fn config_show_json_emits_versioned_envelope() {
 }
 
 #[test]
+fn config_explain_renders_human_layout() {
+    // The human view: grouped sections, the auto-applied profile named, a
+    // top-level loaded gun flagged, and an alias invocation form -- all on
+    // stdout (explain is a stdout-only human view). --plain keeps it
+    // byte-clean so the assertions are stable.
+    let project = make_dir_with_files(&[
+        (".git/HEAD", ""),
+        (
+            "roba.toml",
+            "readonly = true\n\n\
+             [profile.default]\nfull_auto = true\n\n\
+             [alias.review]\ndescription = \"review a PR\"\nargs = [\"pr\"]\ntemplate = \"review ${pr}\"\n",
+        ),
+    ]);
+    let user_home = tempfile::tempdir().expect("user home");
+    roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "config",
+            "explain",
+            "--plain",
+        ])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Active profile"))
+        .stdout(predicate::str::contains("default (auto-applied)"))
+        .stdout(predicate::str::contains("Top-level defaults (always on)"))
+        .stdout(predicate::str::contains("readonly = true"))
+        .stdout(predicate::str::contains(
+            "Profiles (opt in with --profile NAME)",
+        ))
+        // The [profile.default] loaded gun is flagged.
+        .stdout(predicate::str::contains("loaded gun"))
+        .stdout(predicate::str::contains("Aliases (verbs)"))
+        .stdout(predicate::str::contains("roba review <pr>"))
+        .stdout(predicate::str::contains("Sources (closest-to-cwd wins)"))
+        // --plain leaks no ANSI escape.
+        .stdout(predicate::str::contains("\x1b").not());
+}
+
+#[test]
 fn config_show_sources_attributes_each_key_to_its_winning_layer() {
     // EFFECTIVE view: a user file sets full_auto, a project file overrides
     // model (closer wins over the farther user file), and the auto-applied
