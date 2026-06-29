@@ -189,7 +189,8 @@ is the copy-to-use bundle: fill its `<GATE>` / `<CONVENTIONS>` /
 `<CI-NOTE>` holes and go. Its comments carry the durable-context
 discipline (post the verdict via `gh pr comment --edit-last`, not
 `gh pr review`; write complete PR bodies; clarify on the issue rather
-than guess) and the driver loop.
+than guess -- both which fix, and whether to do it at all when the
+issue flags its own value as uncertain) and the driver loop.
 
 ## For agents & scripts
 

@@ -74,12 +74,18 @@ flags = ["--profile", "worker"]
 template = """
 Shepherd issue #${n} through our process, in this one run:
 
-PLAN     Read the issue; state the plan in one short paragraph. If the spec is
-         AMBIGUOUS (no clear file:line, two plausible fixes, an undecided
-         tradeoff), do NOT guess silently. POST the open question to the issue,
-         then proceed on a stated default:
+PLAN     Read the issue; state the plan in one short paragraph. TWO things make
+         you STOP and POST a clarification to the issue (then proceed on a
+         stated default), rather than guess silently:
+         (a) AMBIGUOUS fix -- no clear file:line, two plausible fixes, an
+             undecided tradeoff: ask WHICH fix, proceed with the default.
+         (b) VALUE-uncertain -- the issue questions its own worth or
+             reachability ("uncertain whether it justifies a change",
+             "marginal", "flagged uncertain", a wontfix candidate): ask
+             WHETHER to do it at all, and recommend proceed-vs-wontfix. A clear
+             file:line does NOT make a value-uncertain issue "unambiguous".
            gh issue comment ${n} --body "## Clarification needed
-           <one line: what is unresolved>
+           <one line: what is unresolved -- which fix, or whether to do it>
            - Option A: <terse> -- <consequence>
            - Option B: <terse> -- <consequence>
            Proceeding with A unless redirected."
