@@ -760,12 +760,17 @@ fn write_no_clobber(target: &Option<PathBuf>, content: &str) -> Result<PathBuf> 
 pub fn run_explain(args: ConfigExplainArgs) -> Result<()> {
     let pool = profile::load_pool()?;
     let active = profile::cmd::active_profile(&pool)?;
+    // The authoritative per-file list (the same source `config show
+    // --sources` uses) -- numbers the Sources section and attributes each
+    // rendered value to the file that set it. The merged `pool.sources`
+    // loses that per-file attribution.
+    let layers = profile::pool::load_layers()?;
     let painter = Painter {
         color: explain_color(args.plain),
     };
     print!(
         "{}",
-        render_explain(&pool, &active, &knob_descriptions(), &painter)?
+        render_explain(&pool, &active, &layers, &knob_descriptions(), &painter)?
     );
     Ok(())
 }
@@ -910,15 +915,69 @@ fn alias_invocation(name: &str, alias: &Alias) -> String {
     }
 }
 
+/// Per-item source attribution for the `explain` view: the 1-based source
+/// number (an index into the numbered Sources list) of the file that set or
+/// last-overrode each top-level knob, each profile, and each alias.
+#[derive(Default)]
+struct Provenance {
+    knobs: HashMap<String, usize>,
+    profiles: HashMap<String, usize>,
+    aliases: HashMap<String, usize>,
+}
+
+/// Compute per-item provenance from the ordered config layers, reusing the
+/// serialize-`Profile`-to-`toml::Table` presence trick from
+/// `config show --sources` to know which top-level keys a file set.
+///
+/// Layers are walked low->high precedence (farther-from-cwd first), so a
+/// later (closer) file overwrites the recorded number -- the closest-wins
+/// rule the real merge applies. The attribution differs by item kind:
+///
+/// - top-level knobs merge per-key, so `[N]` is the closest file that set
+///   THAT key.
+/// - aliases are wholesale (closest file wins outright), so `[N]` is the
+///   closest file defining the alias name.
+/// - profiles merge field-by-field across files, so a clean single-file
+///   attribution is not cheaply available; the compact choice is the
+///   closest file that contributes ANY key to the profile.
+fn compute_provenance(layers: &[(PathBuf, ConfigFile)]) -> Result<Provenance> {
+    let mut prov = Provenance::default();
+    for (i, (_, cfg)) in layers.iter().enumerate() {
+        let n = i + 1;
+        for key in profile_table(&cfg.defaults)?.keys() {
+            prov.knobs.insert(key.clone(), n);
+        }
+        for name in cfg.profile.keys() {
+            prov.profiles.insert(name.clone(), n);
+        }
+        for name in cfg.alias.keys() {
+            prov.aliases.insert(name.clone(), n);
+        }
+    }
+    Ok(prov)
+}
+
+/// Render a trailing source marker `[N]` (dim), or nothing when the item has
+/// no attributed source.
+fn source_tag(p: &Painter, num: Option<usize>) -> String {
+    match num {
+        Some(n) => format!(" {}", p.dim(&format!("[{n}]"))),
+        None => String::new(),
+    }
+}
+
 /// Build the full `config explain` narrative. Pure over its inputs (pool,
-/// the auto-applied profile, the knob descriptions, the color gate) so it is
-/// tested directly without a TTY or environment.
+/// the auto-applied profile, the ordered config layers, the knob
+/// descriptions, the color gate) so it is tested directly without a TTY or
+/// environment.
 fn render_explain(
     pool: &Pool,
     active: &Option<(String, &'static str)>,
+    layers: &[(PathBuf, ConfigFile)],
     descs: &HashMap<String, String>,
     p: &Painter,
 ) -> Result<String> {
+    let prov = compute_provenance(layers)?;
     let mut out = String::new();
 
     // Active profile.
@@ -949,6 +1008,7 @@ fn render_explain(
             if let Some(d) = desc_for(descs, key) {
                 line.push_str(&format!("  {}", p.dim(&format!("-- {d}"))));
             }
+            line.push_str(&source_tag(p, prov.knobs.get(key).copied()));
             out.push_str(&line);
             out.push('\n');
         }
@@ -977,8 +1037,9 @@ fn render_explain(
         for name in names {
             let table = profile_table(&pool.profiles[name])?;
             out.push_str(&format!(
-                "  {}  {}\n",
+                "  {}{}  {}\n",
                 p.key(name),
+                source_tag(p, prov.profiles.get(name).copied()),
                 p.dim(&posture_summary(&table))
             ));
             let guns = loaded_guns(&table);
@@ -1004,23 +1065,33 @@ fn render_explain(
         for name in names {
             let alias = &pool.aliases[name];
             out.push_str(&format!(
-                "  {}  {}\n",
+                "  {}{}  {}\n",
                 p.key(&alias_invocation(name, alias)),
+                source_tag(p, prov.aliases.get(name).copied()),
                 p.dim(alias.description.as_deref().unwrap_or(""))
             ));
         }
     }
 
-    // Sources.
+    // Sources (numbered; the [N] markers above point here).
     out.push('\n');
     out.push_str(&p.header("Sources (closest-to-cwd wins)"));
     out.push('\n');
-    if pool.sources.is_empty() {
+    if layers.is_empty() {
         out.push_str(&format!("  {}\n", p.dim("(none)")));
     } else {
-        for s in &pool.sources {
-            out.push_str(&format!("  {}\n", p.dim(&s.display().to_string())));
+        for (i, (path, _)) in layers.iter().enumerate() {
+            out.push_str(&format!(
+                "  {} {}\n",
+                p.dim(&format!("[{}]", i + 1)),
+                p.dim(&path.display().to_string())
+            ));
         }
+        // Legend for the [N] markers, including the one inexact case.
+        out.push_str(&format!(
+            "  {}\n",
+            p.dim("[N] marks the file that set each value above; for a profile it is the closest file contributing to it (profiles merge per-key across files).")
+        ));
     }
 
     Ok(out)
@@ -1536,8 +1607,39 @@ mod tests {
         pool.sources.push(PathBuf::from("/repo/roba.toml"));
         let active = Some(("worker".to_string(), "auto-applied"));
 
+        // One layer carrying every item the pool displays, so provenance
+        // attributes each value to `[1]`.
+        let layers = vec![(
+            PathBuf::from("/repo/roba.toml"),
+            ConfigFile {
+                defaults: Profile {
+                    readonly: Some(true),
+                    full_auto: Some(true),
+                    ..Default::default()
+                },
+                profile: HashMap::from([(
+                    "worker".to_string(),
+                    Profile {
+                        full_auto: Some(true),
+                        max_turns: Some(80),
+                        ..Default::default()
+                    },
+                )]),
+                alias: HashMap::from([(
+                    "review".to_string(),
+                    Alias {
+                        description: Some("review a PR".to_string()),
+                        args: vec!["pr".into()],
+                        template: Some("review ${pr}".into()),
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            },
+        )];
+
         let p = Painter { color: false };
-        let text = render_explain(&pool, &active, &knob_descriptions(), &p).unwrap();
+        let text = render_explain(&pool, &active, &layers, &knob_descriptions(), &p).unwrap();
 
         // Every section header is present.
         assert!(text.contains("Active profile"), "{text}");
@@ -1563,8 +1665,14 @@ mod tests {
         // Alias invocation form + description.
         assert!(text.contains("roba review <pr>"), "{text}");
         assert!(text.contains("review a PR"), "{text}");
-        // Source file listed.
-        assert!(text.contains("/repo/roba.toml"), "{text}");
+        // Source file listed, numbered.
+        assert!(text.contains("[1] /repo/roba.toml"), "{text}");
+        // Every rendered item carries its source number.
+        assert!(text.contains("readonly = true"), "{text}");
+        assert!(text.contains("worker [1]"), "{text}");
+        assert!(text.contains("roba review <pr> [1]"), "{text}");
+        // The legend explaining the [N] markers is present.
+        assert!(text.contains("[N] marks the file"), "{text}");
         // Plain mode emits no ANSI escapes.
         assert!(!text.contains('\x1b'), "plain mode leaked ANSI:\n{text}");
     }
@@ -1573,10 +1681,100 @@ mod tests {
     fn render_explain_empty_pool_shows_nones() {
         let pool = Pool::default();
         let p = Painter { color: false };
-        let text = render_explain(&pool, &None, &knob_descriptions(), &p).unwrap();
+        let text = render_explain(&pool, &None, &[], &knob_descriptions(), &p).unwrap();
         assert!(text.contains("none -- no profile auto-applies"), "{text}");
         // Each empty section degrades to a `(none)` line, not a crash.
         assert_eq!(text.matches("(none)").count(), 4, "{text}");
+    }
+
+    fn explain_layer(path: &str, cfg: ConfigFile) -> (PathBuf, ConfigFile) {
+        (PathBuf::from(path), cfg)
+    }
+
+    #[test]
+    fn compute_provenance_attributes_each_item_kind() {
+        // [1] farther file sets readonly + model and defines the `worker`
+        //     profile + `review` alias.
+        // [2] closer file overrides model, contributes another key to the
+        //     `worker` profile, and redefines `review`.
+        let layers = vec![
+            explain_layer(
+                "/repo/roba.toml",
+                ConfigFile {
+                    defaults: Profile {
+                        readonly: Some(true),
+                        model: Some("sonnet".into()),
+                        ..Default::default()
+                    },
+                    profile: HashMap::from([(
+                        "worker".to_string(),
+                        Profile {
+                            full_auto: Some(true),
+                            ..Default::default()
+                        },
+                    )]),
+                    alias: HashMap::from([("review".to_string(), Alias::default())]),
+                    ..Default::default()
+                },
+            ),
+            explain_layer(
+                "/repo/sub/roba.toml",
+                ConfigFile {
+                    defaults: Profile {
+                        model: Some("opus".into()),
+                        ..Default::default()
+                    },
+                    profile: HashMap::from([(
+                        "worker".to_string(),
+                        Profile {
+                            max_turns: Some(80),
+                            ..Default::default()
+                        },
+                    )]),
+                    alias: HashMap::from([("review".to_string(), Alias::default())]),
+                    ..Default::default()
+                },
+            ),
+        ];
+
+        let prov = compute_provenance(&layers).unwrap();
+        // Per-key knob attribution: readonly only the farther file set it;
+        // model the closer file last-overrode.
+        assert_eq!(prov.knobs.get("readonly").copied(), Some(1));
+        assert_eq!(prov.knobs.get("model").copied(), Some(2));
+        // Profiles merge per-key; the compact choice is the closest file
+        // contributing any key -> [2].
+        assert_eq!(prov.profiles.get("worker").copied(), Some(2));
+        // Aliases are wholesale; the closest file defining it wins -> [2].
+        assert_eq!(prov.aliases.get("review").copied(), Some(2));
+        // Unset items have no attribution.
+        assert!(!prov.knobs.contains_key("writable"));
+    }
+
+    #[test]
+    fn render_explain_numbers_multiple_sources() {
+        // Two files in the pool render as a numbered Sources list.
+        let mut pool = Pool::default();
+        pool.defaults.readonly = Some(true);
+        let layers = vec![
+            explain_layer(
+                "/repo/roba.toml",
+                ConfigFile {
+                    defaults: Profile {
+                        readonly: Some(true),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ),
+            explain_layer("/repo/sub/roba.toml", ConfigFile::default()),
+        ];
+        let p = Painter { color: false };
+        let text = render_explain(&pool, &None, &layers, &knob_descriptions(), &p).unwrap();
+        assert!(text.contains("[1] /repo/roba.toml"), "{text}");
+        assert!(text.contains("[2] /repo/sub/roba.toml"), "{text}");
+        // The top-level knob is attributed to the file that set it.
+        assert!(text.contains("readonly = true"), "{text}");
     }
 
     #[test]
