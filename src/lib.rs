@@ -422,7 +422,14 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         // would (JSON envelope / --code / --out / footer below).
         match run_streaming(&claude, prompt, &args, stream::DisplayMode::Silent).await? {
             Some(r) => r,
-            None => bail!("streaming completed without a result event"),
+            // Parity with the Live --stream path (src/stream.rs): no result
+            // event is "no usable output", which is exit 6, not the generic
+            // exit 1 a `bail!` would map to via classify_exit_code. Same
+            // condition, same code on both paths.
+            None => exit_unusable(
+                EXIT_UNUSABLE_RESULT,
+                "no result event: the streaming run produced no usable output",
+            ),
         }
     } else {
         let name = session::derive_session_name(&prompt);
@@ -622,6 +629,16 @@ fn expand_continue_prefix(args: &mut AskArgs) -> Result<()> {
 /// empty answer or `is_error: true`. Distinct from the `Err`-path codes
 /// in [`classify_exit_code`] (1-5) so an orchestrator can branch on "the
 /// call succeeded but produced nothing usable" without parsing output.
+///
+/// Structured-signal asymmetry (deliberate): code 6 exits from the
+/// `Ok`-path, so the success-shaped `--json` envelope has already been
+/// written to stdout. Unlike the `Err`-path codes -- which have no stdout
+/// and so emit a structured error envelope on stderr (`error::render_json`
+/// in `main`) -- code 6 writes only a plain `roba: <note> (exit 6)` line
+/// to stderr. A `--json` consumer branches on the exit code and inspects
+/// `.result` / `.is_error` on the stdout envelope; it does NOT scrape
+/// stderr for an error envelope on code 6. Emitting one would contradict
+/// "the success envelope is on stdout."
 pub const EXIT_UNUSABLE_RESULT: i32 = 6;
 
 /// Classify a successfully-returned [`QueryResult`] as usable or not.

@@ -254,6 +254,13 @@ applied as one recipe.
   before acting on the answer. Exit `6` now catches the empty / `is_error`
   case, so the exit code and the content agree -- but validating both is
   the belt-and-suspenders an unattended run wants.
+- **Exit `6` signals through stdout, not a stderr envelope.** The
+  `{ version, error }` envelope appears on stderr only for the `Err`-path
+  codes (`1`-`5`), which have no stdout. Exit `6` has already written the
+  success-shaped `{ version, result }` envelope to stdout, so its
+  structured signal is that stdout envelope plus the exit code -- there is
+  no stderr error envelope for `6`. Branch on the exit code and inspect
+  `.result` / `.is_error`; do not scrape stderr for an error on code `6`.
 - **`--bare` for reproducible runs.** Skips hooks, LSP, plugin sync,
   CLAUDE.md auto-discovery, auto-memory, and keychain reads, so the run
   depends only on the prompt and flags you passed (auth via

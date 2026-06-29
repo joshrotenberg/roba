@@ -49,6 +49,9 @@ Examples -- for agents & scripts (deterministic, pipe-clean):
   Exit codes: 0 ok (refusals included), 1 failure (incl. --max-budget-usd
   cap hits), 2 auth, 3 budget, 4 timeout, 5 max-turns (recoverable --
   finish the lifecycle), 6 no usable output (empty answer or is_error).
+  Under --json, codes 1-5 emit a structured error envelope on stderr;
+  code 6 does not -- its signal is the success envelope already on stdout
+  plus the exit code (branch on $?, inspect .result/.is_error).
   Unattended / CI recipe (--json + --bare + the cap trio + --trace, with
   exit-code branching): see the README \"For agents & scripts\" section.
 

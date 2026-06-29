@@ -2874,3 +2874,26 @@ fn nonempty_result_exits_zero() {
         .success()
         .stdout(predicate::str::contains("the answer is 42"));
 }
+
+#[cfg(unix)]
+#[test]
+fn trace_no_result_event_exits_6() {
+    // #368 Note 1: the --trace (Silent, no --stream) path drives the
+    // streaming pipeline; a run that emits NDJSON events but no `result`
+    // event is "no usable output" -- it must exit 6, the same code the
+    // Live --stream path uses, not the generic exit 1 a bail would give.
+    // The fake shim emits two valid stream-json events (system + assistant)
+    // and no result event.
+    let bin = fake_claude(
+        "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s1\"}\n\
+         {\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}",
+    );
+    let home = tempfile::tempdir().expect("home");
+    let cfg = tempfile::tempdir().expect("cfg");
+    let trace = home.path().join("trace.jsonl");
+    roba_with_fake_claude(bin.path(), home.path(), cfg.path())
+        .args(["--trace", trace.to_str().unwrap(), "hello"])
+        .assert()
+        .code(6)
+        .stderr(predicate::str::contains("no result event"));
+}
