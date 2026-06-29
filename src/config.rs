@@ -807,6 +807,12 @@ impl Painter {
     fn warn(&self, s: &str) -> String {
         self.wrap(s, "\x1b[1;33m")
     }
+    /// A source-number cross-reference marker (`[N]`): magenta, so it stands
+    /// out from the dim secondary text it sits among and is easy to match
+    /// against the numbered Sources list.
+    fn num(&self, s: &str) -> String {
+        self.wrap(s, "\x1b[35m")
+    }
     fn wrap(&self, s: &str, code: &str) -> String {
         if self.color {
             format!("{code}{s}\x1b[0m")
@@ -911,18 +917,19 @@ fn posture_summary(table: &toml::Table, p: &Painter) -> String {
     }
 }
 
-/// The invocation form shown for an alias verb: `roba NAME <arg> ...` when it
-/// has a positional schema, `roba NAME ...` for a template alias with no
-/// schema, and `roba NAME <prompt...>` for a flag-shortcut alias (no
-/// template -- the args become the prompt).
+/// The invocation form shown for an alias verb: `NAME <arg> ...` when it has
+/// a positional schema, `NAME ...` for a template alias with no schema, and
+/// `NAME <prompt...>` for a flag-shortcut alias (no template -- the args
+/// become the prompt). The `roba ` prefix lives in the section header, not
+/// repeated on every line.
 fn alias_invocation(name: &str, alias: &Alias) -> String {
     if !alias.args.is_empty() {
         let slots: Vec<String> = alias.args.iter().map(|a| format!("<{a}>")).collect();
-        format!("roba {name} {}", slots.join(" "))
+        format!("{name} {}", slots.join(" "))
     } else if alias.template.is_some() {
-        format!("roba {name} ...")
+        format!("{name} ...")
     } else {
-        format!("roba {name} <prompt...>")
+        format!("{name} <prompt...>")
     }
 }
 
@@ -968,11 +975,12 @@ fn compute_provenance(layers: &[(PathBuf, ConfigFile)]) -> Result<Provenance> {
     Ok(prov)
 }
 
-/// Render a trailing source marker `[N]` (dim), or nothing when the item has
-/// no attributed source.
+/// Render a trailing source marker `[N]` (magenta), or nothing when the item
+/// has no attributed source. Placed right after the item's primary token and
+/// before any descriptive tail, uniformly across knobs, profiles, and aliases.
 fn source_tag(p: &Painter, num: Option<usize>) -> String {
     match num {
-        Some(n) => format!(" {}", p.dim(&format!("[{n}]"))),
+        Some(n) => format!(" {}", p.num(&format!("[{n}]"))),
         None => String::new(),
     }
 }
@@ -1024,10 +1032,12 @@ fn render_explain(
                 p.key(key)
             };
             let mut line = format!("  {} = {}", painted_key, format_toml_value(value));
+            // Source marker first (right after the value), then the description
+            // -- so knobs match the profile/alias layout (item, [N], detail).
+            line.push_str(&source_tag(p, prov.knobs.get(key).copied()));
             if let Some(d) = desc_for(descs, key) {
                 line.push_str(&format!("  {}", p.dim(&format!("-- {d}"))));
             }
-            line.push_str(&source_tag(p, prov.knobs.get(key).copied()));
             out.push_str(&line);
             out.push('\n');
         }
@@ -1074,7 +1084,7 @@ fn render_explain(
 
     // Aliases (verbs).
     out.push('\n');
-    out.push_str(&p.header("Aliases (verbs)"));
+    out.push_str(&p.header("Aliases (verbs, run with roba <verb> ...)"));
     out.push('\n');
     if pool.aliases.is_empty() {
         out.push_str(&format!("  {}\n", p.dim("(none)")));
@@ -1102,7 +1112,7 @@ fn render_explain(
         for (i, (path, _)) in layers.iter().enumerate() {
             out.push_str(&format!(
                 "  {} {}\n",
-                p.dim(&format!("[{}]", i + 1)),
+                p.num(&format!("[{}]", i + 1)),
                 p.dim(&path.display().to_string())
             ));
         }
@@ -1630,16 +1640,16 @@ mod tests {
             template: Some("review ${pr}".into()),
             ..Default::default()
         };
-        assert_eq!(alias_invocation("review", &with_args), "roba review <pr>");
+        assert_eq!(alias_invocation("review", &with_args), "review <pr>");
 
         let template_only = Alias {
             template: Some("do the thing".into()),
             ..Default::default()
         };
-        assert_eq!(alias_invocation("go", &template_only), "roba go ...");
+        assert_eq!(alias_invocation("go", &template_only), "go ...");
 
         let shortcut = Alias::default();
-        assert_eq!(alias_invocation("q", &shortcut), "roba q <prompt...>");
+        assert_eq!(alias_invocation("q", &shortcut), "q <prompt...>");
     }
 
     #[test]
@@ -1708,7 +1718,7 @@ mod tests {
             text.contains("Profiles (opt in with --profile NAME)"),
             "{text}"
         );
-        assert!(text.contains("Aliases (verbs)"), "{text}");
+        assert!(text.contains("Aliases (verbs, run with roba"), "{text}");
         assert!(text.contains("Sources (closest-to-cwd wins)"), "{text}");
 
         // Active profile is named with its reason.
@@ -1722,15 +1732,17 @@ mod tests {
         // Unsafe settings are flagged at both the top level and the profile.
         assert!(text.contains("unsafe at top level"), "{text}");
         assert!(text.contains("[!] unsafe:"), "{text}");
-        // Alias invocation form + description.
-        assert!(text.contains("roba review <pr>"), "{text}");
+        // Alias invocation form (no per-line `roba ` prefix) + description.
+        assert!(text.contains("review <pr>"), "{text}");
+        assert!(!text.contains("roba review <pr>"), "{text}");
         assert!(text.contains("review a PR"), "{text}");
         // Source file listed, numbered.
         assert!(text.contains("[1] /repo/roba.toml"), "{text}");
-        // Every rendered item carries its source number.
-        assert!(text.contains("readonly = true"), "{text}");
+        // Every rendered item carries its source number, placed right after the
+        // item's primary token (knob value / profile name / alias form).
+        assert!(text.contains("readonly = true [1]"), "{text}");
         assert!(text.contains("worker [1]"), "{text}");
-        assert!(text.contains("roba review <pr> [1]"), "{text}");
+        assert!(text.contains("review <pr> [1]"), "{text}");
         // The legend explaining the [N] markers is present.
         assert!(text.contains("[N] marks the file"), "{text}");
         // Plain mode emits no ANSI escapes.
@@ -1833,8 +1845,9 @@ mod tests {
         let text = render_explain(&pool, &None, &layers, &knob_descriptions(), &p).unwrap();
         assert!(text.contains("[1] /repo/roba.toml"), "{text}");
         assert!(text.contains("[2] /repo/sub/roba.toml"), "{text}");
-        // The top-level knob is attributed to the file that set it.
-        assert!(text.contains("readonly = true"), "{text}");
+        // The top-level knob is attributed to the file that set it, with the
+        // [N] right after the value.
+        assert!(text.contains("readonly = true [1]"), "{text}");
     }
 
     #[test]
@@ -1842,8 +1855,14 @@ mod tests {
         let p = Painter { color: true };
         let h = p.header("X");
         assert!(h.starts_with('\x1b') && h.ends_with("\x1b[0m"), "{h}");
+        // The source-number marker gets its own (magenta) color, distinct from
+        // the dim secondary text, so [N] stands out as a cross-reference.
+        let n = p.num("[1]");
+        assert!(n.contains("\x1b[35m") && n.contains("[1]"), "{n}");
+        assert_ne!(n, p.dim("[1]"), "source number must differ from dim");
         // Plain painter leaves text untouched.
         let plain = Painter { color: false };
         assert_eq!(plain.header("X"), "X");
+        assert_eq!(plain.num("[1]"), "[1]");
     }
 }
