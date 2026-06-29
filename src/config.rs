@@ -26,7 +26,7 @@ use serde::Serialize;
 use toml::Value;
 
 use crate::aliases::{self, Alias};
-use crate::cli::{ConfigInitArgs, ConfigShowArgs};
+use crate::cli::{ConfigExplainArgs, ConfigInitArgs, ConfigShowArgs};
 use crate::profile::{self, ConfigFile, Pool, Profile};
 
 /// Run `roba config init [DESCRIPTION] [--write [PATH]] [--model NAME]`.
@@ -741,6 +741,291 @@ fn write_no_clobber(target: &Option<PathBuf>, content: &str) -> Result<PathBuf> 
     Ok(path)
 }
 
+// ---------------------------------------------------------------------------
+// `config explain`: the human-readable narrated view (#357)
+// ---------------------------------------------------------------------------
+
+/// Run `roba config explain [--plain]`.
+///
+/// The human counterpart to `config show`. `show` prints raw, re-parseable
+/// TOML (the machine / redirect view, byte-clean stdout); `explain` renders
+/// a grouped, annotated narrative for a person eyeballing "what is my
+/// effective config and what does it actually do." It is a human view only:
+/// the whole layout goes to stdout, but it is never something a script
+/// parses -- `show` and `--json` own that.
+///
+/// Color is on when stdout is a TTY and `NO_COLOR` is unset and `--plain`
+/// was not passed (the same gating `render.rs` applies). `--plain` only
+/// turns color off; it does NOT fall back to the raw dump.
+pub fn run_explain(args: ConfigExplainArgs) -> Result<()> {
+    let pool = profile::load_pool()?;
+    let active = profile::cmd::active_profile(&pool)?;
+    let painter = Painter {
+        color: explain_color(args.plain),
+    };
+    print!(
+        "{}",
+        render_explain(&pool, &active, &knob_descriptions(), &painter)?
+    );
+    Ok(())
+}
+
+/// Whether `config explain` should colorize: off under `--plain`, `NO_COLOR`,
+/// or a non-TTY stdout. Mirrors the `color` predicate in [`crate::render`].
+fn explain_color(plain: bool) -> bool {
+    use std::io::IsTerminal;
+    !plain && std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+}
+
+/// Tiny ANSI palette gate. When `color` is false every method returns the
+/// text untouched, so the same `render_explain` produces both the colored
+/// TTY view and the byte-plain `--plain` / piped view (and is testable
+/// without a real terminal).
+struct Painter {
+    color: bool,
+}
+
+impl Painter {
+    /// Section header: green-bold, matching clap's own `--help` headers.
+    fn header(&self, s: &str) -> String {
+        self.wrap(s, "\x1b[1;32m")
+    }
+    /// A config knob / alias name: cyan (clap's literal style).
+    fn key(&self, s: &str) -> String {
+        self.wrap(s, "\x1b[36m")
+    }
+    /// Secondary detail (descriptions, sources): dim.
+    fn dim(&self, s: &str) -> String {
+        self.wrap(s, "\x1b[2m")
+    }
+    /// A loaded-gun warning marker: bold yellow.
+    fn warn(&self, s: &str) -> String {
+        self.wrap(s, "\x1b[1;33m")
+    }
+    fn wrap(&self, s: &str, code: &str) -> String {
+        if self.color {
+            format!("{code}{s}\x1b[0m")
+        } else {
+            s.to_string()
+        }
+    }
+}
+
+/// Map each top-level config knob (by its TOML key) to the terse one-line
+/// description clap derives from the `cli.rs` doc comment, so `explain` and
+/// `--help` share one source and cannot drift. The key space is the arg id
+/// (the `AskArgs` field name), which equals the TOML key for every knob
+/// except `continue` (field `continue_session`); [`desc_for`] bridges that
+/// one rename.
+fn knob_descriptions() -> HashMap<String, String> {
+    use clap::CommandFactory;
+    let cmd = crate::cli::Cli::command();
+    let mut map = HashMap::new();
+    for arg in cmd.get_arguments() {
+        if let Some(help) = arg.get_help() {
+            map.insert(arg.get_id().as_str().to_string(), help.to_string());
+        }
+    }
+    map
+}
+
+/// Look up a knob's description by its TOML key, bridging the one serde
+/// rename (`continue` -> the `continue_session` arg id).
+fn desc_for<'a>(descs: &'a HashMap<String, String>, toml_key: &str) -> Option<&'a str> {
+    let arg_id = match toml_key {
+        "continue" => "continue_session",
+        other => other,
+    };
+    descs.get(arg_id).map(String::as_str)
+}
+
+/// Render a TOML scalar/array value inline (without a trailing key), so a
+/// knob reads as `model = "opus"` / `allow_tool = ["Edit", "Write"]`. A
+/// sub-table (only `vars` at the top level) renders as `{ ... }`.
+fn format_toml_value(v: &Value) -> String {
+    match v {
+        Value::String(s) => format!("\"{s}\""),
+        Value::Integer(n) => n.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Boolean(b) => b.to_string(),
+        Value::Datetime(d) => d.to_string(),
+        Value::Array(items) => {
+            let inner: Vec<String> = items.iter().map(format_toml_value).collect();
+            format!("[{}]", inner.join(", "))
+        }
+        Value::Table(_) => "{ ... }".to_string(),
+    }
+}
+
+/// The set keys a profile defines that are "loaded guns" -- task-scoped
+/// powers (`full_auto`, any `worktree`) that should be a deliberate opt-in,
+/// never silently always-on. Mirrors the `config lint` advisory.
+fn loaded_guns(table: &toml::Table) -> Vec<&'static str> {
+    let mut guns = Vec::new();
+    if table.get("full_auto") == Some(&Value::Boolean(true)) {
+        guns.push("full_auto");
+    }
+    // worktree is a loaded gun only when ENABLED (`true` or a named worktree);
+    // `worktree = false` explicitly disables it, so it is not flagged (mirrors
+    // how full_auto checks for `true`, not mere key presence).
+    if matches!(
+        table.get("worktree"),
+        Some(Value::Boolean(true)) | Some(Value::String(_))
+    ) {
+        guns.push("worktree");
+    }
+    guns
+}
+
+/// A compact one-line posture summary of a profile: each set knob as
+/// `key` (a true bool) or `key=value`, sorted, comma-joined. Empty profiles
+/// summarize as `(no overrides)`.
+fn posture_summary(table: &toml::Table) -> String {
+    let mut pieces: Vec<String> = Vec::new();
+    for (k, v) in table {
+        match v {
+            Value::Boolean(true) => pieces.push(k.clone()),
+            _ => pieces.push(format!("{k}={}", format_toml_value(v))),
+        }
+    }
+    if pieces.is_empty() {
+        "(no overrides)".to_string()
+    } else {
+        pieces.join(", ")
+    }
+}
+
+/// The invocation form shown for an alias verb: `roba NAME <arg> ...` when it
+/// has a positional schema, `roba NAME ...` for a template alias with no
+/// schema, and `roba NAME <prompt...>` for a flag-shortcut alias (no
+/// template -- the args become the prompt).
+fn alias_invocation(name: &str, alias: &Alias) -> String {
+    if !alias.args.is_empty() {
+        let slots: Vec<String> = alias.args.iter().map(|a| format!("<{a}>")).collect();
+        format!("roba {name} {}", slots.join(" "))
+    } else if alias.template.is_some() {
+        format!("roba {name} ...")
+    } else {
+        format!("roba {name} <prompt...>")
+    }
+}
+
+/// Build the full `config explain` narrative. Pure over its inputs (pool,
+/// the auto-applied profile, the knob descriptions, the color gate) so it is
+/// tested directly without a TTY or environment.
+fn render_explain(
+    pool: &Pool,
+    active: &Option<(String, &'static str)>,
+    descs: &HashMap<String, String>,
+    p: &Painter,
+) -> Result<String> {
+    let mut out = String::new();
+
+    // Active profile.
+    out.push_str(&p.header("Active profile"));
+    out.push('\n');
+    match active {
+        Some((name, reason)) => {
+            out.push_str(&format!(
+                "  {} {}\n",
+                p.key(name),
+                p.dim(&format!("({reason}) -- see Profiles below"))
+            ));
+        }
+        None => out.push_str(&format!("  {}\n", p.dim("none -- no profile auto-applies"))),
+    }
+
+    // Top-level defaults (always on).
+    out.push('\n');
+    out.push_str(&p.header("Top-level defaults (always on)"));
+    out.push('\n');
+    let defaults = profile_table(&pool.defaults)?;
+    if defaults.is_empty() {
+        out.push_str(&format!("  {}\n", p.dim("(none)")));
+    } else {
+        let guns = loaded_guns(&defaults);
+        for (key, value) in &defaults {
+            let mut line = format!("  {} = {}", p.key(key), format_toml_value(value));
+            if let Some(d) = desc_for(descs, key) {
+                line.push_str(&format!("  {}", p.dim(&format!("-- {d}"))));
+            }
+            out.push_str(&line);
+            out.push('\n');
+        }
+        if !guns.is_empty() {
+            out.push_str(&format!(
+                "  {} {}\n",
+                p.warn("[!] loaded gun at top level:"),
+                p.warn(&guns.join(", "))
+            ));
+            out.push_str(&format!(
+                "      {}\n",
+                p.dim("task-scoped powers belong in a named [profile.NAME], not always-on")
+            ));
+        }
+    }
+
+    // Profiles (opt in with --profile NAME).
+    out.push('\n');
+    out.push_str(&p.header("Profiles (opt in with --profile NAME)"));
+    out.push('\n');
+    if pool.profiles.is_empty() {
+        out.push_str(&format!("  {}\n", p.dim("(none)")));
+    } else {
+        let mut names: Vec<&String> = pool.profiles.keys().collect();
+        names.sort();
+        for name in names {
+            let table = profile_table(&pool.profiles[name])?;
+            out.push_str(&format!(
+                "  {}  {}\n",
+                p.key(name),
+                p.dim(&posture_summary(&table))
+            ));
+            let guns = loaded_guns(&table);
+            if !guns.is_empty() {
+                out.push_str(&format!(
+                    "      {} {}\n",
+                    p.warn("[!] loaded gun:"),
+                    p.warn(&guns.join(", "))
+                ));
+            }
+        }
+    }
+
+    // Aliases (verbs).
+    out.push('\n');
+    out.push_str(&p.header("Aliases (verbs)"));
+    out.push('\n');
+    if pool.aliases.is_empty() {
+        out.push_str(&format!("  {}\n", p.dim("(none)")));
+    } else {
+        let mut names: Vec<&String> = pool.aliases.keys().collect();
+        names.sort();
+        for name in names {
+            let alias = &pool.aliases[name];
+            out.push_str(&format!(
+                "  {}  {}\n",
+                p.key(&alias_invocation(name, alias)),
+                p.dim(alias.description.as_deref().unwrap_or(""))
+            ));
+        }
+    }
+
+    // Sources.
+    out.push('\n');
+    out.push_str(&p.header("Sources (closest-to-cwd wins)"));
+    out.push('\n');
+    if pool.sources.is_empty() {
+        out.push_str(&format!("  {}\n", p.dim("(none)")));
+    } else {
+        for s in &pool.sources {
+            out.push_str(&format!("  {}\n", p.dim(&s.display().to_string())));
+        }
+    }
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1114,5 +1399,193 @@ mod tests {
             .unwrap(),
             "allow_tool = [\"Edit\"]  # /repo/roba.toml (top-level)\n"
         );
+    }
+
+    // -- config explain (#357) ---------------------------------------------
+
+    #[test]
+    fn knob_descriptions_draw_from_cli_help() {
+        // The per-knob "what it does" text is sourced from the cli.rs doc
+        // comments via clap, so explain and --help cannot drift. A handful
+        // of stable knobs must resolve to non-empty descriptions.
+        let descs = knob_descriptions();
+        for key in ["model", "readonly", "max_turns", "full_auto"] {
+            assert!(
+                desc_for(&descs, key).is_some_and(|d| !d.is_empty()),
+                "no description for `{key}` (have {} keys)",
+                descs.len()
+            );
+        }
+    }
+
+    #[test]
+    fn desc_for_bridges_continue_rename() {
+        // The TOML key `continue` maps to the `continue_session` arg id.
+        let descs = knob_descriptions();
+        assert!(desc_for(&descs, "continue").is_some());
+    }
+
+    #[test]
+    fn format_toml_value_renders_scalars_and_arrays() {
+        assert_eq!(format_toml_value(&Value::String("opus".into())), "\"opus\"");
+        assert_eq!(format_toml_value(&Value::Boolean(true)), "true");
+        assert_eq!(format_toml_value(&Value::Integer(80)), "80");
+        assert_eq!(
+            format_toml_value(&Value::Array(vec![
+                Value::String("Edit".into()),
+                Value::String("Write".into())
+            ])),
+            "[\"Edit\", \"Write\"]"
+        );
+    }
+
+    #[test]
+    fn loaded_guns_flags_full_auto_and_worktree() {
+        let p = Profile {
+            full_auto: Some(true),
+            worktree: Some(crate::profile::WorktreeSetting::Enabled(true)),
+            ..Default::default()
+        };
+        let guns = loaded_guns(&profile_table(&p).unwrap());
+        assert!(guns.contains(&"full_auto"), "{guns:?}");
+        assert!(guns.contains(&"worktree"), "{guns:?}");
+
+        // readonly-only profile: no loaded guns.
+        let safe = Profile {
+            readonly: Some(true),
+            ..Default::default()
+        };
+        assert!(loaded_guns(&profile_table(&safe).unwrap()).is_empty());
+
+        // worktree = false explicitly DISABLES it, so it is not a loaded gun.
+        let no_wt = Profile {
+            worktree: Some(crate::profile::WorktreeSetting::Enabled(false)),
+            ..Default::default()
+        };
+        assert!(
+            !loaded_guns(&profile_table(&no_wt).unwrap()).contains(&"worktree"),
+            "worktree = false must not be flagged"
+        );
+
+        // a NAMED worktree is still a loaded gun.
+        let named = Profile {
+            worktree: Some(crate::profile::WorktreeSetting::Named("wt".into())),
+            ..Default::default()
+        };
+        assert!(loaded_guns(&profile_table(&named).unwrap()).contains(&"worktree"));
+    }
+
+    #[test]
+    fn posture_summary_is_compact() {
+        let p = Profile {
+            readonly: Some(true),
+            max_turns: Some(80),
+            ..Default::default()
+        };
+        let s = posture_summary(&profile_table(&p).unwrap());
+        assert!(s.contains("readonly"), "{s}");
+        assert!(s.contains("max_turns=80"), "{s}");
+        // An empty profile reads as no overrides.
+        assert_eq!(
+            posture_summary(&profile_table(&Profile::default()).unwrap()),
+            "(no overrides)"
+        );
+    }
+
+    #[test]
+    fn alias_invocation_forms() {
+        let with_args = Alias {
+            args: vec!["pr".into()],
+            template: Some("review ${pr}".into()),
+            ..Default::default()
+        };
+        assert_eq!(alias_invocation("review", &with_args), "roba review <pr>");
+
+        let template_only = Alias {
+            template: Some("do the thing".into()),
+            ..Default::default()
+        };
+        assert_eq!(alias_invocation("go", &template_only), "roba go ...");
+
+        let shortcut = Alias::default();
+        assert_eq!(alias_invocation("q", &shortcut), "roba q <prompt...>");
+    }
+
+    #[test]
+    fn render_explain_plain_lays_out_every_section() {
+        let mut pool = Pool::default();
+        pool.defaults.readonly = Some(true);
+        pool.defaults.full_auto = Some(true); // a top-level loaded gun
+        pool.profiles.insert(
+            "worker".to_string(),
+            Profile {
+                full_auto: Some(true),
+                max_turns: Some(80),
+                ..Default::default()
+            },
+        );
+        pool.aliases.insert(
+            "review".to_string(),
+            Alias {
+                description: Some("review a PR".to_string()),
+                args: vec!["pr".into()],
+                template: Some("review ${pr}".into()),
+                ..Default::default()
+            },
+        );
+        pool.sources.push(PathBuf::from("/repo/roba.toml"));
+        let active = Some(("worker".to_string(), "auto-applied"));
+
+        let p = Painter { color: false };
+        let text = render_explain(&pool, &active, &knob_descriptions(), &p).unwrap();
+
+        // Every section header is present.
+        assert!(text.contains("Active profile"), "{text}");
+        assert!(text.contains("Top-level defaults (always on)"), "{text}");
+        assert!(
+            text.contains("Profiles (opt in with --profile NAME)"),
+            "{text}"
+        );
+        assert!(text.contains("Aliases (verbs)"), "{text}");
+        assert!(text.contains("Sources (closest-to-cwd wins)"), "{text}");
+
+        // Active profile is named with its reason.
+        assert!(text.contains("worker (auto-applied)"), "{text}");
+        // Top-level knob carries its cli.rs description.
+        assert!(text.contains("readonly = true"), "{text}");
+        assert!(
+            text.contains("-- "),
+            "no knob description rendered:\n{text}"
+        );
+        // Loaded gun is flagged at both the top level and the profile.
+        assert!(text.contains("loaded gun at top level"), "{text}");
+        assert!(text.contains("[!] loaded gun:"), "{text}");
+        // Alias invocation form + description.
+        assert!(text.contains("roba review <pr>"), "{text}");
+        assert!(text.contains("review a PR"), "{text}");
+        // Source file listed.
+        assert!(text.contains("/repo/roba.toml"), "{text}");
+        // Plain mode emits no ANSI escapes.
+        assert!(!text.contains('\x1b'), "plain mode leaked ANSI:\n{text}");
+    }
+
+    #[test]
+    fn render_explain_empty_pool_shows_nones() {
+        let pool = Pool::default();
+        let p = Painter { color: false };
+        let text = render_explain(&pool, &None, &knob_descriptions(), &p).unwrap();
+        assert!(text.contains("none -- no profile auto-applies"), "{text}");
+        // Each empty section degrades to a `(none)` line, not a crash.
+        assert_eq!(text.matches("(none)").count(), 4, "{text}");
+    }
+
+    #[test]
+    fn painter_color_wraps_and_resets() {
+        let p = Painter { color: true };
+        let h = p.header("X");
+        assert!(h.starts_with('\x1b') && h.ends_with("\x1b[0m"), "{h}");
+        // Plain painter leaves text untouched.
+        let plain = Painter { color: false };
+        assert_eq!(plain.header("X"), "X");
     }
 }

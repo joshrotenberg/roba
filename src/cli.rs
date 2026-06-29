@@ -554,6 +554,20 @@ pub enum ConfigCmd {
     /// stderr. `--json` emits the uniform `{ version: 1, result }`
     /// envelope on stdout instead.
     Show(ConfigShowArgs),
+    /// Explain the merged config in a human-readable layout (read-only).
+    ///
+    /// The human counterpart to `config show`. Where `show` prints raw,
+    /// re-parseable TOML (the machine / redirect view), `explain` renders a
+    /// grouped, annotated narrative: the auto-applied profile, the
+    /// always-on top-level defaults (each with the one-line "what it does"
+    /// drawn from `--help`), the opt-in `[profile.NAME]` overlays (with
+    /// loaded guns like `full_auto` / `worktree` flagged), the alias verbs
+    /// with their invocation form, and the source files.
+    ///
+    /// Color-rendered on a TTY; `--plain` (or `NO_COLOR`, or a non-TTY
+    /// stdout) renders it uncolored. This is a human view only -- it is
+    /// never what a script parses; `show` and `--json` own that.
+    Explain(ConfigExplainArgs),
 }
 
 #[derive(ClapArgs, Debug)]
@@ -596,6 +610,18 @@ pub struct ConfigShowArgs {
     /// stdout only.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct ConfigExplainArgs {
+    /// Render without color (the same effect as `NO_COLOR` or a non-TTY
+    /// stdout).
+    ///
+    /// `explain` is a human view; this only turns off ANSI color. It does
+    /// NOT fall back to the raw TOML dump -- that is what `config show` is
+    /// for.
+    #[arg(long)]
+    pub plain: bool,
 }
 
 #[derive(ClapArgs, Debug)]
