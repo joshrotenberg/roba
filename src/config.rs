@@ -865,7 +865,13 @@ fn loaded_guns(table: &toml::Table) -> Vec<&'static str> {
     if table.get("full_auto") == Some(&Value::Boolean(true)) {
         guns.push("full_auto");
     }
-    if table.contains_key("worktree") {
+    // worktree is a loaded gun only when ENABLED (`true` or a named worktree);
+    // `worktree = false` explicitly disables it, so it is not flagged (mirrors
+    // how full_auto checks for `true`, not mere key presence).
+    if matches!(
+        table.get("worktree"),
+        Some(Value::Boolean(true)) | Some(Value::String(_))
+    ) {
         guns.push("worktree");
     }
     guns
@@ -1450,6 +1456,23 @@ mod tests {
             ..Default::default()
         };
         assert!(loaded_guns(&profile_table(&safe).unwrap()).is_empty());
+
+        // worktree = false explicitly DISABLES it, so it is not a loaded gun.
+        let no_wt = Profile {
+            worktree: Some(crate::profile::WorktreeSetting::Enabled(false)),
+            ..Default::default()
+        };
+        assert!(
+            !loaded_guns(&profile_table(&no_wt).unwrap()).contains(&"worktree"),
+            "worktree = false must not be flagged"
+        );
+
+        // a NAMED worktree is still a loaded gun.
+        let named = Profile {
+            worktree: Some(crate::profile::WorktreeSetting::Named("wt".into())),
+            ..Default::default()
+        };
+        assert!(loaded_guns(&profile_table(&named).unwrap()).contains(&"worktree"));
     }
 
     #[test]
