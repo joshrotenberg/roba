@@ -55,14 +55,15 @@
 //!
 //! The `{ version, error }` stderr envelope is emitted only on the
 //! `Err`-path nonzero exits (codes 1-5, via [`render_json`]). Exit 6
-//! ([`crate::EXIT_UNUSABLE_RESULT`] -- an empty / `is_error` `Ok`-path
-//! result) does NOT emit one: it has already written the success-shaped
-//! `{ version, result }` envelope to stdout, so its structured signal is
-//! the stdout envelope plus the exit code. A second error envelope on
-//! stderr would contradict "the success envelope is on stdout." A `--json`
-//! consumer branches on the exit code and inspects `.result` / `.is_error`
-//! on the stdout envelope; it does not scrape stderr for an error envelope
-//! on code 6.
+//! ([`crate::EXIT_UNUSABLE_RESULT`]) never emits one -- the reliable
+//! signal is the exit code itself. What is on stdout depends on the
+//! subcase: for an empty / `is_error` `Ok`-path result the success-shaped
+//! `{ version, result }` envelope is already written there; for a
+//! streaming / `--trace` run that completed with no result event, exit 6
+//! happens before the envelope is rendered, so stdout is empty. A `--json`
+//! consumer branches on the exit code (and inspects `.result` /
+//! `.is_error` on the stdout envelope when present); it does not scrape
+//! stderr for an error envelope on code 6.
 //!
 //! Version 1 guarantees:
 //!
