@@ -109,6 +109,9 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
     if args.bare {
         cmd = cmd.bare();
     }
+    if args.safe_mode {
+        cmd = cmd.safe_mode();
+    }
     if args.no_session_persistence {
         cmd = cmd.no_session_persistence();
     }

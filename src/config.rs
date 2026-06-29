@@ -343,6 +343,7 @@ const ENV_MAP: &[(&str, &str, EnvKind)] = &[
     ("ROBA_WORKTREE", "worktree", EnvKind::Worktree),
     ("ROBA_NO_RETRY", "no_retry", EnvKind::Bool),
     ("ROBA_BARE", "bare", EnvKind::Bool),
+    ("ROBA_SAFE_MODE", "safe_mode", EnvKind::Bool),
     ("ROBA_TRACE", "trace", EnvKind::Str),
     ("ROBA_RATES_FILE", "rates_file", EnvKind::Str),
     ("ROBA_NO_DOLLARS", "no_dollars", EnvKind::Bool),

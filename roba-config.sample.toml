@@ -75,6 +75,7 @@
 # --- Failure / agent-tier ---
 # no_retry  = true                # surface transient failures immediately
 # bare      = true                # minimal-overhead mode (ANTHROPIC_API_KEY auth)
+# safe_mode = true                # disable all claude customizations (security posture for untrusted input)
 # no_agent_check = true           # skip the --agent frontmatter permission check
 
 # --- Limits (unattended guardrails; cap hit -> run errors, exit 1) ---

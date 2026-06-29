@@ -1010,6 +1010,20 @@ pub struct AskArgs {
     #[arg(long, help_heading = "Mode")]
     pub bare: bool,
 
+    /// Start with all claude customizations disabled (security posture).
+    ///
+    /// Passes claude's own `--safe-mode` through (sets
+    /// `CLAUDE_CODE_SAFE_MODE=1`): CLAUDE.md, skills, plugins, hooks, MCP
+    /// servers, and custom commands and agents are all turned off; only
+    /// claude's built-in behavior runs. This is a SECURITY posture, not a
+    /// reproducibility one -- it shrinks the custom-code surface an
+    /// injected or untrusted prompt (e.g. an issue body fed to a
+    /// `--full-auto` worker) could exploit. Pairs naturally with
+    /// unattended / `--full-auto` runs over untrusted input. Distinct from
+    /// `--bare` (minimal-overhead reproducibility) and composable with it.
+    #[arg(long, help_heading = "Mode")]
+    pub safe_mode: bool,
+
     // ----- Model ------------------------------------------------------------
     /// Override the claude model for this call.
     ///

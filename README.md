@@ -268,6 +268,13 @@ applied as one recipe.
   depends only on the prompt and flags you passed (auth via
   `ANTHROPIC_API_KEY`). Supply context explicitly with `--attach` /
   `--prepend` / `-f` rather than relying on ambient discovery.
+- **`--safe-mode` for untrusted input.** When the prompt carries content
+  you do not control (an issue body, a PR diff, a scraped page) into a
+  `--full-auto` worker, add `--safe-mode`. It starts claude with every
+  customization disabled -- CLAUDE.md, skills, plugins, hooks, MCP servers,
+  custom commands and agents (`CLAUDE_CODE_SAFE_MODE=1`) -- shrinking the
+  custom-code surface a prompt-injection could reach. It is a *security*
+  posture, distinct from `--bare`'s reproducibility, and composes with it.
 - **The cap trio.** `--max-turns` and `--max-budget-usd` bound *work*;
   `--timeout SECS` bounds *wall-clock* and is the only one that catches a
   `claude -p` that hangs making no progress. Set all three for a run you

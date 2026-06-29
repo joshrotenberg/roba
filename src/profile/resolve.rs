@@ -240,6 +240,11 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     {
         args.bare = v;
     }
+    if let Some(v) = profile.safe_mode
+        && !args.safe_mode
+    {
+        args.safe_mode = v;
+    }
     if args.trace.is_none()
         && let Some(p) = profile.trace.take()
     {
@@ -890,6 +895,29 @@ mod tests {
         };
         merge_into_args(&mut args, profile, "profile.test");
         assert!(args.bare);
+    }
+
+    #[test]
+    fn merge_safe_mode_applies_when_cli_unset() {
+        let mut args = empty_args();
+        let profile = Profile {
+            safe_mode: Some(true),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert!(args.safe_mode);
+    }
+
+    #[test]
+    fn merge_safe_mode_cli_already_set_is_unaffected() {
+        let mut args = empty_args();
+        args.safe_mode = true;
+        let profile = Profile {
+            safe_mode: Some(false),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert!(args.safe_mode);
     }
 
     #[test]
