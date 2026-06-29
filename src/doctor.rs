@@ -13,10 +13,13 @@
 //!
 //! `--json` emits the uniform `{ version: 1, result: { checks, overall } }`
 //! envelope (via the crate's `VersionedResult` wrapper); the human form
-//! prints one `[ok]`/`[warn]`/`[fail]` line per check, unchanged.
+//! prints one `[ok]`/`[warn]`/`[fail]` line per check, the marker colored by
+//! status and the names aligned into a column. Color is gated on a TTY
+//! stdout with `NO_COLOR` unset, so a piped or `NO_COLOR` run is byte-plain.
 
 use anyhow::Result;
 use serde::Serialize;
+use std::io::IsTerminal;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -45,6 +48,57 @@ impl Status {
             Status::Fail => "[fail]",
         }
     }
+    /// The ANSI color for this status's marker: bold green / yellow / red,
+    /// matching the palette `config explain` uses (green = good, yellow =
+    /// advisory, red = broken).
+    fn color(self) -> &'static str {
+        match self {
+            Status::Ok => "\x1b[1;32m",
+            Status::Warn => "\x1b[1;33m",
+            Status::Fail => "\x1b[1;31m",
+        }
+    }
+}
+
+/// Cyan, matching the check-name / key color in `config explain`.
+const NAME_COLOR: &str = "\x1b[36m";
+
+/// Wrap `s` in an ANSI `code` (with reset) when `on`, else return it
+/// untouched. The one place doctor decides color, so a non-TTY / `NO_COLOR`
+/// run stays byte-plain.
+fn paint(s: &str, code: &str, on: bool) -> String {
+    if on {
+        format!("{code}{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
+}
+
+/// Render the human report: one `[status] name  message` line per check,
+/// markers colored by status and names aligned into a column so the
+/// messages line up. Pure over `(checks, color)` so it is tested without a
+/// TTY. Padding is computed from the VISIBLE marker/name lengths, then the
+/// color is applied, so the ANSI bytes never throw off the alignment.
+fn render_human(checks: &[Check], color: bool) -> String {
+    let marker_w = checks
+        .iter()
+        .map(|c| c.status.marker().len())
+        .max()
+        .unwrap_or(0);
+    let name_w = checks.iter().map(|c| c.name.len()).max().unwrap_or(0);
+    let mut out = String::new();
+    for c in checks {
+        let marker = c.status.marker();
+        out.push_str(&format!(
+            "{}{}  {}{}  {}\n",
+            paint(marker, c.status.color(), color),
+            " ".repeat(marker_w - marker.len()),
+            paint(c.name, NAME_COLOR, color),
+            " ".repeat(name_w - c.name.len()),
+            c.message,
+        ));
+    }
+    out
 }
 
 /// The structured result of one check: a stable `name`, a `status`, and
@@ -84,9 +138,8 @@ pub fn run(args: DoctorArgs) -> Result<i32> {
             serde_json::to_string_pretty(&crate::VersionedResult::new(&report))?
         );
     } else {
-        for c in &report.checks {
-            println!("{} {}: {}", c.status.marker(), c.name, c.message);
-        }
+        let color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+        print!("{}", render_human(&report.checks, color));
     }
     Ok(exit)
 }
@@ -345,6 +398,47 @@ mod tests {
         assert_eq!(Status::Ok.marker(), "[ok]");
         assert_eq!(Status::Warn.marker(), "[warn]");
         assert_eq!(Status::Fail.marker(), "[fail]");
+    }
+
+    fn named(name: &'static str, status: Status) -> Check {
+        Check {
+            name,
+            status,
+            message: "msg".to_string(),
+        }
+    }
+
+    #[test]
+    fn render_human_plain_aligns_and_leaks_no_ansi() {
+        let checks = vec![named("claude", Status::Ok), named("auth", Status::Warn)];
+        let text = render_human(&checks, false);
+        // No color: byte-plain.
+        assert!(!text.contains('\x1b'), "plain mode leaked ANSI:\n{text}");
+        // Markers padded to the widest ([warn] = 6), names to the widest
+        // (claude = 6), so the messages start at the same column.
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "[ok]    claude  msg");
+        assert_eq!(lines[1], "[warn]  auth    msg");
+        // The `msg` column lines up across rows.
+        let col0 = lines[0].find("msg").unwrap();
+        let col1 = lines[1].find("msg").unwrap();
+        assert_eq!(col0, col1, "message column not aligned:\n{text}");
+    }
+
+    #[test]
+    fn render_human_color_wraps_marker_and_name() {
+        let checks = vec![named("auth", Status::Warn)];
+        let text = render_human(&checks, true);
+        // Warn marker wears bold yellow with a reset; the name wears cyan.
+        assert!(text.contains("\x1b[1;33m[warn]\x1b[0m"), "{text}");
+        assert!(text.contains("\x1b[36mauth\x1b[0m"), "{text}");
+    }
+
+    #[test]
+    fn status_color_distinct_per_status() {
+        assert_eq!(Status::Ok.color(), "\x1b[1;32m");
+        assert_eq!(Status::Warn.color(), "\x1b[1;33m");
+        assert_eq!(Status::Fail.color(), "\x1b[1;31m");
     }
 
     fn check(status: Status) -> Check {
