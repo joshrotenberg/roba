@@ -2786,10 +2786,17 @@ fn fake_claude(json_stdout: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("fake claude dir");
     let path = dir.path().join("claude");
     // A `--version` probe (should one ever fire) gets a version string; any
-    // other invocation prints the canned JSON. The heredoc is quoted so the
-    // JSON is emitted verbatim.
+    // other invocation drains stdin, then prints the canned JSON (the heredoc
+    // is quoted so the JSON is emitted verbatim).
+    //
+    // `cat >/dev/null` drains stdin BEFORE emitting output: roba writes the
+    // prompt to claude's stdin, and if this shim exits without reading it, the
+    // prompt write races the exit and fails with EPIPE -- which roba surfaces
+    // as an `Err` (exit 1), not the empty/`is_error` `Ok` path (exit 6). That
+    // race only loses under load, so it flaked Linux CI intermittently (#371).
+    // Draining stdin makes the read deterministic and the exit code stable.
     let script = format!(
-        "#!/bin/sh\ncase \"$*\" in\n  *--version*) echo '1.0.0 (fake)'; exit 0;;\nesac\ncat <<'ROBA_FAKE_EOF'\n{json_stdout}\nROBA_FAKE_EOF\n"
+        "#!/bin/sh\ncase \"$*\" in\n  *--version*) echo '1.0.0 (fake)'; exit 0;;\nesac\ncat >/dev/null 2>&1\ncat <<'ROBA_FAKE_EOF'\n{json_stdout}\nROBA_FAKE_EOF\n"
     );
     std::fs::write(&path, script).expect("write fake claude");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
