@@ -49,7 +49,9 @@ envelope shape, exit codes) -- never model compliance.
 
 Follow the full checklist, in order: clap field in `cli.rs` (terse first
 doc line + detail -- this is the reference) -> `session.rs` wiring ->
-`ROBA_<PARAM>` override in `env.rs` + tests -> `Profile` field +
+`ROBA_<PARAM>` override in `env.rs` + tests -> a `config.rs` `ENV_MAP`
+entry (so `config show --sources` reports the flag's provenance) ->
+`Profile` field +
 `is_empty()` + `merge_in` + resolve merge + tests -> parse-level tests for
 conflicts -> mechanical test in `tests/cli.rs` if it touches exit codes or
 stream routing -> one `#[ignore]` live test -> a commented line in
