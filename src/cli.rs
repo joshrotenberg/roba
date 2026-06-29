@@ -523,7 +523,7 @@ pub enum ConfigCmd {
     /// aliases, pinned agents that don't resolve, and (best-effort) a
     /// pinned agent whose declared tools exceed the posture the entry's own
     /// flags would grant. As an advisory WARNING, it also flags a top-level
-    /// `worktree`/`full_auto` -- a task-scoped loaded gun that belongs in a
+    /// `worktree`/`full_auto` -- a task-scoped unsafe setting that belongs in a
     /// named `[profile.NAME]`, not auto-applied to every run.
     ///
     /// Honest limits: lint-clean now does not guarantee warning-free at
@@ -561,7 +561,7 @@ pub enum ConfigCmd {
     /// grouped, annotated narrative: the auto-applied profile, the
     /// always-on top-level defaults (each with the one-line "what it does"
     /// drawn from `--help`), the opt-in `[profile.NAME]` overlays (with
-    /// loaded guns like `full_auto` / `worktree` flagged), the alias verbs
+    /// unsafe settings like `full_auto` / `worktree` flagged), the alias verbs
     /// with their invocation form, and the source files.
     ///
     /// Color-rendered on a TTY; `--plain` (or `NO_COLOR`, or a non-TTY

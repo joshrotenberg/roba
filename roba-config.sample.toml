@@ -118,8 +118,8 @@ readonly = true
 git_log = 10
 
 # IMPLEMENT -- the dispatch posture: bypass tool checks, isolate in a fresh
-# worktree, and CAP the run so an unattended worker self-arrests. A loaded gun
-# named explicitly, never a top-level default (see `roba config lint`).
+# worktree, and CAP the run so an unattended worker self-arrests. An unsafe
+# setting named explicitly, never a top-level default (see `roba config lint`).
 #   roba --profile worker -f task.md
 [profile.worker]
 full_auto = true
@@ -204,7 +204,7 @@ $(gh issue view ${n})
 """
 
 # Implement an issue end-to-end, open a draft PR.  ->  roba fix 357
-# full_auto via the worker profile above -- an explicit, named loaded gun.
+# full_auto via the worker profile above -- an explicit, named unsafe setting.
 [alias.fix]
 description = "Implement an issue in a worktree, open a draft PR (full_auto)"
 args = ["n"]

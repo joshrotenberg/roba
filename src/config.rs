@@ -589,7 +589,7 @@ fn init_prompt(description: Option<&str>, inherited: Option<&str>) -> String {
          this scope; they merge per-key across the pool and auto-apply silently \
          to every run, so put only SAFE things here.\n\
          - `[profile.NAME]` is a named, opt-in-able MODE selected as a unit \
-         (`--profile NAME`); it is the home for loaded guns, named and deliberate.\n\
+         (`--profile NAME`); it is the home for unsafe settings, named and deliberate.\n\
          - `[alias.NAME]` is a profile PLUS a prompt template, invoked as a verb; \
          only worth it when there is a template, args, or agent.\n\n\
          First, briefly inspect THIS project with the Read/Glob/Grep tools (the \
@@ -599,11 +599,11 @@ fn init_prompt(description: Option<&str>, inherited: Option<&str>) -> String {
          Then produce a starter project roba.toml that:\n\
          - Opens with conservative, SAFE top-level defaults appropriate to this project.\n\
          - NEVER puts `full_auto` or an anonymous `worktree` (`worktree = true`) at \
-         the TOP LEVEL -- those are loaded guns that would auto-apply silently to \
+         the TOP LEVEL -- those are unsafe settings that would auto-apply silently to \
          every run (and a top-level anonymous worktree silently defeats `-c`/`--resume`). \
          If the steer asks for full-auto or worktree isolation, put them in a NAMED \
          `[profile.NAME]` (e.g. `[profile.worker]`) so they are an explicit, named \
-         opt-in. Ship a SAFE default; NAME the loaded guns.\n\
+         opt-in. Ship a SAFE default; NAME the unsafe settings.\n\
          - Defines a couple of useful `[profile.NAME]` overlays fitted to the project.\n\
          - Defines AT MOST one or two `[alias.NAME]` shortcut verbs, and only if clearly useful.\n\
          - Generates REUSABLE verbs, not a one-shot plan: an `[alias.NAME]` is for \
@@ -803,7 +803,7 @@ impl Painter {
     fn dim(&self, s: &str) -> String {
         self.wrap(s, "\x1b[2m")
     }
-    /// A loaded-gun warning marker: bold yellow.
+    /// An unsafe-setting warning marker: bold yellow.
     fn warn(&self, s: &str) -> String {
         self.wrap(s, "\x1b[1;33m")
     }
@@ -862,43 +862,43 @@ fn format_toml_value(v: &Value) -> String {
     }
 }
 
-/// The set keys a profile defines that are "loaded guns" -- task-scoped
+/// The keys a profile defines that are "unsafe" -- task-scoped
 /// powers (`full_auto`, any `worktree`) that should be a deliberate opt-in,
 /// never silently always-on. Mirrors the `config lint` advisory.
-fn loaded_guns(table: &toml::Table) -> Vec<&'static str> {
-    let mut guns = Vec::new();
+fn unsafe_settings(table: &toml::Table) -> Vec<&'static str> {
+    let mut unsafe_keys = Vec::new();
     if table.get("full_auto") == Some(&Value::Boolean(true)) {
-        guns.push("full_auto");
+        unsafe_keys.push("full_auto");
     }
-    // worktree is a loaded gun only when ENABLED (`true` or a named worktree);
+    // worktree is unsafe only when ENABLED (`true` or a named worktree);
     // `worktree = false` explicitly disables it, so it is not flagged (mirrors
     // how full_auto checks for `true`, not mere key presence).
     if matches!(
         table.get("worktree"),
         Some(Value::Boolean(true)) | Some(Value::String(_))
     ) {
-        guns.push("worktree");
+        unsafe_keys.push("worktree");
     }
-    guns
+    unsafe_keys
 }
 
 /// A compact one-line posture summary of a profile: each set knob as
 /// `key` (a true bool) or `key=value`, sorted, comma-joined. Empty profiles
 /// summarize as `(no overrides)`.
 ///
-/// Loaded-gun pieces ([`loaded_guns`]) are painted yellow and the rest dim,
+/// Unsafe pieces ([`unsafe_settings`]) are painted yellow and the rest dim,
 /// so a profile's risky knobs catch the eye inline on a color TTY. With color
-/// off it is byte-plain (the `[!] loaded gun:` text marker carries the signal),
+/// off it is byte-plain (the `[!] unsafe:` text marker carries the signal),
 /// so the risk indicator never depends on color alone.
 fn posture_summary(table: &toml::Table, p: &Painter) -> String {
-    let guns = loaded_guns(table);
+    let unsafe_keys = unsafe_settings(table);
     let mut pieces: Vec<String> = Vec::new();
     for (k, v) in table {
         let piece = match v {
             Value::Boolean(true) => k.clone(),
             _ => format!("{k}={}", format_toml_value(v)),
         };
-        if guns.contains(&k.as_str()) {
+        if unsafe_keys.contains(&k.as_str()) {
             pieces.push(p.warn(&piece));
         } else {
             pieces.push(p.dim(&piece));
@@ -1013,12 +1013,12 @@ fn render_explain(
     if defaults.is_empty() {
         out.push_str(&format!("  {}\n", p.dim("(none)")));
     } else {
-        let guns = loaded_guns(&defaults);
+        let unsafe_keys = unsafe_settings(&defaults);
         for (key, value) in &defaults {
-            // Paint a loaded-gun knob yellow inline so risk catches the eye;
-            // a safe knob keeps the cyan key style. The `[!] loaded gun`
+            // Paint an unsafe knob yellow inline so risk catches the eye;
+            // a safe knob keeps the cyan key style. The `[!] unsafe`
             // marker below carries the same signal as text when color is off.
-            let painted_key = if guns.contains(&key.as_str()) {
+            let painted_key = if unsafe_keys.contains(&key.as_str()) {
                 p.warn(key)
             } else {
                 p.key(key)
@@ -1031,11 +1031,11 @@ fn render_explain(
             out.push_str(&line);
             out.push('\n');
         }
-        if !guns.is_empty() {
+        if !unsafe_keys.is_empty() {
             out.push_str(&format!(
                 "  {} {}\n",
-                p.warn("[!] loaded gun at top level:"),
-                p.warn(&guns.join(", "))
+                p.warn("[!] unsafe at top level:"),
+                p.warn(&unsafe_keys.join(", "))
             ));
             out.push_str(&format!(
                 "      {}\n",
@@ -1061,12 +1061,12 @@ fn render_explain(
                 source_tag(p, prov.profiles.get(name).copied()),
                 posture_summary(&table, p)
             ));
-            let guns = loaded_guns(&table);
-            if !guns.is_empty() {
+            let unsafe_keys = unsafe_settings(&table);
+            if !unsafe_keys.is_empty() {
                 out.push_str(&format!(
                     "      {} {}\n",
-                    p.warn("[!] loaded gun:"),
-                    p.warn(&guns.join(", "))
+                    p.warn("[!] unsafe:"),
+                    p.warn(&unsafe_keys.join(", "))
                 ));
             }
         }
@@ -1220,13 +1220,13 @@ mod tests {
     }
 
     #[test]
-    fn init_prompt_steers_off_top_level_loaded_guns_and_plans() {
+    fn init_prompt_steers_off_top_level_unsafe_settings_and_plans() {
         let p = init_prompt(None, None);
         // Never put full_auto / anonymous worktree at the top level.
         assert!(p.contains("the TOP LEVEL"), "{p}");
         assert!(p.contains("full_auto"), "{p}");
         assert!(p.contains("worktree = true"), "{p}");
-        assert!(p.contains("NAME the loaded guns"), "{p}");
+        assert!(p.contains("NAME the unsafe settings"), "{p}");
         // Reusable verbs, not a one-shot plan.
         assert!(p.contains("REUSABLE verbs"), "{p}");
         assert!(p.contains("phase0"), "{p}");
@@ -1530,39 +1530,39 @@ mod tests {
     }
 
     #[test]
-    fn loaded_guns_flags_full_auto_and_worktree() {
+    fn unsafe_settings_flags_full_auto_and_worktree() {
         let p = Profile {
             full_auto: Some(true),
             worktree: Some(crate::profile::WorktreeSetting::Enabled(true)),
             ..Default::default()
         };
-        let guns = loaded_guns(&profile_table(&p).unwrap());
-        assert!(guns.contains(&"full_auto"), "{guns:?}");
-        assert!(guns.contains(&"worktree"), "{guns:?}");
+        let unsafe_keys = unsafe_settings(&profile_table(&p).unwrap());
+        assert!(unsafe_keys.contains(&"full_auto"), "{unsafe_keys:?}");
+        assert!(unsafe_keys.contains(&"worktree"), "{unsafe_keys:?}");
 
-        // readonly-only profile: no loaded guns.
+        // readonly-only profile: no unsafe settings.
         let safe = Profile {
             readonly: Some(true),
             ..Default::default()
         };
-        assert!(loaded_guns(&profile_table(&safe).unwrap()).is_empty());
+        assert!(unsafe_settings(&profile_table(&safe).unwrap()).is_empty());
 
-        // worktree = false explicitly DISABLES it, so it is not a loaded gun.
+        // worktree = false explicitly DISABLES it, so it is not unsafe.
         let no_wt = Profile {
             worktree: Some(crate::profile::WorktreeSetting::Enabled(false)),
             ..Default::default()
         };
         assert!(
-            !loaded_guns(&profile_table(&no_wt).unwrap()).contains(&"worktree"),
+            !unsafe_settings(&profile_table(&no_wt).unwrap()).contains(&"worktree"),
             "worktree = false must not be flagged"
         );
 
-        // a NAMED worktree is still a loaded gun.
+        // a NAMED worktree is still unsafe.
         let named = Profile {
             worktree: Some(crate::profile::WorktreeSetting::Named("wt".into())),
             ..Default::default()
         };
-        assert!(loaded_guns(&profile_table(&named).unwrap()).contains(&"worktree"));
+        assert!(unsafe_settings(&profile_table(&named).unwrap()).contains(&"worktree"));
     }
 
     #[test]
@@ -1584,10 +1584,10 @@ mod tests {
     }
 
     #[test]
-    fn render_explain_paints_loaded_guns_yellow() {
+    fn render_explain_paints_unsafe_settings_yellow() {
         let mut pool = Pool::default();
         pool.defaults.readonly = Some(true); // safe -- keeps the cyan key style
-        pool.defaults.full_auto = Some(true); // a top-level loaded gun
+        pool.defaults.full_auto = Some(true); // a top-level unsafe setting
         pool.profiles.insert(
             "worker".to_string(),
             Profile {
@@ -1597,13 +1597,13 @@ mod tests {
             },
         );
 
-        // Color ON: the loaded-gun items wear the bold-yellow span, inline,
+        // Color ON: the unsafe items wear the bold-yellow span, inline,
         // at both the top level and inside the profile's posture summary.
         let on = Painter { color: true };
         let colored = render_explain(&pool, &None, &[], &knob_descriptions(), &on).unwrap();
         assert!(
             colored.contains("\x1b[1;33mfull_auto\x1b[0m"),
-            "loaded-gun item not painted yellow:\n{colored:?}"
+            "unsafe item not painted yellow:\n{colored:?}"
         );
         // A safe knob is NOT yellow (it wears the cyan key style instead).
         assert!(
@@ -1619,8 +1619,8 @@ mod tests {
             !plain.contains('\x1b'),
             "plain mode leaked ANSI:\n{plain:?}"
         );
-        assert!(plain.contains("loaded gun at top level"), "{plain}");
-        assert!(plain.contains("[!] loaded gun:"), "{plain}");
+        assert!(plain.contains("unsafe at top level"), "{plain}");
+        assert!(plain.contains("[!] unsafe:"), "{plain}");
     }
 
     #[test]
@@ -1646,7 +1646,7 @@ mod tests {
     fn render_explain_plain_lays_out_every_section() {
         let mut pool = Pool::default();
         pool.defaults.readonly = Some(true);
-        pool.defaults.full_auto = Some(true); // a top-level loaded gun
+        pool.defaults.full_auto = Some(true); // a top-level unsafe setting
         pool.profiles.insert(
             "worker".to_string(),
             Profile {
@@ -1719,9 +1719,9 @@ mod tests {
             text.contains("-- "),
             "no knob description rendered:\n{text}"
         );
-        // Loaded gun is flagged at both the top level and the profile.
-        assert!(text.contains("loaded gun at top level"), "{text}");
-        assert!(text.contains("[!] loaded gun:"), "{text}");
+        // Unsafe settings are flagged at both the top level and the profile.
+        assert!(text.contains("unsafe at top level"), "{text}");
+        assert!(text.contains("[!] unsafe:"), "{text}");
         // Alias invocation form + description.
         assert!(text.contains("roba review <pr>"), "{text}");
         assert!(text.contains("review a PR"), "{text}");

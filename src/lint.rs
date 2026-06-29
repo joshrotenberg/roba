@@ -23,7 +23,7 @@
 //!    flags would grant, surfaced with the intent-respecting hint. For a
 //!    profile the posture maps from its typed fields; for an alias it is
 //!    parsed from its `flags` (skipped when those flags don't parse).
-//! 5. **Top-level loaded guns** (warning) -- a top-level `worktree` or
+//! 5. **Top-level unsafe settings** (warning) -- a top-level `worktree` or
 //!    `full_auto` is a task-scoped knob that auto-applies to every run
 //!    (top-level `worktree` also silently defeats `-c`/`--resume`); it
 //!    belongs in a named `[profile.NAME]`. Advisory -- the config parses
@@ -174,7 +174,7 @@ fn lint_file(path: &Path, cwd: &Path, findings: &mut Vec<Finding>) {
         }
     };
 
-    // Check 5 (advisory): top-level loaded guns. A `worktree`/`full_auto`
+    // Check 5 (advisory): top-level unsafe settings. A `worktree`/`full_auto`
     // at the TOP LEVEL (`cfg.defaults`) auto-applies to every run in the
     // repo; the same key inside a `[profile.*]`/`[alias.*]` is fine (and is
     // not inspected here -- we only read `cfg.defaults`). Warnings, not
@@ -603,7 +603,7 @@ mod tests {
         let findings = findings_for(dir.path(), "full_auto = false\n");
         assert!(
             findings.iter().all(|f| f.rule != "top-level-full-auto"),
-            "a top-level false is pointless but not a loaded gun: {findings:?}"
+            "a top-level false is pointless but not unsafe: {findings:?}"
         );
     }
 

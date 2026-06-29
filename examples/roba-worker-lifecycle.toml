@@ -24,7 +24,7 @@
 # making blocking sub-calls). Verbs are the stochastic work; the driver holds
 # the deterministic and human gates.
 
-# --- Safe top-level: read-only by default. No top-level loaded guns. ---
+# --- Safe top-level: read-only by default. No top-level unsafe settings. ---
 readonly = true
 git_log = 10
 
@@ -35,7 +35,7 @@ git_log = 10
 readonly = true
 git_log = 10
 
-# WORKER -- the dispatch posture (named loaded gun): bypass tool checks + caps.
+# WORKER -- the dispatch posture (named unsafe setting): bypass tool checks + caps.
 # worktree: false keeps the project's build cache warm for a fast gate and is
 # right for SERIAL one-at-a-time work; set true ONLY for parallel unattended
 # fan-out, and give each worktree a shared build/cache path first.
