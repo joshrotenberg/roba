@@ -406,8 +406,11 @@ fn config_explain_renders_human_layout() {
         ))
         // The [profile.default] unsafe setting is flagged.
         .stdout(predicate::str::contains("[!] unsafe:"))
-        .stdout(predicate::str::contains("Aliases (verbs)"))
-        .stdout(predicate::str::contains("roba review <pr>"))
+        // The alias header carries the usage hint; the per-line `roba ` prefix
+        // is dropped (it lives in the header now).
+        .stdout(predicate::str::contains("Aliases (verbs, run with roba"))
+        .stdout(predicate::str::contains("review <pr>"))
+        .stdout(predicate::str::contains("roba review <pr>").not())
         .stdout(predicate::str::contains("Sources (closest-to-cwd wins)"))
         // --plain leaks no ANSI escape.
         .stdout(predicate::str::contains("\x1b").not());
