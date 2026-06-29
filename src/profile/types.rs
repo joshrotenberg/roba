@@ -83,6 +83,12 @@ pub struct Profile {
     /// auto-discovery, auto-memory, and keychain reads (`--bare`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bare: Option<bool>,
+    /// Start with all claude customizations disabled -- CLAUDE.md, skills,
+    /// plugins, hooks, MCP servers, custom commands and agents
+    /// (`--safe-mode`). A security posture for unattended runs over
+    /// untrusted input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safe_mode: Option<bool>,
     /// Write the spawned session's streaming events to this path as
     /// JSONL (`--trace`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -225,6 +231,7 @@ impl Profile {
             && self.worktree.is_none()
             && self.no_retry.is_none()
             && self.bare.is_none()
+            && self.safe_mode.is_none()
             && self.trace.is_none()
             && self.rates_file.is_none()
             && self.no_dollars.is_none()
@@ -279,6 +286,7 @@ impl Profile {
             worktree,
             no_retry,
             bare,
+            safe_mode,
             trace,
             rates_file,
             no_dollars,
@@ -367,6 +375,9 @@ impl Profile {
         }
         if bare.is_some() {
             self.bare = bare;
+        }
+        if safe_mode.is_some() {
+            self.safe_mode = safe_mode;
         }
         if trace.is_some() {
             self.trace = trace;

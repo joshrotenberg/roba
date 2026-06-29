@@ -347,6 +347,9 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     if !args.bare && read_truthy(env, "ROBA_BARE") {
         args.bare = true;
     }
+    if !args.safe_mode && read_truthy(env, "ROBA_SAFE_MODE") {
+        args.safe_mode = true;
+    }
 
     // ----- MCP -----
     // ROBA_MCP_CONFIG mirrors --mcp-config: comma-separated list of config
@@ -1079,6 +1082,31 @@ mod tests {
         let mut args = empty_args();
         apply_env_overrides_from(&mut args, &env_with(&[("ROBA_BARE", "false")]));
         assert!(!args.bare);
+    }
+
+    // -- safe_mode ---------------------------------------------------------
+
+    #[test]
+    fn env_safe_mode_sets_from_roba_safe_mode_var() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_SAFE_MODE", "1")]));
+        assert!(args.safe_mode);
+    }
+
+    #[test]
+    fn env_safe_mode_does_not_override_cli() {
+        // `--safe-mode` is a bool; once true, the env layer must not clear it.
+        let mut args = empty_args();
+        args.safe_mode = true;
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_SAFE_MODE", "0")]));
+        assert!(args.safe_mode);
+    }
+
+    #[test]
+    fn env_safe_mode_ignores_false_value() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_SAFE_MODE", "false")]));
+        assert!(!args.safe_mode);
     }
 
     // -- mcp ---------------------------------------------------------------

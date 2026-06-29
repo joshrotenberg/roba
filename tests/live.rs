@@ -1166,6 +1166,25 @@ fn live_bare_succeeds() {
         .stdout(predicate::str::contains("bare"));
 }
 
+#[test]
+#[ignore]
+fn live_safe_mode_succeeds() {
+    // --safe-mode disables claude's customization surfaces (CLAUDE.md,
+    // skills, plugins, hooks, MCP, custom commands/agents) but leaves auth
+    // and permissions working normally -- so a plain prompt still answers.
+    // Asserts the MECHANIC (the flag plumbs through and the run succeeds),
+    // never model behavior. Unlike --bare, safe-mode does not change auth,
+    // so no ANTHROPIC_API_KEY gate is needed.
+    let dir = fresh_dir();
+    let user = empty_user_home();
+    roba_in(dir.path())
+        .env("XDG_CONFIG_HOME", user.path())
+        .args(["--safe-mode", "respond with the single word: safe"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("safe"));
+}
+
 // ---------------------------------------------------------------------------
 // exit: typed exit codes for failure classes (claude-wrapper 0.11.1, #281)
 // ---------------------------------------------------------------------------
