@@ -14,6 +14,51 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-06-30
+
+### Added
+
+- run-level --timeout wall-clock deadline for the ask ([#366](https://github.com/joshrotenberg/roba/pull/366))
+- add --safe-mode pass-through and bump claude-wrapper to 0.12.2 ([#379](https://github.com/joshrotenberg/roba/pull/379))
+- a human-readable `config explain` view (show stays raw) ([#383](https://github.com/joshrotenberg/roba/pull/383))
+- config explain numbered sources + per-item provenance ([#386](https://github.com/joshrotenberg/roba/pull/386))
+- color-code config explain loaded-gun items yellow (text marker survives --plain) ([#387](https://github.com/joshrotenberg/roba/pull/387))
+- uniform, colored source markers in config explain + alias header hint ([#391](https://github.com/joshrotenberg/roba/pull/391))
+- color and align roba doctor output ([#392](https://github.com/joshrotenberg/roba/pull/392))
+- recoverable exit code 7 for --max-budget-usd cap hits ([#394](https://github.com/joshrotenberg/roba/pull/394))
+- add --json to `last` and align its empty-result exit with `history` ([#400](https://github.com/joshrotenberg/roba/pull/400))
+
+
+### Changed
+
+- rename "loaded gun" config terminology to "unsafe" ([#389](https://github.com/joshrotenberg/roba/pull/389))
+- unify color helpers into src/style.rs (closes #403) ([#404](https://github.com/joshrotenberg/roba/pull/404))
+
+
+### Documentation
+
+- fix private intra-doc links from bare_subcommand_typo ([#356](https://github.com/joshrotenberg/roba/pull/356))
+- worker-lifecycle config bundle + gate-placement practice ([#369](https://github.com/joshrotenberg/roba/pull/369))
+- unattended/CI hardening recipe in the agent ABI ([#370](https://github.com/joshrotenberg/roba/pull/370))
+- add the config.rs ENV_MAP step to the flag checklist ([#382](https://github.com/joshrotenberg/roba/pull/382))
+- correct stale --max-turns exit-code help (exit 5, not 1) ([#393](https://github.com/joshrotenberg/roba/pull/393))
+
+
+### Fixed
+
+- catch single-word subcommand typos instead of prompting ([#354](https://github.com/joshrotenberg/roba/pull/354))
+- never exit 0 on an empty or is_error result ([#360](https://github.com/joshrotenberg/roba/pull/360)) ([#367](https://github.com/joshrotenberg/roba/pull/367))
+- exit-code 6 ABI consistency (trace/stream parity + json envelope) ([#378](https://github.com/joshrotenberg/roba/pull/378))
+- drain stdin in the fake_claude test shim ([#380](https://github.com/joshrotenberg/roba/pull/380))
+- route metadata notes and requested data off stdout in cost/last/profile ([#399](https://github.com/joshrotenberg/roba/pull/399))
+
+
+### Maintenance
+
+- add single-issue lifecycle profiles and verbs to config ([#358](https://github.com/joshrotenberg/roba/pull/358))
+
+
+
 ## [0.9.0] - 2026-06-24
 
 ### Fixed
