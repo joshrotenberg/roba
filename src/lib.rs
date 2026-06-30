@@ -631,7 +631,7 @@ fn expand_continue_prefix(args: &mut AskArgs) -> Result<()> {
 /// the wrapper returned `Ok` with an empty or `is_error: true`
 /// [`QueryResult`](claude_wrapper::types::QueryResult), OR a streaming /
 /// `--trace` run completed with no result event at all. Distinct from the
-/// `Err`-path codes in [`classify_exit_code`] (1-5) so an orchestrator can
+/// `Err`-path codes in [`classify_exit_code`] (1-5 and 7) so an orchestrator can
 /// branch on "the call did not fail, but produced nothing usable" without
 /// parsing output.
 ///
@@ -723,6 +723,14 @@ pub fn classify_exit_code(err: &anyhow::Error) -> i32 {
             // apart from a generic failure without parsing the trace. (#309;
             // claude-wrapper 0.12.0 surfaces the typed variant.)
             claude_wrapper::Error::MaxTurnsExceeded { .. } => 5,
+            // A --max-budget-usd cap-hit is the same shape as max-turns: a
+            // guardrail tripped mid-run, not a defect. The tree is usually
+            // intact (detection is post-hoc, so the run may have completed the
+            // work before tripping). A distinct, recoverable code lets an
+            // orchestrator resume the session and finish the lifecycle rather
+            // than treating the spend ceiling as a hard failure. (#388;
+            // claude-wrapper 0.12.3 surfaces the typed variant.)
+            claude_wrapper::Error::MaxBudgetExceeded { .. } => 7,
             _ => 1,
         }
     } else {
@@ -851,6 +859,16 @@ mod tests {
             max_turns: Some(40),
         };
         assert_eq!(classify_exit_code(&anyhow::Error::new(err)), 5);
+    }
+
+    #[test]
+    fn classify_max_budget_returns_7() {
+        let err = claude_wrapper::Error::MaxBudgetExceeded {
+            command: "claude --print".to_string(),
+            exit_code: 1,
+            max_usd: Some(0.01),
+        };
+        assert_eq!(classify_exit_code(&anyhow::Error::new(err)), 7);
     }
 
     #[test]

@@ -1235,6 +1235,28 @@ fn live_exit_max_turns_returns_5() {
 
 #[test]
 #[ignore]
+fn live_exit_max_budget_returns_7() {
+    // A near-zero --max-budget-usd cap (below even one turn's cost -- system
+    // prompt cache creation alone exceeds a cent) trips claude's spend ceiling
+    // after the first turn. claude-wrapper 0.12.3 detects that as
+    // MaxBudgetExceeded (the error_max_budget_usd result subtype), which roba
+    // maps to the recoverable exit code 7 -- distinct from a generic failure so
+    // an orchestrator can finish the lifecycle, the same as 5 max-turns.
+    // Detection is post-hoc, so the run overspends the cap before tripping; we
+    // assert the mechanic roba owns (cap -> exit 7), never a dollar figure. (#388)
+    let dir = fresh_dir();
+    roba_in(dir.path())
+        .args([
+            "--max-budget-usd",
+            "0.01",
+            "Write a two-line poem about the sea.",
+        ])
+        .assert()
+        .code(7);
+}
+
+#[test]
+#[ignore]
 fn live_exit_timeout_returns_4() {
     // A 1-second wall-clock deadline cannot survive process spawn + auth +
     // even one inference call, so the run is killed and roba exits the

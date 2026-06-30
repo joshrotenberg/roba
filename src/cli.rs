@@ -46,11 +46,12 @@ Examples -- for agents & scripts (deterministic, pipe-clean):
   roba --no-retry \"...\"; echo \"exit=$?\"                typed exit codes
   roba --session ci-bot \"follow up\"                    resume a named session
   roba --full-auto -C repo -f task.md                  fire an unattended worker
-  Exit codes: 0 ok (refusals included), 1 failure (incl. --max-budget-usd
-  cap hits), 2 auth, 3 budget, 4 timeout, 5 max-turns (recoverable --
-  finish the lifecycle), 6 no usable output (empty/is_error result, or a
-  streaming run with no result event). Under --json, codes 1-5 emit a
-  structured error envelope on stderr; code 6 never does -- the signal is
+  Exit codes: 0 ok (refusals included), 1 failure, 2 auth, 3 budget
+  (wrapper tracker), 4 timeout, 5 max-turns (recoverable -- finish the
+  lifecycle), 6 no usable output (empty/is_error result, or a streaming run
+  with no result event), 7 max-budget cap (recoverable -- finish the
+  lifecycle). Under --json, codes 1-5 and 7 emit a structured error
+  envelope on stderr; code 6 never does -- the signal is
   the exit code (the success envelope is on stdout for empty/is_error;
   stdout is empty for the no-result-event case). Branch on $?.
   Unattended / CI recipe (--json + --bare + the cap trio + --trace, with
@@ -1009,10 +1010,12 @@ pub struct AskArgs {
     /// Cap total spend in USD for this run (unattended guardrail).
     ///
     /// Passes claude's own `--max-budget-usd USD` through. When the cap
-    /// is hit the run errors. This is claude's CLI-side ceiling; it is a
-    /// different mechanism from the wrapper's own budget tracker, so a
-    /// cap hit surfaces as the generic failure exit code (1), not the
-    /// budget exit code.
+    /// is hit the run errors. This is claude's CLI-side ceiling, a
+    /// different mechanism from the wrapper's own budget tracker (exit 3).
+    /// claude-wrapper detects the cap result and surfaces it as the
+    /// recoverable exit code 7 (distinct from the generic failure 1), so an
+    /// unattended caller can resume the session and finish the lifecycle,
+    /// the same as 5 max-turns.
     #[arg(long, value_name = "USD", help_heading = "Limits")]
     pub max_budget_usd: Option<f64>,
 

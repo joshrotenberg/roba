@@ -216,7 +216,7 @@ Reading the envelope:
 | Metrics | nest under `.result`: `.result.duration_ms`, `.result.num_turns`, `.result.total_cost_usd` (serde rename of `cost_usd`); the top-level paths return `null` |
 | Top level | only `version`, `refusal`, and `result` |
 | Refusal | still exits `0` (the call succeeded) -- detect via the `refusal` field, not the exit code |
-| Exit codes | `0` ok, `1` generic (incl. `--max-budget-usd` cap hits), `2` auth, `3` budget, `4` timeout, `5` max-turns, `6` no usable output (empty answer or `is_error`); the error `kind` maps the same way |
+| Exit codes | `0` ok, `1` generic, `2` auth, `3` budget (wrapper tracker), `4` timeout, `5` max-turns, `6` no usable output (empty answer or `is_error`), `7` max-budget cap; `5` and `7` are recoverable cap hits. The error `kind` maps the same way |
 | Validate content, not just `$?` | exit `0` means the call returned, not that the answer is usable -- but exit `6` now catches the empty / `is_error` case so a non-answer never looks like success |
 | `see_also` | omitted when empty -- don't assume the key exists |
 
@@ -229,7 +229,7 @@ Worker flags:
 | Flag | Does |
 |---|---|
 | `--json-schema PATH` | schema-validated model output; roba reads the file and inlines it (claude's flag wants inline JSON). With `--json`, the answer is surfaced clean: `.result.structured_output` holds the parsed object and `.result.result` is unfenced -- no `\| jq '.result.result' \| sed ... \| jq` fence-stripping needed |
-| `--max-turns N`, `--max-budget-usd USD` | rails for unattended loops; hitting a cap errors the run (exit `1`) |
+| `--max-turns N`, `--max-budget-usd USD` | rails for unattended loops; hitting a cap errors the run with a recoverable code (`5` max-turns, `7` max-budget) so the caller can finish the lifecycle |
 | `--timeout SECS` | wall-clock deadline; on expiry roba kills the child and exits `4`. The rail for a `claude -p` that HANGS (where the turn/budget caps, which bound work not time, never trip). `0` disables; composes with the caps above |
 | `--no-retry` | surface transient failures immediately; the caller owns retry |
 | `--trace PATH` | the spawned session's events as JSONL -- watch a run in flight |
@@ -287,12 +287,13 @@ applied as one recipe.
 | Code | Meaning | Unattended response |
 |---|---|---|
 | `0` | ok (refusals included -- check the `refusal` field) | use `.result.result` |
-| `1` | generic failure (incl. `--max-budget-usd` cap hit) | fail the job |
+| `1` | generic failure | fail the job |
 | `2` | auth | fail loudly; do not retry |
 | `3` | budget (wrapper `BudgetTracker`) | fail the job |
 | `4` | timeout (`--timeout` expired) | the run hung; retry or escalate |
 | `5` | max-turns (recoverable -- work may be committed) | inspect, finish the lifecycle |
 | `6` | no usable output (empty answer or `is_error`) | treat as failure, not success |
+| `7` | max-budget cap (recoverable -- work may be committed) | inspect, finish the lifecycle |
 
 A minimal guard:
 
