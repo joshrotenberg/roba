@@ -77,3 +77,23 @@ jobs:
 
       - name: Build docs
         run: cargo doc --no-deps --all-features
+
+  # Release-time gate (#405): re-verify the bundled rates.toml freshness ONLY
+  # on the release-plz PR, so it never adds standing red to `main` as the
+  # table ages between releases (the noise #208 was closed to avoid). A stale
+  # table fails the release PR, forcing a manual re-verify before release.
+  rates-freshness:
+    name: Rates freshness (release PR)
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-plz-')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          shared-key: "rates-freshness"
+
+      - name: Re-verify bundled rates.toml freshness
+        run: cargo test --lib rates_fresh_for_release -- --ignored

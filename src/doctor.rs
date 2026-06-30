@@ -358,6 +358,35 @@ mod tests {
         assert!(d < 0, "future date should be negative, got {d}");
     }
 
+    /// Release-time freshness gate for the bundled rate table (#405).
+    /// `#[ignore]` so it never runs in normal CI -- it would go red on
+    /// `main` as the table ages between releases, which is exactly the
+    /// standing noise #208 was closed to avoid. CI runs it ONLY on the
+    /// release-plz PR (see `.github/workflows/ci.yml`), so a stale table
+    /// fails the release PR and forces a manual re-verify before the
+    /// release is cut. Run locally with:
+    ///   cargo test --lib rates_fresh_for_release -- --ignored
+    ///
+    /// The window (45 days) is deliberately stricter than doctor's 90-day
+    /// `RATES_STALE_DAYS` *warn* threshold: doctor advises a user; this
+    /// blocks a release.
+    #[test]
+    #[ignore = "release-time gate; run on the release PR or via cargo test -- --ignored"]
+    fn rates_fresh_for_release() {
+        const RELEASE_RATES_MAX_DAYS: i64 = 45;
+        let rates = Rates::bundled().expect("bundled rates parse");
+        let days = days_since(&rates.meta.as_of)
+            .unwrap_or_else(|| panic!("rates [meta].as_of {:?} does not parse", rates.meta.as_of));
+        assert!(
+            days <= RELEASE_RATES_MAX_DAYS,
+            "bundled src/rates.toml is {days} days old (as_of {}, past the \
+             {RELEASE_RATES_MAX_DAYS}-day release window). Re-verify the per-model \
+             prices against {} and bump [meta].as_of before cutting the release.",
+            rates.meta.as_of,
+            rates.meta.source,
+        );
+    }
+
     #[test]
     fn auth_status_key_set_is_ok() {
         let (status, detail) = auth_status(Some("sk-ant-xxx"));
