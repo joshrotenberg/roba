@@ -347,11 +347,14 @@ fn print_totals(r: &Rollup, dollars: bool) {
             );
         }
     } else {
-        println!();
-        println!("note: dollars suppressed (--no-dollars). tokens only.");
+        // Guidance and notes go to stderr so a captured table holds
+        // only data (principle #2); the rates disclaimer above does
+        // the same.
+        eprintln!();
+        eprintln!("note: dollars suppressed (--no-dollars). tokens only.");
     }
-    println!();
-    println!("      run with --by-project for a breakdown, or --json for machine output.");
+    eprintln!();
+    eprintln!("      run with --by-project for a breakdown, or --json for machine output.");
 }
 
 fn print_by_project(r: &Rollup, limit: usize, dollars: bool) {
@@ -403,7 +406,8 @@ fn print_by_project(r: &Rollup, limit: usize, dollars: bool) {
     }
     let rest = r.projects.len().saturating_sub(cap);
     if rest > 0 {
-        println!("... and {rest} more (use -n 0 to see all)");
+        // Truncation hint is metadata, not data; keep it off stdout.
+        eprintln!("... and {rest} more (use -n 0 to see all)");
     }
 }
 

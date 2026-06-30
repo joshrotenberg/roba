@@ -134,8 +134,10 @@ fn run_active() -> Result<()> {
     };
 
     let profile = pool.get(&name).cloned().expect("checked above");
-    println!("active: {name} ({reason})");
-    println!();
+    // The header is metadata -- route it to stderr (matching
+    // `config show`) so stdout carries only the re-parseable
+    // `[profile.NAME]` TOML block (principle #2).
+    eprintln!("active: {name} ({reason})");
     let rendered = render_named_profile(&name, &profile)?;
     print!("{rendered}");
     Ok(())

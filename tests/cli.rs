@@ -1259,14 +1259,21 @@ fn cli_profile_active_default_auto_applies() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    // The active-profile header is metadata and lands on stderr; stdout
+    // carries only the re-parseable [profile.NAME] block (principle #2).
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stdout.contains("active: default"),
-        "expected active default, got:\n{stdout}"
+        stderr.contains("active: default"),
+        "expected active default on stderr, got:\n{stderr}"
     );
     assert!(
-        stdout.contains("auto-applied"),
-        "expected auto-applied note, got:\n{stdout}"
+        stderr.contains("auto-applied"),
+        "expected auto-applied note on stderr, got:\n{stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("[profile.default]"),
+        "expected profile block on stdout, got:\n{stdout}"
     );
 }
 
@@ -1289,14 +1296,20 @@ fn cli_profile_active_env_override() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Header + reason are metadata on stderr; stdout is byte-clean TOML.
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stdout.contains("active: foo"),
-        "expected active foo, got:\n{stdout}"
+        stderr.contains("active: foo"),
+        "expected active foo on stderr, got:\n{stderr}"
     );
     assert!(
-        stdout.contains("from ROBA_PROFILE env"),
-        "expected env-source note, got:\n{stdout}"
+        stderr.contains("from ROBA_PROFILE env"),
+        "expected env-source note on stderr, got:\n{stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("[profile.foo]"),
+        "expected profile block on stdout, got:\n{stdout}"
     );
 }
 
@@ -2040,6 +2053,52 @@ fn cost_by_project_shows_cost_column() {
         .assert()
         .success()
         .stdout(predicate::str::contains("COST").and(predicate::str::contains("$3.00")));
+}
+
+#[test]
+fn cost_suggestion_line_goes_to_stderr_not_stdout() {
+    // The "--by-project / --json" guidance is metadata; stdout holds
+    // only data so `roba cost | ...` stays clean (principle #2).
+    let home = home_with_session("claude-sonnet-4-6", 1_000_000, 0);
+    let out = roba()
+        .arg("cost")
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stdout.contains("run with --by-project"),
+        "suggestion must not be on stdout, got:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("run with --by-project"),
+        "suggestion must be on stderr, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn cost_no_dollars_note_goes_to_stderr_not_stdout() {
+    let home = home_with_session("claude-sonnet-4-6", 1_000_000, 0);
+    let out = roba()
+        .args(["cost", "--no-dollars"])
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stdout.contains("dollars suppressed"),
+        "note must not be on stdout, got:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("dollars suppressed"),
+        "note must be on stderr, got:\n{stderr}"
+    );
 }
 
 #[test]
