@@ -18,6 +18,7 @@ pub mod cost;
 pub mod detach;
 pub mod doctor;
 pub mod draft;
+pub mod engine;
 pub mod env;
 pub mod error;
 pub mod history;
