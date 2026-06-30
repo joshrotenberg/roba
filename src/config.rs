@@ -28,6 +28,7 @@ use toml::Value;
 use crate::aliases::{self, Alias};
 use crate::cli::{ConfigExplainArgs, ConfigInitArgs, ConfigShowArgs};
 use crate::profile::{self, ConfigFile, Pool, Profile};
+use crate::style::Painter;
 
 /// Run `roba config init [DESCRIPTION] [--write [PATH]] [--model NAME]`.
 pub async fn run_init(args: ConfigInitArgs) -> Result<()> {
@@ -766,60 +767,13 @@ pub fn run_explain(args: ConfigExplainArgs) -> Result<()> {
     // loses that per-file attribution.
     let layers = profile::pool::load_layers()?;
     let painter = Painter {
-        color: explain_color(args.plain),
+        color: crate::style::color_enabled(args.plain),
     };
     print!(
         "{}",
         render_explain(&pool, &active, &layers, &knob_descriptions(), &painter)?
     );
     Ok(())
-}
-
-/// Whether `config explain` should colorize: off under `--plain`, `NO_COLOR`,
-/// or a non-TTY stdout. Mirrors the `color` predicate in [`crate::render`].
-fn explain_color(plain: bool) -> bool {
-    use std::io::IsTerminal;
-    !plain && std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
-}
-
-/// Tiny ANSI palette gate. When `color` is false every method returns the
-/// text untouched, so the same `render_explain` produces both the colored
-/// TTY view and the byte-plain `--plain` / piped view (and is testable
-/// without a real terminal).
-struct Painter {
-    color: bool,
-}
-
-impl Painter {
-    /// Section header: green-bold, matching clap's own `--help` headers.
-    fn header(&self, s: &str) -> String {
-        self.wrap(s, "\x1b[1;32m")
-    }
-    /// A config knob / alias name: cyan (clap's literal style).
-    fn key(&self, s: &str) -> String {
-        self.wrap(s, "\x1b[36m")
-    }
-    /// Secondary detail (descriptions, sources): dim.
-    fn dim(&self, s: &str) -> String {
-        self.wrap(s, "\x1b[2m")
-    }
-    /// An unsafe-setting warning marker: bold yellow.
-    fn warn(&self, s: &str) -> String {
-        self.wrap(s, "\x1b[1;33m")
-    }
-    /// A source-number cross-reference marker (`[N]`): blue (a reference/link
-    /// color, not error-red), so it stands out from the dim secondary text it
-    /// sits among and is easy to match against the numbered Sources list.
-    fn num(&self, s: &str) -> String {
-        self.wrap(s, "\x1b[94m")
-    }
-    fn wrap(&self, s: &str, code: &str) -> String {
-        if self.color {
-            format!("{code}{s}\x1b[0m")
-        } else {
-            s.to_string()
-        }
-    }
 }
 
 /// Map each top-level config knob (by its TOML key) to the terse one-line

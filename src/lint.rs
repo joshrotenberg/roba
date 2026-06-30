@@ -36,7 +36,6 @@
 //! machine, and `$(...)` in an alias template evaluates at expansion
 //! time, not here. The linter is a tripwire, not a proof.
 
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -46,6 +45,7 @@ use crate::agent_check::{self, Posture};
 use crate::aliases::{self, Alias};
 use crate::cli::ConfigLintArgs;
 use crate::profile::{self, Profile, WorktreeSetting};
+use crate::style;
 
 /// Finding severity. `Error` fails the lint (exit 1); `Warning` is an
 /// advisory that is surfaced but still passes (exit 0), mirroring how
@@ -67,12 +67,12 @@ impl Severity {
     }
 
     /// The ANSI color for this severity's keyword: bold red for errors,
-    /// bold yellow for warnings -- the same red/yellow `doctor` and
-    /// `config explain` use (red = broken, yellow = advisory).
+    /// bold yellow for warnings -- from the shared report-verb palette `doctor`
+    /// and `config explain` also draw from (red = broken, yellow = advisory).
     fn color(self) -> &'static str {
         match self {
-            Severity::Error => "\x1b[1;31m",
-            Severity::Warning => "\x1b[1;33m",
+            Severity::Error => style::ERROR,
+            Severity::Warning => style::WARN,
         }
     }
 }
@@ -143,28 +143,10 @@ pub fn run(args: ConfigLintArgs) -> Result<i32> {
         return Ok(exit);
     }
 
-    let color =
-        !args.plain && std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let color = style::color_enabled(args.plain);
     print!("{}", render_human(&findings, &files, color));
     Ok(exit)
 }
-
-/// Wrap `s` in an ANSI `code` (with reset) when `on`, else return it
-/// untouched. The one place lint decides color, so a non-TTY, `NO_COLOR`,
-/// or `--plain` run stays byte-plain (matching `doctor` and `config
-/// explain`, which share the same `--plain` off-switch for report verbs).
-fn paint(s: &str, code: &str, on: bool) -> String {
-    if on {
-        format!("{code}{s}\x1b[0m")
-    } else {
-        s.to_string()
-    }
-}
-
-/// Cyan, matching the file/key color in `doctor` and `config explain`.
-const FILE_COLOR: &str = "\x1b[36m";
-/// Dim, matching the secondary-detail color in `config explain`.
-const HINT_COLOR: &str = "\x1b[2m";
 
 /// The config files in pool scope: the user config (if present) plus
 /// every `roba.toml` in the walk up from `cwd`. Both sources are already
@@ -402,16 +384,16 @@ fn render_human(findings: &[Finding], files: &[PathBuf], color: bool) -> String 
     let mut current: Option<&str> = None;
     for f in findings {
         if current != Some(f.file.as_str()) {
-            out.push_str(&paint(&f.file, FILE_COLOR, color));
+            out.push_str(&style::paint(&f.file, style::KEY, color));
             out.push('\n');
             current = Some(f.file.as_str());
         }
-        let sev = paint(f.severity.keyword(), f.severity.color(), color);
+        let sev = style::paint(f.severity.keyword(), f.severity.color(), color);
         out.push_str(&format!("  {sev}: [{}] {}\n", f.rule, f.message));
         if let Some(hint) = &f.hint {
             out.push_str(&format!(
                 "    {}\n",
-                paint(&format!("hint: {hint}"), HINT_COLOR, color)
+                style::paint(&format!("hint: {hint}"), style::DIM, color)
             ));
         }
     }

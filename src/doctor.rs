@@ -21,13 +21,13 @@
 
 use anyhow::Result;
 use serde::Serialize;
-use std::io::IsTerminal;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli::DoctorArgs;
 use crate::profile;
 use crate::rates::Rates;
+use crate::style;
 
 /// Warn when the bundled rate table's `as_of` date is older than this.
 const RATES_STALE_DAYS: i64 = 90;
@@ -51,28 +51,14 @@ impl Status {
         }
     }
     /// The ANSI color for this status's marker: bold green / yellow / red,
-    /// matching the palette `config explain` uses (green = good, yellow =
-    /// advisory, red = broken).
+    /// from the shared report-verb palette (green = good, yellow = advisory,
+    /// red = broken).
     fn color(self) -> &'static str {
         match self {
-            Status::Ok => "\x1b[1;32m",
-            Status::Warn => "\x1b[1;33m",
-            Status::Fail => "\x1b[1;31m",
+            Status::Ok => style::HEADER,
+            Status::Warn => style::WARN,
+            Status::Fail => style::ERROR,
         }
-    }
-}
-
-/// Cyan, matching the check-name / key color in `config explain`.
-const NAME_COLOR: &str = "\x1b[36m";
-
-/// Wrap `s` in an ANSI `code` (with reset) when `on`, else return it
-/// untouched. The one place doctor decides color, so a non-TTY / `NO_COLOR`
-/// run stays byte-plain.
-fn paint(s: &str, code: &str, on: bool) -> String {
-    if on {
-        format!("{code}{s}\x1b[0m")
-    } else {
-        s.to_string()
     }
 }
 
@@ -93,9 +79,9 @@ fn render_human(checks: &[Check], color: bool) -> String {
         let marker = c.status.marker();
         out.push_str(&format!(
             "{}{}  {}{}  {}\n",
-            paint(marker, c.status.color(), color),
+            style::paint(marker, c.status.color(), color),
             " ".repeat(marker_w - marker.len()),
-            paint(c.name, NAME_COLOR, color),
+            style::paint(c.name, style::KEY, color),
             " ".repeat(name_w - c.name.len()),
             c.message,
         ));
@@ -140,9 +126,7 @@ pub fn run(args: DoctorArgs) -> Result<i32> {
             serde_json::to_string_pretty(&crate::VersionedResult::new(&report))?
         );
     } else {
-        let color = !args.plain
-            && std::io::stdout().is_terminal()
-            && std::env::var_os("NO_COLOR").is_none();
+        let color = style::color_enabled(args.plain);
         print!("{}", render_human(&report.checks, color));
     }
     Ok(exit)
