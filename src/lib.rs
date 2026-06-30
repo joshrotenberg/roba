@@ -31,6 +31,7 @@ pub mod session;
 pub mod show;
 pub mod stdin_probe;
 pub mod stream;
+pub mod style;
 pub mod worktree;
 
 use crate::cli::{AskArgs, Cli, SubCommand};
