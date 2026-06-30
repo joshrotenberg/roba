@@ -665,6 +665,18 @@ pub struct LastArgs {
     /// Look across all projects instead of just the current cwd's.
     #[arg(long, conflicts_with = "project")]
     pub all_projects: bool,
+
+    /// Emit JSON instead of rendered items.
+    ///
+    /// Output is the uniform `{ version: 1, result: [items] }` envelope,
+    /// matching `history --json`. Each item is content-block shaped:
+    /// `{ "type": "text", "text": ... }` for an answer,
+    /// `{ "type": "tool_use", "name": ..., "input": ... }` for a tool
+    /// call. Byte-clean on stdout (no ANSI). An empty result (no
+    /// matching session or no items of the requested `--type`) is a
+    /// `{ version: 1, result: [] }` envelope and exit 0.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]

@@ -2352,6 +2352,130 @@ fn history_json_carries_version_and_result() {
 }
 
 // ---------------------------------------------------------------------------
+// roba last --json + empty-result exit-code alignment with history -- #396
+// ---------------------------------------------------------------------------
+
+/// Seed one session whose single assistant turn carries a tool_use block
+/// followed by a text block, under a fixed project slug. Returns the home
+/// tempdir; scope the `last` call with `--project -last-proj`.
+fn home_with_last_session() -> tempfile::TempDir {
+    let home = tempfile::tempdir().expect("home");
+    let proj = home.path().join(".claude/projects/-last-proj");
+    std::fs::create_dir_all(&proj).expect("mkdir projects");
+    let user =
+        r#"{"type":"user","timestamp":"2026-06-01T10:00:00.000Z","message":{"content":"hi"}}"#;
+    let assistant = r#"{"type":"assistant","timestamp":"2026-06-01T10:00:01.000Z","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"x"}},{"type":"text","text":"the answer"}]}}"#;
+    std::fs::write(
+        proj.join("last-sess-1.jsonl"),
+        format!("{user}\n{assistant}\n"),
+    )
+    .expect("write session");
+    home
+}
+
+#[test]
+fn last_json_carries_version_and_result() {
+    // The uniform { version: 1, result: [items] } envelope, byte-clean
+    // on stdout (parses as JSON, no ANSI). --type all surfaces both the
+    // tool_use and the text block in content-block shape.
+    let home = home_with_last_session();
+    let out = roba()
+        .args([
+            "last",
+            "--project",
+            "-last-proj",
+            "--type",
+            "all",
+            "-n",
+            "2",
+            "--json",
+        ])
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("stdout is JSON");
+    assert_eq!(v["version"], 1, "top-level version must be 1");
+    let arr = v["result"].as_array().expect("result is array of items");
+    assert_eq!(arr.len(), 2, "both blocks of the turn are items under all");
+    assert_eq!(arr[0]["type"], "tool_use");
+    assert_eq!(arr[0]["name"], "Read");
+    assert_eq!(arr[0]["input"]["file_path"], "x");
+    assert_eq!(arr[1]["type"], "text");
+    assert_eq!(arr[1]["text"], "the answer");
+}
+
+#[test]
+fn last_json_default_type_is_text_only() {
+    // Without --type, `last` shows text answers; the JSON result must
+    // mirror that (the tool_use block is filtered out).
+    let home = home_with_last_session();
+    let out = roba()
+        .args(["last", "--project", "-last-proj", "--json"])
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("stdout is JSON");
+    let arr = v["result"].as_array().expect("result is array of items");
+    assert_eq!(arr.len(), 1, "only the text block under the default type");
+    assert_eq!(arr[0]["type"], "text");
+    assert_eq!(arr[0]["text"], "the answer");
+}
+
+#[test]
+fn last_empty_project_exits_zero_matching_history() {
+    // `last --project nonexistent` must align with `history`: exit 0,
+    // advisory on stderr, nothing on stdout, and the SAME 'no sessions
+    // found' wording (no 'error:' prefix).
+    let home = home_with_last_session();
+    roba()
+        .args(["last", "--project", "-no-such-project"])
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("no sessions found"))
+        .stderr(predicate::str::contains("error:").not());
+
+    // The sibling `history` command on the same empty filter: identical
+    // exit code and wording.
+    roba()
+        .args(["history", "--project", "-no-such-project"])
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("no sessions found"));
+}
+
+#[test]
+fn last_json_empty_project_is_clean_empty_envelope() {
+    // Under --json the empty case is the { version: 1, result: [] }
+    // envelope on stdout (not an advisory), exit 0 -- mirroring
+    // `history --json` on an empty filter.
+    let home = home_with_last_session();
+    let out = roba()
+        .args(["last", "--project", "-no-such-project", "--json"])
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("stdout is JSON");
+    assert_eq!(v["version"], 1, "top-level version must be 1");
+    assert_eq!(
+        v["result"].as_array().expect("result is array").len(),
+        0,
+        "no session matches an unknown project"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // --no-agent-check / agent frontmatter permission check (#123)
 // ---------------------------------------------------------------------------
 

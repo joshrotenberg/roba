@@ -224,12 +224,28 @@ fn slug_is_worktree(slug: &str) -> bool {
     slug.contains("claude-worktrees")
 }
 
+/// Print the empty `--json` envelope (`{ version: 1, result: [] }`) for
+/// the no-data paths of `roba last`. Keeps the byte-clean machine form
+/// consistent with `history --json`, which also emits the envelope
+/// rather than an advisory when nothing matches.
+fn print_empty_last_json() -> Result<()> {
+    let empty: Vec<serde_json::Value> = Vec::new();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&crate::VersionedResult::new(&empty))?
+    );
+    Ok(())
+}
+
 /// Implementation of `roba last`.
 pub fn run_last(args: LastArgs) -> Result<()> {
     use claude_wrapper::history::{HistoryEntry, HistoryRoot, ListOptions, ListSort};
 
     let n = args.number.unwrap_or(1);
     if n == 0 {
+        if args.json {
+            return print_empty_last_json();
+        }
         return Ok(());
     }
 
@@ -244,13 +260,20 @@ pub fn run_last(args: LastArgs) -> Result<()> {
     let sessions = root
         .list_sessions_with(scope.as_deref(), &opts)
         .context("reading session history")?;
-    let summary = sessions.first().ok_or_else(|| {
-        if inferred_from_cwd {
-            anyhow::anyhow!("no sessions in this project (use --all-projects to widen)")
-        } else {
-            anyhow::anyhow!("no sessions found")
+    let Some(summary) = sessions.first() else {
+        // No session in scope. Mirror `roba history`: a clean exit 0 --
+        // an empty `{version:1, result:[]}` envelope under `--json`, or
+        // the same stderr advisory wording (never a non-zero bail).
+        if args.json {
+            return print_empty_last_json();
         }
-    })?;
+        if inferred_from_cwd {
+            eprintln!("no sessions in this project (use --all-projects to widen)");
+        } else {
+            eprintln!("no sessions found");
+        }
+        return Ok(());
+    };
     let log = root
         .read_session(&summary.session_id)
         .context("reading most recent session")?;
@@ -300,15 +323,31 @@ pub fn run_last(args: LastArgs) -> Result<()> {
         .collect();
 
     if filtered.is_empty() {
-        bail!(
+        // The session exists but carries nothing of the requested
+        // `--type`. Like the no-session path, this is a clean exit 0:
+        // an empty envelope under `--json`, else a stderr advisory.
+        if args.json {
+            return print_empty_last_json();
+        }
+        eprintln!(
             "session has no {} ({} total items)",
             args.kind.label(),
             items.len()
         );
+        return Ok(());
     }
 
     let start = filtered.len().saturating_sub(n);
     let recent = &filtered[start..];
+
+    if args.json {
+        let payload: Vec<serde_json::Value> = recent.iter().map(|it| it.to_json()).collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&crate::VersionedResult::new(&payload))?
+        );
+        return Ok(());
+    }
 
     let style = crate::render::Style::detect_for_subcommand();
     let mut prev_text = false;
@@ -366,6 +405,21 @@ enum Item {
         name: String,
         input: serde_json::Value,
     },
+}
+
+impl Item {
+    /// Content-block-shaped JSON for the `--json` envelope: a text
+    /// answer renders as `{ "type": "text", "text": ... }`, a tool call
+    /// as `{ "type": "tool_use", "name": ..., "input": ... }`. Mirrors
+    /// the on-disk assistant block shape `roba show` reconstructs from.
+    fn to_json(&self) -> serde_json::Value {
+        match self {
+            Item::Text(text) => serde_json::json!({ "type": "text", "text": text }),
+            Item::Tool { name, input } => {
+                serde_json::json!({ "type": "tool_use", "name": name, "input": input })
+            }
+        }
+    }
 }
 
 /// Extract concatenated text content from an assistant message's

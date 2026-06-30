@@ -202,7 +202,7 @@ success: { "version": 1, "result": { ... }, "refusal": bool }    (stdout)
 failure: { "version": 1, "error": { kind, message, exit_code, chain } }    (stderr)
 ```
 
-The read-only management commands (`cost`, `history`, `doctor`,
+The read-only management commands (`cost`, `history`, `last`, `doctor`,
 `worktree list`) emit the same `{ "version": 1, "result": ... }` shape
 (minus the ask-only `refusal`); `roba show` reconstructs the full ask
 envelope, `refusal` included. One parser handles every `--json` output.
