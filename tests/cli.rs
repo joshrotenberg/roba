@@ -2950,6 +2950,62 @@ fn doctor_json_carries_version_result_and_consistent_exit() {
     assert!(code == 0 || code == 1, "doctor exits 0 or 1, got {code}");
 }
 
+#[test]
+fn doctor_plain_emits_no_ansi() {
+    // `--plain` is accepted and the human output stays byte-plain (no ESC).
+    // Under assert_cmd stdout is already a pipe, so color is off regardless;
+    // this pins that the flag parses and the off path leaks no ANSI. The
+    // colored-vs-plain rendering itself is covered by doctor's unit tests.
+    let out = roba().args(["doctor", "--plain"]).output().expect("run");
+    assert!(
+        !out.stdout.contains(&0x1b),
+        "doctor --plain leaked an ESC byte"
+    );
+    let code = out.status.code().expect("exited normally");
+    assert!(code == 0 || code == 1, "doctor exits 0 or 1, got {code}");
+}
+
+#[test]
+fn doctor_plain_does_not_affect_json() {
+    // `--plain` has no effect under `--json` (that output is already
+    // byte-plain); the envelope shape is unchanged.
+    let out = roba()
+        .args(["doctor", "--plain", "--json"])
+        .output()
+        .expect("run");
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout is JSON on --json");
+    assert_eq!(v["version"], 1, "top-level version must be 1");
+    assert!(v["result"]["checks"].is_array(), "checks array present");
+}
+
+#[test]
+fn config_lint_plain_emits_no_ansi() {
+    // `--plain` is accepted by `config lint` and the findings output stays
+    // byte-plain. Mirrors `doctor --plain` -- the shared report-verb
+    // off-switch.
+    let project = make_dir_with_files(&[
+        (".git/HEAD", ""),
+        ("roba.toml", "[alias.cost]\ntemplate = \"x ${@}\"\n"),
+    ]);
+    let user_home = tempfile::tempdir().expect("user home");
+    let out = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "config",
+            "lint",
+            "--plain",
+        ])
+        .env("XDG_CONFIG_HOME", user_home.path())
+        .output()
+        .expect("run");
+    assert!(
+        !out.stdout.contains(&0x1b),
+        "config lint --plain leaked an ESC byte"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // -c <prefix> -- git-style short session-id resolution (#304)
 // ---------------------------------------------------------------------------

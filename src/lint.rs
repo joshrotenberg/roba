@@ -143,15 +143,16 @@ pub fn run(args: ConfigLintArgs) -> Result<i32> {
         return Ok(exit);
     }
 
-    let color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let color =
+        !args.plain && std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
     print!("{}", render_human(&findings, &files, color));
     Ok(exit)
 }
 
 /// Wrap `s` in an ANSI `code` (with reset) when `on`, else return it
-/// untouched. The one place lint decides color, so a non-TTY / `NO_COLOR`
-/// run stays byte-plain (mirrors `doctor`'s gate-only approach for report
-/// verbs -- no separate `--plain` flag).
+/// untouched. The one place lint decides color, so a non-TTY, `NO_COLOR`,
+/// or `--plain` run stays byte-plain (matching `doctor` and `config
+/// explain`, which share the same `--plain` off-switch for report verbs).
 fn paint(s: &str, code: &str, on: bool) -> String {
     if on {
         format!("{code}{s}\x1b[0m")

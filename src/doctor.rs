@@ -15,7 +15,9 @@
 //! envelope (via the crate's `VersionedResult` wrapper); the human form
 //! prints one `[ok]`/`[warn]`/`[fail]` line per check, the marker colored by
 //! status and the names aligned into a column. Color is gated on a TTY
-//! stdout with `NO_COLOR` unset, so a piped or `NO_COLOR` run is byte-plain.
+//! stdout with `NO_COLOR` unset and `--plain` not passed (the same gating
+//! `config explain` uses), so a piped, `NO_COLOR`, or `--plain` run is
+//! byte-plain.
 
 use anyhow::Result;
 use serde::Serialize;
@@ -138,7 +140,9 @@ pub fn run(args: DoctorArgs) -> Result<i32> {
             serde_json::to_string_pretty(&crate::VersionedResult::new(&report))?
         );
     } else {
-        let color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+        let color = !args.plain
+            && std::io::stdout().is_terminal()
+            && std::env::var_os("NO_COLOR").is_none();
         print!("{}", render_human(&report.checks, color));
     }
     Ok(exit)
