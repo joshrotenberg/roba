@@ -825,7 +825,7 @@ pub struct HistoryArgs {
     pub worktree: Option<String>,
 }
 
-#[derive(ClapArgs, Debug)]
+#[derive(ClapArgs, Debug, Default)]
 pub struct AskArgs {
     // ----- Prompt sources ---------------------------------------------------
     /// Prompt text (positional). Pass `-` for explicit stdin.
