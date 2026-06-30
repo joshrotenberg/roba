@@ -36,6 +36,7 @@
 //! machine, and `$(...)` in an alias template evaluates at expansion
 //! time, not here. The linter is a tripwire, not a proof.
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -54,6 +55,26 @@ use crate::profile::{self, Profile, WorktreeSetting};
 enum Severity {
     Error,
     Warning,
+}
+
+impl Severity {
+    /// The severity keyword printed in the human report.
+    fn keyword(self) -> &'static str {
+        match self {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+        }
+    }
+
+    /// The ANSI color for this severity's keyword: bold red for errors,
+    /// bold yellow for warnings -- the same red/yellow `doctor` and
+    /// `config explain` use (red = broken, yellow = advisory).
+    fn color(self) -> &'static str {
+        match self {
+            Severity::Error => "\x1b[1;31m",
+            Severity::Warning => "\x1b[1;33m",
+        }
+    }
 }
 
 /// One lint finding: which file, which rule, its severity, a
@@ -122,9 +143,27 @@ pub fn run(args: ConfigLintArgs) -> Result<i32> {
         return Ok(exit);
     }
 
-    render_human(&findings, &files);
+    let color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    print!("{}", render_human(&findings, &files, color));
     Ok(exit)
 }
+
+/// Wrap `s` in an ANSI `code` (with reset) when `on`, else return it
+/// untouched. The one place lint decides color, so a non-TTY / `NO_COLOR`
+/// run stays byte-plain (mirrors `doctor`'s gate-only approach for report
+/// verbs -- no separate `--plain` flag).
+fn paint(s: &str, code: &str, on: bool) -> String {
+    if on {
+        format!("{code}{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
+}
+
+/// Cyan, matching the file/key color in `doctor` and `config explain`.
+const FILE_COLOR: &str = "\x1b[36m";
+/// Dim, matching the secondary-detail color in `config explain`.
+const HINT_COLOR: &str = "\x1b[2m";
 
 /// The config files in pool scope: the user config (if present) plus
 /// every `roba.toml` in the walk up from `cwd`. Both sources are already
@@ -338,32 +377,41 @@ fn alias_posture(alias: &Alias) -> Option<Posture> {
         .map(|cli| Posture::from_args(&cli.ask))
 }
 
-/// Print the human findings list: a "no issues" line when clean, else
-/// findings grouped by file with their hints. Findings go to stdout
-/// (this verb's output IS the report), mirroring how `doctor` renders.
-fn render_human(findings: &[Finding], files: &[PathBuf]) {
+/// Render the human findings list: a "no issues" line when clean, else
+/// findings grouped by file with their hints. This verb's output IS the
+/// report, so it goes to stdout, mirroring how `doctor` renders. Pure over
+/// `(findings, files, color)` so it is tested without a TTY: the file
+/// header is cyan, the severity keyword bold red/yellow, and the hint dim
+/// when `color`, and byte-plain otherwise. The `[rule]` token, message, and
+/// summary stay plain in both modes.
+fn render_human(findings: &[Finding], files: &[PathBuf], color: bool) -> String {
+    let mut out = String::new();
     if findings.is_empty() {
         if files.is_empty() {
-            println!("no roba.toml found in the config pool");
+            out.push_str("no roba.toml found in the config pool\n");
         } else {
-            println!("no issues found ({} file(s) checked)", files.len());
+            out.push_str(&format!(
+                "no issues found ({} file(s) checked)\n",
+                files.len()
+            ));
         }
-        return;
+        return out;
     }
 
     let mut current: Option<&str> = None;
     for f in findings {
         if current != Some(f.file.as_str()) {
-            println!("{}", f.file);
+            out.push_str(&paint(&f.file, FILE_COLOR, color));
+            out.push('\n');
             current = Some(f.file.as_str());
         }
-        let sev = match f.severity {
-            Severity::Error => "error",
-            Severity::Warning => "warning",
-        };
-        println!("  {sev}: [{}] {}", f.rule, f.message);
+        let sev = paint(f.severity.keyword(), f.severity.color(), color);
+        out.push_str(&format!("  {sev}: [{}] {}\n", f.rule, f.message));
         if let Some(hint) = &f.hint {
-            println!("    hint: {hint}");
+            out.push_str(&format!(
+                "    {}\n",
+                paint(&format!("hint: {hint}"), HINT_COLOR, color)
+            ));
         }
     }
 
@@ -382,10 +430,13 @@ fn render_human(findings: &[Finding], files: &[PathBuf]) {
     if errors == 0 {
         // Warnings-only: lint passes (exit 0); say so explicitly.
         let noun = if n == 1 { "advisory" } else { "advisories" };
-        println!("\n{n} {noun} found ({breakdown}); no errors -- lint passes");
+        out.push_str(&format!(
+            "\n{n} {noun} found ({breakdown}); no errors -- lint passes\n"
+        ));
     } else {
-        println!("\n{n} issue{plural} found ({breakdown})");
+        out.push_str(&format!("\n{n} issue{plural} found ({breakdown})\n"));
     }
+    out
 }
 
 #[cfg(test)]
@@ -638,6 +689,69 @@ mod tests {
             },
         ];
         assert_eq!(exit_code(&with_error), 1);
+    }
+
+    fn finding(file: &str, rule: &'static str, severity: Severity, hint: Option<&str>) -> Finding {
+        Finding {
+            file: file.to_string(),
+            rule,
+            severity,
+            message: "msg".to_string(),
+            hint: hint.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn render_human_plain_leaks_no_ansi() {
+        let findings = vec![
+            finding("roba.toml", "parse", Severity::Error, Some("fix it")),
+            finding(
+                "roba.toml",
+                "top-level-worktree",
+                Severity::Warning,
+                Some("move it"),
+            ),
+        ];
+        let text = render_human(&findings, &[PathBuf::from("roba.toml")], false);
+        assert!(!text.contains('\x1b'), "plain mode leaked ANSI:\n{text}");
+        // The unpainted content is intact.
+        assert!(text.contains("roba.toml"), "{text}");
+        assert!(text.contains("  error: [parse] msg"), "{text}");
+        assert!(text.contains("    hint: fix it"), "{text}");
+    }
+
+    #[test]
+    fn render_human_clean_plain_leaks_no_ansi() {
+        let text = render_human(&[], &[PathBuf::from("roba.toml")], false);
+        assert!(!text.contains('\x1b'), "plain mode leaked ANSI:\n{text}");
+        assert!(
+            text.contains("no issues found (1 file(s) checked)"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn render_human_color_wraps_severity_header_and_hint() {
+        let findings = vec![
+            finding("roba.toml", "parse", Severity::Error, Some("fix it")),
+            finding("roba.toml", "top-level-worktree", Severity::Warning, None),
+        ];
+        let text = render_human(&findings, &[PathBuf::from("roba.toml")], true);
+        // File header cyan, error severity bold red, warning severity bold
+        // yellow, hint dim -- the five-code standard palette.
+        assert!(text.contains("\x1b[36mroba.toml\x1b[0m"), "{text}");
+        assert!(text.contains("\x1b[1;31merror\x1b[0m"), "{text}");
+        assert!(text.contains("\x1b[1;33mwarning\x1b[0m"), "{text}");
+        assert!(text.contains("\x1b[2mhint: fix it\x1b[0m"), "{text}");
+        // The `[rule]` token and summary stay plain.
+        assert!(text.contains("[parse]"), "{text}");
+        assert!(!text.contains("\x1b[36m[parse]"), "{text}");
+    }
+
+    #[test]
+    fn severity_colors_are_the_standard_codes() {
+        assert_eq!(Severity::Error.color(), "\x1b[1;31m");
+        assert_eq!(Severity::Warning.color(), "\x1b[1;33m");
     }
 
     #[test]
