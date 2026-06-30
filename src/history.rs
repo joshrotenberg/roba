@@ -326,8 +326,12 @@ pub fn run_last(args: LastArgs) -> Result<()> {
                 prev_text = true;
             }
             Item::Tool { name, input } => {
+                // Tool items are the requested output for this query
+                // (--type tools, or the tool half of --type all), so
+                // they go to stdout (principle #2), not the stderr
+                // stream used for live sub-action indicators.
                 let summary = crate::output::summarize_tool(name, input);
-                crate::render::print_tool_call(&summary, &style);
+                crate::render::print_tool_call_out(&summary, &style);
                 prev_text = false;
             }
         }

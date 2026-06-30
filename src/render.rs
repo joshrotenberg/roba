@@ -207,6 +207,18 @@ pub fn print_tool_call(line: &str, style: &Style) {
     }
 }
 
+/// Print a tool-call summary on stdout. Used by `roba last --type
+/// tools`, where the tool calls ARE the requested data and so must
+/// land on stdout (principle #2); the live `--stream` sub-action
+/// indicator stays on stderr via [`print_tool_call`].
+pub fn print_tool_call_out(line: &str, style: &Style) {
+    if style.color {
+        println!("   \x1b[2m▸ {line}\x1b[0m");
+    } else {
+        println!("   > {line}");
+    }
+}
+
 /// Build a minimal spinner that redraws on stderr while a future is
 /// awaited. Returns `None` when the style says no spinner -- the
 /// caller is responsible for handling the `Option`.
