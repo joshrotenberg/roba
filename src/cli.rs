@@ -444,6 +444,15 @@ pub struct DoctorArgs {
     /// same as the human form (1 when any check fails).
     #[arg(long)]
     pub json: bool,
+
+    /// Render without color (the same effect as `NO_COLOR` or a non-TTY
+    /// stdout).
+    ///
+    /// The master color kill-switch for this view, matching `config
+    /// explain`'s `--plain`. Has no effect under `--json` (that output is
+    /// always byte-plain).
+    #[arg(long)]
+    pub plain: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -587,6 +596,15 @@ pub struct ConfigLintArgs {
     /// in both modes.
     #[arg(long)]
     pub json: bool,
+
+    /// Render without color (the same effect as `NO_COLOR` or a non-TTY
+    /// stdout).
+    ///
+    /// The master color kill-switch for this view, matching `config
+    /// explain`'s `--plain`. Has no effect under `--json` (that output is
+    /// always byte-plain).
+    #[arg(long)]
+    pub plain: bool,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -1497,7 +1515,10 @@ mod tests {
         let cli = Cli::try_parse_from(["roba", "doctor"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(SubCommand::Doctor(DoctorArgs { json: false }))
+            Some(SubCommand::Doctor(DoctorArgs {
+                json: false,
+                plain: false
+            }))
         ));
     }
 
@@ -1507,7 +1528,23 @@ mod tests {
         let cli = Cli::try_parse_from(["roba", "doctor", "--json"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(SubCommand::Doctor(DoctorArgs { json: true }))
+            Some(SubCommand::Doctor(DoctorArgs {
+                json: true,
+                plain: false
+            }))
+        ));
+    }
+
+    #[test]
+    fn doctor_plain_flag_parses() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "doctor", "--plain"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(SubCommand::Doctor(DoctorArgs {
+                json: false,
+                plain: true
+            }))
         ));
     }
 
