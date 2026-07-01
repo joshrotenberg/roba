@@ -7,13 +7,15 @@
 //! programmatic caller (or, later, `serve` -- see #142) builds a `Config`
 //! directly.
 //!
-//! v1 is deliberately small and faithful: `Config` exposes the common run
-//! knobs and reuses the proven [`apply_session`] mapper (via
-//! `Config::to_ask_args`), so there is no second flag->command mapper to
-//! drift. Knobs not on `Config` take their safe `AskArgs` defaults (read-only
-//! permissions, a fresh session, no caps). Growing `Config` toward full
-//! `AskArgs` fidelity and routing `run_ask` through it are the follow-up
-//! phases in #407.
+//! `Config` covers the full run-shaping surface that [`apply_session`]
+//! consumes -- model/fallback/effort/agent, the permission posture +
+//! `--permission-mode`, session continuity, worktree, caps, timeout, the
+//! system-prompt overrides + the agent notice, retry/persistence/bare/safe
+//! modes, `--add-dir`, and MCP config. It reuses the proven `apply_session`
+//! mapper (via `Config::to_ask_args`), so there is no second flag->command
+//! mapper to drift; a bare `Config` maps to roba's safe defaults (read-only,
+//! a fresh session, no caps, and the built-in agent notice injected). Routing
+//! `run_ask` through this seam is the remaining follow-up phase in #407.
 //!
 //! Out of scope for v1 (stays in the CLI layer): prompt composition
 //! (attach/git/prepend/vars -- `Config` takes the already-composed prompt),
@@ -24,7 +26,7 @@ use anyhow::Result;
 use claude_wrapper::types::QueryResult;
 use claude_wrapper::{Claude, QueryCommand};
 
-use crate::cli::AskArgs;
+use crate::cli::{AskArgs, EffortLevel, PermMode};
 use crate::session::{apply_session, derive_session_name};
 
 /// What to do about session continuity, mirroring the CLI's `-c` / `--resume`
@@ -65,8 +67,19 @@ pub struct Config {
     pub prompt: String,
     /// Override the model for this run (`None` = claude's default).
     pub model: Option<String>,
+    /// Fallback model when the primary is overloaded (`--fallback-model`).
+    pub fallback_model: Option<String>,
+    /// Reasoning-effort level (`--effort`; `None` = claude's default).
+    pub effort: Option<EffortLevel>,
+    /// Run under a named subagent definition (`--agent`).
+    pub agent: Option<String>,
     /// Permission posture (default read-only).
     pub permissions: Permissions,
+    /// A specific claude `--permission-mode` (plan / acceptEdits / dontAsk /
+    /// auto / bypassPermissions / default), composed on top of the posture.
+    /// `None` leaves claude's default. Ignored under [`Permissions::FullAuto`],
+    /// which bypasses all checks before the mode is read.
+    pub permission_mode: Option<PermMode>,
     /// Extra allowed tool patterns layered on top of the posture.
     pub allow_tools: Vec<String>,
     /// Tool patterns to block (ignored under [`Permissions::FullAuto`]).
@@ -88,6 +101,35 @@ pub struct Config {
     /// Constrain output to a JSON Schema. The value is the inline schema
     /// JSON (not a path -- the CLI's path-reading sugar is its own concern).
     pub json_schema: Option<String>,
+    /// Replace claude's system prompt (`--system-prompt`). `None` keeps it.
+    pub system_prompt: Option<String>,
+    /// Append to the system prompt (`--append-system-prompt`); composed with
+    /// the agent notice below into one appended block.
+    pub append_system_prompt: Option<String>,
+    /// Override the built-in single-turn agent-notice text (`--agent-notice`).
+    /// `Some("")` disables the notice (as does `no_agent_notice`); `None` uses
+    /// the built-in text.
+    pub agent_notice: Option<String>,
+    /// Suppress the built-in single-turn agent notice (`--no-agent-notice`).
+    /// Default `false` -- the notice is injected, faithful to the CLI default.
+    pub no_agent_notice: bool,
+    /// Fail fast on a transient error instead of retrying (`--no-retry`): a
+    /// single attempt, no backoff.
+    pub no_retry: bool,
+    /// Do not persist the session to claude's history
+    /// (`--no-session-persistence`).
+    pub no_session_persistence: bool,
+    /// Bare mode (`--bare`): the minimal claude invocation.
+    pub bare: bool,
+    /// Safe mode (`--safe-mode`): claude's extra guardrails.
+    pub safe_mode: bool,
+    /// Extra tool-access directories (`--add-dir`), forwarded verbatim.
+    pub add_dir: Vec<String>,
+    /// MCP server config files (`--mcp-config`), forwarded verbatim.
+    pub mcp_config: Vec<String>,
+    /// Use only the servers in `mcp_config`, ignoring other MCP sources
+    /// (`--strict-mcp-config`).
+    pub strict_mcp_config: bool,
 }
 
 impl Config {
@@ -118,8 +160,12 @@ impl Config {
         };
         AskArgs {
             model: self.model.clone(),
+            fallback_model: self.fallback_model.clone(),
+            effort: self.effort,
+            agent: self.agent.clone(),
             writable,
             full_auto,
+            permission_mode: self.permission_mode,
             allow_tool: self.allow_tools.clone(),
             deny_tool: self.deny_tools.clone(),
             continue_session,
@@ -129,6 +175,17 @@ impl Config {
             max_turns: self.max_turns,
             max_budget_usd: self.max_budget_usd,
             json_schema: self.json_schema.clone(),
+            system_prompt: self.system_prompt.clone(),
+            append_system_prompt: self.append_system_prompt.clone(),
+            agent_notice: self.agent_notice.clone(),
+            no_agent_notice: self.no_agent_notice,
+            no_retry: self.no_retry,
+            no_session_persistence: self.no_session_persistence,
+            bare: self.bare,
+            safe_mode: self.safe_mode,
+            add_dir: self.add_dir.clone(),
+            mcp_config: self.mcp_config.clone(),
+            strict_mcp_config: self.strict_mcp_config,
             ..AskArgs::default()
         }
     }
@@ -184,6 +241,15 @@ mod tests {
         );
         assert!(args.worktree.is_none() && !args.fork);
         assert!(args.max_turns.is_none() && args.max_budget_usd.is_none());
+        // The full-surface knobs also default off; the agent notice injects
+        // by default (no suppression / override), faithful to the CLI default.
+        assert!(args.fallback_model.is_none() && args.effort.is_none());
+        assert!(args.agent.is_none() && args.permission_mode.is_none());
+        assert!(!args.no_retry && !args.bare && !args.safe_mode);
+        assert!(!args.no_session_persistence && !args.strict_mcp_config);
+        assert!(args.add_dir.is_empty() && args.mcp_config.is_empty());
+        assert!(!args.no_agent_notice && args.agent_notice.is_none());
+        assert!(args.system_prompt.is_none() && args.append_system_prompt.is_none());
     }
 
     #[test]
@@ -232,5 +298,41 @@ mod tests {
         assert!(auto.full_auto);
         assert_eq!(auto.allow_tool, vec!["Bash(git:*)".to_string()]);
         assert_eq!(auto.deny_tool, vec!["Write".to_string()]);
+    }
+
+    #[test]
+    fn to_ask_args_maps_the_full_run_surface() {
+        // Every full-fidelity knob projects onto the matching AskArgs field,
+        // so the reused apply_session mapper applies them without drift.
+        let cfg = Config {
+            fallback_model: Some("claude-opus-4-8".into()),
+            effort: Some(EffortLevel::High),
+            agent: Some("reviewer".into()),
+            permission_mode: Some(PermMode::Plan),
+            system_prompt: Some("be terse".into()),
+            append_system_prompt: Some("cite files".into()),
+            agent_notice: Some("custom".into()),
+            no_agent_notice: true,
+            no_retry: true,
+            no_session_persistence: true,
+            bare: true,
+            safe_mode: true,
+            add_dir: vec!["/repo".into()],
+            mcp_config: vec!["mcp.json".into()],
+            strict_mcp_config: true,
+            ..Config::new("p")
+        };
+        let a = cfg.to_ask_args();
+        assert_eq!(a.fallback_model.as_deref(), Some("claude-opus-4-8"));
+        assert!(matches!(a.effort, Some(EffortLevel::High)));
+        assert_eq!(a.agent.as_deref(), Some("reviewer"));
+        assert!(matches!(a.permission_mode, Some(PermMode::Plan)));
+        assert_eq!(a.system_prompt.as_deref(), Some("be terse"));
+        assert_eq!(a.append_system_prompt.as_deref(), Some("cite files"));
+        assert_eq!(a.agent_notice.as_deref(), Some("custom"));
+        assert!(a.no_agent_notice && a.no_retry && a.no_session_persistence);
+        assert!(a.bare && a.safe_mode && a.strict_mcp_config);
+        assert_eq!(a.add_dir, vec!["/repo".to_string()]);
+        assert_eq!(a.mcp_config, vec!["mcp.json".to_string()]);
     }
 }
