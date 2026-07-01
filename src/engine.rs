@@ -207,21 +207,34 @@ pub async fn run(config: &Config) -> Result<QueryResult> {
     }
     let claude = builder.build()?;
 
-    let args = config.to_ask_args();
-    let name = derive_session_name(&config.prompt);
-    let cmd = apply_session(
-        QueryCommand::new(config.prompt.clone())
-            .name(name)
-            .prompt_via_stdin(true),
-        &args,
-    );
-    let mut result = cmd.execute_json(&claude).await?;
+    let mut result = execute(&config.to_ask_args(), &config.prompt, &claude).await?;
 
     // Parity with run_ask: with a schema active, surface the structured answer
     // onto `structured_output` / an unfenced `result` (see #317).
     if config.json_schema.is_some() {
         crate::output::surface_structured_output(&mut result);
     }
+    Ok(result)
+}
+
+/// Build the `QueryCommand` for `prompt` under `args` -- through the one proven
+/// [`apply_session`] mapper -- and run it non-streaming, returning the typed
+/// result. The single build+execute path shared by [`run`] and the CLI's
+/// non-streaming branch (`run_ask`), so there is no parallel copy to drift:
+/// `run` passes `Config::to_ask_args()`, the CLI passes its resolved `args`.
+///
+/// Schema surfacing is the caller's job -- the CLI shares it with its `--trace`
+/// path, and [`run`] does it after this returns.
+pub(crate) async fn execute(args: &AskArgs, prompt: &str, claude: &Claude) -> Result<QueryResult> {
+    let name = derive_session_name(prompt);
+    let result = apply_session(
+        QueryCommand::new(prompt.to_string())
+            .name(name)
+            .prompt_via_stdin(true),
+        args,
+    )
+    .execute_json(claude)
+    .await?;
     Ok(result)
 }
 
