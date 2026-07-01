@@ -61,12 +61,10 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
         cmd = cmd.agent(name.clone());
     }
     if let Some(name) = &args.worktree {
-        if continue_defeated_by_anon_worktree(args) {
-            // Warn-not-block (stderr only; stdout/--json stay byte-clean).
-            eprintln!(
-                "warning: -c/--resume with an anonymous --worktree starts a fresh worktree each run, so there is no prior session to continue. Use a named worktree (-w NAME) or drop --worktree."
-            );
-        }
+        // The anonymous-worktree-defeats-continue advisory
+        // ([`continue_defeated_by_anon_worktree`]) is emitted by the CLI
+        // (`run_ask`), NOT here: this mapper is shared with the
+        // side-effect-free `engine::run`, so it must not print.
         cmd = match name {
             Some(n) => cmd.worktree_named(n.clone()),
             None => cmd.worktree(),

@@ -404,6 +404,16 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     // enforced uniformly across both the streaming and non-streaming exec
     // paths below (the wrapper kills + reaps the child and returns
     // Error::Timeout, which classify_exit_code maps to exit 4). `0` disables.
+    // The anonymous-worktree-defeats-continue advisory (#328): stderr only, so
+    // stdout / --json stay byte-clean. Emitted here in the CLI layer -- the
+    // shared apply_session mapper (reused by the side-effect-free engine::run)
+    // no longer prints it. Fires on every exec path (stream / trace / plain).
+    if crate::session::continue_defeated_by_anon_worktree(&args) {
+        eprintln!(
+            "warning: -c/--resume with an anonymous --worktree starts a fresh worktree each run, so there is no prior session to continue. Use a named worktree (-w NAME) or drop --worktree."
+        );
+    }
+
     let mut builder = Claude::builder();
     if let Some(secs) = args.timeout
         && secs > 0
