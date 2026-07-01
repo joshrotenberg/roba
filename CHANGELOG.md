@@ -14,6 +14,26 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-07-01
+
+### Added
+
+- add internal engine::run config-and-run seam (refs #407) ([#408](https://github.com/joshrotenberg/roba/pull/408))
+- grow engine Config to full run-knob fidelity (refs #407) ([#410](https://github.com/joshrotenberg/roba/pull/410))
+
+
+### CI
+
+- release-time rates.toml freshness gate (closes #405) ([#406](https://github.com/joshrotenberg/roba/pull/406))
+
+
+### Changed
+
+- route run_ask non-streaming path through engine::execute (refs #407) ([#411](https://github.com/joshrotenberg/roba/pull/411))
+- make apply_session side-effect-free; advisory moves to the CLI (closes #407) ([#412](https://github.com/joshrotenberg/roba/pull/412))
+
+
+
 ## [0.10.0] - 2026-06-30
 
 ### Added
