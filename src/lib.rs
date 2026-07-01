@@ -7,7 +7,7 @@
 //! See the README for positioning and the agent ABI.
 
 use anyhow::{Context, Result, bail};
-use claude_wrapper::{Claude, QueryCommand};
+use claude_wrapper::Claude;
 use std::io::IsTerminal;
 
 pub mod agent_check;
@@ -45,7 +45,6 @@ use crate::prompt::{
     apply_vars, collect_attachments, collect_git_context, compose_prompt, merge_optional,
     resolve_main_prompt,
 };
-use crate::session::apply_session;
 use crate::stream::run_streaming;
 
 /// Dispatch a parsed [`Cli`] to the matching runner. Subcommands
@@ -437,13 +436,9 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
             ),
         }
     } else {
-        let name = session::derive_session_name(&prompt);
-        apply_session(
-            QueryCommand::new(prompt).name(name).prompt_via_stdin(true),
-            &args,
-        )
-        .execute_json(&claude)
-        .await?
+        // The non-streaming run flows through the shared engine build+execute
+        // (the same code engine::run uses), so the two can't drift.
+        engine::execute(&args, &prompt, &claude).await?
     };
     if let Some(pb) = spinner {
         pb.finish_and_clear();
@@ -588,7 +583,7 @@ fn apply_no_worktree(args: &mut AskArgs) {
 /// Expand a `-c <value>` (`--continue=VALUE`) that carried an explicit
 /// value, treating it as a git-style short session-id prefix and
 /// resolving it to a full UUID against the current project's sessions
-/// before it reaches [`apply_session`] (-> claude's `--resume`).
+/// before it reaches [`crate::session::apply_session`] (-> claude's `--resume`).
 ///
 /// Three outcomes (see [`session::resolve_session_prefix`]):
 /// - a unique prefix is expanded in place to the full id;
