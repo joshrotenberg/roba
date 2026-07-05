@@ -47,19 +47,19 @@ jobs:
 
       - name: Clippy
         if: matrix.rust == 'stable'
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Build
-        run: cargo build --all-features
+        run: cargo build --workspace --all-features
 
       - name: Unit tests
-        run: cargo test --lib --all-features
+        run: cargo test --workspace --lib --all-features
 
       - name: Mechanical CLI tests
         run: cargo test --test cli --all-features
 
       - name: Doc tests
-        run: cargo test --doc --all-features
+        run: cargo test --workspace --doc --all-features
 
   docs:
     name: Documentation
@@ -76,7 +76,7 @@ jobs:
           shared-key: "docs"
 
       - name: Build docs
-        run: cargo doc --no-deps --all-features
+        run: cargo doc --workspace --no-deps --all-features
 
   # Release-time gate (#405): re-verify the bundled rates.toml freshness ONLY
   # on the release-plz PR, so it never adds standing red to `main` as the

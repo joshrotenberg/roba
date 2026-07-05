@@ -76,33 +76,12 @@
 //! - Breaking shape changes (renames, removals, type changes) require
 //!   a version bump.
 
-use serde::Serialize;
-
-/// Outer envelope. Carries the top-level `version` ABI marker plus an
-/// `"error"` key, which makes it structurally distinct from the
-/// success envelope (which carries `result` instead). `version` is
-/// listed first so it sorts to the top of pretty-printed JSON.
-#[derive(Debug, Serialize)]
-pub struct ErrorEnvelope {
-    pub version: u32,
-    pub error: ErrorBody,
-}
-
-/// Inner payload. `kind` is a small string union; `chain` lists the
-/// anyhow context layers from top (most recent context call) to root
-/// (the underlying error).
-#[derive(Debug, Serialize)]
-pub struct ErrorBody {
-    pub kind: &'static str,
-    pub message: String,
-    pub exit_code: i32,
-    pub chain: Vec<String>,
-    /// Optional canonical doc URLs the error points at. Additive v1
-    /// field: serialized only when non-empty, so the default shape is
-    /// unchanged for errors that have no doc pointer.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub see_also: Vec<String>,
-}
+/// The `{ version, error }` failure envelope and its `{ kind, message,
+/// exit_code, chain, see_also }` body live in the [`roba_types`] contract
+/// crate (owned + `Deserialize` so a downstream harness shares the shape). The
+/// binary re-exports and constructs them; `build_envelope` below is the one
+/// producer.
+pub use roba_types::{ErrorBody, ErrorEnvelope};
 
 /// Classify an [`anyhow::Error`] into the envelope's `kind` string.
 /// Matches the wrapper variant when downcastable; everything else is
@@ -210,7 +189,7 @@ pub fn build_envelope(err: &anyhow::Error, exit_code: i32) -> ErrorEnvelope {
     ErrorEnvelope {
         version: 1,
         error: ErrorBody {
-            kind: kind_of(err),
+            kind: kind_of(err).to_string(),
             message,
             exit_code,
             chain,
@@ -342,7 +321,7 @@ mod tests {
     #[test]
     fn populated_see_also_appears_in_json() {
         let body = ErrorBody {
-            kind: "other",
+            kind: "other".to_string(),
             message: "with pointer".to_string(),
             exit_code: 1,
             chain: vec!["with pointer".to_string()],

@@ -138,51 +138,16 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
     }
 }
 
-/// Versioned success envelope for `--json` mode. Top-level `version`
-/// is the stable ABI marker (see the [`error`] module for the v1
-/// contract); `result` holds the wrapper's `QueryResult` shape
-/// verbatim. Mirrors the error envelope's `version` + `error` layout
-/// so success and failure are structurally consistent.
-///
-/// `pub(crate)` so `roba show` (the reconstructed-envelope path in
-/// [`crate::show`]) emits the byte-identical envelope shape instead of
-/// re-deriving it.
-#[derive(serde::Serialize)]
-pub(crate) struct SuccessEnvelope<'a> {
-    pub(crate) version: u32,
-    pub(crate) result: &'a claude_wrapper::types::QueryResult,
-    /// True when [`crate::output::looks_like_refusal`] matched the
-    /// response body. Lets non-TTY consumers (the ones that never see
-    /// the human-facing footer warning) branch on "got an answer" vs
-    /// "got refused" without parsing the body text. Additive v1 field.
-    pub(crate) refusal: bool,
-}
-
-/// Versioned success envelope for the read-only management commands'
-/// `--json` mode. Mirrors [`SuccessEnvelope`]'s `version` + `result`
-/// layout, minus the ask-only `refusal` flag, so the whole `--json`
-/// surface is `{ version: 1, result: ... }` on success and
-/// `{ version: 1, error: ... }` on failure (see the [`error`] module
-/// for the v1 contract).
-///
-/// `cost`, `history`, `doctor`, and `worktree list` all wrap their
-/// payload through this so a programmatic consumer peels off `version`
-/// and `result` uniformly regardless of which command produced the
-/// output. Generic over the payload `T` since each command has its own
-/// result shape (a `Rollup`, a `Vec<SessionSummary>`, a doctor report,
-/// a `Vec<Worktree>`).
-#[derive(serde::Serialize)]
-pub(crate) struct VersionedResult<'a, T: serde::Serialize> {
-    pub(crate) version: u32,
-    pub(crate) result: &'a T,
-}
-
-impl<'a, T: serde::Serialize> VersionedResult<'a, T> {
-    /// Wrap a payload reference at the current ABI version (1).
-    pub(crate) fn new(result: &'a T) -> Self {
-        Self { version: 1, result }
-    }
-}
+// The `--json` envelope shapes live in the `roba-types` contract crate (owned
+// + `Deserialize` so a downstream harness shares the exact shape). The binary
+// serializes them with a `&`-borrow payload (no clone), so the JSON is
+// byte-identical to before the extraction:
+//
+// - `SuccessEnvelope<&QueryResult>` -- the prompt-run `{ version, result,
+//   refusal }` (used here and by `roba show`).
+// - `VersionedResult<&T>` -- the read-only commands' `{ version, result }`
+//   (cost / history / last / doctor / worktree list).
+pub(crate) use roba_types::{SuccessEnvelope, VersionedResult};
 
 /// Default action: resolve a prompt, send it through claude, render
 /// the result.
@@ -653,7 +618,10 @@ fn expand_continue_prefix(args: &mut AskArgs) -> Result<()> {
 /// envelope is rendered, stdout is empty. So a `--json` consumer branches
 /// on the exit code (and reads the stdout envelope when present); it does
 /// NOT scrape stderr for an error envelope on code 6.
-pub const EXIT_UNUSABLE_RESULT: i32 = 6;
+///
+/// Defined in [`roba_types`] (the shared contract) and re-exported here so the
+/// binary and the published crate use the one constant.
+pub use roba_types::EXIT_UNUSABLE_RESULT;
 
 /// Classify a successfully-returned [`QueryResult`] as usable or not.
 ///
@@ -719,17 +687,20 @@ pub(crate) fn exit_unusable(code: i32, note: &str) -> ! {
 /// the `Ok`-path "empty / is_error result" signal set by
 /// `classify_result`, not an error-chain mapping.
 pub fn classify_exit_code(err: &anyhow::Error) -> i32 {
+    use roba_types::{
+        EXIT_AUTH, EXIT_BUDGET, EXIT_FAILURE, EXIT_MAX_BUDGET, EXIT_MAX_TURNS, EXIT_TIMEOUT,
+    };
     if let Some(wrapper_err) = err.downcast_ref::<claude_wrapper::Error>() {
         match wrapper_err {
-            claude_wrapper::Error::Auth { .. } => 2,
-            claude_wrapper::Error::BudgetExceeded { .. } => 3,
-            claude_wrapper::Error::Timeout { .. } => 4,
+            claude_wrapper::Error::Auth { .. } => EXIT_AUTH,
+            claude_wrapper::Error::BudgetExceeded { .. } => EXIT_BUDGET,
+            claude_wrapper::Error::Timeout { .. } => EXIT_TIMEOUT,
             // A --max-turns cap-hit is recoverable, not a hard failure: the
             // tree is usually complete and just needs the lifecycle finished
             // (gates + commit). A distinct code lets an orchestrator tell that
             // apart from a generic failure without parsing the trace. (#309;
             // claude-wrapper 0.12.0 surfaces the typed variant.)
-            claude_wrapper::Error::MaxTurnsExceeded { .. } => 5,
+            claude_wrapper::Error::MaxTurnsExceeded { .. } => EXIT_MAX_TURNS,
             // A --max-budget-usd cap-hit is the same shape as max-turns: a
             // guardrail tripped mid-run, not a defect. The tree is usually
             // intact (detection is post-hoc, so the run may have completed the
@@ -737,11 +708,11 @@ pub fn classify_exit_code(err: &anyhow::Error) -> i32 {
             // orchestrator resume the session and finish the lifecycle rather
             // than treating the spend ceiling as a hard failure. (#388;
             // claude-wrapper 0.12.3 surfaces the typed variant.)
-            claude_wrapper::Error::MaxBudgetExceeded { .. } => 7,
-            _ => 1,
+            claude_wrapper::Error::MaxBudgetExceeded { .. } => EXIT_MAX_BUDGET,
+            _ => EXIT_FAILURE,
         }
     } else {
-        1
+        EXIT_FAILURE
     }
 }
 
