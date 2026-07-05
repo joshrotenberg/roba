@@ -17,11 +17,11 @@ keywords = ["claude", "cli", "ai", "llm", "anthropic"]
 categories = ["command-line-utilities"]
 
 # Root package + workspace: `roba` stays at the repo root; `roba-types` (the
-# published, dependency-light machine contract) is a member. resolver "3"
-# matches the edition-2024 package default so making this a workspace does not
-# change dependency resolution.
+# published, dependency-light machine contract) and `roba-core` (the clap-free
+# run engine) are members. resolver "3" matches the edition-2024 package
+# default so making this a workspace does not change dependency resolution.
 [workspace]
-members = ["roba-types"]
+members = ["roba-types", "roba-core"]
 resolver = "3"
 
 [[bin]]
@@ -36,6 +36,9 @@ claude-wrapper = "0.12.3"
 dialoguer = { version = "0.12", default-features = false, features = ["fuzzy-select"] }
 glob = "0.3"
 indicatif = "0.18"
+# The clap-free run engine (Config -> QueryResult), split out of the CLI so a
+# programmatic caller / serve (#142) can drive it without clap.
+roba-core = { version = "0.1.0", path = "roba-core" }
 # The machine contract (envelopes + exit codes), shared so the binary and the
 # published crate cannot disagree. version + path so `roba` can still publish.
 roba-types = { version = "0.1.0", path = "roba-types" }

@@ -18,7 +18,6 @@ pub mod cost;
 pub mod detach;
 pub mod doctor;
 pub mod draft;
-pub mod engine;
 pub mod env;
 pub mod error;
 pub mod history;
@@ -28,18 +27,21 @@ pub mod profile;
 pub mod prompt;
 pub mod rates;
 pub mod render;
-pub mod session;
 pub mod show;
 pub mod stdin_probe;
 pub mod stream;
 pub mod style;
 pub mod worktree;
 
+// The clap-free run engine lives in roba-core (#416). Re-export so the rest of
+// the crate keeps addressing it as `crate::engine` / `crate::session`.
+pub use roba_core::{engine, session};
+
 use crate::cli::{AskArgs, Cli, SubCommand};
 use crate::history::{pick_session_interactive, run_history, run_last};
 use crate::output::{
     default_body, extract_code_blocks, format_footer, looks_like_refusal, path_is_json,
-    should_show_footer, surface_structured_output,
+    should_show_footer,
 };
 use crate::prompt::{
     apply_vars, collect_attachments, collect_git_context, compose_prompt, merge_optional,
@@ -196,6 +198,36 @@ fn swallow_note(args: &AskArgs) -> Option<String> {
 /// `args -> Config` mapper; `engine::run` takes a `Config` directly, so both
 /// the CLI and a programmatic caller flow through the single `apply_session`
 /// (`Config -> QueryCommand`) mapper beneath it.
+/// Map roba's clap `--effort` value to claude-wrapper's `Effort` (the type
+/// `Config` and the core mapper use, so the core stays clap-free).
+fn effort_to_cw(e: cli::EffortLevel) -> claude_wrapper::Effort {
+    use claude_wrapper::Effort;
+    use cli::EffortLevel;
+    match e {
+        EffortLevel::Low => Effort::Low,
+        EffortLevel::Medium => Effort::Medium,
+        EffortLevel::High => Effort::High,
+        EffortLevel::Xhigh => Effort::Xhigh,
+        EffortLevel::Max => Effort::Max,
+    }
+}
+
+/// Map roba's clap `--permission-mode` value to claude-wrapper's
+/// `PermissionMode` (kept out of the core mapper so `Config` is clap-free).
+fn permission_mode_to_cw(mode: cli::PermMode) -> claude_wrapper::PermissionMode {
+    use claude_wrapper::PermissionMode;
+    use cli::PermMode;
+    match mode {
+        PermMode::AcceptEdits => PermissionMode::AcceptEdits,
+        PermMode::Auto => PermissionMode::Auto,
+        #[allow(deprecated)]
+        PermMode::BypassPermissions => PermissionMode::BypassPermissions,
+        PermMode::Default => PermissionMode::Default,
+        PermMode::DontAsk => PermissionMode::DontAsk,
+        PermMode::Plan => PermissionMode::Plan,
+    }
+}
+
 fn build_config(args: &AskArgs, prompt: impl Into<String>) -> engine::Config {
     use engine::{Permissions, Session};
     let permissions = if args.full_auto {
@@ -218,10 +250,10 @@ fn build_config(args: &AskArgs, prompt: impl Into<String>) -> engine::Config {
         prompt: prompt.into(),
         model: args.model.clone(),
         fallback_model: args.fallback_model.clone(),
-        effort: args.effort,
+        effort: args.effort.map(effort_to_cw),
         agent: args.agent.clone(),
         permissions,
-        permission_mode: args.permission_mode,
+        permission_mode: args.permission_mode.map(permission_mode_to_cw),
         allow_tools: args.allow_tool.clone(),
         deny_tools: args.deny_tool.clone(),
         session,
@@ -425,11 +457,16 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     // enforced uniformly across both the streaming and non-streaming exec
     // paths below (the wrapper kills + reaps the child and returns
     // Error::Timeout, which classify_exit_code maps to exit 4). `0` disables.
+    // Collapse the resolved args + composed prompt into the engine Config. Both
+    // exec paths below run through it, and the engine::run public entry uses the
+    // same Config -> apply_session mapper, so nothing drifts.
+    let config = build_config(&args, prompt);
+
     // The anonymous-worktree-defeats-continue advisory (#328): stderr only, so
     // stdout / --json stay byte-clean. Emitted here in the CLI layer -- the
     // shared apply_session mapper (reused by the side-effect-free engine::run)
     // no longer prints it. Fires on every exec path (stream / trace / plain).
-    if crate::session::continue_defeated_by_anon_worktree(&args) {
+    if session::continue_defeated_by_anon_worktree(&config) {
         eprintln!(
             "warning: -c/--resume with an anonymous --worktree starts a fresh worktree each run, so there is no prior session to continue. Use a named worktree (-w NAME) or drop --worktree."
         );
@@ -442,11 +479,6 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         builder = builder.timeout_secs(secs);
     }
     let claude = builder.build()?;
-
-    // Collapse the resolved args + composed prompt into the engine Config. Both
-    // exec paths below run through it, and the engine::run public entry uses
-    // the same Config -> apply_session mapper, so nothing drifts.
-    let config = build_config(&args, prompt);
 
     if args.stream {
         run_streaming(&claude, &config, &args, stream::DisplayMode::Live).await?;
@@ -486,7 +518,7 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     // `.result.structured_output` and an unfenced `.result.result`. Gated on
     // `--json-schema` so a normal answer containing a code block is untouched.
     if args.json_schema.is_some() {
-        surface_structured_output(&mut result);
+        engine::surface_structured_output(&mut result);
     }
 
     let file_path = args.out.as_deref();

@@ -44,3 +44,17 @@ git_release_enable = false
 git_tag_enable = false
 changelog_update = true
 changelog_path = "roba-types/CHANGELOG.md"
+
+# The clap-free run engine (Config -> QueryResult). Publishes to crates.io so
+# the `roba` binary's path dep resolves on publish; no git tag or GitHub
+# release of its own (those belong to the `roba` binary). release-plz publishes
+# in dependency order (roba-core before roba); version tracked via crates.io.
+[[package]]
+name = "roba-core"
+semver_check = true
+release = true
+publish = true
+git_release_enable = false
+git_tag_enable = false
+changelog_update = true
+changelog_path = "roba-core/CHANGELOG.md"

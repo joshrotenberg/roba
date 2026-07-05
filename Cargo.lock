@@ -818,6 +818,7 @@ dependencies = [
  "indicatif",
  "libc",
  "predicates",
+ "roba-core",
  "roba-types",
  "serde",
  "serde_json",
@@ -826,6 +827,15 @@ dependencies = [
  "tokio",
  "toml",
  "uuid",
+]
+
+[[package]]
+name = "roba-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "claude-wrapper",
+ "serde_json",
 ]
 
 [[package]]
