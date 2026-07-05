@@ -15,6 +15,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use crate::cli::AskArgs;
+use crate::engine::Config;
 use crate::output::{
     format_footer, format_tool_summary, looks_like_refusal, should_show_footer, summarize_tool,
 };
@@ -84,16 +85,22 @@ fn open_trace(path: Option<&Path>) -> Result<Option<TraceWriter>> {
 /// to render exactly as the non-streaming path would.
 pub async fn run_streaming(
     claude: &Claude,
-    prompt: String,
+    config: &Config,
     args: &AskArgs,
     display: DisplayMode,
 ) -> Result<Option<QueryResult>> {
-    let name = derive_session_name(&prompt);
+    let name = derive_session_name(&config.prompt);
     // TODO: `prompt_via_stdin(true)` cannot be used here because
     // `stream_query` sets the child's stdin to null. Prompt hiding for
     // the streaming path requires a change in claude-wrapper itself.
-    let cmd = apply_session(QueryCommand::new(prompt).name(name), args)
+    let mut cmd = apply_session(QueryCommand::new(config.prompt.clone()).name(name), config)
         .output_format(OutputFormat::StreamJson);
+    // Extended-thinking partial messages are a streaming-only display concern
+    // (moved out of the display-flag-free `apply_session`). `show_thinking` is
+    // meaningful only here -- we are already on the stream/trace path.
+    if args.show_thinking {
+        cmd = cmd.include_partial_messages();
+    }
     let show_meta = should_show_footer(args);
     let style = Style::detect(args);
     let mut final_result: Option<QueryResult> = None;

@@ -189,6 +189,62 @@ fn swallow_note(args: &AskArgs) -> Option<String> {
     None
 }
 
+/// Collapse the CLI's resolved [`AskArgs`] (after env/profile/session
+/// resolution) plus the composed prompt into an [`engine::Config`]: the flat
+/// permission flags become a [`engine::Permissions`] posture and the session
+/// flags a [`engine::Session`] selector, everything else 1:1. This is the one
+/// `args -> Config` mapper; `engine::run` takes a `Config` directly, so both
+/// the CLI and a programmatic caller flow through the single `apply_session`
+/// (`Config -> QueryCommand`) mapper beneath it.
+fn build_config(args: &AskArgs, prompt: impl Into<String>) -> engine::Config {
+    use engine::{Permissions, Session};
+    let permissions = if args.full_auto {
+        Permissions::FullAuto
+    } else if args.writable {
+        Permissions::Writable
+    } else {
+        Permissions::ReadOnly
+    };
+    let session = if let Some(id) = &args.session_id {
+        Session::WithId(id.clone())
+    } else {
+        match &args.continue_session {
+            None => Session::Fresh,
+            Some(None) => Session::Continue,
+            Some(Some(id)) => Session::Resume(id.clone()),
+        }
+    };
+    engine::Config {
+        prompt: prompt.into(),
+        model: args.model.clone(),
+        fallback_model: args.fallback_model.clone(),
+        effort: args.effort,
+        agent: args.agent.clone(),
+        permissions,
+        permission_mode: args.permission_mode,
+        allow_tools: args.allow_tool.clone(),
+        deny_tools: args.deny_tool.clone(),
+        session,
+        fork: args.fork,
+        worktree: args.worktree.clone(),
+        max_turns: args.max_turns,
+        max_budget_usd: args.max_budget_usd,
+        timeout_secs: args.timeout,
+        json_schema: args.json_schema.clone(),
+        system_prompt: args.system_prompt.clone(),
+        append_system_prompt: args.append_system_prompt.clone(),
+        agent_notice: args.agent_notice.clone(),
+        no_agent_notice: args.no_agent_notice,
+        no_retry: args.no_retry,
+        no_session_persistence: args.no_session_persistence,
+        bare: args.bare,
+        safe_mode: args.safe_mode,
+        add_dir: args.add_dir.clone(),
+        mcp_config: args.mcp_config.clone(),
+        strict_mcp_config: args.strict_mcp_config,
+    }
+}
+
 pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     env::apply_env_overrides(&mut args)?;
     let pool = profile::load_pool()?;
@@ -387,8 +443,13 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     }
     let claude = builder.build()?;
 
+    // Collapse the resolved args + composed prompt into the engine Config. Both
+    // exec paths below run through it, and the engine::run public entry uses
+    // the same Config -> apply_session mapper, so nothing drifts.
+    let config = build_config(&args, prompt);
+
     if args.stream {
-        run_streaming(&claude, prompt, &args, stream::DisplayMode::Live).await?;
+        run_streaming(&claude, &config, &args, stream::DisplayMode::Live).await?;
         return Ok(());
     }
 
@@ -399,7 +460,7 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         // event log can be captured, but suppress all live display and
         // render the final answer exactly as the non-streaming path
         // would (JSON envelope / --code / --out / footer below).
-        match run_streaming(&claude, prompt, &args, stream::DisplayMode::Silent).await? {
+        match run_streaming(&claude, &config, &args, stream::DisplayMode::Silent).await? {
             Some(r) => r,
             // Parity with the Live --stream path (src/stream.rs): no result
             // event is "no usable output", which is exit 6, not the generic
@@ -412,8 +473,8 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         }
     } else {
         // The non-streaming run flows through the shared engine build+execute
-        // (the same code engine::run uses), so the two can't drift.
-        engine::execute(&args, &prompt, &claude).await?
+        // (the same Config the engine::run public entry uses), so they can't drift.
+        engine::execute(&config, &claude).await?
     };
     if let Some(pb) = spinner {
         pb.finish_and_clear();
@@ -720,6 +781,59 @@ pub fn classify_exit_code(err: &anyhow::Error) -> i32 {
 mod tests {
     use super::*;
     use claude_wrapper::auth::AuthErrorKind;
+
+    fn ask(argv: &[&str]) -> AskArgs {
+        use clap::Parser;
+        cli::Cli::try_parse_from(argv).unwrap().ask
+    }
+
+    #[test]
+    fn build_config_collapses_permission_posture() {
+        use engine::Permissions;
+        // The flat --readonly/--writable/--full-auto flags collapse into the
+        // curated posture: full_auto wins, then writable, else read-only.
+        assert!(matches!(
+            build_config(&ask(&["roba", "p"]), "p").permissions,
+            Permissions::ReadOnly
+        ));
+        assert!(matches!(
+            build_config(&ask(&["roba", "--writable", "p"]), "p").permissions,
+            Permissions::Writable
+        ));
+        assert!(matches!(
+            build_config(&ask(&["roba", "--full-auto", "p"]), "p").permissions,
+            Permissions::FullAuto
+        ));
+    }
+
+    #[test]
+    fn build_config_collapses_session_selector() {
+        use engine::Session;
+        assert!(matches!(
+            build_config(&ask(&["roba", "p"]), "p").session,
+            Session::Fresh
+        ));
+        assert!(matches!(
+            build_config(&ask(&["roba", "-c", "-p", "x"]), "p").session,
+            Session::Continue
+        ));
+        let uuid = "12345678-1234-4234-8234-123456789abc";
+        assert!(matches!(
+            build_config(&ask(&["roba", "--session-id", uuid, "p"]), "p").session,
+            Session::WithId(id) if id == uuid
+        ));
+    }
+
+    #[test]
+    fn build_config_carries_the_prompt_and_pass_through_knobs() {
+        let c = build_config(
+            &ask(&["roba", "--max-turns", "5", "--add-dir", "/repo", "p"]),
+            "composed prompt",
+        );
+        assert_eq!(c.prompt, "composed prompt");
+        assert_eq!(c.max_turns, Some(5));
+        assert_eq!(c.add_dir, vec!["/repo".to_string()]);
+    }
 
     #[test]
     fn resolve_session_known_name_returns_uuid() {

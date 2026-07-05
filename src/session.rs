@@ -1,12 +1,16 @@
 //! Session continuation and permission preset application.
 //!
-//! These are small mutators on a [`QueryCommand`] -- they translate
-//! [`AskArgs`] flags (`-c` / `-c=ID`, `--fork`, `--readonly`,
-//! `--full-auto`) into the matching builder method calls.
+//! [`apply_session`] is the single flag->`QueryCommand` mapper: it translates
+//! an [`crate::engine::Config`] (session continuity, model/effort/agent, the
+//! permission posture, caps, MCP, ...) into the matching builder calls. It is
+//! clap-free -- the CLI's `run_ask` builds a `Config` from its resolved
+//! `AskArgs` (`build_config`) and the side-effect-free `engine::run` takes one
+//! directly, so both share this one mapper with no second copy to drift.
 
 use claude_wrapper::{Effort, PermissionMode, QueryCommand, RetryPolicy};
 
 use crate::cli::{AskArgs, EffortLevel, PermMode};
+use crate::engine::{Config, Permissions, Session};
 
 /// True when a continue/resume request will be silently defeated by an
 /// anonymous (unnamed) worktree: the worktree mints a fresh dir every
@@ -22,33 +26,28 @@ pub fn continue_defeated_by_anon_worktree(args: &AskArgs) -> bool {
 /// Apply session-related flags (-c / -c=ID, --fork), the model
 /// override (--model), the subagent override (--agent), and then
 /// permission-related flags. Returns the configured QueryCommand.
-pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
-    // Session selection. clap's conflicts guarantee at most one of
-    // {continue/resume, --session-id} is set, so these are mutually
-    // exclusive arms: continue/resume picks up an existing session;
-    // --session-id assigns a caller-chosen UUID to a new one. The
-    // auto-derived `.name(...)` (display label) is applied elsewhere and
-    // coexists with either -- name (display) and session-id (UUID) are
-    // independent.
-    if let Some(id) = &args.session_id {
-        cmd = cmd.session_id(id.clone());
-    } else {
-        match &args.continue_session {
-            None => {}                                      // fresh session
-            Some(None) => cmd = cmd.continue_session(),     // most recent in cwd
-            Some(Some(id)) => cmd = cmd.resume(id.clone()), // specific id
-        }
+pub fn apply_session(mut cmd: QueryCommand, config: &Config) -> QueryCommand {
+    // Session selection. `WithId` assigns a caller-chosen UUID to a new
+    // session; the others continue the most recent / resume a specific one /
+    // start fresh. The auto-derived `.name(...)` (display label) is applied
+    // elsewhere and coexists with either -- name (display) and session-id
+    // (UUID) are independent.
+    match &config.session {
+        Session::Fresh => {}
+        Session::Continue => cmd = cmd.continue_session(),
+        Session::Resume(id) => cmd = cmd.resume(id.clone()),
+        Session::WithId(id) => cmd = cmd.session_id(id.clone()),
     }
-    if args.fork {
+    if config.fork {
         cmd = cmd.fork_session();
     }
-    if let Some(m) = &args.model {
+    if let Some(m) = &config.model {
         cmd = cmd.model(m.clone());
     }
-    if let Some(m) = &args.fallback_model {
+    if let Some(m) = &config.fallback_model {
         cmd = cmd.fallback_model(m.clone());
     }
-    if let Some(e) = args.effort {
+    if let Some(e) = config.effort {
         cmd = cmd.effort(match e {
             EffortLevel::Low => Effort::Low,
             EffortLevel::Medium => Effort::Medium,
@@ -57,10 +56,10 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
             EffortLevel::Max => Effort::Max,
         });
     }
-    if let Some(name) = &args.agent {
+    if let Some(name) = &config.agent {
         cmd = cmd.agent(name.clone());
     }
-    if let Some(name) = &args.worktree {
+    if let Some(name) = &config.worktree {
         // The anonymous-worktree-defeats-continue advisory
         // ([`continue_defeated_by_anon_worktree`]) is emitted by the CLI
         // (`run_ask`), NOT here: this mapper is shared with the
@@ -70,20 +69,20 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
             None => cmd.worktree(),
         };
     }
-    if let Some(ref text) = args.system_prompt {
+    if let Some(ref text) = config.system_prompt {
         cmd = cmd.system_prompt(text.clone());
     }
     // Append the user's `--append-system-prompt` and the built-in agent
     // notice as ONE combined value (claude-wrapper's append_system_prompt
     // is a setter, so a second call would clobber the first -- see
     // compose_append_system_prompt).
-    if let Some(text) = compose_append_system_prompt(args) {
+    if let Some(text) = compose_append_system_prompt(config) {
         cmd = cmd.append_system_prompt(text);
     }
-    if args.show_thinking && (args.stream || args.trace.is_some()) {
-        cmd = cmd.include_partial_messages();
-    }
-    if args.no_retry {
+    // NOTE: include_partial_messages (extended-thinking on the stream/trace
+    // path) is a display concern applied by the streaming pipeline
+    // (`run_streaming`), not here -- `Config` carries no display flags.
+    if config.no_retry {
         // Force a per-command retry policy of a single attempt. This
         // overrides any client-level default (the wrapper resolves
         // per-command policy first), so a transient failure surfaces
@@ -91,42 +90,42 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
         // `max_attempts(1)` means "no retries."
         cmd = cmd.retry(RetryPolicy::new().max_attempts(1));
     }
-    if let Some(n) = args.max_turns {
+    if let Some(n) = config.max_turns {
         cmd = cmd.max_turns(n);
     }
-    if let Some(v) = args.max_budget_usd {
+    if let Some(v) = config.max_budget_usd {
         cmd = cmd.max_budget_usd(v);
     }
-    if let Some(schema) = &args.json_schema {
-        // By this point `args.json_schema` holds the inlined schema JSON
-        // (run_ask reads the PATH the flag named and replaces the value
-        // with the file contents). claude's `--json-schema` takes inline
-        // JSON, so pass it straight through.
+    if let Some(schema) = &config.json_schema {
+        // `config.json_schema` is the inline schema JSON (the CLI reads the
+        // PATH its `--json-schema` flag named and stores the contents; a
+        // programmatic caller sets the JSON directly). claude's
+        // `--json-schema` takes inline JSON, so pass it straight through.
         cmd = cmd.json_schema(schema.clone());
     }
-    if args.bare {
+    if config.bare {
         cmd = cmd.bare();
     }
-    if args.safe_mode {
+    if config.safe_mode {
         cmd = cmd.safe_mode();
     }
-    if args.no_session_persistence {
+    if config.no_session_persistence {
         cmd = cmd.no_session_persistence();
     }
     // Additional tool-access directories: forward each --add-dir path
     // verbatim (claude resolves and reads them). Pure pass-through.
-    for d in &args.add_dir {
+    for d in &config.add_dir {
         cmd = cmd.add_dir(d.clone());
     }
     // MCP servers for this run: forward each --mcp-config path verbatim
     // (claude reads the file), then the strict flag. Pure pass-through.
-    for p in &args.mcp_config {
+    for p in &config.mcp_config {
         cmd = cmd.mcp_config(p.clone());
     }
-    if args.strict_mcp_config {
+    if config.strict_mcp_config {
         cmd = cmd.strict_mcp_config();
     }
-    apply_permissions(cmd, args)
+    apply_permissions(cmd, config)
 }
 
 /// Apply permission policy.
@@ -147,33 +146,33 @@ pub fn apply_session(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
 ///   under `--full-auto`, which bypasses all checks before the allow/deny
 ///   lists are built.
 /// - `--full-auto` -- bypass everything (overrides above).
-pub fn apply_permissions(mut cmd: QueryCommand, args: &AskArgs) -> QueryCommand {
-    if args.full_auto {
+pub fn apply_permissions(mut cmd: QueryCommand, config: &Config) -> QueryCommand {
+    if matches!(config.permissions, Permissions::FullAuto) {
         return cmd.dangerously_skip_permissions();
     }
 
-    // Apply --permission-mode if set. --full-auto returned above, so the
-    // mode only applies on the non-bypass path; it composes with
-    // --readonly / --writable (the allow list below still applies).
-    if let Some(mode) = args.permission_mode {
+    // Apply the permission mode if set. FullAuto returned above, so the mode
+    // only applies on the non-bypass path; it composes with the ReadOnly /
+    // Writable posture (the allow list below still applies).
+    if let Some(mode) = config.permission_mode {
         let cw_mode = permission_mode_to_cw(mode);
         cmd = cmd.permission_mode(cw_mode);
     }
 
-    // Always-on safe defaults. --readonly is the explicit form;
-    // either way these three are in the allow list.
+    // Always-on safe defaults. ReadOnly is the default posture; either way
+    // these three are in the allow list.
     let mut allow: Vec<String> = vec!["Read".to_string(), "Glob".to_string(), "Grep".to_string()];
-    if args.writable {
+    if matches!(config.permissions, Permissions::Writable) {
         push_unique(&mut allow, "Edit");
         push_unique(&mut allow, "Write");
     }
-    for t in &args.allow_tool {
+    for t in &config.allow_tools {
         push_unique(&mut allow, t);
     }
     cmd = cmd.allowed_tools(allow);
 
-    if !args.deny_tool.is_empty() {
-        cmd = cmd.disallowed_tools(args.deny_tool.clone());
+    if !config.deny_tools.is_empty() {
+        cmd = cmd.disallowed_tools(config.deny_tools.clone());
     }
 
     cmd
@@ -219,11 +218,14 @@ auto-resumed.";
 /// the content override. Returns `None` when the notice is suppressed
 /// (`--no-agent-notice`) or the resolved content is empty
 /// (`agent_notice = ""` -- a config-level disable).
-fn resolve_agent_notice(args: &AskArgs) -> Option<String> {
-    if args.no_agent_notice {
+fn resolve_agent_notice(config: &Config) -> Option<String> {
+    if config.no_agent_notice {
         return None;
     }
-    let text = args.agent_notice.as_deref().unwrap_or(BUILTIN_AGENT_NOTICE);
+    let text = config
+        .agent_notice
+        .as_deref()
+        .unwrap_or(BUILTIN_AGENT_NOTICE);
     if text.is_empty() {
         None
     } else {
@@ -240,12 +242,12 @@ fn resolve_agent_notice(args: &AskArgs) -> Option<String> {
 /// between) and applied once. The notice never clobbers a user's
 /// `--append-system-prompt`, and vice versa. Returns `None` when neither
 /// piece is present.
-pub fn compose_append_system_prompt(args: &AskArgs) -> Option<String> {
-    let user = args
+pub fn compose_append_system_prompt(config: &Config) -> Option<String> {
+    let user = config
         .append_system_prompt
         .as_deref()
         .filter(|s| !s.is_empty());
-    let notice = resolve_agent_notice(args);
+    let notice = resolve_agent_notice(config);
     match (user, notice) {
         (Some(u), Some(n)) => Some(format!("{u}\n\n{n}")),
         (Some(u), None) => Some(u.to_string()),
@@ -462,41 +464,40 @@ mod tests {
     }
 
     #[test]
-    fn show_thinking_gated_on_stream_or_trace() {
-        // `--show-thinking` only sets claude's --include-partial-messages
-        // when streaming (--stream) or tracing (--trace); on the default
-        // non-streaming path claude rejects --include-partial-messages, so
-        // the flag must NOT be forwarded. Assert via the derived Debug of
-        // the resolved QueryCommand.
+    fn apply_session_never_forwards_include_partial_messages() {
+        // `--include-partial-messages` is streaming-only (claude rejects it on
+        // the non-streaming path). apply_session is display-flag-free, so it
+        // must NEVER forward it, regardless of --show-thinking/--stream/--trace
+        // -- the streaming pipeline (run_streaming) sets it on the stream/trace
+        // path. This is the structural guarantee that the non-streaming path,
+        // which goes through apply_session only, can never receive it.
         use crate::cli::Cli;
         use clap::Parser;
 
-        let apply = |argv: &[&str]| {
+        let dbg = |argv: &[&str]| {
             let cli = Cli::try_parse_from(argv).unwrap();
-            format!("{:?}", apply_session(QueryCommand::new("hi"), &cli.ask))
+            format!(
+                "{:?}",
+                apply_session(QueryCommand::new("hi"), &cfg(&cli.ask))
+            )
         };
 
-        // Default path: gated off.
-        assert!(
-            apply(&["roba", "--show-thinking", "prompt"])
-                .contains("include_partial_messages: false")
-        );
-        // --stream: gated on.
-        assert!(
-            apply(&["roba", "--show-thinking", "--stream", "prompt"])
-                .contains("include_partial_messages: true")
-        );
-        // --trace: gated on.
-        assert!(
-            apply(&[
+        for argv in [
+            &["roba", "--show-thinking", "prompt"][..],
+            &["roba", "--show-thinking", "--stream", "prompt"][..],
+            &[
                 "roba",
                 "--show-thinking",
                 "--trace",
                 "/tmp/x.jsonl",
-                "prompt"
-            ])
-            .contains("include_partial_messages: true")
-        );
+                "prompt",
+            ][..],
+        ] {
+            assert!(
+                dbg(argv).contains("include_partial_messages: false"),
+                "apply_session must not forward include_partial_messages: {argv:?}"
+            );
+        }
     }
 
     // -- agent notice (#302) -----------------------------------------------
@@ -507,9 +508,16 @@ mod tests {
         Cli::try_parse_from(argv).unwrap().ask
     }
 
+    /// Build an engine `Config` from CLI args the way `run_ask` does, so these
+    /// tests exercise the real `args -> Config -> QueryCommand` path that
+    /// `apply_session` now consumes.
+    fn cfg(args: &AskArgs) -> Config {
+        crate::build_config(args, "")
+    }
+
     #[test]
     fn notice_injected_by_default() {
-        let composed = compose_append_system_prompt(&ask(&["roba", "prompt"])).unwrap();
+        let composed = compose_append_system_prompt(&cfg(&ask(&["roba", "prompt"]))).unwrap();
         assert!(
             composed.contains("single, non-interactive"),
             "got: {composed}"
@@ -519,14 +527,14 @@ mod tests {
     #[test]
     fn notice_absent_under_no_agent_notice() {
         let args = ask(&["roba", "--no-agent-notice", "prompt"]);
-        assert!(compose_append_system_prompt(&args).is_none());
+        assert!(compose_append_system_prompt(&cfg(&args)).is_none());
     }
 
     #[test]
     fn notice_override_replaces_builtin() {
         let mut args = ask(&["roba", "prompt"]);
         args.agent_notice = Some("CUSTOM NOTICE".to_string());
-        let composed = compose_append_system_prompt(&args).unwrap();
+        let composed = compose_append_system_prompt(&cfg(&args)).unwrap();
         assert_eq!(composed, "CUSTOM NOTICE");
         assert!(!composed.contains("single, non-interactive"));
     }
@@ -534,7 +542,7 @@ mod tests {
     #[test]
     fn notice_composes_with_user_append() {
         let args = ask(&["roba", "--append-system-prompt", "Be terse.", "prompt"]);
-        let composed = compose_append_system_prompt(&args).unwrap();
+        let composed = compose_append_system_prompt(&cfg(&args)).unwrap();
         assert!(composed.contains("Be terse."), "got: {composed}");
         assert!(
             composed.contains("single, non-interactive"),
@@ -546,7 +554,7 @@ mod tests {
     fn notice_empty_override_injects_nothing() {
         let mut args = ask(&["roba", "prompt"]);
         args.agent_notice = Some(String::new());
-        assert!(compose_append_system_prompt(&args).is_none());
+        assert!(compose_append_system_prompt(&cfg(&args)).is_none());
     }
 
     #[test]
@@ -554,7 +562,7 @@ mod tests {
         let mut args = ask(&["roba", "--append-system-prompt", "Be terse.", "prompt"]);
         args.agent_notice = Some(String::new());
         assert_eq!(
-            compose_append_system_prompt(&args).as_deref(),
+            compose_append_system_prompt(&cfg(&args)).as_deref(),
             Some("Be terse.")
         );
     }
@@ -564,7 +572,7 @@ mod tests {
         // End-to-end: the notice reaches the QueryCommand on the default path.
         let dbg = format!(
             "{:?}",
-            apply_session(QueryCommand::new("hi"), &ask(&["roba", "prompt"]))
+            apply_session(QueryCommand::new("hi"), &cfg(&ask(&["roba", "prompt"])))
         );
         assert!(dbg.contains("single, non-interactive"), "got: {dbg}");
     }
