@@ -29,3 +29,18 @@ git_tag_enable = true
 git_tag_name = "v{{ version }}"
 changelog_update = true
 changelog_path = "CHANGELOG.md"
+
+# The dependency-light contract crate. Publishes to crates.io (so downstream
+# harnesses can depend on it) but does NOT get its own git tag or GitHub
+# release: the `v{{ version }}` tag + release + cross-platform binaries belong
+# to the `roba` binary. release-plz publishes members in dependency order
+# (roba-types before roba); its released version is tracked via crates.io.
+[[package]]
+name = "roba-types"
+semver_check = true
+release = true
+publish = true
+git_release_enable = false
+git_tag_enable = false
+changelog_update = true
+changelog_path = "roba-types/CHANGELOG.md"

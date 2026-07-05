@@ -35,10 +35,14 @@ answer. Lib + bin targets so integration tests drive the same code paths.
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --lib --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --lib --all-features
 cargo test --test cli --all-features
 ```
+
+`--workspace` covers the `roba-types` member crate (the published,
+dependency-light `--json` envelope + exit-code contract) alongside the
+`roba` binary. The `cli` integration tests are roba-only.
 
 `tests/live.rs` calls real claude and costs money: `#[ignore]` by
 default, run explicitly with `cargo test --test live -- --ignored`.
