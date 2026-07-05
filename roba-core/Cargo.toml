@@ -1,0 +1,21 @@
+[package]
+name = "roba-core"
+version = "0.1.0"
+edition = "2024"
+authors = ["Josh Rotenberg <joshrotenberg@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/joshrotenberg/roba"
+homepage = "https://github.com/joshrotenberg/roba"
+documentation = "https://docs.rs/roba-core"
+readme = "README.md"
+description = "roba's clap-free, side-effect-free run engine: a Config in, a claude QueryResult out."
+keywords = ["roba", "claude", "cli", "engine", "wrapper"]
+categories = ["command-line-utilities", "api-bindings"]
+
+[dependencies]
+anyhow = "1"
+serde_json = "1"
+# Default features: the async runtime + json result types. engine::run builds
+# the Claude client and awaits execute_json, so unlike roba-types this crate
+# needs the async surface.
+claude-wrapper = "0.12.3"

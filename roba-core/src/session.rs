@@ -7,20 +7,18 @@
 //! `AskArgs` (`build_config`) and the side-effect-free `engine::run` takes one
 //! directly, so both share this one mapper with no second copy to drift.
 
-use claude_wrapper::{Effort, PermissionMode, QueryCommand, RetryPolicy};
+use claude_wrapper::{QueryCommand, RetryPolicy};
 
-use crate::cli::{AskArgs, EffortLevel, PermMode};
 use crate::engine::{Config, Permissions, Session};
 
 /// True when a continue/resume request will be silently defeated by an
-/// anonymous (unnamed) worktree: the worktree mints a fresh dir every
-/// run, so `-c` finds no prior session there. A NAMED worktree is stable
-/// and composes fine, so it is excluded. `--session-id` takes precedence
-/// over continue, so it is excluded too.
-pub fn continue_defeated_by_anon_worktree(args: &AskArgs) -> bool {
-    args.session_id.is_none()
-        && args.continue_session.is_some()
-        && matches!(args.worktree, Some(None))
+/// anonymous (unnamed) worktree: the worktree mints a fresh dir every run, so
+/// `-c` finds no prior session there. A NAMED worktree is stable and composes
+/// fine, so it is excluded; a `--session-id` (a new session with a chosen id,
+/// i.e. [`Session::WithId`]) is not a continue/resume, so it is excluded too.
+pub fn continue_defeated_by_anon_worktree(config: &Config) -> bool {
+    matches!(config.session, Session::Continue | Session::Resume(_))
+        && matches!(config.worktree, Some(None))
 }
 
 /// Apply session-related flags (-c / -c=ID, --fork), the model
@@ -48,13 +46,7 @@ pub fn apply_session(mut cmd: QueryCommand, config: &Config) -> QueryCommand {
         cmd = cmd.fallback_model(m.clone());
     }
     if let Some(e) = config.effort {
-        cmd = cmd.effort(match e {
-            EffortLevel::Low => Effort::Low,
-            EffortLevel::Medium => Effort::Medium,
-            EffortLevel::High => Effort::High,
-            EffortLevel::Xhigh => Effort::Xhigh,
-            EffortLevel::Max => Effort::Max,
-        });
+        cmd = cmd.effort(e);
     }
     if let Some(name) = &config.agent {
         cmd = cmd.agent(name.clone());
@@ -155,8 +147,7 @@ pub fn apply_permissions(mut cmd: QueryCommand, config: &Config) -> QueryCommand
     // only applies on the non-bypass path; it composes with the ReadOnly /
     // Writable posture (the allow list below still applies).
     if let Some(mode) = config.permission_mode {
-        let cw_mode = permission_mode_to_cw(mode);
-        cmd = cmd.permission_mode(cw_mode);
+        cmd = cmd.permission_mode(mode);
     }
 
     // Always-on safe defaults. ReadOnly is the default posture; either way
@@ -176,19 +167,6 @@ pub fn apply_permissions(mut cmd: QueryCommand, config: &Config) -> QueryCommand
     }
 
     cmd
-}
-
-/// Convert roba's `PermMode` to claude-wrapper's `PermissionMode`.
-fn permission_mode_to_cw(mode: PermMode) -> PermissionMode {
-    match mode {
-        PermMode::AcceptEdits => PermissionMode::AcceptEdits,
-        PermMode::Auto => PermissionMode::Auto,
-        #[allow(deprecated)]
-        PermMode::BypassPermissions => PermissionMode::BypassPermissions,
-        PermMode::Default => PermissionMode::Default,
-        PermMode::DontAsk => PermissionMode::DontAsk,
-        PermMode::Plan => PermissionMode::Plan,
-    }
 }
 
 fn push_unique(list: &mut Vec<String>, item: &str) {
@@ -466,58 +444,26 @@ mod tests {
     #[test]
     fn apply_session_never_forwards_include_partial_messages() {
         // `--include-partial-messages` is streaming-only (claude rejects it on
-        // the non-streaming path). apply_session is display-flag-free, so it
-        // must NEVER forward it, regardless of --show-thinking/--stream/--trace
-        // -- the streaming pipeline (run_streaming) sets it on the stream/trace
-        // path. This is the structural guarantee that the non-streaming path,
-        // which goes through apply_session only, can never receive it.
-        use crate::cli::Cli;
-        use clap::Parser;
-
-        let dbg = |argv: &[&str]| {
-            let cli = Cli::try_parse_from(argv).unwrap();
-            format!(
-                "{:?}",
-                apply_session(QueryCommand::new("hi"), &cfg(&cli.ask))
-            )
-        };
-
-        for argv in [
-            &["roba", "--show-thinking", "prompt"][..],
-            &["roba", "--show-thinking", "--stream", "prompt"][..],
-            &[
-                "roba",
-                "--show-thinking",
-                "--trace",
-                "/tmp/x.jsonl",
-                "prompt",
-            ][..],
-        ] {
-            assert!(
-                dbg(argv).contains("include_partial_messages: false"),
-                "apply_session must not forward include_partial_messages: {argv:?}"
-            );
-        }
+        // the non-streaming path). apply_session is display-flag-free -- Config
+        // carries no streaming/display flag -- so it must NEVER forward it. The
+        // streaming pipeline (run_streaming) sets it on the stream/trace path.
+        // This is the structural guarantee that the non-streaming path, which
+        // goes through apply_session only, can never receive it.
+        let dbg = format!(
+            "{:?}",
+            apply_session(QueryCommand::new("hi"), &Config::new("p"))
+        );
+        assert!(
+            dbg.contains("include_partial_messages: false"),
+            "apply_session must not forward include_partial_messages: {dbg}"
+        );
     }
 
     // -- agent notice (#302) -----------------------------------------------
 
-    fn ask(argv: &[&str]) -> AskArgs {
-        use crate::cli::Cli;
-        use clap::Parser;
-        Cli::try_parse_from(argv).unwrap().ask
-    }
-
-    /// Build an engine `Config` from CLI args the way `run_ask` does, so these
-    /// tests exercise the real `args -> Config -> QueryCommand` path that
-    /// `apply_session` now consumes.
-    fn cfg(args: &AskArgs) -> Config {
-        crate::build_config(args, "")
-    }
-
     #[test]
     fn notice_injected_by_default() {
-        let composed = compose_append_system_prompt(&cfg(&ask(&["roba", "prompt"]))).unwrap();
+        let composed = compose_append_system_prompt(&Config::new("p")).unwrap();
         assert!(
             composed.contains("single, non-interactive"),
             "got: {composed}"
@@ -526,23 +472,31 @@ mod tests {
 
     #[test]
     fn notice_absent_under_no_agent_notice() {
-        let args = ask(&["roba", "--no-agent-notice", "prompt"]);
-        assert!(compose_append_system_prompt(&cfg(&args)).is_none());
+        let c = Config {
+            no_agent_notice: true,
+            ..Config::new("p")
+        };
+        assert!(compose_append_system_prompt(&c).is_none());
     }
 
     #[test]
     fn notice_override_replaces_builtin() {
-        let mut args = ask(&["roba", "prompt"]);
-        args.agent_notice = Some("CUSTOM NOTICE".to_string());
-        let composed = compose_append_system_prompt(&cfg(&args)).unwrap();
+        let c = Config {
+            agent_notice: Some("CUSTOM NOTICE".to_string()),
+            ..Config::new("p")
+        };
+        let composed = compose_append_system_prompt(&c).unwrap();
         assert_eq!(composed, "CUSTOM NOTICE");
         assert!(!composed.contains("single, non-interactive"));
     }
 
     #[test]
     fn notice_composes_with_user_append() {
-        let args = ask(&["roba", "--append-system-prompt", "Be terse.", "prompt"]);
-        let composed = compose_append_system_prompt(&cfg(&args)).unwrap();
+        let c = Config {
+            append_system_prompt: Some("Be terse.".to_string()),
+            ..Config::new("p")
+        };
+        let composed = compose_append_system_prompt(&c).unwrap();
         assert!(composed.contains("Be terse."), "got: {composed}");
         assert!(
             composed.contains("single, non-interactive"),
@@ -552,17 +506,22 @@ mod tests {
 
     #[test]
     fn notice_empty_override_injects_nothing() {
-        let mut args = ask(&["roba", "prompt"]);
-        args.agent_notice = Some(String::new());
-        assert!(compose_append_system_prompt(&cfg(&args)).is_none());
+        let c = Config {
+            agent_notice: Some(String::new()),
+            ..Config::new("p")
+        };
+        assert!(compose_append_system_prompt(&c).is_none());
     }
 
     #[test]
     fn notice_empty_override_keeps_user_append_only() {
-        let mut args = ask(&["roba", "--append-system-prompt", "Be terse.", "prompt"]);
-        args.agent_notice = Some(String::new());
+        let c = Config {
+            append_system_prompt: Some("Be terse.".to_string()),
+            agent_notice: Some(String::new()),
+            ..Config::new("p")
+        };
         assert_eq!(
-            compose_append_system_prompt(&cfg(&args)).as_deref(),
+            compose_append_system_prompt(&c).as_deref(),
             Some("Be terse.")
         );
     }
@@ -572,7 +531,7 @@ mod tests {
         // End-to-end: the notice reaches the QueryCommand on the default path.
         let dbg = format!(
             "{:?}",
-            apply_session(QueryCommand::new("hi"), &cfg(&ask(&["roba", "prompt"])))
+            apply_session(QueryCommand::new("hi"), &Config::new("p"))
         );
         assert!(dbg.contains("single, non-interactive"), "got: {dbg}");
     }
@@ -581,68 +540,68 @@ mod tests {
 
     #[test]
     fn anon_worktree_defeats_continue_most_recent() {
-        // `-c` (most recent) + bare `-w` (anonymous) -> true.
-        assert!(continue_defeated_by_anon_worktree(&ask(&[
-            "roba", "-c", "-w", "-p", "prompt"
-        ])));
+        // Continue-most-recent + an anonymous worktree -> true.
+        let c = Config {
+            session: Session::Continue,
+            worktree: Some(None),
+            ..Config::new("p")
+        };
+        assert!(continue_defeated_by_anon_worktree(&c));
     }
 
     #[test]
     fn anon_worktree_defeats_resume_specific() {
-        // `-c=ID` (resume specific) + bare `-w` (anonymous) -> true.
-        assert!(continue_defeated_by_anon_worktree(&ask(&[
-            "roba",
-            "-c=abc123",
-            "-w",
-            "-p",
-            "prompt"
-        ])));
+        // Resume-specific + an anonymous worktree -> true.
+        let c = Config {
+            session: Session::Resume("abc123".into()),
+            worktree: Some(None),
+            ..Config::new("p")
+        };
+        assert!(continue_defeated_by_anon_worktree(&c));
     }
 
     #[test]
     fn named_worktree_does_not_defeat_continue() {
-        // `-c` + named `-w=NAME` (stable dir) -> false.
-        assert!(!continue_defeated_by_anon_worktree(&ask(&[
-            "roba",
-            "-c",
-            "-w=mybranch",
-            "-p",
-            "prompt"
-        ])));
+        // Continue + a NAMED worktree (stable dir) -> false.
+        let c = Config {
+            session: Session::Continue,
+            worktree: Some(Some("mybranch".into())),
+            ..Config::new("p")
+        };
+        assert!(!continue_defeated_by_anon_worktree(&c));
     }
 
     #[test]
     fn anon_worktree_alone_is_fine() {
-        // bare `-w` with no continue/resume -> false.
-        assert!(!continue_defeated_by_anon_worktree(&ask(&[
-            "roba", "-w", "-p", "prompt"
-        ])));
+        // Anonymous worktree with a fresh session (no continue/resume) -> false.
+        let c = Config {
+            session: Session::Fresh,
+            worktree: Some(None),
+            ..Config::new("p")
+        };
+        assert!(!continue_defeated_by_anon_worktree(&c));
     }
 
     #[test]
     fn continue_alone_is_fine() {
-        // `-c` with no worktree -> false.
-        assert!(!continue_defeated_by_anon_worktree(&ask(&[
-            "roba", "-c", "-p", "prompt"
-        ])));
+        // Continue with no worktree -> false.
+        let c = Config {
+            session: Session::Continue,
+            ..Config::new("p")
+        };
+        assert!(!continue_defeated_by_anon_worktree(&c));
     }
 
     #[test]
-    fn session_id_takes_precedence_over_continue() {
-        // `--session-id` wins over continue (apply_session arms it first),
-        // so even with continue set the guard must NOT fire. clap forbids
-        // `--session-id` together with `-c`, so set continue_session by hand
-        // to model the precedence path.
-        let mut args = ask(&[
-            "roba",
-            "--session-id",
-            "ef7de917-1234-4abc-8def-000000000001",
-            "-w",
-            "-p",
-            "prompt",
-        ]);
-        args.continue_session = Some(None);
-        assert!(!continue_defeated_by_anon_worktree(&args));
+    fn session_id_does_not_defeat_continue() {
+        // A --session-id (WithId, a NEW session) is not a continue/resume, so
+        // even with an anonymous worktree the guard must NOT fire.
+        let c = Config {
+            session: Session::WithId("ef7de917-1234-4abc-8def-000000000001".into()),
+            worktree: Some(None),
+            ..Config::new("p")
+        };
+        assert!(!continue_defeated_by_anon_worktree(&c));
     }
 
     #[test]

@@ -25,9 +25,8 @@
 
 use anyhow::Result;
 use claude_wrapper::types::QueryResult;
-use claude_wrapper::{Claude, QueryCommand};
+use claude_wrapper::{Claude, Effort, PermissionMode, QueryCommand};
 
-use crate::cli::{EffortLevel, PermMode};
 use crate::session::{apply_session, derive_session_name};
 
 /// What to do about session continuity, mirroring the CLI's `-c` / `--resume`
@@ -70,17 +69,18 @@ pub struct Config {
     pub model: Option<String>,
     /// Fallback model when the primary is overloaded (`--fallback-model`).
     pub fallback_model: Option<String>,
-    /// Reasoning-effort level (`--effort`; `None` = claude's default).
-    pub effort: Option<EffortLevel>,
+    /// Reasoning-effort level (`None` = claude's default). The CLI maps its
+    /// `--effort` value to this claude-wrapper type in `build_config`.
+    pub effort: Option<Effort>,
     /// Run under a named subagent definition (`--agent`).
     pub agent: Option<String>,
     /// Permission posture (default read-only).
     pub permissions: Permissions,
-    /// A specific claude `--permission-mode` (plan / acceptEdits / dontAsk /
-    /// auto / bypassPermissions / default), composed on top of the posture.
-    /// `None` leaves claude's default. Ignored under [`Permissions::FullAuto`],
-    /// which bypasses all checks before the mode is read.
-    pub permission_mode: Option<PermMode>,
+    /// A specific claude permission mode composed on top of the posture. `None`
+    /// leaves claude's default. Ignored under [`Permissions::FullAuto`], which
+    /// bypasses all checks before the mode is read. The CLI maps its
+    /// `--permission-mode` value to this claude-wrapper type in `build_config`.
+    pub permission_mode: Option<PermissionMode>,
     /// Extra allowed tool patterns layered on top of the posture.
     pub allow_tools: Vec<String>,
     /// Tool patterns to block (ignored under [`Permissions::FullAuto`]).
@@ -164,20 +164,20 @@ pub async fn run(config: &Config) -> Result<QueryResult> {
     // Parity with run_ask: with a schema active, surface the structured answer
     // onto `structured_output` / an unfenced `result` (see #317).
     if config.json_schema.is_some() {
-        crate::output::surface_structured_output(&mut result);
+        surface_structured_output(&mut result);
     }
     Ok(result)
 }
 
-/// Build the `QueryCommand` for `prompt` under `args` -- through the one proven
+/// Build the `QueryCommand` for `config` -- through the one proven
 /// [`apply_session`] mapper -- and run it non-streaming, returning the typed
 /// result. The single build+execute path shared by [`run`] and the CLI's
-/// non-streaming branch (`run_ask`), so there is no parallel copy to drift:
-/// `run` passes `Config::to_ask_args()`, the CLI passes its resolved `args`.
+/// non-streaming branch (`run_ask`), which both hand this the same [`Config`],
+/// so there is no parallel copy to drift.
 ///
 /// Schema surfacing is the caller's job -- the CLI shares it with its `--trace`
 /// path, and [`run`] does it after this returns.
-pub(crate) async fn execute(config: &Config, claude: &Claude) -> Result<QueryResult> {
+pub async fn execute(config: &Config, claude: &Claude) -> Result<QueryResult> {
     let name = derive_session_name(&config.prompt);
     let result = apply_session(
         QueryCommand::new(config.prompt.clone())
@@ -188,6 +188,60 @@ pub(crate) async fn execute(config: &Config, claude: &Claude) -> Result<QueryRes
     .execute_json(claude)
     .await?;
     Ok(result)
+}
+
+/// Surface `--json-schema` structured output cleanly (#317).
+///
+/// In practice claude delivers the schema-constrained answer as a fenced
+/// ```` ```json ```` block inside `result.result` and does NOT populate a
+/// `structured_output` field. This normalizes that: when the body is a
+/// single fenced block whose contents parse as JSON, the parsed value is
+/// inserted under `result.extra["structured_output"]` (so `--json`
+/// consumers read `.result.structured_output` directly) and
+/// `result.result` is replaced with the unfenced text (so
+/// `.result.result` and the default text body are clean too).
+///
+/// No-ops when `structured_output` is already present and non-null (a
+/// future wrapper/claude version may surface it natively), or when the
+/// body is not a single parseable fenced JSON block. The caller gates
+/// this on `--json-schema` so a normal answer containing a JSON code
+/// block is never reinterpreted as structured output.
+pub fn surface_structured_output(result: &mut QueryResult) {
+    if result
+        .extra
+        .get("structured_output")
+        .is_some_and(|v| !v.is_null())
+    {
+        return;
+    }
+    let Some(inner) = unfence_single_block(&result.result) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&inner) else {
+        return;
+    };
+    result.extra.insert("structured_output".to_string(), value);
+    result.result = inner;
+}
+
+/// If `text` is a single fenced code block -- it opens with a line
+/// starting ```` ``` ```` (optionally a language tag) and closes with a
+/// bare ```` ``` ```` line, with nothing outside the fence -- return the
+/// inner content (trimmed). Returns `None` otherwise, so a normal answer
+/// that merely contains a code block mid-paragraph is left untouched.
+fn unfence_single_block(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    let mut lines = trimmed.lines();
+    let first = lines.next()?;
+    if !first.starts_with("```") {
+        return None;
+    }
+    let rest: Vec<&str> = lines.collect();
+    let (last, body) = rest.split_last()?;
+    if last.trim() != "```" {
+        return None;
+    }
+    Some(body.join("\n").trim().to_string())
 }
 
 #[cfg(test)]
@@ -207,5 +261,86 @@ mod tests {
         assert!(!c.fork && c.worktree.is_none());
         assert!(c.max_turns.is_none() && c.max_budget_usd.is_none());
         assert!(!c.no_agent_notice && c.agent_notice.is_none());
+    }
+
+    // -- schema output surfacing (#317) ------------------------------------
+
+    fn query_result_body(body: &str) -> QueryResult {
+        serde_json::from_value(serde_json::json!({
+            "result": body,
+            "session_id": "s1",
+            "is_error": false,
+        }))
+        .expect("build QueryResult fixture")
+    }
+
+    #[test]
+    fn surface_structured_output_unfences_json_block() {
+        // The real --json-schema shape (#317): a fenced ```json block in
+        // `result.result`, no `structured_output` key.
+        let mut result = query_result_body("```json\n{\"answer\": \"Paris\"}\n```");
+        surface_structured_output(&mut result);
+        assert_eq!(
+            result.extra.get("structured_output").unwrap()["answer"],
+            "Paris"
+        );
+        // result.result is unfenced so `.result.result` reads cleanly.
+        assert_eq!(result.result, "{\"answer\": \"Paris\"}");
+    }
+
+    #[test]
+    fn surface_structured_output_handles_untagged_fence() {
+        let mut result = query_result_body("```\n[1, 2, 3]\n```");
+        surface_structured_output(&mut result);
+        assert_eq!(
+            result.extra.get("structured_output").unwrap(),
+            &serde_json::json!([1, 2, 3])
+        );
+    }
+
+    #[test]
+    fn surface_structured_output_noop_when_already_present() {
+        // A native structured_output is never clobbered by the body.
+        let mut result: QueryResult = serde_json::from_value(serde_json::json!({
+            "result": "```json\n{\"from\": \"body\"}\n```",
+            "session_id": "s1",
+            "is_error": false,
+            "structured_output": {"from": "native"},
+        }))
+        .expect("build QueryResult fixture");
+        surface_structured_output(&mut result);
+        assert_eq!(
+            result.extra.get("structured_output").unwrap()["from"],
+            "native"
+        );
+        // The native path leaves the body unchanged.
+        assert!(result.result.contains("```"));
+    }
+
+    #[test]
+    fn surface_structured_output_noop_on_non_fenced_text() {
+        let mut result = query_result_body("The answer is 42.");
+        surface_structured_output(&mut result);
+        assert!(!result.extra.contains_key("structured_output"));
+        assert_eq!(result.result, "The answer is 42.");
+    }
+
+    #[test]
+    fn surface_structured_output_noop_when_fence_is_not_json() {
+        // A fenced block that does not parse as JSON is left untouched.
+        let mut result = query_result_body("```rust\nfn main() {}\n```");
+        surface_structured_output(&mut result);
+        assert!(!result.extra.contains_key("structured_output"));
+        assert!(result.result.contains("fn main"));
+    }
+
+    #[test]
+    fn surface_structured_output_noop_on_prose_around_block() {
+        // A real answer that merely contains a JSON block mid-text is not a
+        // single fenced block, so it is not reinterpreted as structured output.
+        let mut result =
+            query_result_body("Here you go:\n```json\n{\"a\": 1}\n```\nHope that helps.");
+        surface_structured_output(&mut result);
+        assert!(!result.extra.contains_key("structured_output"));
     }
 }
