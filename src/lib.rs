@@ -977,21 +977,30 @@ mod tests {
 
     #[test]
     fn classify_max_turns_returns_5() {
-        let err = claude_wrapper::Error::MaxTurnsExceeded {
-            command: "claude --print".to_string(),
-            exit_code: 1,
-            max_turns: Some(40),
-        };
+        // The rail-stop variants are #[non_exhaustive] (claude-wrapper 0.13,
+        // #669), so build them via the public path: from_command_failure
+        // detects the terminal result event's subtype on stdout.
+        let stdout = r#"{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":40,"result":"Reached maximum number of turns (40)"}"#;
+        let err = claude_wrapper::Error::from_command_failure(
+            "claude --print".to_string(),
+            1,
+            stdout.to_string(),
+            String::new(),
+            None,
+        );
         assert_eq!(classify_exit_code(&anyhow::Error::new(err)), 5);
     }
 
     #[test]
     fn classify_max_budget_returns_7() {
-        let err = claude_wrapper::Error::MaxBudgetExceeded {
-            command: "claude --print".to_string(),
-            exit_code: 1,
-            max_usd: Some(0.01),
-        };
+        let stdout = r#"{"type":"result","subtype":"error_max_budget_usd","is_error":true,"result":"Reached maximum budget ($0.01)"}"#;
+        let err = claude_wrapper::Error::from_command_failure(
+            "claude --print".to_string(),
+            1,
+            stdout.to_string(),
+            String::new(),
+            None,
+        );
         assert_eq!(classify_exit_code(&anyhow::Error::new(err)), 7);
     }
 
