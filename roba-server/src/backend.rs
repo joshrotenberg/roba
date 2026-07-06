@@ -81,6 +81,12 @@ impl DuplexBackend {
         if self.conversation.is_some() {
             return Ok(());
         }
+        tracing::info!(
+            model = ?self.model,
+            structured = self.schema.is_some(),
+            max_usd = ?self.max_usd,
+            "session: spawning warm claude child",
+        );
         let mut opts = DuplexOptions::default();
         if let Some(model) = &self.model {
             opts = opts.model(model.clone());
@@ -98,6 +104,9 @@ impl DuplexBackend {
             conversation = conversation.with_budget(BudgetTracker::builder().max_usd(max).build());
         }
         self.conversation = Some(conversation);
+        // The session id is minted by claude on the first turn (not at spawn),
+        // so it is logged on `turn: complete`, not here.
+        tracing::info!("session: spawned warm claude child");
         Ok(())
     }
 }
