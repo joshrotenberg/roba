@@ -17,4 +17,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # json-only: no async, so no tokio. QueryResult is a plain serde data type;
 # this pulls the wrapper's result shape without its runtime.
-claude-wrapper = { version = "0.12.3", default-features = false, features = ["json"] }
+claude-wrapper = { version = "0.13", default-features = false, features = ["json"] }
