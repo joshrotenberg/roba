@@ -23,12 +23,10 @@ path = "src/main.rs"
 
 [dependencies]
 # http feature: the inward (south) MCP surface is served over HTTP on an
-# ephemeral localhost port so the child claude can connect to it.
-# NOTE: the operator bridge compiles here but stays dormant until tower-mcp
-# ships the #924 client_requester fix (elicitation over bidirectional stdio).
-# Proven working against a local build of tower-mcp main; bump this to the
-# release that carries #924 to activate it.
-tower-mcp = { version = "0.12", features = ["http"] }
+# ephemeral localhost port so the child claude can connect to it. 0.12.2 carries
+# the #924 client_requester fix that activates the operator bridge (elicitation
+# over bidirectional stdio).
+tower-mcp = { version = "0.12.2", features = ["http"] }
 claude-wrapper = "0.13"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "net"] }
 serde = { version = "1", features = ["derive"] }
