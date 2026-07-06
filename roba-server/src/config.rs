@@ -18,6 +18,10 @@ pub struct ServerConfig {
     /// reflexive `context` tool to introspect its own roba-server execution.
     /// Default on; disable with `ROBA_INWARD=0`.
     pub inward: bool,
+    /// Full-auto posture: the session bypasses permission checks (all tools,
+    /// including Bash / git / edits). Off by default (read-only Read/Glob/Grep).
+    /// Enable with `ROBA_FULL_AUTO=1`. A loaded gun -- opt in per task.
+    pub full_auto: bool,
 }
 
 impl ServerConfig {
@@ -29,6 +33,7 @@ impl ServerConfig {
             schema: env_nonempty("ROBA_SCHEMA"),
             max_usd: env_nonempty("ROBA_MAX_USD").and_then(|s| s.parse().ok()),
             inward: env_bool("ROBA_INWARD", true),
+            full_auto: env_bool("ROBA_FULL_AUTO", false),
         }
     }
 

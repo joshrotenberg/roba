@@ -61,6 +61,8 @@ pub struct DuplexBackend {
     /// Path to a generated `--mcp-config` pointing the child at the inward
     /// (south) MCP server. `Some` wires the reflexive surface; `None` omits it.
     mcp_config: Option<String>,
+    /// Full-auto: bypass permission checks (all tools). Off = read-only posture.
+    full_auto: bool,
     conversation: Option<Conversation>,
 }
 
@@ -71,6 +73,7 @@ impl DuplexBackend {
         schema: Option<String>,
         max_usd: Option<f64>,
         mcp_config: Option<String>,
+        full_auto: bool,
     ) -> Self {
         Self {
             claude,
@@ -78,6 +81,7 @@ impl DuplexBackend {
             schema,
             max_usd,
             mcp_config,
+            full_auto,
             conversation: None,
         }
     }
@@ -96,16 +100,24 @@ impl DuplexBackend {
         if let Some(model) = &self.model {
             opts = opts.model(model.clone());
         }
-        // Safe-by-default posture: not full-auto, read-only tools. A later pass
-        // maps roba-core `Permissions` here (and elicitation can gate escalation).
-        let mut allowed = vec!["Read".to_string(), "Glob".to_string(), "Grep".to_string()];
-        if let Some(path) = &self.mcp_config {
-            // Wire the inward surface: strict so the child's MCP surface is
-            // exactly our server, and allow its reflexive mcp__roba__* tools.
-            opts = opts.mcp_config(path.clone()).strict_mcp_config();
-            allowed.push("mcp__roba".to_string());
+        // Posture. Full-auto bypasses permission checks (all tools). Otherwise
+        // safe-by-default: read-only tools, plus the inward mcp__roba__* tools
+        // when the reflexive surface is wired. A later pass maps roba-core
+        // `Permissions` here (and elicitation can gate escalation).
+        if self.full_auto {
+            opts = opts.dangerously_skip_permissions();
+        } else {
+            let mut allowed = vec!["Read".to_string(), "Glob".to_string(), "Grep".to_string()];
+            if self.mcp_config.is_some() {
+                allowed.push("mcp__roba".to_string());
+            }
+            opts = opts.allowed_tools(allowed);
         }
-        opts = opts.allowed_tools(allowed);
+        // The inward surface is wired regardless of posture (strict: the child's
+        // MCP surface is exactly our server).
+        if let Some(path) = &self.mcp_config {
+            opts = opts.mcp_config(path.clone()).strict_mcp_config();
+        }
         if let Some(schema) = &self.schema {
             // Per-session structured mode: --json-schema is fixed for the child.
             opts = opts.json_schema(schema.clone());

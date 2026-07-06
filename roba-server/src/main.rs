@@ -13,6 +13,8 @@ async fn main() -> Result<()> {
         model = ?config.model,
         structured = config.structured(),
         max_usd = ?config.max_usd,
+        inward = config.inward,
+        full_auto = config.full_auto,
         "roba-server: stdio MCP up",
     );
     roba_server::serve(config).await

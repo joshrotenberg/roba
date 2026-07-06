@@ -93,6 +93,7 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
         config.schema,
         config.max_usd,
         mcp_config_path,
+        config.full_auto,
     );
     let handle = spawn_session_actor(backend, status);
     let router = tools::router(handle, structured);
