@@ -1,0 +1,43 @@
+[package]
+name = "roba-server"
+version = "0.1.0"
+edition = "2024"
+authors = ["Josh Rotenberg <joshrotenberg@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/joshrotenberg/roba"
+homepage = "https://github.com/joshrotenberg/roba"
+description = "An MCP server exposing a single warm claude session (experimental)."
+keywords = ["roba", "claude", "mcp", "server", "session"]
+categories = ["command-line-utilities"]
+# Experimental: not published to crates.io yet. Lives in the workspace so it
+# builds and is reviewed alongside roba, but the surface is not stable.
+publish = false
+
+[lib]
+name = "roba_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "roba-server"
+path = "src/main.rs"
+
+[dependencies]
+# http feature: the inward (south) MCP surface is served over HTTP on an
+# ephemeral localhost port so the child claude can connect to it. 0.12.2 carries
+# the #924 client_requester fix that activates the operator bridge (elicitation
+# over bidirectional stdio).
+tower-mcp = { version = "0.12.2", features = ["http"] }
+claude-wrapper = "0.13"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1.2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# axum::serve on a self-bound listener, so we can use an ephemeral port (fixed
+# ports would collide when several roba-server processes run). Matches the axum
+# tower-mcp pulls in.
+axum = "0.8"
+# The generated --mcp-config file handed to the child (kept alive for the run).
+tempfile = "3"

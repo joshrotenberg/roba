@@ -21,7 +21,7 @@ categories = ["command-line-utilities"]
 # run engine) are members. resolver "3" matches the edition-2024 package
 # default so making this a workspace does not change dependency resolution.
 [workspace]
-members = ["roba-types", "roba-core"]
+members = ["roba-types", "roba-core", "roba-server"]
 resolver = "3"
 
 [[bin]]
