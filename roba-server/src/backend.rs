@@ -10,10 +10,11 @@
 //! behind the same trait.
 
 use anyhow::Result;
-use claude_wrapper::duplex::{DuplexOptions, DuplexSession};
+use claude_wrapper::duplex::{DuplexOptions, DuplexSession, InboundEvent};
 use claude_wrapper::{BudgetTracker, Claude, Conversation};
 use serde_json::Value;
 use std::sync::Arc;
+use tokio::sync::broadcast::{Receiver, error::RecvError};
 
 /// Backend-agnostic outcome of one turn (a superset of `QueryResult` /
 /// `TurnResult`). `session_id` / `cost_usd` are the honest per-turn figures a
@@ -123,6 +124,9 @@ impl DuplexBackend {
             opts = opts.json_schema(schema.clone());
         }
         let session = DuplexSession::spawn(&self.claude, opts).await?;
+        // Surface the child's tool-by-tool activity in our own trace stream
+        // (subscribe before the first turn so no events are missed).
+        spawn_event_logger(session.subscribe());
         let mut conversation = Conversation::new(session);
         if let Some(max) = self.max_usd {
             conversation = conversation.with_budget(BudgetTracker::builder().max_usd(max).build());
@@ -175,5 +179,67 @@ impl SessionBackend for DuplexBackend {
         self.conversation
             .as_ref()
             .map_or(0, Conversation::total_turns)
+    }
+}
+
+/// Drive a background task that logs the child's tool-by-tool activity from the
+/// session's event broadcast. Runs until the session closes. A slow consumer
+/// drops events (`Lagged`) rather than back-pressuring the session; that is a
+/// best-effort trace, not a durable log (the session JSONL is the record).
+fn spawn_event_logger(mut events: Receiver<InboundEvent>) {
+    tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(InboundEvent::Assistant(msg)) => log_tool_calls(&msg),
+                Ok(_) => {} // SystemInit / StreamEvent / User / Other: skip
+                Err(RecvError::Closed) => break,
+                Err(RecvError::Lagged(n)) => {
+                    tracing::warn!(skipped = n, "child event stream lagged");
+                }
+            }
+        }
+    });
+}
+
+/// Emit one `child: tool` trace line per tool-use block in an assistant message.
+fn log_tool_calls(assistant: &Value) {
+    let Some(content) = assistant
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+    for block in content {
+        if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+            continue;
+        }
+        let name = block.get("name").and_then(Value::as_str).unwrap_or("?");
+        let detail = tool_detail(name, block.get("input"));
+        tracing::info!(tool = name, detail = %detail, "child: tool");
+    }
+}
+
+/// A short human-readable summary of a tool-use input for the trace line.
+fn tool_detail(name: &str, input: Option<&Value>) -> String {
+    let Some(input) = input else {
+        return String::new();
+    };
+    let take = |s: &str, n: usize| s.chars().take(n).collect::<String>();
+    match name {
+        "Bash" => take(
+            input.get("command").and_then(Value::as_str).unwrap_or(""),
+            160,
+        ),
+        "Read" | "Edit" | "Write" | "NotebookEdit" => input
+            .get("file_path")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        "Glob" | "Grep" => take(
+            input.get("pattern").and_then(Value::as_str).unwrap_or(""),
+            80,
+        ),
+        _ => take(&input.to_string(), 120),
     }
 }
