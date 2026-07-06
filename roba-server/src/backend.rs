@@ -58,6 +58,9 @@ pub struct DuplexBackend {
     /// Optional session spend ceiling (USD). `send` fails fast with
     /// `Error::BudgetExceeded` once exceeded.
     max_usd: Option<f64>,
+    /// Path to a generated `--mcp-config` pointing the child at the inward
+    /// (south) MCP server. `Some` wires the reflexive surface; `None` omits it.
+    mcp_config: Option<String>,
     conversation: Option<Conversation>,
 }
 
@@ -67,12 +70,14 @@ impl DuplexBackend {
         model: Option<String>,
         schema: Option<String>,
         max_usd: Option<f64>,
+        mcp_config: Option<String>,
     ) -> Self {
         Self {
             claude,
             model,
             schema,
             max_usd,
+            mcp_config,
             conversation: None,
         }
     }
@@ -93,7 +98,14 @@ impl DuplexBackend {
         }
         // Safe-by-default posture: not full-auto, read-only tools. A later pass
         // maps roba-core `Permissions` here (and elicitation can gate escalation).
-        opts = opts.allowed_tools(["Read", "Glob", "Grep"]);
+        let mut allowed = vec!["Read".to_string(), "Glob".to_string(), "Grep".to_string()];
+        if let Some(path) = &self.mcp_config {
+            // Wire the inward surface: strict so the child's MCP surface is
+            // exactly our server, and allow its reflexive mcp__roba__* tools.
+            opts = opts.mcp_config(path.clone()).strict_mcp_config();
+            allowed.push("mcp__roba".to_string());
+        }
+        opts = opts.allowed_tools(allowed);
         if let Some(schema) = &self.schema {
             // Per-session structured mode: --json-schema is fixed for the child.
             opts = opts.json_schema(schema.clone());

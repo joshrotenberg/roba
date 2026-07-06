@@ -22,12 +22,20 @@ name = "roba-server"
 path = "src/main.rs"
 
 [dependencies]
-tower-mcp = "0.12"
+# http feature: the inward (south) MCP surface is served over HTTP on an
+# ephemeral localhost port so the child claude can connect to it.
+tower-mcp = { version = "0.12", features = ["http"] }
 claude-wrapper = "0.13"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "net"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "1.2"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# axum::serve on a self-bound listener, so we can use an ephemeral port (fixed
+# ports would collide when several roba-server processes run). Matches the axum
+# tower-mcp pulls in.
+axum = "0.8"
+# The generated --mcp-config file handed to the child (kept alive for the run).
+tempfile = "3"

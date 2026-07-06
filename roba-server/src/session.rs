@@ -54,13 +54,14 @@ impl SessionHandle {
     }
 }
 
-/// Spawn the actor over a concrete backend and return its handle.
-pub fn spawn_session_actor<B>(mut backend: B) -> SessionHandle
+/// Spawn the actor over a backend and return its handle. `status` is owned by
+/// the caller and shared with the inward MCP surface, so the running agent's
+/// `context` tool reads the same live figures the actor writes.
+pub fn spawn_session_actor<B>(mut backend: B, status: Arc<Mutex<SessionStatus>>) -> SessionHandle
 where
     B: SessionBackend + Send + 'static,
 {
     let (tx, mut rx) = mpsc::channel::<TurnRequest>(64);
-    let status = Arc::new(Mutex::new(SessionStatus::default()));
     let actor_status = status.clone();
 
     tokio::spawn(async move {
