@@ -1,0 +1,31 @@
+[package]
+name = "roba-server"
+version = "0.1.0"
+edition = "2024"
+authors = ["Josh Rotenberg <joshrotenberg@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/joshrotenberg/roba"
+homepage = "https://github.com/joshrotenberg/roba"
+description = "An MCP server exposing a single warm claude session (experimental)."
+keywords = ["roba", "claude", "mcp", "server", "session"]
+categories = ["command-line-utilities"]
+# Experimental: not published to crates.io yet. Lives in the workspace so it
+# builds and is reviewed alongside roba, but the surface is not stable.
+publish = false
+
+[lib]
+name = "roba_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "roba-server"
+path = "src/main.rs"
+
+[dependencies]
+tower-mcp = "0.12"
+claude-wrapper = "0.13"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1.2"
+anyhow = "1"
