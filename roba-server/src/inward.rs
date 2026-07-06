@@ -16,18 +16,23 @@ use std::io::Write as _;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use tempfile::NamedTempFile;
+use tokio::sync::oneshot;
 use tower_mcp::{CallToolResult, HttpTransport, McpRouter, NoParams, Tool, ToolBuilder};
 
+use crate::bridge::{ElicitBridge, ElicitOutcome, ElicitRequest};
 use crate::config::ServerConfig;
 use crate::session::SessionStatus;
 
-/// What the inward tools read: the static launch config plus the live session
-/// status shared with the actor.
+/// What the inward tools read: the static launch config, the live session
+/// status shared with the actor, and the operator bridge (for `ask_operator`).
 #[derive(Clone)]
 pub struct InwardContext {
     pub config: ServerConfig,
     pub status: Arc<Mutex<SessionStatus>>,
+    pub bridge: ElicitBridge,
 }
 
 /// Bind an ephemeral localhost port, serve the inward MCP router in the
@@ -59,9 +64,64 @@ pub fn write_mcp_config(inward_url: &str) -> Result<NamedTempFile> {
 
 /// The inward router. Server name `roba` => the child sees `mcp__roba__*` tools.
 fn inward_router(ctx: InwardContext) -> McpRouter {
+    let bridge = ctx.bridge.clone();
     McpRouter::new()
         .server_info("roba", env!("CARGO_PKG_VERSION"))
         .tool(context_tool(ctx))
+        .tool(ask_operator_tool(bridge))
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct AskOperatorInput {
+    /// The question to put to the human operator.
+    question: String,
+}
+
+/// `ask_operator`: the agent asks the human operator a question mid-turn and
+/// gets their answer. Routes through the bridge to the in-flight north `prompt`
+/// handler, which raises the elicitation. Returns `{action, answer?}`.
+fn ask_operator_tool(bridge: ElicitBridge) -> Tool {
+    ToolBuilder::new("ask_operator")
+        .title("Ask the operator")
+        .description(
+            "Ask the human operator a question and get their answer. Use when you \
+             need a decision or clarification only they can give (which branch to \
+             target, whether to proceed, a missing value).",
+        )
+        .handler(move |input: AskOperatorInput| {
+            let bridge = bridge.clone();
+            async move {
+                let sender = bridge.lock().expect("bridge mutex poisoned").clone();
+                let Some(tx) = sender else {
+                    return Ok(CallToolResult::error(
+                        "no operator is attached to this session right now",
+                    ));
+                };
+                let (reply, rx) = oneshot::channel();
+                if tx
+                    .send(ElicitRequest {
+                        question: input.question,
+                        reply,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return Ok(CallToolResult::error("operator channel closed"));
+                }
+                let value = match rx.await {
+                    Ok(ElicitOutcome::Answer(answer)) => {
+                        serde_json::json!({"action": "accept", "answer": answer})
+                    }
+                    Ok(ElicitOutcome::Declined) => serde_json::json!({"action": "decline"}),
+                    Ok(ElicitOutcome::Cancelled) => serde_json::json!({"action": "cancel"}),
+                    Ok(ElicitOutcome::Unavailable) | Err(_) => {
+                        return Ok(CallToolResult::error("operator unavailable"));
+                    }
+                };
+                Ok(CallToolResult::json(value))
+            }
+        })
+        .build()
 }
 
 fn context_tool(ctx: InwardContext) -> Tool {

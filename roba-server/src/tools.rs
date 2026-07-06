@@ -7,8 +7,11 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::sync::mpsc;
+use tower_mcp::extract::{Context, Json, State};
 use tower_mcp::{CallToolResult, McpRouter, NoParams, Tool, ToolBuilder};
 
+use crate::bridge::{ElicitBridge, ElicitRequest, ask_via_context};
 use crate::session::SessionHandle;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -17,27 +20,67 @@ struct PromptInput {
     prompt: String,
 }
 
-/// Build the MCP router: server info + the tools, all sharing one session
-/// handle. `structured` selects whether `prompt` returns `structuredContent`
-/// (the session was launched with a schema) or plain text.
-pub fn router(handle: SessionHandle, structured: bool) -> McpRouter {
+/// State shared into the `prompt` handler: the session handle, the operator
+/// bridge (to service the agent's `ask_operator` during the turn), and the
+/// output mode.
+#[derive(Clone)]
+struct PromptState {
+    handle: SessionHandle,
+    bridge: ElicitBridge,
+    structured: bool,
+}
+
+/// Build the MCP router: server info + the tools. `bridge` lets the in-flight
+/// `prompt` turn service the running agent's `ask_operator` requests.
+pub fn router(handle: SessionHandle, structured: bool, bridge: ElicitBridge) -> McpRouter {
+    let state = PromptState {
+        handle: handle.clone(),
+        bridge,
+        structured,
+    };
     McpRouter::new()
         .server_info("roba-server", env!("CARGO_PKG_VERSION"))
-        .tool(prompt_tool(handle.clone(), structured))
+        .tool(prompt_tool(state))
         .tool(status_tool(handle))
 }
 
-fn prompt_tool(handle: SessionHandle, structured: bool) -> Tool {
+fn prompt_tool(state: PromptState) -> Tool {
     ToolBuilder::new("prompt")
         .title("Prompt")
         .description(
             "Send the next turn to this process's single warm claude session. \
              Concurrent calls queue FIFO and run one at a time.",
         )
-        .handler(move |input: PromptInput| {
-            let handle = handle.clone();
-            async move {
-                match handle.prompt(input.prompt).await {
+        .extractor_handler(
+            state,
+            |State(s): State<PromptState>,
+             ctx: Context,
+             Json(input): Json<PromptInput>| async move {
+                let PromptState {
+                    handle,
+                    bridge,
+                    structured,
+                } = s;
+                // Register a per-turn channel so the agent's `ask_operator`
+                // requests reach this handler (which holds an elicitation-capable
+                // Context) while the turn runs.
+                let (tx, mut rx) = mpsc::channel::<ElicitRequest>(8);
+                *bridge.lock().expect("bridge mutex poisoned") = Some(tx);
+
+                let turn = handle.prompt(input.prompt);
+                tokio::pin!(turn);
+                let outcome = loop {
+                    tokio::select! {
+                        result = &mut turn => break result,
+                        Some(req) = rx.recv() => {
+                            let answer = ask_via_context(&ctx, &req.question).await;
+                            let _ = req.reply.send(answer);
+                        }
+                    }
+                };
+                *bridge.lock().expect("bridge mutex poisoned") = None;
+
+                match outcome {
                     Err(e) => Ok(CallToolResult::error(e.to_string())),
                     Ok(out) if out.is_error => Ok(CallToolResult::error(out.text)),
                     Ok(out) if structured => match out.structured {
@@ -47,8 +90,8 @@ fn prompt_tool(handle: SessionHandle, structured: bool) -> Tool {
                     },
                     Ok(out) => Ok(CallToolResult::text(out.text)),
                 }
-            }
-        })
+            },
+        )
         .build()
 }
 

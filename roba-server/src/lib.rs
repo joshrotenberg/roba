@@ -38,6 +38,7 @@
 //! - optional session spend ceiling (`ROBA_MAX_USD`), a `Conversation` budget.
 
 pub mod backend;
+pub mod bridge;
 pub mod config;
 pub mod inward;
 pub mod session;
@@ -46,7 +47,7 @@ pub mod tools;
 use anyhow::Result;
 use claude_wrapper::Claude;
 use std::sync::{Arc, Mutex};
-use tower_mcp::StdioTransport;
+use tower_mcp::BidirectionalStdioTransport;
 
 use crate::backend::DuplexBackend;
 use crate::config::ServerConfig;
@@ -67,6 +68,9 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
     // Shared live status: the actor writes it, the north `status` tool and the
     // inward `context` tool read it.
     let status = Arc::new(Mutex::new(SessionStatus::default()));
+    // The operator bridge: the north `prompt` handler registers a channel here
+    // for its turn; the inward `ask_operator` tool reads it to reach the operator.
+    let bridge = bridge::new_bridge();
 
     // Inward surface (optional): bring it up before the child can spawn, and
     // keep the generated config file alive for the whole run.
@@ -75,6 +79,7 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
         let ctx = InwardContext {
             config: config.clone(),
             status: status.clone(),
+            bridge: bridge.clone(),
         };
         let url = inward::spawn_server(ctx).await?;
         let file = inward::write_mcp_config(&url)?;
@@ -96,7 +101,10 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
         config.full_auto,
     );
     let handle = spawn_session_actor(backend, status);
-    let router = tools::router(handle, structured);
-    StdioTransport::new(router).run().await?;
+    let router = tools::router(handle, structured, bridge);
+    // Bidirectional so the server can issue elicitation/create to the operator
+    // (the operator bridge). Also serves the request/response tools as before.
+    let mut transport = BidirectionalStdioTransport::new(router);
+    transport.run().await?;
     Ok(())
 }
