@@ -235,6 +235,16 @@ pub enum SubCommand {
         #[command(subcommand)]
         action: AliasAction,
     },
+    /// Inspect personas: role-bearing profiles (`[profile.NAME]` with `agent`).
+    ///
+    /// A persona is a profile that pins a claude agent (the role) plus its run
+    /// envelope; `list` shows the role-bearing profiles, `show NAME` prints one
+    /// and locates its agent file. Read-only. See also `roba profile` and
+    /// `roba config explain`.
+    Persona {
+        #[command(subcommand)]
+        action: PersonaAction,
+    },
     /// Bootstrap a project roba.toml (claude-assisted).
     ///
     /// The per-project half of the config-draft verbs: `init` looks at
@@ -285,6 +295,17 @@ pub enum SubCommand {
     /// pool (or errors with close-match suggestions).
     #[command(external_subcommand)]
     External(Vec<String>),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PersonaAction {
+    /// List personas: profiles that pin an `agent` (the role).
+    List,
+    /// Show one persona's `[profile.NAME]` block and its resolved agent file.
+    Show {
+        /// Persona name (the `[profile.NAME]` whose `agent` is set).
+        name: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
