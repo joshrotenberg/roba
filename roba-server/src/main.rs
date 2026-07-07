@@ -11,6 +11,10 @@ async fn main() -> Result<()> {
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         model = ?config.model,
+        agent = ?config.agent,
+        effort = ?config.effort,
+        fallback_model = ?config.fallback_model,
+        max_turns = ?config.max_turns,
         structured = config.structured(),
         max_usd = ?config.max_usd,
         inward = config.inward,

@@ -11,7 +11,7 @@
 
 use anyhow::Result;
 use claude_wrapper::duplex::{DuplexOptions, DuplexSession, InboundEvent};
-use claude_wrapper::{BudgetTracker, Claude, Conversation};
+use claude_wrapper::{BudgetTracker, Claude, Conversation, Effort};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
@@ -55,6 +55,15 @@ pub trait SessionBackend: Send {
 pub struct DuplexBackend {
     claude: Arc<Claude>,
     model: Option<String>,
+    /// The role: a native claude agent selected via `--agent`. See
+    /// [`ServerConfig::agent`](crate::config::ServerConfig::agent).
+    agent: Option<String>,
+    /// Reasoning effort for the session.
+    effort: Option<Effort>,
+    /// Fallback model when the primary is overloaded.
+    fallback_model: Option<String>,
+    /// Per-prompt agentic turn cap.
+    max_turns: Option<u32>,
     /// Inline JSON schema. `Some` => structured session (fixed at spawn);
     /// `None` => a prose session. Per-session, not per-call.
     schema: Option<String>,
@@ -83,6 +92,10 @@ impl DuplexBackend {
         Self {
             claude,
             model: config.model.clone(),
+            agent: config.agent.clone(),
+            effort: config.effort,
+            fallback_model: config.fallback_model.clone(),
+            max_turns: config.max_turns,
             schema: config.schema.clone(),
             max_usd: config.max_usd,
             mcp_config,
@@ -100,6 +113,7 @@ impl DuplexBackend {
         }
         tracing::info!(
             model = ?self.model,
+            agent = ?self.agent,
             structured = self.schema.is_some(),
             max_usd = ?self.max_usd,
             "session: spawning warm claude child",
@@ -107,6 +121,21 @@ impl DuplexBackend {
         let mut opts = DuplexOptions::default();
         if let Some(model) = &self.model {
             opts = opts.model(model.clone());
+        }
+        // Role + envelope: the agent is the persona's role (a native claude
+        // agent via --agent); effort / fallback / max_turns are the run
+        // envelope bare --agent lacks. All fixed for the session at spawn.
+        if let Some(agent) = &self.agent {
+            opts = opts.agent(agent.clone());
+        }
+        if let Some(effort) = self.effort {
+            opts = opts.effort(effort);
+        }
+        if let Some(fallback) = &self.fallback_model {
+            opts = opts.fallback_model(fallback.clone());
+        }
+        if let Some(max_turns) = self.max_turns {
+            opts = opts.max_turns(max_turns);
         }
         // Posture. Full-auto bypasses permission checks (all tools). Otherwise
         // safe-by-default: read-only tools, plus the inward mcp__roba__* tools
