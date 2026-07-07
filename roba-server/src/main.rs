@@ -15,6 +15,9 @@ async fn main() -> Result<()> {
         max_usd = ?config.max_usd,
         inward = config.inward,
         full_auto = config.full_auto,
+        writable = config.writable,
+        allow_tools = ?config.allow_tools,
+        deny_tools = ?config.deny_tools,
         "roba-server: stdio MCP up",
     );
     roba_server::serve(config).await

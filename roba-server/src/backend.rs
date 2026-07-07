@@ -16,6 +16,8 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 
+use crate::config::ServerConfig;
+
 /// Backend-agnostic outcome of one turn (a superset of `QueryResult` /
 /// `TurnResult`). `session_id` / `cost_usd` are the honest per-turn figures a
 /// real server surfaces in the result `_meta` (a later pass); the current
@@ -64,25 +66,30 @@ pub struct DuplexBackend {
     mcp_config: Option<String>,
     /// Full-auto: bypass permission checks (all tools). Off = read-only posture.
     full_auto: bool,
+    /// Writable posture: add Edit + Write to the read-only base (ignored under
+    /// full_auto).
+    writable: bool,
+    /// Extra allowed tool patterns layered on the posture (e.g. `Bash(gh:*)`).
+    allow_tools: Vec<String>,
+    /// Tool patterns to deny, applied on top of any posture.
+    deny_tools: Vec<String>,
     conversation: Option<Conversation>,
 }
 
 impl DuplexBackend {
-    pub fn new(
-        claude: Arc<Claude>,
-        model: Option<String>,
-        schema: Option<String>,
-        max_usd: Option<f64>,
-        mcp_config: Option<String>,
-        full_auto: bool,
-    ) -> Self {
+    /// Build the backend from the resolved config plus the generated inward
+    /// `--mcp-config` path (if the reflexive surface is wired).
+    pub fn new(claude: Arc<Claude>, config: &ServerConfig, mcp_config: Option<String>) -> Self {
         Self {
             claude,
-            model,
-            schema,
-            max_usd,
+            model: config.model.clone(),
+            schema: config.schema.clone(),
+            max_usd: config.max_usd,
             mcp_config,
-            full_auto,
+            full_auto: config.full_auto,
+            writable: config.writable,
+            allow_tools: config.allow_tools.clone(),
+            deny_tools: config.deny_tools.clone(),
             conversation: None,
         }
     }
@@ -109,10 +116,20 @@ impl DuplexBackend {
             opts = opts.dangerously_skip_permissions();
         } else {
             let mut allowed = vec!["Read".to_string(), "Glob".to_string(), "Grep".to_string()];
+            if self.writable {
+                allowed.push("Edit".to_string());
+                allowed.push("Write".to_string());
+            }
             if self.mcp_config.is_some() {
                 allowed.push("mcp__roba".to_string());
             }
+            // Extra patterns (e.g. Bash(gh:*)) for a read-plus-review posture.
+            allowed.extend(self.allow_tools.iter().cloned());
             opts = opts.allowed_tools(allowed);
+        }
+        // Deny patterns apply on top of any posture (carve-outs).
+        if !self.deny_tools.is_empty() {
+            opts = opts.disallowed_tools(self.deny_tools.clone());
         }
         // The inward surface is wired regardless of posture (strict: the child's
         // MCP surface is exactly our server).

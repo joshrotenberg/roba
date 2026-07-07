@@ -36,6 +36,10 @@
 //!   MCP `outputSchema` is per-tool. A different schema means a different
 //!   process.
 //! - optional session spend ceiling (`ROBA_MAX_USD`), a `Conversation` budget.
+//! - posture: read-only by default; `ROBA_WRITABLE=1` adds Edit + Write,
+//!   `ROBA_FULL_AUTO=1` bypasses all checks. `ROBA_ALLOW_TOOLS` /
+//!   `ROBA_DENY_TOOLS` (comma-separated tool patterns) layer on top, e.g.
+//!   `ROBA_ALLOW_TOOLS='Bash(gh:*)'` for a read-plus-review session.
 
 pub mod backend;
 pub mod bridge;
@@ -92,14 +96,7 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
     };
 
     let claude = Arc::new(Claude::builder().build()?);
-    let backend = DuplexBackend::new(
-        claude,
-        config.model,
-        config.schema,
-        config.max_usd,
-        mcp_config_path,
-        config.full_auto,
-    );
+    let backend = DuplexBackend::new(claude, &config, mcp_config_path);
     let handle = spawn_session_actor(backend, status);
     let router = tools::router(handle, structured, bridge);
     // Bidirectional so the server can issue elicitation/create to the operator
