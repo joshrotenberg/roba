@@ -28,6 +28,7 @@ pub mod profile;
 pub mod prompt;
 pub mod rates;
 pub mod render;
+pub mod serve;
 pub mod show;
 pub mod stdin_probe;
 pub mod stream;
@@ -84,6 +85,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         // Persona inspection: role-bearing profiles. Synchronous, read-only,
         // no claude call.
         Some(SubCommand::Persona { action }) => persona::run(action),
+        // Resolve a persona from the pool, map it onto ROBA_* env, and exec
+        // the roba-server binary. No claude call in this process.
+        Some(SubCommand::Serve(args)) => serve::run(args),
         // `config init` makes one claude call (with a read-only window
         // onto the project), so it is async like the draft verbs.
         Some(SubCommand::Config { cmd }) => match cmd {
