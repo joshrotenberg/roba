@@ -54,6 +54,10 @@ pub struct Profile {
     /// Pin a claude-code subagent by name (`--agent`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// Human-readable summary of a persona, shown by `roba persona list`.
+    /// Metadata only: no CLI flag, never forwarded to a run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -221,6 +225,7 @@ impl Profile {
             && self.model.is_none()
             && self.effort.is_none()
             && self.agent.is_none()
+            && self.description.is_none()
             && self.stream.is_none()
             && self.show_thinking.is_none()
             && self.echo.is_none()
@@ -276,6 +281,7 @@ impl Profile {
             model,
             effort,
             agent,
+            description,
             stream,
             show_thinking,
             echo,
@@ -345,6 +351,9 @@ impl Profile {
         }
         if agent.is_some() {
             self.agent = agent;
+        }
+        if description.is_some() {
+            self.description = description;
         }
         if stream.is_some() {
             self.stream = stream;
@@ -695,18 +704,21 @@ git_diff = true
         let mut a = Profile {
             readonly: Some(false),
             git_log: Some(3),
+            description: Some("base".to_string()),
             ..Default::default()
         };
         let b = Profile {
             readonly: Some(true),
             git_log: None,
             git_diff: Some(true),
+            description: Some("override".to_string()),
             ..Default::default()
         };
         a.merge_in(b);
         assert_eq!(a.readonly, Some(true)); // other overrode
         assert_eq!(a.git_log, Some(3)); // other was None, keep self
         assert_eq!(a.git_diff, Some(true)); // self was None, take other
+        assert_eq!(a.description.as_deref(), Some("override")); // other overrode
     }
 
     #[test]

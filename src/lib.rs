@@ -23,6 +23,7 @@ pub mod error;
 pub mod history;
 pub mod lint;
 pub mod output;
+pub mod persona;
 pub mod profile;
 pub mod prompt;
 pub mod rates;
@@ -80,6 +81,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             crate::cli::AliasAction::Draft(args) => aliases::run_draft(args).await,
             other => aliases::run(other),
         },
+        // Persona inspection: role-bearing profiles. Synchronous, read-only,
+        // no claude call.
+        Some(SubCommand::Persona { action }) => persona::run(action),
         // `config init` makes one claude call (with a read-only window
         // onto the project), so it is async like the draft verbs.
         Some(SubCommand::Config { cmd }) => match cmd {

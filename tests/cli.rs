@@ -1857,6 +1857,86 @@ fn alias_show_unknown_errors_with_suggestion() {
         .stderr(predicate::str::contains("review"));
 }
 
+// ---------------------------------------------------------------------------
+// persona list / show -- role-bearing profiles (#428)
+// ---------------------------------------------------------------------------
+
+/// A project with one persona (a profile with `agent` set) and one plain
+/// profile, plus the persona's agent file so `persona show` can resolve it.
+fn persona_project() -> tempfile::TempDir {
+    make_dir_with_files(&[
+        (".git/HEAD", ""),
+        (
+            ".claude/agents/reviewer.md",
+            "---\nname: reviewer\ndescription: sample\n---\nYou review PRs.",
+        ),
+        (
+            "roba.toml",
+            r#"
+[profile.reviewer]
+description = "Read and comment PR reviewer"
+agent = "reviewer"
+allow_tool = ["Bash(gh pr view:*)"]
+
+[profile.plainish]
+model = "haiku"
+"#,
+        ),
+    ])
+}
+
+#[test]
+fn persona_list_shows_only_role_bearing_profiles() {
+    let project = persona_project();
+    let home = tempfile::tempdir().unwrap();
+    roba_in(&project, &home)
+        .args(["persona", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reviewer"))
+        .stdout(predicate::str::contains("Read and comment PR reviewer"))
+        // the plain profile (no agent) is not a persona
+        .stdout(predicate::str::contains("plainish").not());
+}
+
+#[test]
+fn persona_show_prints_block_and_locates_agent() {
+    let project = persona_project();
+    let home = tempfile::tempdir().unwrap();
+    roba_in(&project, &home)
+        .args(["persona", "show", "reviewer"])
+        .assert()
+        .success()
+        // stdout: the re-parseable profile block
+        .stdout(predicate::str::contains("[profile.reviewer]"))
+        .stdout(predicate::str::contains("agent = \"reviewer\""))
+        // stderr: the resolved agent file (metadata)
+        .stderr(predicate::str::contains("reviewer.md"));
+}
+
+#[test]
+fn persona_show_non_persona_errors() {
+    let project = persona_project();
+    let home = tempfile::tempdir().unwrap();
+    roba_in(&project, &home)
+        .args(["persona", "show", "plainish"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a persona"));
+}
+
+#[test]
+fn persona_show_unknown_errors_with_known_list() {
+    let project = persona_project();
+    let home = tempfile::tempdir().unwrap();
+    roba_in(&project, &home)
+        .args(["persona", "show", "nope"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no persona named `nope`"))
+        .stderr(predicate::str::contains("reviewer"));
+}
+
 #[test]
 fn session_unknown_name_errors_before_claude() {
     // `--session NAME` for an unconfigured NAME must fail loudly (and
