@@ -31,6 +31,11 @@
 //! # Modes (launch config, fixed for the session)
 //!
 //! - model (`ROBA_MODEL`)
+//! - the role (`ROBA_AGENT`): a native claude agent (a persona, #428) run via
+//!   claude's own `--agent`; the agent file carries the role's system prompt,
+//!   tools, and model. The envelope knobs `ROBA_EFFORT`
+//!   (low/medium/high/xhigh/max), `ROBA_FALLBACK_MODEL`, and `ROBA_MAX_TURNS`
+//!   complete what bare `--agent` lacks.
 //! - per-session structured output (`ROBA_SCHEMA`, an inline JSON schema):
 //!   structured because `DuplexSession`'s `--json-schema` is fixed at spawn and
 //!   MCP `outputSchema` is per-tool. A different schema means a different

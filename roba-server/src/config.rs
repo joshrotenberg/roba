@@ -4,11 +4,24 @@
 //! (profiles, `ROBA_*`) onto this, and the posture becomes a roba-core
 //! `Permissions` instead of the fixed read-only default in `backend`.
 
+use claude_wrapper::Effort;
+
 /// How the single session is configured for this process's lifetime.
 #[derive(Debug, Clone, Default)]
 pub struct ServerConfig {
     /// Model override (e.g. `"haiku"`). `None` uses claude's default.
     pub model: Option<String>,
+    /// The role the session runs as: a native claude agent, selected via
+    /// claude's own `--agent` (`ROBA_AGENT`). A persona's defining field
+    /// (#428): the agent file carries the role's system prompt, tool posture,
+    /// and model; roba-server just names it and wraps it in the run envelope.
+    pub agent: Option<String>,
+    /// Reasoning effort (`ROBA_EFFORT`: low / medium / high / xhigh / max).
+    pub effort: Option<Effort>,
+    /// Fallback model when the primary is overloaded (`ROBA_FALLBACK_MODEL`).
+    pub fallback_model: Option<String>,
+    /// Cap the agentic turn count per prompt (`ROBA_MAX_TURNS`).
+    pub max_turns: Option<u32>,
     /// Inline JSON schema. `Some` puts the session in structured mode for its
     /// whole life (every turn returns `structuredContent`); `None` is prose.
     pub schema: Option<String>,
@@ -40,6 +53,10 @@ impl ServerConfig {
     pub fn from_env() -> Self {
         Self {
             model: env_nonempty("ROBA_MODEL"),
+            agent: env_nonempty("ROBA_AGENT"),
+            effort: env_effort("ROBA_EFFORT"),
+            fallback_model: env_nonempty("ROBA_FALLBACK_MODEL"),
+            max_turns: env_nonempty("ROBA_MAX_TURNS").and_then(|s| s.parse().ok()),
             schema: env_nonempty("ROBA_SCHEMA"),
             max_usd: env_nonempty("ROBA_MAX_USD").and_then(|s| s.parse().ok()),
             inward: env_bool("ROBA_INWARD", true),
@@ -58,6 +75,19 @@ impl ServerConfig {
 
 fn env_nonempty(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|s| !s.is_empty())
+}
+
+/// Parse `ROBA_EFFORT` into a claude [`Effort`]. Case-insensitive and trimmed;
+/// an unrecognized or unset value yields `None` (the flag is simply not passed).
+fn env_effort(key: &str) -> Option<Effort> {
+    match env_nonempty(key)?.trim().to_ascii_lowercase().as_str() {
+        "low" => Some(Effort::Low),
+        "medium" => Some(Effort::Medium),
+        "high" => Some(Effort::High),
+        "xhigh" => Some(Effort::Xhigh),
+        "max" => Some(Effort::Max),
+        _ => None,
+    }
 }
 
 /// A truthy/falsy env flag: `1`/`true`/`yes`/`on` => true, `0`/`false`/`no`/`off`
@@ -115,5 +145,18 @@ mod tests {
         );
         unsafe { std::env::remove_var("ROBA_TEST_ALLOW_LIST") };
         assert!(env_list("ROBA_TEST_ALLOW_LIST_UNSET").is_empty());
+    }
+
+    #[test]
+    fn env_effort_parses_case_insensitively_and_ignores_unknown() {
+        // SAFETY: sets a uniquely-named var, reads it, removes it.
+        unsafe { std::env::set_var("ROBA_TEST_EFFORT", "High") };
+        assert_eq!(env_effort("ROBA_TEST_EFFORT"), Some(Effort::High));
+        unsafe { std::env::set_var("ROBA_TEST_EFFORT", "  xhigh ") };
+        assert_eq!(env_effort("ROBA_TEST_EFFORT"), Some(Effort::Xhigh));
+        unsafe { std::env::set_var("ROBA_TEST_EFFORT", "bogus") };
+        assert_eq!(env_effort("ROBA_TEST_EFFORT"), None);
+        unsafe { std::env::remove_var("ROBA_TEST_EFFORT") };
+        assert_eq!(env_effort("ROBA_TEST_EFFORT_UNSET"), None);
     }
 }
