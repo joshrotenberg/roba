@@ -103,6 +103,11 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     {
         args.hermetic = Some(w);
     }
+    if args.bundle.is_none()
+        && let Some(s) = read_string(env, "ROBA_BUNDLE")
+    {
+        args.bundle = Some(std::path::PathBuf::from(s));
+    }
 
     // ----- Effort -----
     if args.effort.is_none()
