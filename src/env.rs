@@ -92,6 +92,11 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     {
         args.fallback_model = Some(s);
     }
+    if args.setting_sources.is_none()
+        && let Some(s) = read_string(env, "ROBA_SETTING_SOURCES")
+    {
+        args.setting_sources = Some(s);
+    }
 
     // ----- Effort -----
     if args.effort.is_none()
@@ -1327,6 +1332,28 @@ mod tests {
         let mut args = empty_args();
         apply_env_overrides_from(&mut args, &env_with(&[("ROBA_FALLBACK_MODEL", "")]));
         assert!(args.fallback_model.is_none());
+    }
+
+    #[test]
+    fn env_setting_sources_sets_from_roba_var() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_SETTING_SOURCES", "user")]));
+        assert_eq!(args.setting_sources.as_deref(), Some("user"));
+    }
+
+    #[test]
+    fn env_setting_sources_does_not_override_cli() {
+        let mut args = empty_args();
+        args.setting_sources = Some("project".into());
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_SETTING_SOURCES", "user")]));
+        assert_eq!(args.setting_sources.as_deref(), Some("project"));
+    }
+
+    #[test]
+    fn env_setting_sources_ignores_empty() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_SETTING_SOURCES", "")]));
+        assert!(args.setting_sources.is_none());
     }
 
     #[test]

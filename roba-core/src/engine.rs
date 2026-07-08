@@ -131,6 +131,10 @@ pub struct Config {
     /// Use only the servers in `mcp_config`, ignoring other MCP sources
     /// (`--strict-mcp-config`).
     pub strict_mcp_config: bool,
+    /// Comma-separated whitelist of ambient claude setting sources to load
+    /// (`user,project,local`); `None` uses claude's default. The claude-hermetic
+    /// lever (`--setting-sources`): restrict it to seal ambient config.
+    pub setting_sources: Option<String>,
 }
 
 impl Config {

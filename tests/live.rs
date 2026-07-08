@@ -70,6 +70,24 @@ fn live_smoke_prompt() {
 
 #[test]
 #[ignore]
+fn live_hermetic_setting_sources_plumbs() {
+    // Mechanics only: `--setting-sources` is accepted and a sealed run still
+    // answers. Never asserts model compliance (a normal answer to a normal
+    // prompt); the seal is verified separately against a leaking CLAUDE.md.
+    let dir = fresh_dir();
+    roba_in(dir.path())
+        .args([
+            "--setting-sources",
+            "user",
+            "respond with the single word: pong",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("pong"));
+}
+
+#[test]
+#[ignore]
 fn live_smoke_cwd_scopes_session_to_path() {
     // Verify -C scopes claude's session to the given path: a seeded
     // session in dir A is reachable from -c when we point -C at A again,

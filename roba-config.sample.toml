@@ -44,6 +44,10 @@
 # effort = "high"                 # low | medium | high | xhigh | max
 # system_prompt = "..."           # replace the system prompt for the call
 # append_system_prompt = "..."    # add to the default system prompt
+# setting_sources = "user"        # which ambient claude config loads
+#                                 #   (comma-separated: user,project,local).
+#                                 #   Restrict to seal ambient CLAUDE.md/agents/
+#                                 #   skills -- the claude half of hermetic mode.
 # agent_notice = "..."            # replace the built-in single-turn advisory
 #                                 #   text (roba injects it by default; disable
 #                                 #   with --no-agent-notice or no_agent_notice).
