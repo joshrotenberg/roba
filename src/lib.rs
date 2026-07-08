@@ -236,6 +236,21 @@ fn permission_mode_to_cw(mode: cli::PermMode) -> claude_wrapper::PermissionMode 
     }
 }
 
+/// The bundle directory for this run: an explicit `--bundle`, else `./.roba`
+/// when the roba-hermetic axis is on and it exists.
+fn resolve_bundle(args: &AskArgs, roba_hermetic: bool) -> Option<std::path::PathBuf> {
+    if let Some(b) = &args.bundle {
+        return Some(b.clone());
+    }
+    if roba_hermetic {
+        let dot = std::path::PathBuf::from(".roba");
+        if dot.is_dir() {
+            return Some(dot);
+        }
+    }
+    None
+}
+
 /// The `(roba, claude)` axes sealed by hermetic mode, honoring `--no-hermetic`.
 fn hermetic_axes(args: &AskArgs) -> (bool, bool) {
     use crate::cli::HermeticWhich;
@@ -311,13 +326,13 @@ fn build_config(args: &AskArgs, prompt: impl Into<String>) -> engine::Config {
 pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     env::apply_env_overrides(&mut args)?;
     // roba-hermetic axis: ignore roba's own ambient config (the pool walk +
-    // ~/.config) so the run uses only explicitly provided config.
+    // ~/.config). A bundle (explicit --bundle, or ./.roba under --hermetic)
+    // provides config instead -- the sole config when sealed, else the closest
+    // layer on top of the ambient pool.
     let (roba_hermetic, _) = hermetic_axes(&args);
-    let pool = if roba_hermetic {
-        profile::Pool::default()
-    } else {
-        profile::load_pool()?
-    };
+    let bundle = resolve_bundle(&args, roba_hermetic);
+    let cwd = std::env::current_dir().context("getting current dir")?;
+    let pool = profile::load_pool_with_bundle(&cwd, bundle.as_deref(), roba_hermetic)?;
     if let Some(chosen) = profile::resolve(&args, &pool)? {
         let source = profile::profile_source_label(&args, &pool);
         profile::merge_into_args(&mut args, chosen, &source);

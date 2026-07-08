@@ -1490,6 +1490,14 @@ pub struct AskArgs {
     #[arg(long, help_heading = "Hermetic")]
     pub no_hermetic: bool,
 
+    /// Load config from a `.roba/` bundle directory.
+    ///
+    /// The bundle's `roba.toml` becomes a config source: the closest
+    /// (highest-precedence) layer, or the SOLE config under `--hermetic`.
+    /// `--hermetic` with no explicit `--bundle` auto-discovers `./.roba`.
+    #[arg(long, value_name = "DIR", help_heading = "Hermetic")]
+    pub bundle: Option<std::path::PathBuf>,
+
     // ----- Profiles ---------------------------------------------------------
     /// Apply a named profile (user, project, or env source).
     #[arg(long, value_name = "NAME", help_heading = "Profiles")]

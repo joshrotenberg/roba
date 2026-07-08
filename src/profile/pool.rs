@@ -127,15 +127,35 @@ pub fn parse_config_str(content: &str) -> Result<ConfigFile> {
 /// 1. User-level config
 /// 2. Project chain, farther-from-cwd first
 pub fn load_pool_from(cwd: &Path) -> Result<Pool> {
+    load_pool_with_bundle(cwd, None, false)
+}
+
+/// Load the config pool, optionally overlaying a `.roba/` bundle.
+///
+/// `bundle` is a bundle directory (its `roba.toml` is the config). When
+/// `bundle_only` is true (the roba-hermetic axis), ONLY the bundle loads -- the
+/// ambient user + project walk is skipped, so the bundle is the sole config
+/// (`Pool::default()` if it has no `roba.toml`). Otherwise the bundle layers as
+/// the CLOSEST (highest-precedence) source on top of the ambient pool.
+pub fn load_pool_with_bundle(cwd: &Path, bundle: Option<&Path>, bundle_only: bool) -> Result<Pool> {
     let mut pool = Pool::default();
 
     let mut layers: Vec<PathBuf> = Vec::new();
-    if let Some(user) = user_config_path()
-        && user.is_file()
-    {
-        layers.push(user);
+    if !bundle_only {
+        if let Some(user) = user_config_path()
+            && user.is_file()
+        {
+            layers.push(user);
+        }
+        layers.extend(discover_project_configs(cwd));
     }
-    layers.extend(discover_project_configs(cwd));
+    // The bundle's roba.toml is the closest layer (loaded last -> wins per-key).
+    if let Some(dir) = bundle {
+        let bundle_toml = dir.join("roba.toml");
+        if bundle_toml.is_file() {
+            layers.push(bundle_toml);
+        }
+    }
 
     for path in layers {
         let cfg = load_file(&path)?;
@@ -376,6 +396,34 @@ mod tests {
         write_file(tmp.path(), "a/b/c/.gitkeep", "");
         let found = discover_project_configs(&tmp.path().join("a/b/c"));
         assert!(found.is_empty());
+    }
+
+    #[test]
+    fn bundle_layers_closest_and_sole() {
+        let tmp = tempfile::tempdir().unwrap();
+        // .git marker so the project walk stops at this dir.
+        write_file(tmp.path(), ".git/HEAD", "");
+        // Ambient project config: a top-level model plus a profile `p`.
+        write_file(
+            tmp.path(),
+            "roba.toml",
+            "model = \"opus\"\n[profile.p]\nmodel = \"opus\"\n",
+        );
+        // The bundle overrides the top-level model.
+        write_file(tmp.path(), ".roba/roba.toml", "model = \"haiku\"\n");
+        let bundle = tmp.path().join(".roba");
+
+        // Additive: the bundle is the closest layer, so it wins per-key, and the
+        // ambient profile is still present.
+        let pool = load_pool_with_bundle(tmp.path(), Some(&bundle), false).unwrap();
+        assert_eq!(pool.defaults.model.as_deref(), Some("haiku"));
+        assert!(pool.profiles.contains_key("p"));
+
+        // Sole (roba-hermetic): only the bundle; the ambient project config,
+        // including its profile `p`, is skipped.
+        let pool = load_pool_with_bundle(tmp.path(), Some(&bundle), true).unwrap();
+        assert_eq!(pool.defaults.model.as_deref(), Some("haiku"));
+        assert!(!pool.profiles.contains_key("p"));
     }
 
     // -- File load round-trip ----------------------------------------------
