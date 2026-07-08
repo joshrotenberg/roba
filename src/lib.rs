@@ -251,6 +251,33 @@ fn resolve_bundle(args: &AskArgs, roba_hermetic: bool) -> Option<std::path::Path
     None
 }
 
+/// Provide a bundle's context files to claude: `system-prompt.md` composes into
+/// `--append-system-prompt`, `mcp.json` adds to `--mcp-config`. Agent provision
+/// under a strict seal (`--agents` JSON) is a separate concern (#422).
+fn apply_bundle_context(args: &mut AskArgs, bundle: Option<&std::path::Path>) -> Result<()> {
+    let Some(dir) = bundle else {
+        return Ok(());
+    };
+    let sp = dir.join("system-prompt.md");
+    if sp.is_file() {
+        let content = std::fs::read_to_string(&sp)
+            .with_context(|| format!("reading bundle system prompt {}", sp.display()))?
+            .trim()
+            .to_string();
+        if !content.is_empty() {
+            args.append_system_prompt = Some(match args.append_system_prompt.take() {
+                Some(existing) => format!("{existing}\n\n{content}"),
+                None => content,
+            });
+        }
+    }
+    let mcp = dir.join("mcp.json");
+    if mcp.is_file() {
+        args.mcp_config.push(mcp.to_string_lossy().into_owned());
+    }
+    Ok(())
+}
+
 /// The `(roba, claude)` axes sealed by hermetic mode, honoring `--no-hermetic`.
 fn hermetic_axes(args: &AskArgs) -> (bool, bool) {
     use crate::cli::HermeticWhich;
@@ -510,6 +537,10 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     // enforced uniformly across both the streaming and non-streaming exec
     // paths below (the wrapper kills + reaps the child and returns
     // Error::Timeout, which classify_exit_code maps to exit 4). `0` disables.
+    // Provide a bundle's context files to claude (system-prompt.md ->
+    // --append-system-prompt, mcp.json -> --mcp-config); after profile
+    // resolution so a bundle system prompt composes on top.
+    apply_bundle_context(&mut args, bundle.as_deref())?;
     // Collapse the resolved args + composed prompt into the engine Config. Both
     // exec paths below run through it, and the engine::run public entry uses the
     // same Config -> apply_session mapper, so nothing drifts.
@@ -919,6 +950,36 @@ mod tests {
         assert_eq!(c.setting_sources, None);
         assert!(!c.strict_mcp_config);
         assert!(!c.exclude_dynamic_system_prompt_sections);
+    }
+
+    #[test]
+    fn apply_bundle_context_composes_system_prompt_and_mcp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle = tmp.path();
+        std::fs::write(bundle.join("system-prompt.md"), "  be terse  ").unwrap();
+        std::fs::write(bundle.join("mcp.json"), "{}").unwrap();
+
+        // No prior append: the (trimmed) bundle system prompt becomes it.
+        let mut a = ask(&["roba", "p"]);
+        apply_bundle_context(&mut a, Some(bundle)).unwrap();
+        assert_eq!(a.append_system_prompt.as_deref(), Some("be terse"));
+        assert_eq!(a.mcp_config.len(), 1);
+        assert!(a.mcp_config[0].ends_with("mcp.json"));
+
+        // Prior append (e.g. from a profile): the bundle composes on top.
+        let mut a = ask(&["roba", "--append-system-prompt", "first", "p"]);
+        apply_bundle_context(&mut a, Some(bundle)).unwrap();
+        assert_eq!(a.append_system_prompt.as_deref(), Some("first\n\nbe terse"));
+    }
+
+    #[test]
+    fn apply_bundle_context_noop_without_files() {
+        let mut a = ask(&["roba", "p"]);
+        apply_bundle_context(&mut a, None).unwrap();
+        let empty = tempfile::tempdir().unwrap();
+        apply_bundle_context(&mut a, Some(empty.path())).unwrap();
+        assert!(a.append_system_prompt.is_none());
+        assert!(a.mcp_config.is_empty());
     }
 
     #[test]
