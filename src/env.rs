@@ -97,6 +97,12 @@ pub fn apply_env_overrides_from(args: &mut AskArgs, env: &HashMap<String, String
     {
         args.setting_sources = Some(s);
     }
+    if !args.no_hermetic
+        && args.hermetic.is_none()
+        && let Some(w) = read_hermetic(env, "ROBA_HERMETIC")
+    {
+        args.hermetic = Some(w);
+    }
 
     // ----- Effort -----
     if args.effort.is_none()
@@ -415,6 +421,19 @@ fn tag_cli_sources(args: &mut AskArgs) {
 
 fn read_string(env: &HashMap<String, String>, key: &str) -> Option<String> {
     env.get(key).filter(|s| !s.is_empty()).cloned()
+}
+
+/// Parse `ROBA_HERMETIC` into a [`HermeticWhich`](crate::cli::HermeticWhich).
+/// `both`/`roba`/`claude` (case-insensitive) map directly; a truthy value
+/// (`1`/`true`/`yes`/`on`) means `both`; anything else is no override.
+fn read_hermetic(env: &HashMap<String, String>, key: &str) -> Option<crate::cli::HermeticWhich> {
+    use crate::cli::HermeticWhich;
+    match env.get(key)?.trim().to_ascii_lowercase().as_str() {
+        "both" | "1" | "true" | "yes" | "on" => Some(HermeticWhich::Both),
+        "roba" => Some(HermeticWhich::Roba),
+        "claude" => Some(HermeticWhich::Claude),
+        _ => None,
+    }
 }
 
 /// Truthy means `1`/`true`/`yes`/`on` (case-insensitive). Everything
@@ -1354,6 +1373,31 @@ mod tests {
         let mut args = empty_args();
         apply_env_overrides_from(&mut args, &env_with(&[("ROBA_SETTING_SOURCES", "")]));
         assert!(args.setting_sources.is_none());
+    }
+
+    #[test]
+    fn env_hermetic_both_and_truthy() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_HERMETIC", "both")]));
+        assert_eq!(args.hermetic, Some(crate::cli::HermeticWhich::Both));
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_HERMETIC", "1")]));
+        assert_eq!(args.hermetic, Some(crate::cli::HermeticWhich::Both));
+    }
+
+    #[test]
+    fn env_hermetic_axis_value() {
+        let mut args = empty_args();
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_HERMETIC", "roba")]));
+        assert_eq!(args.hermetic, Some(crate::cli::HermeticWhich::Roba));
+    }
+
+    #[test]
+    fn env_hermetic_no_hermetic_cancels() {
+        let mut args = empty_args();
+        args.no_hermetic = true;
+        apply_env_overrides_from(&mut args, &env_with(&[("ROBA_HERMETIC", "both")]));
+        assert!(args.hermetic.is_none());
     }
 
     #[test]

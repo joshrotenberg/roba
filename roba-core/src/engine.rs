@@ -135,6 +135,10 @@ pub struct Config {
     /// (`user,project,local`); `None` uses claude's default. The claude-hermetic
     /// lever (`--setting-sources`): restrict it to seal ambient config.
     pub setting_sources: Option<String>,
+    /// Move per-machine system-prompt sections (cwd, env, git status) out of the
+    /// prompt (`--exclude-dynamic-system-prompt-sections`); part of the hermetic
+    /// claude axis, for reproducibility.
+    pub exclude_dynamic_system_prompt_sections: bool,
 }
 
 impl Config {

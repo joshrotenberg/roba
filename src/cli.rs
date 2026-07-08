@@ -763,6 +763,18 @@ pub enum EffortLevel {
     Max,
 }
 
+/// Which axes `--hermetic` seals. `both` (the default) seals ambient roba config
+/// AND ambient claude config; `roba` or `claude` seals just one.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HermeticWhich {
+    /// Seal both axes (default): roba's config pool and claude's ambient config.
+    Both,
+    /// Seal only roba's own config (skip the roba.toml pool + `~/.config`).
+    Roba,
+    /// Seal only claude's ambient config (`--setting-sources` + strict MCP).
+    Claude,
+}
+
 impl EffortLevel {
     /// Lowercase label for display (footer suffix) and wiring.
     pub fn as_str(self) -> &'static str {
@@ -1454,6 +1466,29 @@ pub struct AskArgs {
     /// mode.
     #[arg(long, value_name = "LIST", help_heading = "Hermetic")]
     pub setting_sources: Option<String>,
+
+    /// Seal the run to a known promptspace (hermetic mode).
+    ///
+    /// `--hermetic` seals BOTH axes; `--hermetic=roba` skips roba's own config
+    /// pool (the up-tree roba.toml walk + `~/.config`); `--hermetic=claude`
+    /// seals claude's ambient config (`--setting-sources user` + strict MCP),
+    /// dropping the project's ambient CLAUDE.md/agents while your global
+    /// `~/.claude` stays. For a full seal add `--setting-sources ''`. Seals the
+    /// promptspace, not tool permissions.
+    #[arg(
+        long,
+        value_name = "WHICH",
+        require_equals = true,
+        num_args = 0..=1,
+        default_missing_value = "both",
+        conflicts_with = "no_hermetic",
+        help_heading = "Hermetic"
+    )]
+    pub hermetic: Option<HermeticWhich>,
+
+    /// Cancel a hermetic setting arriving from env for this run.
+    #[arg(long, help_heading = "Hermetic")]
+    pub no_hermetic: bool,
 
     // ----- Profiles ---------------------------------------------------------
     /// Apply a named profile (user, project, or env source).
@@ -2267,6 +2302,48 @@ mod tests {
             vec!["a.json".to_string(), "b.json".to_string()]
         );
         assert_eq!(cli.ask.prompt.as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn hermetic_bare_is_both() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["roba", "--hermetic", "p"]).unwrap();
+        assert_eq!(cli.ask.hermetic, Some(HermeticWhich::Both));
+    }
+
+    #[test]
+    fn hermetic_value_parses_each_axis() {
+        use clap::Parser;
+        assert_eq!(
+            Cli::try_parse_from(["roba", "--hermetic=roba", "p"])
+                .unwrap()
+                .ask
+                .hermetic,
+            Some(HermeticWhich::Roba)
+        );
+        assert_eq!(
+            Cli::try_parse_from(["roba", "--hermetic=claude", "p"])
+                .unwrap()
+                .ask
+                .hermetic,
+            Some(HermeticWhich::Claude)
+        );
+    }
+
+    #[test]
+    fn hermetic_require_equals_does_not_swallow_prompt() {
+        use clap::Parser;
+        // A space-separated word after `--hermetic` is the PROMPT, not WHICH
+        // (require_equals; the #100 footgun).
+        let cli = Cli::try_parse_from(["roba", "--hermetic", "seal it"]).unwrap();
+        assert_eq!(cli.ask.hermetic, Some(HermeticWhich::Both));
+        assert_eq!(cli.ask.prompt.as_deref(), Some("seal it"));
+    }
+
+    #[test]
+    fn hermetic_conflicts_with_no_hermetic() {
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["roba", "--hermetic", "--no-hermetic", "p"]).is_err());
     }
 
     #[test]
