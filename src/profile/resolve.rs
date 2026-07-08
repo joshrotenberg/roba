@@ -182,6 +182,11 @@ pub fn merge_into_args(args: &mut AskArgs, mut profile: Profile, source: &str) {
     {
         args.model = Some(m);
     }
+    if args.setting_sources.is_none()
+        && let Some(s) = profile.setting_sources.take()
+    {
+        args.setting_sources = Some(s);
+    }
     if args.effort.is_none() && profile.effort.is_some() {
         args.effort = profile.effort;
     }
@@ -1094,6 +1099,28 @@ mod tests {
         };
         merge_into_args(&mut args, profile, "profile.test");
         assert_eq!(args.fallback_model.as_deref(), Some("opus"));
+    }
+
+    #[test]
+    fn merge_setting_sources_applies_when_cli_unset() {
+        let mut args = empty_args();
+        let profile = Profile {
+            setting_sources: Some("user".to_string()),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.setting_sources.as_deref(), Some("user"));
+    }
+
+    #[test]
+    fn merge_setting_sources_cli_wins_over_profile() {
+        let mut args = args_with(&["--setting-sources", "project"]);
+        let profile = Profile {
+            setting_sources: Some("user".to_string()),
+            ..Default::default()
+        };
+        merge_into_args(&mut args, profile, "profile.test");
+        assert_eq!(args.setting_sources.as_deref(), Some("project"));
     }
 
     #[test]

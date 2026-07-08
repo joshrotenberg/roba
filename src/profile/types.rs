@@ -48,6 +48,10 @@ pub struct Profile {
     /// Override the claude model (alias or full id).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Ambient claude setting sources to load (`--setting-sources`, e.g.
+    /// `user,project,local`); the claude-hermetic lever.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setting_sources: Option<String>,
     /// Effort level (`--effort`). Controls the cost/quality tradeoff.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<EffortLevel>,
@@ -223,6 +227,7 @@ impl Profile {
             && self.deny_tool.is_empty()
             && self.vars.is_empty()
             && self.model.is_none()
+            && self.setting_sources.is_none()
             && self.effort.is_none()
             && self.agent.is_none()
             && self.description.is_none()
@@ -279,6 +284,7 @@ impl Profile {
             mut deny_tool,
             vars,
             model,
+            setting_sources,
             effort,
             agent,
             description,
@@ -345,6 +351,9 @@ impl Profile {
         }
         if model.is_some() {
             self.model = model;
+        }
+        if setting_sources.is_some() {
+            self.setting_sources = setting_sources;
         }
         if effort.is_some() {
             self.effort = effort;

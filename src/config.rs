@@ -373,6 +373,7 @@ const ENV_MAP: &[(&str, &str, EnvKind)] = &[
     ("ROBA_JSON_SCHEMA", "json_schema", EnvKind::Str),
     ("ROBA_MCP_CONFIG", "mcp_config", EnvKind::List),
     ("ROBA_STRICT_MCP_CONFIG", "strict_mcp_config", EnvKind::Bool),
+    ("ROBA_SETTING_SOURCES", "setting_sources", EnvKind::Str),
     ("ROBA_ADD_DIR", "add_dir", EnvKind::List),
     ("ROBA_FALLBACK_MODEL", "fallback_model", EnvKind::Str),
     (

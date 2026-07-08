@@ -282,6 +282,7 @@ fn build_config(args: &AskArgs, prompt: impl Into<String>) -> engine::Config {
         add_dir: args.add_dir.clone(),
         mcp_config: args.mcp_config.clone(),
         strict_mcp_config: args.strict_mcp_config,
+        setting_sources: args.setting_sources.clone(),
     }
 }
 

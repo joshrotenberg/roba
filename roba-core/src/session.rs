@@ -117,6 +117,10 @@ pub fn apply_session(mut cmd: QueryCommand, config: &Config) -> QueryCommand {
     if config.strict_mcp_config {
         cmd = cmd.strict_mcp_config();
     }
+    // Claude-hermetic axis: restrict which ambient setting sources load.
+    if let Some(sources) = &config.setting_sources {
+        cmd = cmd.setting_sources(sources.clone());
+    }
     apply_permissions(cmd, config)
 }
 

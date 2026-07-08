@@ -1444,6 +1444,17 @@ pub struct AskArgs {
     #[arg(long, help_heading = "MCP")]
     pub strict_mcp_config: bool,
 
+    /// Which ambient claude setting sources to load (`user,project,local`).
+    ///
+    /// A comma-separated whitelist passed straight to claude's
+    /// `--setting-sources`. Restrict it to seal ambient config: e.g.
+    /// `--setting-sources user` drops the project and local layers (including a
+    /// project `CLAUDE.md`) while auth stays on your keychain/subscription. This
+    /// seals the promptspace, not tool permissions. The claude half of hermetic
+    /// mode.
+    #[arg(long, value_name = "LIST", help_heading = "Hermetic")]
+    pub setting_sources: Option<String>,
+
     // ----- Profiles ---------------------------------------------------------
     /// Apply a named profile (user, project, or env source).
     #[arg(long, value_name = "NAME", help_heading = "Profiles")]
