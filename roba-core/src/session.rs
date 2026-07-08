@@ -121,6 +121,9 @@ pub fn apply_session(mut cmd: QueryCommand, config: &Config) -> QueryCommand {
     if let Some(sources) = &config.setting_sources {
         cmd = cmd.setting_sources(sources.clone());
     }
+    if config.exclude_dynamic_system_prompt_sections {
+        cmd = cmd.exclude_dynamic_system_prompt_sections();
+    }
     apply_permissions(cmd, config)
 }
 

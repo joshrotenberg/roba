@@ -236,6 +236,20 @@ fn permission_mode_to_cw(mode: cli::PermMode) -> claude_wrapper::PermissionMode 
     }
 }
 
+/// The `(roba, claude)` axes sealed by hermetic mode, honoring `--no-hermetic`.
+fn hermetic_axes(args: &AskArgs) -> (bool, bool) {
+    use crate::cli::HermeticWhich;
+    if args.no_hermetic {
+        return (false, false);
+    }
+    match args.hermetic {
+        None => (false, false),
+        Some(HermeticWhich::Both) => (true, true),
+        Some(HermeticWhich::Roba) => (true, false),
+        Some(HermeticWhich::Claude) => (false, true),
+    }
+}
+
 fn build_config(args: &AskArgs, prompt: impl Into<String>) -> engine::Config {
     use engine::{Permissions, Session};
     let permissions = if args.full_auto {
@@ -254,6 +268,10 @@ fn build_config(args: &AskArgs, prompt: impl Into<String>) -> engine::Config {
             Some(Some(id)) => Session::Resume(id.clone()),
         }
     };
+    // Claude-hermetic axis: seal ambient claude config. `user` is the default
+    // (seals project/local ambient, keeps your global ~/.claude); an explicit
+    // --setting-sources wins (e.g. `''` for a full seal).
+    let (_, claude_hermetic) = hermetic_axes(args);
     engine::Config {
         prompt: prompt.into(),
         model: args.model.clone(),
@@ -281,14 +299,25 @@ fn build_config(args: &AskArgs, prompt: impl Into<String>) -> engine::Config {
         safe_mode: args.safe_mode,
         add_dir: args.add_dir.clone(),
         mcp_config: args.mcp_config.clone(),
-        strict_mcp_config: args.strict_mcp_config,
-        setting_sources: args.setting_sources.clone(),
+        strict_mcp_config: args.strict_mcp_config || claude_hermetic,
+        setting_sources: args
+            .setting_sources
+            .clone()
+            .or_else(|| claude_hermetic.then(|| "user".to_string())),
+        exclude_dynamic_system_prompt_sections: claude_hermetic,
     }
 }
 
 pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     env::apply_env_overrides(&mut args)?;
-    let pool = profile::load_pool()?;
+    // roba-hermetic axis: ignore roba's own ambient config (the pool walk +
+    // ~/.config) so the run uses only explicitly provided config.
+    let (roba_hermetic, _) = hermetic_axes(&args);
+    let pool = if roba_hermetic {
+        profile::Pool::default()
+    } else {
+        profile::load_pool()?
+    };
     if let Some(chosen) = profile::resolve(&args, &pool)? {
         let source = profile::profile_source_label(&args, &pool);
         profile::merge_into_args(&mut args, chosen, &source);
@@ -826,6 +855,55 @@ mod tests {
     fn ask(argv: &[&str]) -> AskArgs {
         use clap::Parser;
         cli::Cli::try_parse_from(argv).unwrap().ask
+    }
+
+    #[test]
+    fn hermetic_axes_map_which() {
+        assert_eq!(hermetic_axes(&ask(&["roba", "p"])), (false, false));
+        assert_eq!(
+            hermetic_axes(&ask(&["roba", "--hermetic", "p"])),
+            (true, true)
+        );
+        assert_eq!(
+            hermetic_axes(&ask(&["roba", "--hermetic=roba", "p"])),
+            (true, false)
+        );
+        assert_eq!(
+            hermetic_axes(&ask(&["roba", "--hermetic=claude", "p"])),
+            (false, true)
+        );
+    }
+
+    #[test]
+    fn hermetic_no_hermetic_cancels() {
+        let mut a = ask(&["roba", "--no-hermetic", "p"]);
+        a.hermetic = Some(cli::HermeticWhich::Both);
+        assert_eq!(hermetic_axes(&a), (false, false));
+    }
+
+    #[test]
+    fn hermetic_claude_axis_sets_the_seal() {
+        let c = build_config(&ask(&["roba", "--hermetic", "p"]), "p");
+        assert_eq!(c.setting_sources.as_deref(), Some("user"));
+        assert!(c.strict_mcp_config);
+        assert!(c.exclude_dynamic_system_prompt_sections);
+    }
+
+    #[test]
+    fn hermetic_explicit_setting_sources_overrides_default() {
+        let c = build_config(
+            &ask(&["roba", "--hermetic", "--setting-sources", "", "p"]),
+            "p",
+        );
+        assert_eq!(c.setting_sources.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn hermetic_roba_axis_only_leaves_claude_seal_off() {
+        let c = build_config(&ask(&["roba", "--hermetic=roba", "p"]), "p");
+        assert_eq!(c.setting_sources, None);
+        assert!(!c.strict_mcp_config);
+        assert!(!c.exclude_dynamic_system_prompt_sections);
     }
 
     #[test]
