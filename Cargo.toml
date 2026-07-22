@@ -1,6 +1,6 @@
 [package]
 name = "roba"
-version = "0.10.1"
+version = "0.11.0"
 edition = "2024"
 # No rust-version floor: roba is a binary (nobody depends on it as a
 # library), so it tracks recent stable rather than carrying an MSRV.
@@ -38,10 +38,10 @@ glob = "0.3"
 indicatif = "0.18"
 # The clap-free run engine (Config -> QueryResult), split out of the CLI so a
 # programmatic caller / serve (#142) can drive it without clap.
-roba-core = { version = "0.1.0", path = "roba-core" }
+roba-core = { version = "0.2.0", path = "roba-core" }
 # The machine contract (envelopes + exit codes), shared so the binary and the
 # published crate cannot disagree. version + path so `roba` can still publish.
-roba-types = { version = "0.1.0", path = "roba-types" }
+roba-types = { version = "0.1.1", path = "roba-types" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"

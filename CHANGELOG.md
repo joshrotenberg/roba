@@ -14,6 +14,52 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-22
+
+### Added
+
+- extract roba-types crate (envelope + exit-code contract, no tokio) ([#415](https://github.com/joshrotenberg/roba/pull/415))
+- MCP server for a warm claude session ([#421](https://github.com/joshrotenberg/roba/pull/421))
+- roba persona list/show for role-bearing profiles ([#433](https://github.com/joshrotenberg/roba/pull/433))
+- roba serve --profile launches roba-server as a resolved persona ([#435](https://github.com/joshrotenberg/roba/pull/435))
+- --setting-sources seals ambient claude config (the claude-hermetic axis) ([#437](https://github.com/joshrotenberg/roba/pull/437))
+- --hermetic seals the run to a known promptspace (both axes) ([#438](https://github.com/joshrotenberg/roba/pull/438))
+- --bundle loads config from a .roba/ bundle (hermetic PR4, config half) ([#439](https://github.com/joshrotenberg/roba/pull/439))
+- --bundle provides system-prompt.md + mcp.json to claude (hermetic PR4b) ([#440](https://github.com/joshrotenberg/roba/pull/440))
+- promote the run-receipt schema into roba-types ([#451](https://github.com/joshrotenberg/roba/pull/451))
+- terminal receipts carry observed cost_usd ([#452](https://github.com/joshrotenberg/roba/pull/452))
+- roba jobs + roba watch -- derived views over run receipts (#444 slices 1-2) ([#454](https://github.com/joshrotenberg/roba/pull/454))
+
+
+### Build
+
+- bump claude-wrapper to 0.13 ([#420](https://github.com/joshrotenberg/roba/pull/420))
+
+
+### Changed
+
+- apply_session takes &Config; run_ask builds it (refs #416) ([#418](https://github.com/joshrotenberg/roba/pull/418))
+- extract the clap-free run engine into a roba-core crate ([#416](https://github.com/joshrotenberg/roba/pull/416)) ([#419](https://github.com/joshrotenberg/roba/pull/419))
+
+
+### Documentation
+
+- reconcile README/AGENTS with the 0.11 surface; refresh rates ([#456](https://github.com/joshrotenberg/roba/pull/456))
+
+
+### Fixed
+
+- detached runs write a durable exit receipt; show prefers it over stop_reason ([#446](https://github.com/joshrotenberg/roba/pull/446))
+
+
+### Maintenance
+
+- remove roba-server and the serve launcher (server arc parked) ([#450](https://github.com/joshrotenberg/roba/pull/450)) (BREAKING)
+- receipts get a stated lifecycle -- age-based prune on write ([#453](https://github.com/joshrotenberg/roba/pull/453))
+- quick-wins sweep -- design docs tracked, envelope constant, crates.io pitch ([#455](https://github.com/joshrotenberg/roba/pull/455))
+
+
+
 ## [0.10.1] - 2026-07-01
 
 ### Added
