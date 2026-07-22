@@ -248,6 +248,22 @@ pub enum SubCommand {
         #[command(subcommand)]
         action: PersonaAction,
     },
+    /// List detached runs from their receipts (a ps-like view).
+    ///
+    /// Derived entirely from the run receipts under the state dir
+    /// (`$XDG_STATE_HOME/roba/runs`): session, honest state (`ok` /
+    /// `exit N` / `running` / `stale?` when a running record's pid is
+    /// gone), observed cost, age, and a best-effort project column.
+    /// Read-only. Empty is a note on stderr and exit 0.
+    Jobs(JobsArgs),
+    /// Wait on detached runs; print a line as each completes.
+    ///
+    /// `show --wait` pluralized: poll a set of sessions (explicit ids,
+    /// prefix-resolved against recorded receipts; with no ids, every
+    /// currently-running receipt) and print one completion line per run,
+    /// with an OSC-9 terminal notification on stderr TTYs. Exits 0 when
+    /// every watched run succeeded, 1 when any failed, 4 on timeout.
+    Watch(WatchArgs),
     /// Bootstrap a project roba.toml (claude-assisted).
     ///
     /// The per-project half of the config-draft verbs: `init` looks at
@@ -309,6 +325,24 @@ pub enum PersonaAction {
         /// Persona name (the `[profile.NAME]` whose `agent` is set).
         name: String,
     },
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct JobsArgs {
+    /// Emit the table as a versioned JSON envelope on stdout.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct WatchArgs {
+    /// Session ids (or unique prefixes) to watch; empty = all running.
+    pub session_ids: Vec<String>,
+    /// Give up after this many seconds (0 = wait indefinitely).
+    ///
+    /// On timeout the exit code is 4 (timeout), mirroring `show --wait`.
+    #[arg(long, value_name = "SECS")]
+    pub timeout: Option<u64>,
 }
 
 #[derive(Subcommand, Debug)]

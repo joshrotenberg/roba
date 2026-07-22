@@ -202,7 +202,7 @@ fn wait_for_complete(root: &HistoryRoot, args: &crate::cli::ShowArgs) -> Result<
 /// during a long tool call (a 30s build writes nothing to the JSONL, so
 /// mtime goes quiet mid-run). It is still best-effort, not a guarantee --
 /// consistent with how the reconstructed envelope is documented.
-fn is_complete(log: &SessionLog) -> bool {
+pub(crate) fn is_complete(log: &SessionLog) -> bool {
     let last_assistant = log.entries.iter().rev().find_map(|e| match e {
         HistoryEntry::Assistant { message, .. } => Some(message),
         _ => None,

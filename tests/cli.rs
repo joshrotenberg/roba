@@ -3269,3 +3269,173 @@ fn trace_no_result_event_exits_6() {
         .code(6)
         .stderr(predicate::str::contains("no result event"));
 }
+
+// ---------------------------------------------------------------------------
+// jobs + watch (#444 slices 1-2): derived views over run receipts.
+// All receipts are planted under an isolated ROBA_STATE_DIR -- no claude.
+// ---------------------------------------------------------------------------
+
+/// Plant a receipt JSON under `<state>/runs/<id>.json`.
+fn plant_receipt(state_dir: &std::path::Path, id: &str, body: &str) {
+    let runs = state_dir.join("runs");
+    std::fs::create_dir_all(&runs).unwrap();
+    std::fs::write(runs.join(format!("{id}.json")), body).unwrap();
+}
+
+#[test]
+fn jobs_empty_state_dir_is_a_note_and_exit_0() {
+    let dir = tempfile::tempdir().unwrap();
+    roba()
+        .env("ROBA_STATE_DIR", dir.path())
+        .arg("jobs")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("no detached runs recorded"));
+}
+
+#[test]
+fn jobs_lists_terminal_receipts_with_state_and_cost() {
+    let dir = tempfile::tempdir().unwrap();
+    plant_receipt(
+        dir.path(),
+        "aaaa1111-0000-4000-8000-000000000001",
+        r#"{"session_id":"aaaa1111-0000-4000-8000-000000000001","pid":1,"started_at":100,"state":"exited","exit_code":7,"ended_at":200,"cost_usd":0.13}"#,
+    );
+    plant_receipt(
+        dir.path(),
+        "bbbb2222-0000-4000-8000-000000000002",
+        r#"{"session_id":"bbbb2222-0000-4000-8000-000000000002","pid":1,"started_at":300,"state":"exited","exit_code":0,"ended_at":400}"#,
+    );
+    roba()
+        .env("ROBA_STATE_DIR", dir.path())
+        .arg("jobs")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("aaaa1111"))
+        .stdout(predicate::str::contains("exit 7"))
+        .stdout(predicate::str::contains("$0.1300"))
+        .stdout(predicate::str::contains("bbbb2222"))
+        .stdout(predicate::str::contains("ok"));
+}
+
+#[test]
+fn jobs_marks_a_dead_pid_running_record_stale() {
+    // The SIGKILL case: a `running` record whose pid is gone. Pid
+    // 99999999 is beyond real pid spaces on macOS/Linux (unix-only
+    // assertion; Windows reports liveness as unknown).
+    let dir = tempfile::tempdir().unwrap();
+    plant_receipt(
+        dir.path(),
+        "cccc3333-0000-4000-8000-000000000003",
+        r#"{"session_id":"cccc3333-0000-4000-8000-000000000003","pid":99999999,"started_at":100,"state":"running"}"#,
+    );
+    let assert = roba()
+        .env("ROBA_STATE_DIR", dir.path())
+        .arg("jobs")
+        .assert()
+        .success();
+    #[cfg(unix)]
+    assert.stdout(predicate::str::contains("stale?"));
+    #[cfg(not(unix))]
+    assert.stdout(predicate::str::contains("running?"));
+}
+
+#[test]
+fn jobs_json_wears_the_versioned_envelope() {
+    let dir = tempfile::tempdir().unwrap();
+    plant_receipt(
+        dir.path(),
+        "dddd4444-0000-4000-8000-000000000004",
+        r#"{"session_id":"dddd4444-0000-4000-8000-000000000004","pid":1,"started_at":100,"state":"exited","exit_code":0,"ended_at":150}"#,
+    );
+    let output = roba()
+        .env("ROBA_STATE_DIR", dir.path())
+        .args(["jobs", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: serde_json::Value = serde_json::from_slice(&output).expect("byte-clean JSON");
+    assert_eq!(parsed["version"], 1);
+    assert_eq!(parsed["result"][0]["state"], "ok");
+    assert_eq!(
+        parsed["result"][0]["session_id"],
+        "dddd4444-0000-4000-8000-000000000004"
+    );
+}
+
+#[test]
+fn watch_terminal_receipt_completes_immediately_with_failure_exit() {
+    // A watched run that already failed: watch prints its line and exits 1
+    // (a watched RUN failed; watch itself worked).
+    let dir = tempfile::tempdir().unwrap();
+    plant_receipt(
+        dir.path(),
+        "eeee5555-0000-4000-8000-000000000005",
+        r#"{"session_id":"eeee5555-0000-4000-8000-000000000005","pid":1,"started_at":100,"state":"exited","exit_code":7,"ended_at":200,"cost_usd":1.5}"#,
+    );
+    roba()
+        .env("ROBA_STATE_DIR", dir.path())
+        .args(["watch", "eeee5555"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("exit 7"))
+        .stdout(predicate::str::contains("$1.5000"));
+}
+
+#[test]
+fn watch_all_ok_exits_0() {
+    let dir = tempfile::tempdir().unwrap();
+    plant_receipt(
+        dir.path(),
+        "ffff6666-0000-4000-8000-000000000006",
+        r#"{"session_id":"ffff6666-0000-4000-8000-000000000006","pid":1,"started_at":100,"state":"exited","exit_code":0,"ended_at":200}"#,
+    );
+    roba()
+        .env("ROBA_STATE_DIR", dir.path())
+        .args(["watch", "ffff6666"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("exit 0"));
+}
+
+#[test]
+fn watch_timeout_on_a_running_receipt_exits_4() {
+    // A foreign-pid running record that never finishes: --timeout 1 must
+    // surface the typed timeout (exit 4), mirroring `show --wait`.
+    let dir = tempfile::tempdir().unwrap();
+    plant_receipt(
+        dir.path(),
+        "9999aaaa-0000-4000-8000-000000000007",
+        r#"{"session_id":"9999aaaa-0000-4000-8000-000000000007","pid":1,"started_at":100,"state":"running"}"#,
+    );
+    roba()
+        .env("ROBA_STATE_DIR", dir.path())
+        .args(["watch", "9999aaaa", "--timeout", "1"])
+        .assert()
+        .code(4);
+}
+
+#[test]
+fn watch_nothing_running_is_a_note_and_exit_0() {
+    let dir = tempfile::tempdir().unwrap();
+    roba()
+        .env("ROBA_STATE_DIR", dir.path())
+        .arg("watch")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("nothing to watch"));
+}
+
+#[test]
+fn watch_unknown_id_errors_loudly() {
+    let dir = tempfile::tempdir().unwrap();
+    roba()
+        .env("ROBA_STATE_DIR", dir.path())
+        .args(["watch", "zzzz"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no receipt matches"));
+}

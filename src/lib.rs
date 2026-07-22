@@ -21,6 +21,7 @@ pub mod draft;
 pub mod env;
 pub mod error;
 pub mod history;
+pub mod jobs;
 pub mod lint;
 pub mod output;
 pub mod persona;
@@ -85,6 +86,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         // Persona inspection: role-bearing profiles. Synchronous, read-only,
         // no claude call.
         Some(SubCommand::Persona { action }) => persona::run(action),
+        // Derived views over run receipts (#444): read-only, no claude call.
+        Some(SubCommand::Jobs(args)) => jobs::run_jobs(&args),
+        Some(SubCommand::Watch(args)) => jobs::run_watch(&args),
         // `config init` makes one claude call (with a read-only window
         // onto the project), so it is async like the draft verbs.
         Some(SubCommand::Config { cmd }) => match cmd {
