@@ -5,7 +5,7 @@
 //! downstream harness can deserialize against it and branch on the exit code
 //! without depending on the whole `roba` binary (tokio, clap, termimad, ...).
 //!
-//! Two pieces:
+//! Three pieces:
 //!
 //! - **Exit codes** ([`EXIT_FAILURE`] .. [`EXIT_MAX_BUDGET`]) -- the full map
 //!   the binary returns. The `roba` binary references these same constants, so
@@ -16,10 +16,16 @@
 //!   both `Serialize` (roba serializes a borrow, no clone) and `Deserialize`
 //!   (a consumer deserializes owned), so there is one type per shape and no
 //!   drift between producer and consumer.
+//! - **Run receipts** ([`receipt`]) -- the durable outcome record a detached
+//!   run leaves behind (`$XDG_STATE_HOME/roba/runs/<id>.json`), as a
+//!   read-side contract: the record shape, the path-resolution precedence,
+//!   and best-effort readers. Only the roba binary writes receipts.
 //!
 //! The result payload is claude's own [`QueryResult`], re-exported here. This
 //! crate pulls `claude-wrapper` with `default-features = false, features =
 //! ["json"]`, so it carries serde but **no async runtime**.
+
+pub mod receipt;
 
 use serde::{Deserialize, Serialize};
 

@@ -18,3 +18,6 @@ serde_json = "1"
 # json-only: no async, so no tokio. QueryResult is a plain serde data type;
 # this pulls the wrapper's result shape without its runtime.
 claude-wrapper = { version = "0.13", default-features = false, features = ["json"] }
+
+[dev-dependencies]
+tempfile = "3"
