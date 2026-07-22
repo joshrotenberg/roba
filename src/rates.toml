@@ -13,7 +13,7 @@
 # resolves to the `claude-sonnet-4-6` entry.
 
 [meta]
-as_of = "2026-06-10"
+as_of = "2026-07-22"
 source = "https://platform.claude.com/docs/en/about-claude/pricing"
 
 # -- Fable -------------------------------------------------------------
@@ -57,6 +57,14 @@ cache_read = 1.50
 cache_write = 18.75
 
 # -- Sonnet ------------------------------------------------------------
+
+# Introductory pricing through 2026-08-31; from 2026-09-01 it becomes
+# 3.00 / 15.00 (cache_read 0.30, cache_write 3.75). Re-verify then.
+[models."claude-sonnet-5"]
+input = 2.00
+output = 10.00
+cache_read = 0.20
+cache_write = 2.50
 
 [models."claude-sonnet-4-6"]
 input = 3.00
