@@ -58,6 +58,7 @@ fn wants_json(cli: &Cli) -> bool {
         Some(SubCommand::History(args)) => args.json,
         Some(SubCommand::Last(args)) => args.json,
         Some(SubCommand::Cost(args)) => args.json,
+        Some(SubCommand::Jobs(args)) => args.json,
         Some(SubCommand::Doctor(args)) => args.json,
         Some(SubCommand::Worktree {
             cmd: WorktreeCmd::List(args),
