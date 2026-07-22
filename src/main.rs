@@ -32,7 +32,12 @@ async fn main() {
             }
         }
         // The error seam: record the typed code before exiting so an
-        // observer sees the real outcome, not a reconstructed success.
+        // observer sees the real outcome, not a reconstructed success. A
+        // cap-hit error carries the run's observed spend; note it so the
+        // terminal receipt reports what the capped run cost (#449).
+        if let Some(cost) = roba::error_cost_usd(&err) {
+            roba::receipt::note_cost(cost);
+        }
         roba::receipt::finish(exit_code);
         std::process::exit(exit_code);
     }
