@@ -36,6 +36,7 @@
 //!   or a supervisor. Same species as claude's own session records.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // The consumer-facing contract (shape, paths, readers) lives in roba-types;
@@ -43,6 +44,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub use roba_types::receipt::{
     RECEIPT_ENV, Receipt, STATE_DIR_ENV, State, load, path_for, read_at, runs_dir,
 };
+
+/// The run's observed spend, noted once where the result is known (the
+/// success seam's `total_cost_usd`, or a cap-hit error's parsed cost) and
+/// attached to the terminal record by [`finish`]. Process-global because the
+/// exit seams live in `main` while the result lives in `run_ask`; set-once
+/// because one process is one run.
+static OBSERVED_COST: OnceLock<f64> = OnceLock::new();
+
+/// Note the run's observed cost for the terminal receipt. Safe to call on
+/// any run (a no-op recording for a foreground run whose receipt never
+/// gets written); later calls after the first are ignored.
+pub fn note_cost(cost_usd: f64) {
+    let _ = OBSERVED_COST.set(cost_usd);
+}
 
 /// Seconds since the Unix epoch; 0 if the clock is before it (never in
 /// practice, and a bogus timestamp must not fail a run).
@@ -152,8 +167,24 @@ pub fn start() {
         state: State::Running,
         exit_code: None,
         ended_at: None,
+        cost_usd: None,
     };
     let _ = write_atomic(&path, &rec);
+}
+
+/// Close a record with its terminal outcome: the pure half of [`finish`],
+/// split out so the attach logic is testable without the process-global
+/// cost note or the env-carried path.
+fn close(mut rec: Receipt, exit_code: i32, cost_usd: Option<f64>, now: u64) -> Receipt {
+    rec.state = State::Exited;
+    rec.exit_code = Some(exit_code);
+    rec.ended_at = Some(now);
+    // Attach observed spend when this run noted one; otherwise keep whatever
+    // the record already carried (nothing today) rather than erasing it.
+    if cost_usd.is_some() {
+        rec.cost_usd = cost_usd;
+    }
+    rec
 }
 
 /// Record this run's terminal exit code. Called at every exit seam of a
@@ -169,15 +200,13 @@ pub fn start() {
 /// `pid` are carried over from the start record.
 pub fn finish(exit_code: i32) {
     let Some(path) = active_path() else { return };
-    let Some(mut rec) = read_at(&path) else {
+    let Some(rec) = read_at(&path) else {
         return;
     };
     if rec.pid != std::process::id() {
         return;
     }
-    rec.state = State::Exited;
-    rec.exit_code = Some(exit_code);
-    rec.ended_at = Some(now_secs());
+    let rec = close(rec, exit_code, OBSERVED_COST.get().copied(), now_secs());
     let _ = write_atomic(&path, &rec);
 }
 
@@ -196,7 +225,27 @@ mod tests {
             state,
             exit_code: code,
             ended_at: code.map(|_| 200),
+            cost_usd: None,
         }
+    }
+
+    // -- close (terminal attach) -------------------------------------------
+
+    #[test]
+    fn close_attaches_code_time_and_cost() {
+        let r = close(rec(State::Running, None), 7, Some(0.13), 300);
+        assert_eq!(r.state, State::Exited);
+        assert_eq!(r.exit_code, Some(7));
+        assert_eq!(r.ended_at, Some(300));
+        assert_eq!(r.cost_usd, Some(0.13));
+    }
+
+    #[test]
+    fn close_without_cost_leaves_cost_absent() {
+        // No result event (crash-shaped exits): unknown, never zero.
+        let r = close(rec(State::Running, None), 1, None, 300);
+        assert!(r.is_terminal());
+        assert_eq!(r.cost_usd, None);
     }
 
     // -- atomic write ------------------------------------------------------

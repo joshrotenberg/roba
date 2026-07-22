@@ -11,7 +11,7 @@
 //! ```json
 //! {"session_id":"...","pid":41234,"started_at":1753,"state":"running"}
 //! {"session_id":"...","pid":41234,"started_at":1753,"state":"exited",
-//!  "exit_code":7,"ended_at":1789}
+//!  "exit_code":7,"ended_at":1789,"cost_usd":0.042}
 //! ```
 //!
 //! # The contract, for consumers
@@ -79,6 +79,12 @@ pub struct Receipt {
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<u64>,
+    /// Observed spend for the run, from claude's own result event
+    /// (`total_cost_usd`), when the run produced one. Absent means unknown --
+    /// a run that died before a result event, or a run whose auth reports no
+    /// cost -- never zero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
 }
 
 impl Receipt {
@@ -179,6 +185,7 @@ mod tests {
             state,
             exit_code: code,
             ended_at: code.map(|_| 200),
+            cost_usd: None,
         }
     }
 
@@ -224,6 +231,17 @@ mod tests {
         assert_eq!(back.state, State::Exited);
         assert_eq!(back.exit_code, Some(2));
         assert_eq!(back.ended_at, Some(200));
+    }
+
+    #[test]
+    fn cost_serializes_only_when_present() {
+        let mut r = rec(State::Exited, Some(0));
+        assert!(!serde_json::to_string(&r).unwrap().contains("cost_usd"));
+        r.cost_usd = Some(0.042);
+        let text = serde_json::to_string(&r).unwrap();
+        assert!(text.contains(r#""cost_usd":0.042"#), "got: {text}");
+        let back: Receipt = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.cost_usd, Some(0.042));
     }
 
     #[test]

@@ -593,6 +593,13 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         pb.finish_and_clear();
     }
 
+    // Note observed spend for the terminal receipt (#449) as soon as the
+    // result lands -- before the unusable-output exit below, so even an
+    // exit-6 receipt carries what the run cost.
+    if let Some(cost) = result.cost_usd {
+        receipt::note_cost(cost);
+    }
+
     // #317: with --json-schema, claude returns the schema-constrained answer
     // as a fenced JSON block in `result.result` and leaves `structured_output`
     // unset. Surface it cleanly so `--json` consumers get a real
@@ -851,6 +858,19 @@ pub(crate) fn exit_unusable(code: i32, note: &str) -> ! {
     // reconstructing success (#441). A no-op for a foreground run.
     receipt::finish(code);
     std::process::exit(code);
+}
+
+/// Observed spend carried by a typed error, when the failure happened after
+/// claude emitted a result event: the cap-hit variants parse
+/// `total_cost_usd` out of it. `None` for every other error -- unknown,
+/// never zero. Surfaced so the error exit seam can note it for the terminal
+/// receipt (#449).
+pub fn error_cost_usd(err: &anyhow::Error) -> Option<f64> {
+    match err.downcast_ref::<claude_wrapper::Error>()? {
+        claude_wrapper::Error::MaxTurnsExceeded { cost_usd, .. }
+        | claude_wrapper::Error::MaxBudgetExceeded { cost_usd, .. } => *cost_usd,
+        _ => None,
+    }
 }
 
 /// Map an anyhow error chain to a stable exit code:
