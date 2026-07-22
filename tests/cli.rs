@@ -1938,21 +1938,6 @@ fn persona_show_unknown_errors_with_known_list() {
 }
 
 #[test]
-fn serve_unknown_profile_errors() {
-    // `serve --profile` resolves the persona from the pool BEFORE it looks for
-    // the roba-server binary, so an unknown name fails fast (and without
-    // launching a server) -- which is what makes this testable.
-    let project = persona_project();
-    let home = tempfile::tempdir().unwrap();
-    roba_in(&project, &home)
-        .args(["serve", "--profile", "nope"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("no profile named `nope`"))
-        .stderr(predicate::str::contains("reviewer"));
-}
-
-#[test]
 fn session_unknown_name_errors_before_claude() {
     // `--session NAME` for an unconfigured NAME must fail loudly (and
     // before any claude call -- the unknown-name bail happens during

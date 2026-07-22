@@ -61,8 +61,3 @@ changelog_path = "roba-core/CHANGELOG.md"
 
 # Experimental MCP server. Lives in the workspace for review + CI, but is not
 # published or versioned by release-plz (publish = false in its Cargo.toml).
-[[package]]
-name = "roba-server"
-release = false
-publish = false
-semver_check = false
