@@ -279,3 +279,168 @@ fn wait_returns_on_a_terminal_receipt_even_if_the_log_looks_unfinished() {
     assert_eq!(json["result"]["is_error"], true);
     assert_eq!(json["result"]["exit_code"], 1);
 }
+
+// -- ownership: an inherited ROBA_RECEIPT must not be claimed --------------
+//
+// `ROBA_RECEIPT` reaches the detached child through the ENVIRONMENT, and env
+// is inherited by everything the child spawns: `claude`, and every process
+// claude runs via Bash -- including a nested `roba`. Without an ownership
+// check that nested roba stamps the outer run's receipt `exited/0` on its own
+// exit, and `show --wait` returns that wrong success to the orchestrator
+// while the real run is still working.
+
+/// A pid that is certainly not the roba process under test.
+fn foreign_pid() -> u32 {
+    std::process::id().wrapping_add(1)
+}
+
+fn running(session_id: &str, pid: u32) -> serde_json::Value {
+    serde_json::json!({
+        "session_id": session_id,
+        "pid": pid,
+        "started_at": 1_700_000_000u64,
+        "state": "running",
+    })
+}
+
+/// Read back the planted receipt.
+fn read_receipt(state_dir: &Path, session_id: &str) -> serde_json::Value {
+    let text = std::fs::read_to_string(state_dir.join("runs").join(format!("{session_id}.json")))
+        .expect("receipt still exists");
+    serde_json::from_str(&text).expect("receipt is valid json")
+}
+
+#[test]
+fn a_nested_roba_does_not_close_another_runs_receipt() {
+    // The repro: any roba invocation that merely inherited ROBA_RECEIPT,
+    // against a live run's record. Before the ownership check this rewrote
+    // the record as `exited, exit_code: 0`.
+    let proj = project().build();
+    let state = common::fresh_dir();
+    let path = state.path().join("runs").join(format!("{SESSION}.json"));
+    plant_receipt(state.path(), SESSION, running(SESSION, foreign_pid()));
+
+    let out = proj
+        .roba()
+        .args(["alias", "list"])
+        .env("ROBA_STATE_DIR", state.path())
+        .env("ROBA_RECEIPT", &path)
+        .output()
+        .expect("run a nested roba");
+    assert!(
+        out.status.success(),
+        "the nested command itself still succeeds: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let rec = read_receipt(state.path(), SESSION);
+    assert_eq!(rec["state"], "running", "another run's record was closed");
+    assert!(rec.get("exit_code").is_none(), "got: {rec}");
+    assert_eq!(rec["pid"], foreign_pid(), "the owner's pid was overwritten");
+    assert_eq!(rec["started_at"], 1_700_000_000u64);
+}
+
+#[test]
+fn a_nested_roba_does_not_close_another_runs_receipt_on_the_error_path() {
+    // The terminal record is written at every exit seam, so the error seam
+    // needs the same guard as the success seam.
+    let proj = project().build();
+    let state = common::fresh_dir();
+    let path = state.path().join("runs").join(format!("{SESSION}.json"));
+    plant_receipt(state.path(), SESSION, running(SESSION, foreign_pid()));
+
+    let out = proj
+        .roba()
+        .args(["show", "22222222-2222-4222-8222-222222222222"])
+        .env("ROBA_STATE_DIR", state.path())
+        .env("ROBA_RECEIPT", &path)
+        .output()
+        .expect("run a nested roba that fails");
+    assert!(!out.status.success(), "the nested command fails as usual");
+
+    let rec = read_receipt(state.path(), SESSION);
+    assert_eq!(rec["state"], "running", "another run's record was closed");
+    assert!(rec.get("exit_code").is_none(), "got: {rec}");
+}
+
+#[test]
+fn wait_is_not_short_circuited_by_a_nested_roba() {
+    // The consequence the guard buys, at the recipe level: `show --wait`
+    // against a live run keeps waiting (here, times out) instead of
+    // returning the nested process's success.
+    let proj = project().build();
+    let state = common::fresh_dir();
+    let path = state.path().join("runs").join(format!("{SESSION}.json"));
+    plant_receipt(state.path(), SESSION, running(SESSION, foreign_pid()));
+
+    let nested = proj
+        .roba()
+        .args(["alias", "list"])
+        .env("ROBA_STATE_DIR", state.path())
+        .env("ROBA_RECEIPT", &path)
+        .output()
+        .expect("run a nested roba");
+    assert!(nested.status.success());
+
+    let out = proj
+        .roba()
+        .args(["show", SESSION, "--wait", "--timeout", "1"])
+        .env("ROBA_STATE_DIR", state.path())
+        .output()
+        .expect("run show --wait");
+
+    assert_eq!(
+        out.status.code(),
+        Some(4),
+        "documented timeout exit, not a reported success: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_receipt_this_process_owns_is_still_written() {
+    // The guard must not break the real path: with no record on disk the
+    // run claims the receipt and closes it with its own typed exit code.
+    let proj = project().build();
+    let state = common::fresh_dir();
+    let path = state.path().join("runs").join(format!("{SESSION}.json"));
+    std::fs::create_dir_all(state.path().join("runs")).unwrap();
+
+    let out = proj
+        .roba()
+        .args(["show", "22222222-2222-4222-8222-222222222222"])
+        .env("ROBA_STATE_DIR", state.path())
+        .env("ROBA_RECEIPT", &path)
+        .output()
+        .expect("run roba with an unclaimed receipt");
+    let code = out.status.code().expect("exited normally");
+    assert_ne!(code, 0, "a missing session is an error");
+
+    let rec = read_receipt(state.path(), SESSION);
+    assert_eq!(rec["state"], "exited");
+    assert_eq!(rec["exit_code"], code, "the run's own typed code");
+}
+
+#[test]
+fn a_terminal_record_from_a_prior_run_is_reclaimed() {
+    // A finished record is not a live owner: a new run reusing the id must
+    // still get a receipt, otherwise a reused session id silently loses one.
+    let proj = project().build();
+    let state = common::fresh_dir();
+    let path = state.path().join("runs").join(format!("{SESSION}.json"));
+    plant_receipt(state.path(), SESSION, terminal(SESSION, 7));
+
+    let out = proj
+        .roba()
+        .args(["show", "22222222-2222-4222-8222-222222222222"])
+        .env("ROBA_STATE_DIR", state.path())
+        .env("ROBA_RECEIPT", &path)
+        .output()
+        .expect("run roba over a finished record");
+    let code = out.status.code().expect("exited normally");
+
+    let rec = read_receipt(state.path(), SESSION);
+    assert_eq!(rec["state"], "exited");
+    assert_eq!(rec["exit_code"], code, "replaced by this run's outcome");
+    assert_ne!(rec["pid"], 4242, "the new owner's pid");
+}

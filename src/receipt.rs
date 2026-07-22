@@ -23,6 +23,9 @@
 //!   `main`, the terminal record at the exit seam). The parent only computes
 //!   the path and hands it over in `ROBA_RECEIPT`. A single writer means the
 //!   parent can never clobber a terminal record written by a fast child.
+//!   `ROBA_RECEIPT` is inherited by every descendant, so that single writer is
+//!   enforced by an explicit pid check (the `owns` helper) rather than
+//!   assumed.
 //! - **Best-effort, never load-bearing.** Every write and read here is
 //!   fallible and swallowed. A missing or unreadable receipt degrades to
 //!   exactly today's behavior, so this is a disposable, self-healing artifact
@@ -150,7 +153,11 @@ fn is_safe_id(id: &str) -> bool {
 /// directory, or malformed JSON yields `None`, which callers treat as "no
 /// receipt" and fall back to their prior behavior.
 pub fn load(session_id: &str) -> Option<Receipt> {
-    let path = path_for(session_id)?;
+    read_at(&path_for(session_id)?)
+}
+
+/// Read the record at an exact path. Best-effort, like [`load`].
+fn read_at(path: &Path) -> Option<Receipt> {
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
 }
@@ -169,10 +176,10 @@ fn write_atomic(path: &Path, rec: &Receipt) -> std::io::Result<()> {
     // temp file from a killed run must not block a later one).
     let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
     std::fs::write(&tmp, json)?;
-    // Windows rename fails if the destination exists; remove it first. On
-    // unix the rename is already atomic and the remove is a no-op miss.
-    #[cfg(windows)]
-    let _ = std::fs::remove_file(path);
+    // `fs::rename` replaces an existing destination on both platforms (on
+    // Windows it uses MOVEFILE_REPLACE_EXISTING), so no unlink-first step is
+    // needed -- and adding one would open the exact window (destination
+    // briefly absent) that the temp-file-plus-rename exists to close.
     match std::fs::rename(&tmp, path) {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -188,6 +195,37 @@ fn write_atomic(path: &Path, rec: &Receipt) -> std::io::Result<()> {
 fn active_path() -> Option<PathBuf> {
     let raw = std::env::var(RECEIPT_ENV).ok()?;
     (!raw.is_empty()).then(|| PathBuf::from(raw))
+}
+
+/// Whether this process may write the record at `path`.
+///
+/// [`RECEIPT_ENV`] travels in the ENVIRONMENT, and env is inherited by every
+/// descendant: the detached child's `claude`, and in turn every process
+/// claude spawns -- including a nested `roba` (the chained/recursive shape,
+/// and roba verbs invoked inside a dispatch). Without this check a nested
+/// roba stamps the outer run's receipt `exited, exit_code: 0` while the real
+/// run is still working, and `show --wait` hands the orchestrator that wrong
+/// success: the same class of failure #441 exists to fix, on the exact recipe
+/// the README tells callers to depend on.
+///
+/// Ownership is decided by pid against the record already on disk:
+///
+/// - no record: unclaimed, this process may claim it.
+/// - a TERMINAL record: a prior run of this id finished, so a genuinely new
+///   run reusing the id may overwrite it.
+/// - a `running` record carrying OUR pid: our own start record.
+/// - a `running` record carrying a FOREIGN pid: someone else's live run --
+///   decline, leaving their record untouched.
+///
+/// The one case this declines wrongly is a new run reusing an id whose
+/// previous run was SIGKILLed, leaving a `running` record behind a dead pid.
+/// That degrades to no receipt, i.e. exactly today's behavior, and is what
+/// the deferred pid-liveness check resolves.
+fn owns(path: &Path) -> bool {
+    match read_at(path) {
+        None => true,
+        Some(existing) => existing.is_terminal() || existing.pid == std::process::id(),
+    }
 }
 
 /// Session id for a receipt path -- the file stem, which [`path_for`] built
@@ -207,8 +245,15 @@ fn id_from_path(path: &Path) -> String {
 /// after `spawn()`: a child that exits fast would otherwise have its terminal
 /// record clobbered by the parent's late start record. One writer, in order,
 /// no race.
+///
+/// Declines when the record on disk belongs to another live run (the `owns`
+/// helper), which is what keeps a nested roba that merely inherited
+/// [`RECEIPT_ENV`] from claiming the outer run's receipt.
 pub fn start() {
     let Some(path) = active_path() else { return };
+    if !owns(&path) {
+        return;
+    }
     let rec = Receipt {
         session_id: id_from_path(&path),
         pid: std::process::id(),
@@ -225,25 +270,23 @@ pub fn start() {
 ///
 /// Failure here is swallowed on purpose: a run must not change its exit code
 /// because a disposable observability artifact could not be written.
+///
+/// Only the process that claimed the record in [`start`] may close it: the
+/// on-disk `pid` must be ours. A nested roba that inherited [`RECEIPT_ENV`]
+/// reads a foreign pid here and leaves the record alone, so it can never
+/// report a still-working run as `exited, exit_code: 0`. `started_at` and
+/// `pid` are carried over from the start record.
 pub fn finish(exit_code: i32) {
     let Some(path) = active_path() else { return };
-    let now = now_secs();
-    // Reuse the start record's fields when it is readable so `started_at`
-    // and `pid` survive; otherwise record what this process knows.
-    let mut rec = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| serde_json::from_str::<Receipt>(&t).ok())
-        .unwrap_or_else(|| Receipt {
-            session_id: id_from_path(&path),
-            pid: std::process::id(),
-            started_at: now,
-            state: State::Running,
-            exit_code: None,
-            ended_at: None,
-        });
+    let Some(mut rec) = read_at(&path) else {
+        return;
+    };
+    if rec.pid != std::process::id() {
+        return;
+    }
     rec.state = State::Exited;
     rec.exit_code = Some(exit_code);
-    rec.ended_at = Some(now);
+    rec.ended_at = Some(now_secs());
     let _ = write_atomic(&path, &rec);
 }
 
@@ -357,6 +400,66 @@ mod tests {
         let back: Receipt = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(back.state, State::Exited);
         assert_eq!(back.exit_code, Some(0));
+    }
+
+    // -- ownership ---------------------------------------------------------
+    //
+    // ROBA_RECEIPT is inherited by every descendant of the detached child,
+    // so a nested roba must not claim or close the outer run's record.
+
+    /// Write a record with a specific pid at `path`.
+    fn plant(path: &Path, pid: u32, state: State, code: Option<i32>) {
+        let mut r = rec(state, code);
+        r.pid = pid;
+        write_atomic(path, &r).unwrap();
+    }
+
+    /// A pid that is certainly not ours.
+    fn foreign_pid() -> u32 {
+        std::process::id().wrapping_add(1)
+    }
+
+    #[test]
+    fn an_unclaimed_path_is_ownable() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(owns(&dir.path().join("sess-1.json")));
+    }
+
+    #[test]
+    fn our_own_running_record_stays_ours() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sess-1.json");
+        plant(&path, std::process::id(), State::Running, None);
+        assert!(owns(&path));
+    }
+
+    #[test]
+    fn a_foreign_running_record_is_not_ours() {
+        // The nested-roba case: another live run holds this receipt.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sess-1.json");
+        plant(&path, foreign_pid(), State::Running, None);
+        assert!(!owns(&path), "must not claim another live run's receipt");
+    }
+
+    #[test]
+    fn a_terminal_foreign_record_may_be_reclaimed() {
+        // A prior run of this id finished, so a new run reusing the id owns
+        // the path -- otherwise a reused session id could never get a receipt.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sess-1.json");
+        plant(&path, foreign_pid(), State::Exited, Some(0));
+        assert!(owns(&path));
+    }
+
+    #[test]
+    fn a_malformed_record_does_not_block_ownership() {
+        // Unreadable is indistinguishable from absent; degrade to claimable
+        // rather than losing receipts to one corrupt file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sess-1.json");
+        std::fs::write(&path, "{not json").unwrap();
+        assert!(owns(&path));
     }
 
     #[test]

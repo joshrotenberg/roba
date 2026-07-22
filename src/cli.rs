@@ -400,6 +400,12 @@ pub struct ShowArgs {
     ///
     /// `read_session` walks every project directory looking for
     /// `<id>.jsonl`, so no project-scoping flag is needed.
+    ///
+    /// EXIT CODE: for a run roba detached, `show` exits with that run's
+    /// own typed exit code (it reads the run receipt the detached child
+    /// wrote), so `roba show <ID> || handle_failure` works. This applies
+    /// to plain `show`, not just `--wait`. Any run roba did not detach has
+    /// no receipt and `show` exits 0 as it always has.
     pub session_id: String,
 
     /// Also print the per-model token + cost breakdown for the session.
