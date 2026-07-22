@@ -1599,6 +1599,70 @@ fn live_detach_roundtrip() {
     );
 }
 
+#[test]
+#[ignore = "calls real claude, costs money"]
+fn live_detach_writes_a_run_receipt() {
+    // The #441 mechanic end-to-end: a real detached child records its own
+    // typed exit code, and `show` reads it back. Asserts only mechanics we
+    // own -- that a terminal receipt exists with exit 0 and that `show`
+    // surfaces the code -- never anything about what the model said.
+    //
+    // Like `live_detach_roundtrip`, this needs a TTY on stdin (the --detach
+    // piped-stdin guard), so it drives the binary via std::process.
+    use std::process::{Command as StdCommand, Stdio};
+
+    let dir = fresh_dir();
+    let state = fresh_dir();
+    let bin = assert_cmd::cargo::cargo_bin("roba");
+
+    let out = StdCommand::new(&bin)
+        .args([
+            "-C",
+            dir.path().to_str().expect("utf-8 tempdir path"),
+            "--model",
+            "haiku",
+            "--detach",
+            "respond with the single word: pong",
+        ])
+        .env("ROBA_STATE_DIR", state.path())
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn roba --detach");
+    assert!(
+        out.status.success(),
+        "--detach should exit 0 after spawning (stdin must be a TTY); stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let handle = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
+    // Wait for the run through the documented re-attach path, with the same
+    // state dir so `show` sees the child's receipt.
+    let show = Command::cargo_bin("roba")
+        .expect("cargo-built roba binary")
+        .args(["show", &handle, "--wait", "--timeout", "90", "--json"])
+        .env("ROBA_STATE_DIR", state.path())
+        .assert()
+        .success();
+
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&show.get_output().stdout).expect("clean json envelope");
+    assert_eq!(
+        envelope["result"]["exit_code"], 0,
+        "a completed detached run should report its typed exit code"
+    );
+    assert_eq!(envelope["result"]["is_error"], false);
+
+    // And the receipt itself is on disk, terminal, keyed by the handle.
+    let receipt = std::fs::read_to_string(state.path().join("runs").join(format!("{handle}.json")))
+        .expect("receipt written by the detached child");
+    let receipt: serde_json::Value = serde_json::from_str(&receipt).expect("receipt parses");
+    assert_eq!(receipt["state"], "exited");
+    assert_eq!(receipt["exit_code"], 0);
+    assert_eq!(receipt["session_id"], handle);
+}
+
 // ---------------------------------------------------------------------------
 // INTENTIONALLY UNTESTED (high cost / low signal, or no fixture path yet)
 // ---------------------------------------------------------------------------

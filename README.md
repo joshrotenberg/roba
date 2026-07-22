@@ -353,6 +353,18 @@ detached child's stdin is `/dev/null`; this data check is unix-only for
 now). Nobody is watching the run, so pair it with the rails
 (`--max-turns`, `--max-budget-usd`).
 
+`show --wait` reports the detached run's real outcome, not a
+reconstruction. The detached child writes a **run receipt** at its exit
+seam (`$ROBA_STATE_DIR/runs/<id>.json`, else `$XDG_STATE_HOME/roba/runs`,
+else `~/.local/state/roba/runs`) carrying its typed exit code, and `show`
+prefers it over the `stop_reason` heuristic: `.result.is_error` is true
+on a failure, `.result.exit_code` carries the code, and `show` itself
+exits with that same code. So `roba show "$id" --wait || handle_failure`
+works, and a run that died before claude persisted a session is reported
+rather than waited out. A receipt is written only for runs roba detached;
+without one, `show` behaves exactly as before (`is_error: false`, no
+`exit_code`, exit 0).
+
 The manual fallback (older versions, or no `--detach`):
 
 ```bash

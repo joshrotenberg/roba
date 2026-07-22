@@ -25,6 +25,7 @@ use crate::cost::{Usage, cost_breakdown, usage_by_model};
 use crate::history::extract_message_text;
 use crate::output::{format_count, looks_like_refusal, truncate_arg};
 use crate::rates::Rates;
+use crate::receipt::{self, Receipt};
 use crate::render;
 
 /// Default `--wait` timeout, in seconds. Bounds every wait so `--wait`
@@ -45,12 +46,62 @@ pub fn run(args: &crate::cli::ShowArgs) -> Result<()> {
         // the timeout fires), then fall through to the normal render
         // path below. A not-yet-written session is treated as "not
         // started yet" rather than an immediate not-found error.
-        wait_for_complete(&root, args)?
+        match wait_for_complete(&root, args)? {
+            Waited::Log(log) => log,
+            // A detached run that died before claude persisted anything
+            // (auth failure, a bad flag). There is no log to render and
+            // never will be, so report the receipt and stop waiting.
+            Waited::ReceiptOnly(rec) => report_receipt_only(&args.session_id, &rec),
+        }
     } else {
         load_session(&root, &args.session_id)?
     };
 
-    render_session(&root, &log, args)
+    // Read the receipt AFTER the log is resolved so a terminal record
+    // written during a `--wait` is picked up. Absent (every non-detached
+    // run) leaves the render exactly as it was.
+    let outcome = receipt::load(&args.session_id);
+    render_session(&root, &log, args, outcome.as_ref())?;
+
+    // Propagate the detached child's typed exit code. Without a receipt,
+    // or on a clean exit 0, `show` exits 0 as it always has.
+    if let Some(code) = outcome
+        .as_ref()
+        .filter(|r| r.failed())
+        .and_then(|r| r.exit_code)
+    {
+        flush_and_exit(code);
+    }
+    Ok(())
+}
+
+/// Flush stdout (the answer may not end in a newline) and exit with a
+/// specific code, bypassing `main`'s error mapping. Used only to mirror a
+/// receipt's already-typed code.
+fn flush_and_exit(code: i32) -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    std::process::exit(code);
+}
+
+/// Report a detached run that exited without ever writing a session log,
+/// then exit with its typed code. Nothing goes to stdout: there is no
+/// answer, and stdout must stay the answer channel.
+fn report_receipt_only(session_id: &str, rec: &Receipt) -> ! {
+    let code = rec.exit_code.unwrap_or(roba_types::EXIT_FAILURE);
+    eprintln!(
+        "roba: detached run `{session_id}` exited {code} without writing a session log \
+         (it failed before claude persisted anything)"
+    );
+    flush_and_exit(code);
+}
+
+/// What a `--wait` resolved to.
+enum Waited {
+    /// The session log, ready to render.
+    Log(SessionLog),
+    /// A terminal receipt but no session log -- the run failed early.
+    ReceiptOnly(Receipt),
 }
 
 /// Load a session by id, distinguishing a genuine not-found from a real
@@ -77,11 +128,17 @@ fn load_session(root: &HistoryRoot, session_id: &str) -> Result<SessionLog> {
 /// by `args.timeout` (default [`DEFAULT_WAIT_TIMEOUT_SECS`]; `0` waits
 /// indefinitely) so it never hangs unbounded -- including the case where
 /// the session hasn't written its JSONL yet.
-fn wait_for_complete(root: &HistoryRoot, args: &crate::cli::ShowArgs) -> Result<SessionLog> {
+/// A terminal receipt is AUTHORITATIVE and outranks the heuristic: the child
+/// recorded its own exit, so there is nothing left to wait for -- including
+/// the cases the heuristic cannot see (a crash, an auth failure, a cap hit)
+/// and the case where the log never appears at all (#441).
+fn wait_for_complete(root: &HistoryRoot, args: &crate::cli::ShowArgs) -> Result<Waited> {
     let timeout_secs = args.timeout.unwrap_or(DEFAULT_WAIT_TIMEOUT_SECS);
     let deadline = (timeout_secs != 0).then(|| Instant::now() + Duration::from_secs(timeout_secs));
 
     loop {
+        let outcome = receipt::load(&args.session_id).filter(Receipt::is_terminal);
+
         // A missing session under `--wait` means "not started yet", not
         // an error: keep polling until it appears or the timeout fires.
         // A REAL lookup/read error (permissions, a vanished file) is NOT
@@ -91,11 +148,18 @@ fn wait_for_complete(root: &HistoryRoot, args: &crate::cli::ShowArgs) -> Result<
                 let log = root
                     .read_session(&args.session_id)
                     .with_context(|| format!("reading session `{}`", args.session_id))?;
-                if is_complete(&log) {
-                    return Ok(log);
+                if outcome.is_some() || is_complete(&log) {
+                    return Ok(Waited::Log(log));
                 }
             }
-            Ok(None) => {} // not started yet -- keep polling
+            // Not started yet -- unless the run already recorded an exit,
+            // in which case no log is ever coming and waiting out the
+            // timeout would report a failure as a timeout.
+            Ok(None) => {
+                if let Some(rec) = outcome {
+                    return Ok(Waited::ReceiptOnly(rec));
+                }
+            }
             Err(e) => {
                 return Err(e).with_context(|| format!("looking up session `{}`", args.session_id));
             }
@@ -157,7 +221,12 @@ fn is_complete(log: &SessionLog) -> bool {
 /// output path, unchanged by `--wait` (which only gates when we get
 /// here). Reused by both the immediate and the poll-until-complete entry
 /// points so the rendering logic lives in exactly one place.
-fn render_session(root: &HistoryRoot, log: &SessionLog, args: &crate::cli::ShowArgs) -> Result<()> {
+fn render_session(
+    root: &HistoryRoot,
+    log: &SessionLog,
+    args: &crate::cli::ShowArgs,
+    outcome: Option<&Receipt>,
+) -> Result<()> {
     let (result_text, num_turns) = reconstruct_answer(log);
 
     // Per-model token rollup, read from the same JSONL the summary came
@@ -177,6 +246,16 @@ fn render_session(root: &HistoryRoot, log: &SessionLog, args: &crate::cli::ShowA
     let rates = Rates::resolve(None).ok();
     let cost_usd = rates.as_ref().and_then(|r| cost_breakdown(&by_model, r).1);
 
+    // The one thing the session log CANNOT tell us: how the run ended.
+    // A terminal receipt carries the child's typed exit code, so prefer it
+    // (#441); with no receipt, `is_error` stays false exactly as before and
+    // `exit_code` is absent from the envelope rather than fabricated.
+    let terminal = outcome.filter(|r| r.is_terminal());
+    let mut extra = HashMap::new();
+    if let Some(code) = terminal.and_then(|r| r.exit_code) {
+        extra.insert("exit_code".to_string(), serde_json::json!(code));
+    }
+
     let qr = QueryResult {
         result: result_text,
         session_id: log.session_id.clone(),
@@ -185,8 +264,8 @@ fn render_session(root: &HistoryRoot, log: &SessionLog, args: &crate::cli::ShowA
         // is honest about that with a null.
         duration_ms: None,
         num_turns: Some(num_turns),
-        is_error: false,
-        extra: HashMap::new(),
+        is_error: terminal.is_some_and(Receipt::failed),
+        extra,
     };
     let refusal = looks_like_refusal(&qr.result);
 
@@ -247,9 +326,15 @@ fn print_footer(qr: &QueryResult, refusal: bool, style: &render::Style) {
         Some(c) => format!("${c:.4}"),
         None => "cost unavailable".to_string(),
     };
+    // A recorded exit code is the run's real outcome, so it leads the
+    // provenance note. Absent for every run without a receipt.
+    let exit = match qr.extra.get("exit_code").and_then(|v| v.as_i64()) {
+        Some(code) => format!("exit {code} . "),
+        None => String::new(),
+    };
     render::print_meta(
         &format!(
-            "session {id} . turns {turns} . {cost} . reconstructed envelope (duration unavailable)"
+            "session {id} . turns {turns} . {cost} . {exit}reconstructed envelope (duration unavailable)"
         ),
         style,
     );

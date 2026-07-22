@@ -83,6 +83,9 @@ Environment variables:
     ROBA_CONTINUE=1|ID     truthy = continue most recent; else a session id
     ROBA_WORKTREE=1|NAME   truthy = fresh anonymous worktree; else a name
     ROBA_RATES_FILE=PATH   override the rates table (footer + roba cost)
+    ROBA_STATE_DIR=PATH    roba's disposable state (detached-run receipts
+                           land in <PATH>/runs; default $XDG_STATE_HOME/roba
+                           or ~/.local/state/roba)
     NO_COLOR=1             disable color (help and answer rendering)
   Precedence: CLI > ROBA_* env > profile > top-level keys > built-in default.
 
@@ -397,6 +400,12 @@ pub struct ShowArgs {
     ///
     /// `read_session` walks every project directory looking for
     /// `<id>.jsonl`, so no project-scoping flag is needed.
+    ///
+    /// EXIT CODE: for a run roba detached, `show` exits with that run's
+    /// own typed exit code (it reads the run receipt the detached child
+    /// wrote), so `roba show <ID> || handle_failure` works. This applies
+    /// to plain `show`, not just `--wait`. Any run roba did not detach has
+    /// no receipt and `show` exits 0 as it always has.
     pub session_id: String,
 
     /// Also print the per-model token + cost breakdown for the session.
@@ -424,12 +433,21 @@ pub struct ShowArgs {
     /// appear rather than erroring. Composes with `--json` / `--metrics`
     /// (those render once complete).
     ///
-    /// Completion is a BEST-EFFORT heuristic over claude's session log
-    /// (no explicit "done" marker is persisted): roba considers the run
-    /// finished when the last assistant turn's `stop_reason` is terminal
-    /// (`end_turn` / `stop_sequence` / `max_tokens`) rather than
-    /// `tool_use`. It is not a guaranteed "done" event. Always bounded by
-    /// `--timeout`.
+    /// For a run roba detached, completion is EXACT: the detached child
+    /// writes a run receipt carrying its typed exit code, and `show`
+    /// prefers it. The receipt also makes `show` report the outcome --
+    /// `is_error` and an `exit_code` field in the `--json` envelope -- and
+    /// `show` exits with that same code, so a failed detached run no longer
+    /// reconstructs as success. A run that died before claude persisted
+    /// anything is reported from the receipt instead of waiting out the
+    /// timeout.
+    ///
+    /// Without a receipt (any run roba did not detach) completion is a
+    /// BEST-EFFORT heuristic over claude's session log (no explicit "done"
+    /// marker is persisted): roba considers the run finished when the last
+    /// assistant turn's `stop_reason` is terminal (`end_turn` /
+    /// `stop_sequence` / `max_tokens`) rather than `tool_use`. It is not a
+    /// guaranteed "done" event. Always bounded by `--timeout`.
     #[arg(long)]
     pub wait: bool,
 

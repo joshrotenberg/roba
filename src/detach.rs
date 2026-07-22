@@ -91,6 +91,17 @@ pub fn run_detached(args: &AskArgs) -> Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // (4a) Hand the child its receipt path. The child -- not this process --
+    // writes both the start and the terminal record, so a fast child can
+    // never have its outcome clobbered by a late write from here (#441).
+    // Env, not argv: the re-exec is raw surgery on the user's own tokens, and
+    // this belongs nowhere near the clap surface. Its presence is also how
+    // the child knows roba detached it, so a receipt is written for detached
+    // runs only. A receipt path we cannot resolve just means no receipt --
+    // `show` then behaves exactly as it did before.
+    if let Some(path) = crate::receipt::path_for(&handle) {
+        cmd.env(crate::receipt::RECEIPT_ENV, path);
+    }
     detach_process_group(&mut cmd);
     cmd.spawn()
         .map_err(|e| anyhow::anyhow!("--detach: failed to spawn the detached run: {e}"))?;

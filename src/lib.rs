@@ -27,6 +27,7 @@ pub mod persona;
 pub mod profile;
 pub mod prompt;
 pub mod rates;
+pub mod receipt;
 pub mod render;
 pub mod serve;
 pub mod show;
@@ -849,6 +850,10 @@ pub(crate) fn exit_unusable(code: i32, note: &str) -> ! {
     use std::io::Write;
     let _ = std::io::stdout().flush();
     eprintln!("roba: {note} (exit {code})");
+    // One of the three seams where a detached child's typed exit code is
+    // known; record it so `roba show` reports the outcome instead of
+    // reconstructing success (#441). A no-op for a foreground run.
+    receipt::finish(code);
     std::process::exit(code);
 }
 
