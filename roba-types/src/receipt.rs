@@ -27,6 +27,9 @@
 //!   have been SIGKILLed before reaching its exit seam).
 //! - **A receipt describes a finished run.** It is not a job table, a queue,
 //!   or a supervisor.
+//! - **Receipts expire.** The writer sweeps records older than ~30 days when
+//!   a new detached run starts, so the directory self-heals. Consumers must
+//!   not treat an absent old receipt as meaningful.
 //!
 //! # Location
 //!
