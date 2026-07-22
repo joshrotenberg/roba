@@ -158,8 +158,7 @@ readonly = true
 git_status = true
 
 # PERSONA -- a role-bearing profile: a profile that pins a claude `agent` (the
-# role) plus its run envelope. Inspect these with `roba persona {list,show}`;
-# roba-server can assume one for a warm session (`ROBA_AGENT=reviewer`). The
+# role) plus its run envelope. Inspect these with `roba persona {list,show}`. The
 # `agent` names a native claude agent under `.claude/agents/` -- the role's
 # system prompt and tools live in that file, not here; this profile just names
 # it and wraps it. A full_auto persona (an autonomous worker) follows the same

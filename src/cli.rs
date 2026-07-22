@@ -248,14 +248,6 @@ pub enum SubCommand {
         #[command(subcommand)]
         action: PersonaAction,
     },
-    /// Launch the roba-server MCP server, optionally as a persona.
-    ///
-    /// Resolves `--profile NAME` from the config pool (top-level defaults +
-    /// `[profile.NAME]`) and maps the persona onto the `ROBA_*` env the server
-    /// reads, then execs the `roba-server` binary (found next to `roba`).
-    /// Existing `ROBA_*` env wins over the profile (env > profile). Without
-    /// `--profile`, launches the server with the current environment.
-    Serve(ServeArgs),
     /// Bootstrap a project roba.toml (claude-assisted).
     ///
     /// The per-project half of the config-draft verbs: `init` looks at
@@ -317,16 +309,6 @@ pub enum PersonaAction {
         /// Persona name (the `[profile.NAME]` whose `agent` is set).
         name: String,
     },
-}
-
-#[derive(ClapArgs, Debug)]
-pub struct ServeArgs {
-    /// Launch the server as this persona (a role-bearing `[profile.NAME]`).
-    ///
-    /// The profile is resolved from the config pool (top-level defaults +
-    /// `[profile.NAME]`) and mapped onto the `ROBA_*` env the server reads.
-    #[arg(long, visible_alias = "persona")]
-    pub profile: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
