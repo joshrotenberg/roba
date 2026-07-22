@@ -1,4 +1,5 @@
-//! Run receipts -- the durable outcome record for a detached run.
+//! Run receipts -- the WRITE side of the durable outcome record for a
+//! detached run.
 //!
 //! `--detach` re-execs roba disowned and drops the child handle, so the
 //! child's typed exit code has nowhere to go. `roba show` then had to
@@ -9,13 +10,14 @@
 //!
 //! A receipt closes that gap: the detached child writes a small JSON record
 //! keyed by session id, and `show` prefers it over the `stop_reason`
-//! heuristic. Shape:
+//! heuristic.
 //!
-//! ```json
-//! {"session_id":"...","pid":41234,"started_at":1753,"state":"running"}
-//! {"session_id":"...","pid":41234,"started_at":1753,"state":"exited",
-//!  "exit_code":7,"ended_at":1789}
-//! ```
+//! The record SHAPE, the path-resolution contract, and the best-effort
+//! readers live in [`roba_types::receipt`] (re-exported here), so downstream
+//! consumers (a scheduler, a watcher) read receipts through the published
+//! ABI crate without depending on this binary. This module keeps what only
+//! the writer needs: the atomic write, the pid-ownership guard, and the
+//! `start`/`finish` seams.
 //!
 //! Three properties keep this inside the "roba owns no runtime state" line:
 //!
@@ -32,73 +34,15 @@
 //!   rather than state roba depends on.
 //! - **A receipt describes a FINISHED run.** It is not a job table, a queue,
 //!   or a supervisor. Same species as claude's own session records.
-//!
-//! Location: `$ROBA_STATE_DIR/runs/<id>.json`, else
-//! `$XDG_STATE_HOME/roba/runs/<id>.json`, else
-//! `~/.local/state/roba/runs/<id>.json`. Deliberately NOT `.roba/` -- that is
-//! the hermetic config bundle directory, meant to be authored, audited, and
-//! potentially committed; receipts are per-machine and disposable.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
-
-/// Env var carrying the receipt path from the detaching parent to the
-/// detached child. Env, not argv: the re-exec does raw argv surgery on the
-/// user's own tokens, and a receipt path has no business on the clap
-/// surface. Its presence is also the child's only signal that roba itself
-/// detached it, so a receipt is never written for an ordinary foreground run.
-pub const RECEIPT_ENV: &str = "ROBA_RECEIPT";
-
-/// Env var overriding the state directory root (receipts land in
-/// `<dir>/runs/`). Exists for test isolation and for callers that keep roba's
-/// disposable state somewhere specific.
-pub const STATE_DIR_ENV: &str = "ROBA_STATE_DIR";
-
-/// Lifecycle state of a run receipt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum State {
-    /// The child started and has not recorded an exit. Either still running
-    /// or killed hard enough to skip its exit seam (SIGKILL, power loss).
-    Running,
-    /// The child reached an exit seam and recorded its typed code.
-    Exited,
-}
-
-/// The on-disk record. Timestamps are Unix epoch SECONDS -- coarse on
-/// purpose, and dependency-free (no chrono).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Receipt {
-    /// Session handle this run was launched under (the `show <ID>` key).
-    pub session_id: String,
-    /// The detached child's pid. Recorded so a later refinement can tell
-    /// "still running" from "died without recording an exit" via a liveness
-    /// check; nothing reads it for that purpose yet.
-    pub pid: u32,
-    pub started_at: u64,
-    pub state: State,
-    /// The child's typed exit code. Present iff `state` is `exited`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exit_code: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ended_at: Option<u64>,
-}
-
-impl Receipt {
-    /// True once the child recorded an exit code. Only a terminal receipt is
-    /// authoritative about the outcome; a `running` one says nothing.
-    pub fn is_terminal(&self) -> bool {
-        self.state == State::Exited && self.exit_code.is_some()
-    }
-
-    /// True when this run finished with a non-zero typed exit code. A
-    /// non-terminal receipt is NOT a failure -- it is "no answer yet".
-    pub fn failed(&self) -> bool {
-        self.is_terminal() && self.exit_code != Some(0)
-    }
-}
+// The consumer-facing contract (shape, paths, readers) lives in roba-types;
+// re-export it so in-crate callers keep saying `crate::receipt::*`.
+pub use roba_types::receipt::{
+    RECEIPT_ENV, Receipt, STATE_DIR_ENV, State, load, path_for, read_at, runs_dir,
+};
 
 /// Seconds since the Unix epoch; 0 if the clock is before it (never in
 /// practice, and a bogus timestamp must not fail a run).
@@ -107,59 +51,6 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-/// The directory receipts live in, per the documented precedence. `None`
-/// when no home can be resolved and nothing is set -- receipts are then
-/// simply off.
-pub fn runs_dir() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var(STATE_DIR_ENV)
-        && !dir.is_empty()
-    {
-        return Some(PathBuf::from(dir).join("runs"));
-    }
-    if let Ok(dir) = std::env::var("XDG_STATE_HOME")
-        && !dir.is_empty()
-    {
-        return Some(PathBuf::from(dir).join("roba").join("runs"));
-    }
-    crate::profile::home_dir().map(|h| h.join(".local").join("state").join("roba").join("runs"))
-}
-
-/// The receipt path for a session id, or `None` when receipts are
-/// unavailable (no resolvable directory) or the id is unsafe as a filename.
-///
-/// The id reaches us from `--session-id` / `--session NAME`, i.e. user input,
-/// so an id carrying a path separator or `..` is rejected rather than
-/// allowed to escape the runs directory.
-pub fn path_for(session_id: &str) -> Option<PathBuf> {
-    if !is_safe_id(session_id) {
-        return None;
-    }
-    Some(runs_dir()?.join(format!("{session_id}.json")))
-}
-
-/// Reject ids that would escape the runs directory or name nothing.
-fn is_safe_id(id: &str) -> bool {
-    !id.is_empty()
-        && id != "."
-        && id != ".."
-        && !id.contains('/')
-        && !id.contains('\\')
-        && !id.contains('\0')
-}
-
-/// Read the receipt for a session id. Best-effort: any missing file, unset
-/// directory, or malformed JSON yields `None`, which callers treat as "no
-/// receipt" and fall back to their prior behavior.
-pub fn load(session_id: &str) -> Option<Receipt> {
-    read_at(&path_for(session_id)?)
-}
-
-/// Read the record at an exact path. Best-effort, like [`load`].
-fn read_at(path: &Path) -> Option<Receipt> {
-    let text = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
 }
 
 /// Write a record atomically: serialize to a sibling temp file, then rename
@@ -294,6 +185,9 @@ pub fn finish(exit_code: i32) {
 mod tests {
     use super::*;
 
+    // Schema, predicate, and id-safety tests live with the types in
+    // roba-types::receipt; this module tests only what the writer owns.
+
     fn rec(state: State, code: Option<i32>) -> Receipt {
         Receipt {
             session_id: "sess-1".to_string(),
@@ -303,72 +197,6 @@ mod tests {
             exit_code: code,
             ended_at: code.map(|_| 200),
         }
-    }
-
-    // -- outcome predicates ------------------------------------------------
-
-    #[test]
-    fn terminal_zero_is_not_a_failure() {
-        let r = rec(State::Exited, Some(0));
-        assert!(r.is_terminal());
-        assert!(!r.failed());
-    }
-
-    #[test]
-    fn terminal_non_zero_is_a_failure() {
-        let r = rec(State::Exited, Some(7));
-        assert!(r.is_terminal());
-        assert!(r.failed());
-    }
-
-    #[test]
-    fn running_receipt_is_neither_terminal_nor_failed() {
-        // The kill -9 case reads as "running", never as success or failure.
-        let r = rec(State::Running, None);
-        assert!(!r.is_terminal());
-        assert!(!r.failed(), "no answer yet must not report as failure");
-    }
-
-    #[test]
-    fn exited_without_a_code_is_not_terminal() {
-        // A truncated/hand-edited record must not be trusted as an outcome.
-        assert!(!rec(State::Exited, None).is_terminal());
-    }
-
-    // -- serialization -----------------------------------------------------
-
-    #[test]
-    fn round_trips_through_json() {
-        let r = rec(State::Exited, Some(2));
-        let text = serde_json::to_string(&r).unwrap();
-        let back: Receipt = serde_json::from_str(&text).unwrap();
-        assert_eq!(back.session_id, "sess-1");
-        assert_eq!(back.pid, 42);
-        assert_eq!(back.state, State::Exited);
-        assert_eq!(back.exit_code, Some(2));
-        assert_eq!(back.ended_at, Some(200));
-    }
-
-    #[test]
-    fn running_record_omits_terminal_fields() {
-        let text = serde_json::to_string(&rec(State::Running, None)).unwrap();
-        assert!(text.contains(r#""state":"running""#), "got: {text}");
-        assert!(!text.contains("exit_code"), "got: {text}");
-        assert!(!text.contains("ended_at"), "got: {text}");
-    }
-
-    // -- id safety ---------------------------------------------------------
-
-    #[test]
-    fn rejects_ids_that_would_escape_the_runs_dir() {
-        for bad in ["", ".", "..", "../evil", "a/b", "a\\b"] {
-            assert!(!is_safe_id(bad), "should reject {bad:?}");
-        }
-    }
-
-    #[test]
-    fn accepts_a_uuid_shaped_id() {
-        assert!(is_safe_id("11111111-1111-4111-8111-111111111111"));
     }
 
     // -- atomic write ------------------------------------------------------

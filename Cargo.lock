@@ -845,6 +845,7 @@ dependencies = [
  "claude-wrapper",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
