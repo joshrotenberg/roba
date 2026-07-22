@@ -12,7 +12,7 @@ repository = "https://github.com/joshrotenberg/roba"
 homepage = "https://github.com/joshrotenberg/roba"
 documentation = "https://docs.rs/roba"
 readme = "README.md"
-description = "A sharp, focused sugaring of claude -p -- pipeable, composable, safe-by-default, session-re-enterable."
+description = "A single-prompt CLI runner on top of claude -p: one invocation, one answer. Composable input, pipe-clean output, re-enterable sessions, a stable scripting ABI."
 keywords = ["claude", "cli", "ai", "llm", "anthropic"]
 categories = ["command-line-utilities"]
 

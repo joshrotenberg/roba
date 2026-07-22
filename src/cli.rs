@@ -178,7 +178,7 @@ fn split_two_column(line: &str) -> Option<(&str, &str, &str)> {
     Some((indent, &body[..gap], &body[gap..]))
 }
 
-/// A sharp, focused sugaring of claude -p -- pipeable, composable, safe-by-default, session-re-enterable.
+/// A single-prompt CLI runner on top of claude -p: one invocation, one answer.
 #[derive(Parser, Debug)]
 #[command(
     version,

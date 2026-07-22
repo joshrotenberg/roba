@@ -273,7 +273,7 @@ fn render_session(
         // stdout stays a clean SuccessEnvelope (byte-identical shape to
         // the live `roba --json` path); metrics, if asked, go to stderr.
         let envelope = SuccessEnvelope {
-            version: 1,
+            version: roba_types::VERSION,
             result: &qr,
             refusal,
         };
