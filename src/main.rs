@@ -9,6 +9,10 @@ async fn main() {
     // consumes the AskArgs -- error styling needs to honor it too.
     let plain = cli.ask.plain;
     let json = wants_json(&cli);
+    // A detached child records that it started, so `roba show` can tell
+    // "still running" from "never started" (#441). No-op without the
+    // ROBA_RECEIPT the detaching parent sets, i.e. for every ordinary run.
+    roba::receipt::start();
     if let Err(err) = roba::dispatch(cli).await {
         let exit_code = roba::classify_exit_code(&err);
         if json {
@@ -27,8 +31,13 @@ async fn main() {
                 roba::render::print_meta(&hint, &style);
             }
         }
+        // The error seam: record the typed code before exiting so an
+        // observer sees the real outcome, not a reconstructed success.
+        roba::receipt::finish(exit_code);
         std::process::exit(exit_code);
     }
+    // The success seam. `exit_unusable` (code 6) records its own.
+    roba::receipt::finish(0);
 }
 
 /// True when any explicit `--json` flag on the invocation asked for
