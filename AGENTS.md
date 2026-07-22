@@ -27,7 +27,9 @@ answer. Lib + bin targets so integration tests drive the same code paths.
 - `src/cli.rs` clap surface -- doc comments here ARE the `--help` reference
 - `src/session.rs` flag -> `QueryCommand` wiring; `src/env.rs` `ROBA_*` overrides
 - `src/profile/` config layering; `src/show.rs`, `src/history.rs`,
-  `src/cost.rs`, `src/worktree.rs`, `src/doctor.rs` read-only subcommands
+  `src/cost.rs`, `src/worktree.rs`, `src/doctor.rs`, `src/jobs.rs`
+  read-only subcommands; `src/receipt.rs` the run-receipt writer (the
+  schema lives in `roba-types`)
 - Doc homes: README (concepts + agent ABI), `--help` (reference,
   generated from `cli.rs`), `roba-config.sample.toml` (parse-tested schema)
 
@@ -40,9 +42,11 @@ cargo test --workspace --lib --all-features
 cargo test --test cli --all-features
 ```
 
-`--workspace` covers the `roba-types` member crate (the published,
-dependency-light `--json` envelope + exit-code contract) alongside the
-`roba` binary. The `cli` integration tests are roba-only.
+`--workspace` covers the member crates alongside the `roba` binary:
+`roba-types` (the published, dependency-light machine contract: `--json`
+envelopes, the exit-code map, run receipts) and `roba-core` (the
+clap-free config-and-run engine). The `cli` integration tests are
+roba-only.
 
 `tests/live.rs` calls real claude and costs money: `#[ignore]` by
 default, run explicitly with `cargo test --test live -- --ignored`.

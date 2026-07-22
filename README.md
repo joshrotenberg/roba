@@ -152,6 +152,10 @@ Files are discovered by walking up from the cwd (plus
   `[alias.review]` prompt template (`${1}` / `${pr}` / `$(...)` shell
   substitution) plus default flags and dispatches like a normal call.
   Your domain knowledge lives in your aliases, not the binary.
+- **Personas** are profiles that carry a role: set `agent = "NAME"` in
+  a `[profile.NAME]` and the run adopts that native claude agent
+  (`.claude/agents/NAME.md`) plus the profile's envelope. Inspect them
+  with `roba persona list` / `roba persona show NAME`.
 - **Draft one with claude:** `roba alias draft "..."` /
   `roba profile draft "..."` generate a validated `[alias.NAME]` /
   `[profile.NAME]` block from a description on stdout (pipe it to
@@ -170,6 +174,28 @@ enforced read-only, schema-validated reviewer in a few lines of TOML; and
 [`roba-multi-task-worker.toml`](examples/roba-multi-task-worker.toml), a
 worker sized to chew through a task list in one run (the one-turn-many-tasks
 pattern).
+
+## Sealed runs
+
+By default a run inherits everything ambient: roba's config pool walks
+up from the cwd, and claude reads `~/.claude` (agents, skills,
+CLAUDE.md, MCP servers). For a reproducible, auditable run you can seal
+either side or both:
+
+```bash
+roba --setting-sources user "..."   # claude ignores project/local ambient config
+roba --hermetic "..."               # seal BOTH: skip roba's pool + ~/.config,
+                                    #   and pin claude to a known promptspace
+roba --hermetic=roba "..."          # or seal one axis: roba | claude
+roba --bundle path/.roba "..."      # a .roba/ bundle supplies the run's config
+                                    #   (roba.toml, system-prompt.md, mcp.json)
+```
+
+Under `--hermetic`, a `./.roba` bundle (when present) is the sole config
+source, MCP is strict to what the bundle provides, and claude's dynamic
+system-prompt sections are excluded -- the run's capability surface is
+exactly what was declared, which is what makes an unattended `--full-auto`
+run auditable.
 
 ## Worker lifecycle
 
@@ -203,7 +229,7 @@ failure: { "version": 1, "error": { kind, message, exit_code, chain } }    (stde
 ```
 
 The read-only management commands (`cost`, `history`, `last`, `doctor`,
-`worktree list`) emit the same `{ "version": 1, "result": ... }` shape
+`worktree list`, `jobs`) emit the same `{ "version": 1, "result": ... }` shape
 (minus the ask-only `refusal`); `roba show` reconstructs the full ask
 envelope, `refusal` included. One parser handles every `--json` output.
 Pin `version` and you've pinned the shape.
@@ -363,7 +389,27 @@ exits with that same code. So `roba show "$id" --wait || handle_failure`
 works, and a run that died before claude persisted a session is reported
 rather than waited out. A receipt is written only for runs roba detached;
 without one, `show` behaves exactly as before (`is_error: false`, no
-`exit_code`, exit 0).
+`exit_code`, exit 0). The terminal receipt also records the run's
+observed spend (`cost_usd`, from claude's own result event; absent means
+unknown, never zero), and receipts expire: records older than ~30 days
+are swept when a new detached run starts.
+
+Two derived views make a batch of detached runs legible without a
+resident process:
+
+```bash
+roba jobs                 # ps-like table over the receipts: session, honest
+                          #   state (ok / exit N / running / stale?), cost, age
+roba watch                # wait on every running detached run; one line per
+                          #   completion, OSC-9 terminal bell; 0 all ok /
+                          #   1 any failed / 4 timeout
+roba watch 43a14535 9f2b  # or watch specific runs (unique id prefixes ok)
+```
+
+`stale?` is the honest column: a `running` record whose pid is gone --
+the run was killed too hard to record its exit. `roba jobs --json` wears
+the same `{ "version": 1, "result": ... }` envelope as every other
+report verb.
 
 The manual fallback (older versions, or no `--detach`):
 
