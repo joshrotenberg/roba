@@ -617,7 +617,7 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     let want_json = args.json || file_path.is_some_and(path_is_json);
     let body = if want_json {
         let envelope = SuccessEnvelope {
-            version: 1,
+            version: roba_types::VERSION,
             result: &result,
             refusal: looks_like_refusal(&result.result),
         };
@@ -1218,7 +1218,7 @@ mod tests {
             extra: std::collections::HashMap::new(),
         };
         let envelope = SuccessEnvelope {
-            version: 1,
+            version: roba_types::VERSION,
             result: &result,
             refusal: looks_like_refusal(&result.result),
         };

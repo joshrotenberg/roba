@@ -187,7 +187,7 @@ pub fn build_envelope(err: &anyhow::Error, exit_code: i32) -> ErrorEnvelope {
     let chain: Vec<String> = err.chain().map(|c| c.to_string()).collect();
     let message = chain.first().cloned().unwrap_or_else(|| err.to_string());
     ErrorEnvelope {
-        version: 1,
+        version: roba_types::VERSION,
         error: ErrorBody {
             kind: kind_of(err).to_string(),
             message,

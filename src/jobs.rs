@@ -193,10 +193,7 @@ pub fn run_jobs(args: &JobsArgs) -> Result<()> {
         .collect();
 
     if args.json {
-        let envelope = roba_types::VersionedResult {
-            version: 1,
-            result: &rows,
-        };
+        let envelope = roba_types::VersionedResult::new(&rows);
         println!("{}", serde_json::to_string_pretty(&envelope)?);
         return Ok(());
     }
