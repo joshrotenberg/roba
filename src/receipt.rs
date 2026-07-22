@@ -144,6 +144,43 @@ fn id_from_path(path: &Path) -> String {
         .to_string()
 }
 
+/// Receipts older than this are swept when a new detached run claims its
+/// path: 30 days, comfortably past any plausible `show`/re-attach window
+/// (claude's own session records are the durable history; a receipt is only
+/// the run's outcome signal). The sweep is the directory's whole lifecycle
+/// -- amortized on the runs that create the pressure, so the state dir
+/// self-heals instead of accumulating one file per detached run forever
+/// (#447).
+const PRUNE_AFTER_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// Remove entries in `dir` whose mtime is before `cutoff` (seconds since
+/// the Unix epoch), skipping `keep`. Sweeps expired records AND stale temp
+/// files from killed runs. Best-effort: any unreadable entry or failed
+/// remove is skipped, and a missing directory is a no-op.
+fn prune_older_than(dir: &Path, cutoff: u64, keep: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == keep {
+            continue;
+        }
+        let Some(mtime) = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+        else {
+            continue;
+        };
+        if mtime < cutoff {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 /// Record that this (detached) run started. Called once, early in `main`;
 /// a no-op for any process without [`RECEIPT_ENV`] set.
 ///
@@ -170,6 +207,12 @@ pub fn start() {
         cost_usd: None,
     };
     let _ = write_atomic(&path, &rec);
+    // The directory's lifecycle: each new run sweeps expired receipts, so
+    // the state dir stays disposable. After the write, so a slow sweep can
+    // never delay the record an observer is about to poll for.
+    if let Some(dir) = path.parent() {
+        prune_older_than(dir, now_secs().saturating_sub(PRUNE_AFTER_SECS), &path);
+    }
 }
 
 /// Close a record with its terminal outcome: the pure half of [`finish`],
@@ -246,6 +289,46 @@ mod tests {
         let r = close(rec(State::Running, None), 1, None, 300);
         assert!(r.is_terminal());
         assert_eq!(r.cost_usd, None);
+    }
+
+    // -- prune (the lifecycle) ---------------------------------------------
+
+    #[test]
+    fn prune_removes_entries_older_than_cutoff_and_keeps_ours() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_rec = dir.path().join("old.json");
+        let stale_tmp = dir.path().join("dead.json.tmp.999");
+        let ours = dir.path().join("ours.json");
+        write_atomic(&old_rec, &rec(State::Exited, Some(0))).unwrap();
+        std::fs::write(&stale_tmp, "half-written").unwrap();
+        write_atomic(&ours, &rec(State::Running, None)).unwrap();
+
+        // A cutoff in the future ages out everything except the kept path.
+        let future = now_secs() + 10;
+        prune_older_than(dir.path(), future, &ours);
+        assert!(!old_rec.exists(), "expired record should be swept");
+        assert!(!stale_tmp.exists(), "stale temp file should be swept");
+        assert!(ours.exists(), "our own record must survive any cutoff");
+    }
+
+    #[test]
+    fn prune_keeps_entries_newer_than_cutoff() {
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = dir.path().join("fresh.json");
+        write_atomic(&fresh, &rec(State::Exited, Some(0))).unwrap();
+        // A cutoff in the past leaves fresh records alone.
+        prune_older_than(
+            dir.path(),
+            now_secs().saturating_sub(60),
+            &dir.path().join("other.json"),
+        );
+        assert!(fresh.exists());
+    }
+
+    #[test]
+    fn prune_missing_dir_is_a_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        prune_older_than(&dir.path().join("absent"), now_secs(), Path::new("x"));
     }
 
     // -- atomic write ------------------------------------------------------
