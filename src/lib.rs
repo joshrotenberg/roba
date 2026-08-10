@@ -349,9 +349,9 @@ fn build_config(args: &AskArgs, prompt: impl Into<String>) -> Result<engine::Con
             SessionSpec::Resume { session } => Session::Resume(session.id),
         }
     };
-    // Claude-hermetic axis: seal ambient claude config. `user` is the default
-    // (seals project/local ambient, keeps your global ~/.claude); an explicit
-    // --setting-sources wins (e.g. `''` for a full seal).
+    // Claude-hermetic axis: seal every ambient Claude setting source. An
+    // explicit --setting-sources still wins when a caller deliberately wants
+    // to opt a source such as `user` back in.
     let (_, claude_hermetic) = hermetic_axes(args);
     Ok(engine::Config {
         prompt: spec
@@ -390,7 +390,7 @@ fn build_config(args: &AskArgs, prompt: impl Into<String>) -> Result<engine::Con
         setting_sources: args
             .setting_sources
             .clone()
-            .or_else(|| claude_hermetic.then(|| "user".to_string())),
+            .or_else(|| claude_hermetic.then(String::new)),
         exclude_dynamic_system_prompt_sections: claude_hermetic,
     })
 }
@@ -1011,7 +1011,7 @@ mod tests {
     #[test]
     fn hermetic_claude_axis_sets_the_seal() {
         let c = build_config(&ask(&["roba", "--hermetic", "p"]), "p").unwrap();
-        assert_eq!(c.setting_sources.as_deref(), Some("user"));
+        assert_eq!(c.setting_sources.as_deref(), Some(""));
         assert!(c.strict_mcp_config);
         assert!(c.exclude_dynamic_system_prompt_sections);
     }
@@ -1019,11 +1019,11 @@ mod tests {
     #[test]
     fn hermetic_explicit_setting_sources_overrides_default() {
         let c = build_config(
-            &ask(&["roba", "--hermetic", "--setting-sources", "", "p"]),
+            &ask(&["roba", "--hermetic", "--setting-sources", "user", "p"]),
             "p",
         )
         .unwrap();
-        assert_eq!(c.setting_sources.as_deref(), Some(""));
+        assert_eq!(c.setting_sources.as_deref(), Some("user"));
     }
 
     #[test]

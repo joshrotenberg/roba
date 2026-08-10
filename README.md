@@ -278,9 +278,9 @@ CLAUDE.md, MCP servers). For a reproducible, auditable run you can seal
 either side or both:
 
 ```bash
-roba --setting-sources user "..."   # claude ignores project/local ambient config
+roba --setting-sources user "..."   # claude keeps only user ambient config
 roba --hermetic "..."               # seal BOTH: skip roba's pool + ~/.config,
-                                    #   and pin claude to a known promptspace
+                                    #   and exclude all claude setting sources
 roba --hermetic=roba "..."          # or seal one axis: roba | claude
 roba --bundle path/.roba "..."      # a .roba/ bundle supplies explicit context
 ```
@@ -289,7 +289,8 @@ Under `--hermetic`, a `./.roba` bundle (when present) is the sole config
 source, MCP is strict to what the bundle provides, and claude's dynamic
 system-prompt sections are excluded -- the run's capability surface is
 exactly what was declared, which is what makes an unattended `--full-auto`
-run auditable.
+run auditable. Pass an explicit `--setting-sources user` only when you intend
+to add global Claude configuration back to that surface.
 
 A bundle may contain `roba.toml`, `system-prompt.md`, `mcp.json`,
 `settings.json`, and `agents/*.md`. Agent files use Claude's normal Markdown
