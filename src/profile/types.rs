@@ -58,7 +58,7 @@ pub struct Profile {
     /// Pin a claude-code subagent by name (`--agent`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
-    /// Human-readable summary of a persona, shown by `roba persona list`.
+    /// Human-readable summary shown by legacy profile inspection commands.
     /// Metadata only: no CLI flag, never forwarded to a run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,

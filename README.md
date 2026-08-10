@@ -230,11 +230,13 @@ roba --mcp-config mcp.json --strict-mcp-config "..." # use ONLY those servers
 roba forwards the path, claude reads it. Not a roba MCP server -- it
 wires per-run MCP servers into the `claude -p` call.
 
-## Configuration: profiles & aliases
+## Legacy one-shot configuration: profiles & aliases
 
-A `roba.toml` lets you stop retyping flags and define your own verbs.
-Files are discovered by walking up from the cwd (plus
-`~/.config/roba.toml`); closer-to-cwd wins per key.
+The original `roba.toml` format remains readable for one-shot compatibility,
+but profiles are deprecated in favor of the explicit hierarchical run config
+shown above. Legacy files are discovered by walking up from the cwd (plus
+`~/.config/roba.toml`); closer-to-cwd wins per key. New bounded runs should use
+`[agents.NAME]` and `roba run --config PATH --agent NAME`.
 
 - **Profiles** are named bundles of flag defaults: `--profile review`
   applies `[profile.review]`. A `default` profile auto-applies.
@@ -242,10 +244,6 @@ Files are discovered by walking up from the cwd (plus
   `[alias.review]` prompt template (`${1}` / `${pr}` / `$(...)` shell
   substitution) plus default flags and dispatches like a normal call.
   Your domain knowledge lives in your aliases, not the binary.
-- **Personas** are profiles that carry a role: set `agent = "NAME"` in
-  a `[profile.NAME]` and the run adopts that native claude agent
-  (`.claude/agents/NAME.md`) plus the profile's envelope. Inspect them
-  with `roba persona list` / `roba persona show NAME`.
 - **Draft one with claude:** `roba alias draft "..."` /
   `roba profile draft "..."` generate a validated `[alias.NAME]` /
   `[profile.NAME]` block from a description on stdout (pipe it to
@@ -255,6 +253,11 @@ The fully-commented [`roba-config.sample.toml`](roba-config.sample.toml)
 documents every key with worked examples; `roba profile init` drops it
 in your project. Inspect with `roba profile {list,show,active}` and
 `roba alias {list,show}`.
+
+The old “persona” label was only a profile with Claude's native `agent` field,
+so its duplicate inspection command has been removed. Existing profiles that
+set `agent` still execute unchanged and remain inspectable with `roba profile`.
+For provider-neutral roles, use a named hierarchical agent instead.
 
 For ready-to-copy setups, [`examples/`](examples/) carries vetted bundles
 (each parse-tested in CI): [`roba-rust-dispatch.toml`](examples/roba-rust-dispatch.toml)
