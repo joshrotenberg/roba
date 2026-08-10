@@ -1,6 +1,8 @@
 //! OpenAI Codex provider adapter.
 
-use codex_wrapper::types::QueryResult;
+use std::path::PathBuf;
+
+use codex_wrapper::types::{JsonLineEvent, QueryResult};
 use codex_wrapper::{
     ApprovalPolicyConfig, Codex, ExecCommand, ExecResumeCommand, McpConfigBuilder, McpServerConfig,
     SandboxMode,
@@ -15,14 +17,31 @@ use crate::run::{
 };
 
 /// Codex CLI implementation of Roba's provider-neutral turn boundary.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct CodexProvider;
+#[derive(Debug, Clone, Default)]
+pub struct CodexProvider {
+    binary: Option<PathBuf>,
+}
 
 const WORKER_GUIDANCE: &str = "Roba owns all child work for this run. When the task calls for workers, use only the `roba_workers.spawn_worker` MCP tool, then use `roba_workers.workers` and wait for every spawned worker before answering. Never launch Roba or provider CLIs in the shell to simulate workers, and never substitute provider-native subagents. If Roba refuses a spawn, report that refusal instead of using another mechanism.";
 
 impl CodexProvider {
-    fn client(request: &TurnRequest, context: &ProviderContext) -> Result<Codex, ProviderError> {
+    /// Use an explicit Codex executable instead of resolving `codex` from
+    /// `PATH`. This is useful for embedded hosts and deterministic tests.
+    pub fn with_binary(binary: impl Into<PathBuf>) -> Self {
+        Self {
+            binary: Some(binary.into()),
+        }
+    }
+
+    fn client(
+        &self,
+        request: &TurnRequest,
+        context: &ProviderContext,
+    ) -> Result<Codex, ProviderError> {
         let mut builder = Codex::builder();
+        if let Some(binary) = &self.binary {
+            builder = builder.binary(binary);
+        }
         if let Some(seconds) = request.spec.execution.limits.timeout_secs {
             builder = builder.timeout_secs(seconds);
         }
@@ -104,14 +123,7 @@ impl CodexProvider {
                 provider: ProviderId::codex(),
                 id,
             }),
-            usage: result.usage.map(|usage| TokenUsage {
-                input: usage.input_tokens,
-                cached_input: usage.cached_input_tokens,
-                cache_write_input: usage.cache_write_input_tokens,
-                output: usage.output_tokens,
-                reasoning_output: usage.reasoning_output_tokens,
-                total: usage.total_tokens,
-            }),
+            usage: result.usage.map(normalize_token_usage),
             // Codex reports token usage but no authoritative price.
             cost: None,
             duration_ms: None,
@@ -129,10 +141,9 @@ impl Provider for CodexProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             resume: true,
-            // The wrapper supports streaming, but this first adapter slice
-            // uses its typed terminal result. Streaming moves behind the
-            // common event sink with the run lifecycle.
-            streaming: false,
+            // JSONL output and usage are normalized into the common event
+            // sink before the same records assemble the terminal outcome.
+            streaming: true,
             read_only: true,
             workspace_write: true,
             full_auto: true,
@@ -209,28 +220,70 @@ impl Provider for CodexProvider {
     ) -> ProviderFuture<'a> {
         Box::pin(async move {
             self.validate(&request)?;
-            let codex = Self::client(&request, &context)?;
+            let codex = self.client(&request, &context)?;
             events.emit(RunEvent::TurnStarted {
                 provider: ProviderId::codex(),
             });
-            let result = match &request.spec.execution.session {
-                SessionSpec::Fresh => Self::fresh_command(&request, &context)
-                    .execute_json(&codex)
+            let mut captured = Vec::new();
+            {
+                let mut capture = |event| {
+                    emit_stream_event(&event, events);
+                    captured.push(event);
+                };
+                match &request.spec.execution.session {
+                    SessionSpec::Fresh => codex_wrapper::streaming::stream_exec(
+                        &codex,
+                        &Self::fresh_command(&request, &context),
+                        &mut capture,
+                    )
                     .await
                     .map_err(map_error)?,
-                SessionSpec::Resume { session } => {
-                    { Self::resume_command(&request, &session.id, &context) }
-                        .execute_json(&codex)
+                    SessionSpec::Resume { session } => {
+                        codex_wrapper::streaming::stream_exec_resume(
+                            &codex,
+                            &Self::resume_command(&request, &session.id, &context),
+                            &mut capture,
+                        )
                         .await
                         .map_err(map_error)?
+                    }
                 }
-            };
+            }
+            if !captured.iter().any(JsonLineEvent::is_turn_completed) {
+                return Err(ProviderError::new(
+                    FailureKind::Provider,
+                    "Codex stream ended without a turn.completed event",
+                ));
+            }
+            let result = QueryResult::from_events(captured);
             let outcome = Self::normalize(result);
             events.emit(RunEvent::TurnCompleted {
                 outcome: outcome.clone(),
             });
             Ok(outcome)
         })
+    }
+}
+
+fn normalize_token_usage(usage: codex_wrapper::types::TokenUsage) -> TokenUsage {
+    TokenUsage {
+        input: usage.input_tokens,
+        cached_input: usage.cached_input_tokens,
+        cache_write_input: usage.cache_write_input_tokens,
+        output: usage.output_tokens,
+        reasoning_output: usage.reasoning_output_tokens,
+        total: usage.total_tokens,
+    }
+}
+
+fn emit_stream_event(event: &codex_wrapper::types::JsonLineEvent, sink: &dyn EventSink) {
+    if let Some(text) = event.agent_message_text() {
+        sink.emit(RunEvent::OutputDelta { text });
+    }
+    if let Some(usage) = event.usage() {
+        sink.emit(RunEvent::Usage {
+            usage: normalize_token_usage(usage),
+        });
     }
 }
 
@@ -312,11 +365,64 @@ fn map_error(error: codex_wrapper::Error) -> ProviderError {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::sync::Mutex;
+
     use codex_wrapper::CodexCommand;
     use codex_wrapper::types::{JsonLineEvent, TokenUsage as CodexUsage};
 
     use super::*;
+    #[cfg(unix)]
+    use crate::run::RunState;
     use crate::run::{AgentSpec, Prompt, RunSpec};
+
+    #[cfg(unix)]
+    #[derive(Default)]
+    struct RecordingSink {
+        events: Mutex<Vec<RunEvent>>,
+    }
+
+    #[cfg(unix)]
+    impl EventSink for RecordingSink {
+        fn emit(&self, event: RunEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    #[cfg(unix)]
+    fn fake_codex(temp: &tempfile::TempDir) -> (CodexProvider, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let marker = temp.path().join("blocked.pid");
+        let binary = temp.path().join("codex");
+        let script = format!(
+            r#"#!/bin/sh
+prompt=$(cat)
+if [ "$prompt" = "block" ]; then
+  printf '%s' "$$" > '{}'
+  exec sleep 30
+fi
+if [ "$prompt" = "unterminated" ]; then
+  printf '%s\n' '{{"type":"thread.started","thread_id":"thread-1"}}'
+  printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"partial"}}}}'
+  exit 0
+fi
+case " $* " in
+  *" resume "*) text=resumed ;;
+  *) text=opened ;;
+esac
+printf '%s\n' '{{"type":"thread.started","thread_id":"thread-1"}}'
+printf '{{"type":"item.completed","item":{{"type":"agent_message","text":"%s"}}}}\n' "$text"
+printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_tokens":2}}}}'
+"#,
+            marker.display()
+        );
+        std::fs::write(&binary, script).unwrap();
+        let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&binary, permissions).unwrap();
+        (CodexProvider::with_binary(binary), marker)
+    }
 
     fn request() -> TurnRequest {
         RunSpec::suspended(AgentSpec::new(ProviderId::codex()))
@@ -348,7 +454,7 @@ mod tests {
 
     #[test]
     fn unsupported_limits_refuse_before_launch() {
-        let provider = CodexProvider;
+        let provider = CodexProvider::default();
         let mut turn = request();
         turn.spec.execution.limits.max_turns = Some(2);
         let error = provider.validate(&turn).unwrap_err();
@@ -435,5 +541,129 @@ mod tests {
         assert!(prompt.contains("roba_workers.spawn_worker"));
         assert!(prompt.contains("Never launch Roba or provider CLIs in the shell"));
         assert!(!format!("{context:?}").contains("secret-worker-token"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_binary_streams_open_and_resume_into_normalized_events() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, _) = fake_codex(&temp);
+
+        let fresh_events = RecordingSink::default();
+        let fresh = provider
+            .execute(request(), ProviderContext::default(), &fresh_events)
+            .await
+            .unwrap();
+        assert_eq!(fresh.output, "opened");
+        assert_eq!(fresh.session.as_ref().unwrap().id, "thread-1");
+        assert_eq!(fresh.usage.as_ref().unwrap().input, Some(3));
+        assert_eq!(fresh.usage.as_ref().unwrap().output, Some(2));
+        let fresh_events = fresh_events.events.into_inner().unwrap();
+        assert!(fresh_events.contains(&RunEvent::OutputDelta {
+            text: "opened".to_string(),
+        }));
+        assert!(fresh_events.iter().any(|event| matches!(
+            event,
+            RunEvent::Usage { usage }
+                if usage.input == Some(3) && usage.output == Some(2)
+        )));
+        assert!(matches!(
+            fresh_events.last(),
+            Some(RunEvent::TurnCompleted { .. })
+        ));
+
+        let mut resumed = request();
+        resumed.spec.execution.session = SessionSpec::Resume {
+            session: SessionHandle {
+                provider: ProviderId::codex(),
+                id: "thread-1".to_string(),
+            },
+        };
+        let resume_events = RecordingSink::default();
+        let resumed = provider
+            .execute(resumed, ProviderContext::default(), &resume_events)
+            .await
+            .unwrap();
+        assert_eq!(resumed.output, "resumed");
+        assert!(
+            resume_events
+                .events
+                .into_inner()
+                .unwrap()
+                .contains(&RunEvent::OutputDelta {
+                    text: "resumed".to_string(),
+                })
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_a_streamed_turn_kills_the_fake_process() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, marker) = fake_codex(&temp);
+        let run = crate::Run::new(
+            RunSpec::suspended(AgentSpec::new(ProviderId::codex()))
+                .with_prompt(Prompt::new("block").unwrap()),
+            std::sync::Arc::new(provider),
+        )
+        .unwrap();
+        run.begin().await.unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !marker.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fake Codex process did not start");
+        let pid = std::fs::read_to_string(&marker).unwrap();
+
+        run.handle().cancel().await.unwrap();
+        assert_eq!(run.handle().wait().await.state, RunState::Cancelled);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let alive = std::process::Command::new("kill")
+                    .args(["-0", pid.as_str()])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|status| status.success());
+                if !alive {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cancelled Codex process remained alive");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn successful_process_without_terminal_event_fails_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, _) = fake_codex(&temp);
+        let request = RunSpec::suspended(AgentSpec::new(ProviderId::codex()))
+            .with_prompt(Prompt::new("unterminated").unwrap())
+            .into_turn()
+            .unwrap();
+        let events = RecordingSink::default();
+
+        let error = provider
+            .execute(request, ProviderContext::default(), &events)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind, FailureKind::Provider);
+        assert!(error.message.contains("without a turn.completed event"));
+        let events = events.events.into_inner().unwrap();
+        assert!(events.contains(&RunEvent::OutputDelta {
+            text: "partial".to_string(),
+        }));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, RunEvent::TurnCompleted { .. }))
+        );
     }
 }
