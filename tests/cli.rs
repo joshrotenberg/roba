@@ -87,7 +87,10 @@ fn bounded_run_help_exposes_provider_and_run_adapters() {
         .stdout(predicate::str::contains("--mcp"))
         .stdout(predicate::str::contains("--json"))
         .stdout(predicate::str::contains("--max-workers"))
-        .stdout(predicate::str::contains("--max-worker-depth"));
+        .stdout(predicate::str::contains("--max-worker-depth"))
+        .stdout(predicate::str::contains("--github-repo"))
+        .stdout(predicate::str::contains("--github-pr-write"))
+        .stdout(predicate::str::contains("--github-merge"));
 }
 
 fn inspectable_bundle_fixture() -> tempfile::TempDir {
@@ -330,6 +333,25 @@ timeuot_secs = 30
         .failure()
         .code(1)
         .stderr(predicate::str::contains("unknown field `timeuot_secs`"));
+}
+
+#[test]
+fn bounded_github_process_rejects_an_invalid_repository_before_provider_launch() {
+    roba()
+        .args([
+            "run",
+            "--provider",
+            "codex",
+            "--github-repo",
+            "not-a-repository",
+            "work",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "GitHub repository must be an owner/name slug",
+        ));
 }
 
 #[test]

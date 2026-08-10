@@ -120,7 +120,17 @@ impl Roba {
                 }
                 consumed_grants.insert(grant.clone());
             }
-            resolved.insert(id.clone(), capability.clone());
+            let mut capability = capability.clone();
+            for action in &capability.descriptor.actions {
+                consumed_grants.extend(action.required_grants.iter().cloned());
+            }
+            capability.descriptor.actions.retain(|action| {
+                action
+                    .required_grants
+                    .iter()
+                    .all(|grant| spec.mission.grants().contains(grant))
+            });
+            resolved.insert(id.clone(), capability);
         }
         if let Some(grant) = spec
             .mission
@@ -245,12 +255,26 @@ mod tests {
                 required_grants: [AuthorityGrantId::new("test/write").unwrap()]
                     .into_iter()
                     .collect(),
-                actions: vec![ProcessActionSpec {
-                    id: ProcessActionId::new("record").unwrap(),
-                    description: "record a value".to_string(),
-                    input_schema: serde_json::json!({"type": "object"}),
-                    destructive: false,
-                }],
+                actions: vec![
+                    ProcessActionSpec {
+                        id: ProcessActionId::new("record").unwrap(),
+                        description: "record a value".to_string(),
+                        input_schema: serde_json::json!({"type": "object"}),
+                        required_grants: Default::default(),
+                        scope: crate::ProcessActionScope::RunTree,
+                        destructive: false,
+                    },
+                    ProcessActionSpec {
+                        id: ProcessActionId::new("admin").unwrap(),
+                        description: "perform an elevated action".to_string(),
+                        input_schema: serde_json::json!({"type": "object"}),
+                        required_grants: [AuthorityGrantId::new("test/admin").unwrap()]
+                            .into_iter()
+                            .collect(),
+                        scope: crate::ProcessActionScope::RootOnly,
+                        destructive: true,
+                    },
+                ],
                 instructions: vec!["Follow the deterministic test process.".to_string()],
             }
         }
@@ -407,6 +431,32 @@ mod tests {
             CompletionPolicy::RootTerminal,
         )
         .unwrap();
+        let resolved = roba.resolve_capabilities(&spec).unwrap();
+        assert_eq!(
+            resolved.values().next().unwrap().descriptor.actions.len(),
+            1
+        );
+        let mut elevated = spec.clone();
+        elevated.mission = MissionPolicy::new(
+            [ProcessCapabilityId::new("test/process").unwrap()],
+            [
+                AuthorityGrantId::new("test/write").unwrap(),
+                AuthorityGrantId::new("test/admin").unwrap(),
+            ],
+            CompletionPolicy::RootTerminal,
+        )
+        .unwrap();
+        assert_eq!(
+            roba.resolve_capabilities(&elevated)
+                .unwrap()
+                .values()
+                .next()
+                .unwrap()
+                .descriptor
+                .actions
+                .len(),
+            2
+        );
         let run = roba.create_run(spec).unwrap();
         assert_eq!(
             run.spec()

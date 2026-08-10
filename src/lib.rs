@@ -66,7 +66,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             .with_context(|| format!("--cwd: cannot change directory to {}", path.display()))?;
     }
     match cli.command {
-        Some(SubCommand::Run(args)) => bounded::run(args).await,
+        Some(SubCommand::Run(args)) => bounded::run(*args).await,
         Some(SubCommand::Bundle { cmd }) => bundle::run(cmd),
         Some(SubCommand::History(args)) => run_history(args),
         Some(SubCommand::Last(args)) => run_last(args),

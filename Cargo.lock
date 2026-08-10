@@ -1227,6 +1227,7 @@ dependencies = [
  "predicates",
  "roba-core",
  "roba-mcp",
+ "roba-process-github",
  "roba-repl",
  "roba-types",
  "serde",
@@ -1264,6 +1265,17 @@ dependencies = [
  "tokio",
  "tower-mcp",
  "uuid",
+]
+
+[[package]]
+name = "roba-process-github"
+version = "0.1.0"
+dependencies = [
+ "roba-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

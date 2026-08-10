@@ -44,9 +44,10 @@ pub use mission::{
 };
 pub use process::{
     AuthorityGrantId, AuthorityGrantIdError, CompletionPolicy, MissionPolicy, MissionPolicyError,
-    ProcessActionId, ProcessActionIdError, ProcessActionRequest, ProcessActionSpec,
-    ProcessCapability, ProcessCapabilityDescriptor, ProcessCapabilityError, ProcessCapabilityId,
-    ProcessCapabilityIdError, ProcessControl, ProcessControlError, ProcessFuture,
+    ProcessActionId, ProcessActionIdError, ProcessActionRequest, ProcessActionScope,
+    ProcessActionSpec, ProcessCapability, ProcessCapabilityDescriptor, ProcessCapabilityError,
+    ProcessCapabilityId, ProcessCapabilityIdError, ProcessControl, ProcessControlError,
+    ProcessFuture,
 };
 pub use provider::{
     EventSink, NoopEventSink, Provider, ProviderCapabilities, ProviderContext, ProviderError,

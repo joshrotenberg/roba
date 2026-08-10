@@ -3,7 +3,9 @@
 //! A process capability describes a workflow the host knows how to perform.
 //! Declaring one does not grant authority: every capability lists the exact
 //! grants it requires, and [`Roba`](crate::Roba) validates the immutable
-//! mission policy before constructing a run or starting provider work.
+//! mission policy before constructing a run or starting provider work. An
+//! action may additionally be root-only; such actions never enter a worker's
+//! private process control.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -206,8 +208,26 @@ pub struct ProcessActionSpec {
     /// before side effects.
     #[serde(default = "default_object_schema")]
     pub input_schema: Value,
+    /// Additional grants required before this action is projected or
+    /// invokable. These do not prevent a host from declaring the capability's
+    /// baseline surface.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub required_grants: BTreeSet<AuthorityGrantId>,
+    /// Which runs in the owned tree may receive this action. Root-only actions
+    /// are removed before a worker's private process control is constructed.
+    #[serde(default)]
+    pub scope: ProcessActionScope,
     #[serde(default)]
     pub destructive: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ProcessActionScope {
+    #[default]
+    RunTree,
+    RootOnly,
 }
 
 fn default_object_schema() -> Value {
@@ -272,8 +292,16 @@ pub struct ProcessControl {
 impl ProcessControl {
     pub(crate) fn new(
         run_id: RunId,
-        capabilities: BTreeMap<ProcessCapabilityId, RegisteredProcessCapability>,
+        mut capabilities: BTreeMap<ProcessCapabilityId, RegisteredProcessCapability>,
     ) -> Self {
+        if run_id != RunId::ROOT {
+            for capability in capabilities.values_mut() {
+                capability
+                    .descriptor
+                    .actions
+                    .retain(|action| action.scope == ProcessActionScope::RunTree);
+            }
+        }
         let descriptors = capabilities
             .values()
             .map(|item| item.descriptor.clone())
@@ -430,5 +458,61 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn root_only_actions_are_absent_from_worker_control() {
+        struct Scoped(ProcessCapabilityDescriptor);
+
+        impl ProcessCapability for Scoped {
+            fn descriptor(&self) -> ProcessCapabilityDescriptor {
+                self.0.clone()
+            }
+
+            fn invoke<'a>(&'a self, _request: ProcessActionRequest) -> ProcessFuture<'a> {
+                Box::pin(async { Ok(Value::Null) })
+            }
+        }
+
+        let descriptor = ProcessCapabilityDescriptor {
+            id: ProcessCapabilityId::new("test/scoped").unwrap(),
+            description: "scoped actions".to_string(),
+            required_grants: Default::default(),
+            actions: vec![
+                ProcessActionSpec {
+                    id: ProcessActionId::new("read").unwrap(),
+                    description: "read".to_string(),
+                    input_schema: default_object_schema(),
+                    required_grants: Default::default(),
+                    scope: ProcessActionScope::RunTree,
+                    destructive: false,
+                },
+                ProcessActionSpec {
+                    id: ProcessActionId::new("write").unwrap(),
+                    description: "write".to_string(),
+                    input_schema: default_object_schema(),
+                    required_grants: Default::default(),
+                    scope: ProcessActionScope::RootOnly,
+                    destructive: true,
+                },
+            ],
+            instructions: Vec::new(),
+        };
+        let registered = |descriptor: ProcessCapabilityDescriptor| {
+            BTreeMap::from([(
+                descriptor.id.clone(),
+                RegisteredProcessCapability {
+                    implementation: Arc::new(Scoped(descriptor.clone())),
+                    descriptor,
+                },
+            )])
+        };
+        let root = ProcessControl::new(RunId::ROOT, registered(descriptor.clone()));
+        let child_id: RunId = serde_json::from_value(serde_json::json!(2)).unwrap();
+        let child = ProcessControl::new(child_id, registered(descriptor));
+
+        assert_eq!(root.descriptors()[0].actions.len(), 2);
+        assert_eq!(child.descriptors()[0].actions.len(), 1);
+        assert_eq!(child.descriptors()[0].actions[0].id.as_str(), "read");
     }
 }

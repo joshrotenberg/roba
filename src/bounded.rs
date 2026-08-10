@@ -4,9 +4,11 @@ use anyhow::{Context, Result, bail};
 use tokio::io::BufReader;
 
 use roba_core::{
-    ClaudeProvider, CodexProvider, ConfigLayer, Effort, PermissionPolicy, Prompt, ProviderId, Roba,
-    RobaConfig, RunOverrides, RunSpec, RunState, SessionHandle, SessionSpec,
+    ClaudeProvider, CodexProvider, CompletionPolicy, ConfigLayer, Effort, MissionPolicy,
+    PermissionPolicy, Prompt, ProviderId, Roba, RobaConfig, RunOverrides, RunSpec, RunState,
+    SessionHandle, SessionSpec,
 };
+use roba_process_github::{GitHubProcess, GitHubRepository};
 
 use crate::VersionedResult;
 use crate::cli::{EffortLevel, RunArgs, RunProvider};
@@ -16,11 +18,12 @@ pub async fn run(args: RunArgs) -> Result<()> {
         bail!("a prompt-less run is suspended; add --repl or --mcp so it can be started");
     }
 
-    let spec = resolve_spec(&args)?;
+    let mut spec = resolve_spec(&args)?;
 
     let mut roba = Roba::new();
     roba.register(roba_mcp::WorkerMcpProvider::new(ClaudeProvider))?;
     roba.register(roba_mcp::WorkerMcpProvider::new(CodexProvider::default()))?;
+    configure_github_process(&args, &mut spec, &mut roba)?;
     let run = roba.create_run(spec)?;
     if run.spec().initial_prompt.is_some() {
         run.begin().await?;
@@ -66,6 +69,28 @@ pub async fn run(args: RunArgs) -> Result<()> {
         RunState::Cancelled => bail!("run was cancelled"),
         state => bail!("run ended wait in unexpected state {state:?}"),
     }
+}
+
+fn configure_github_process(args: &RunArgs, spec: &mut RunSpec, roba: &mut Roba) -> Result<()> {
+    let Some(repository) = &args.github_repo else {
+        return Ok(());
+    };
+    let process =
+        GitHubProcess::new(GitHubRepository::new(repository)?).with_binary(&args.gh_binary);
+    let mut grants = vec![GitHubProcess::read_grant()];
+    if args.github_pr_write {
+        grants.push(GitHubProcess::pull_request_write_grant());
+    }
+    if args.github_merge {
+        grants.push(GitHubProcess::merge_grant());
+    }
+    spec.mission = MissionPolicy::new(
+        [GitHubProcess::capability_id()],
+        grants,
+        CompletionPolicy::RootTerminal,
+    )?;
+    roba.register_capability(process)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -160,7 +185,7 @@ mod tests {
         )
         .unwrap();
         match cli.command.unwrap() {
-            SubCommand::Run(args) => args,
+            SubCommand::Run(args) => *args,
             other => panic!("expected run args, got {other:?}"),
         }
     }
@@ -286,6 +311,69 @@ model = "configured"
                 json["result"],
                 serde_json::to_value(snapshot).unwrap(),
                 "the adapter must wrap the public snapshot without reshaping it"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn github_process_flags_resolve_exact_capabilities_and_grants() {
+        let args = parse_run_args(&[
+            "--provider",
+            "codex",
+            "--github-repo",
+            "Owner/Project",
+            "--github-pr-write",
+            "--gh-binary",
+            "/test/gh",
+            "work the backlog",
+        ]);
+        let mut spec = resolve_spec(&args).unwrap();
+        let mut roba = Roba::new();
+        roba.register(roba_mcp::WorkerMcpProvider::new(CodexProvider::default()))
+            .unwrap();
+        configure_github_process(&args, &mut spec, &mut roba).unwrap();
+
+        assert_eq!(
+            spec.mission.capabilities(),
+            &std::collections::BTreeSet::from([GitHubProcess::capability_id()])
+        );
+        assert_eq!(
+            spec.mission.grants(),
+            &std::collections::BTreeSet::from([
+                GitHubProcess::read_grant(),
+                GitHubProcess::pull_request_write_grant(),
+            ])
+        );
+        let run = roba.create_run(spec).unwrap();
+        let mission = run.handle().mission().await;
+        let actions = &mission.authority.process_capabilities[0].actions;
+        assert!(
+            actions
+                .iter()
+                .any(|action| action.id.as_str() == "pulls/create")
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|action| action.id.as_str() == "pulls/merge")
+        );
+    }
+
+    #[test]
+    fn github_write_flags_require_an_explicit_repository() {
+        for flag in ["--github-pr-write", "--github-merge", "--gh-binary"] {
+            let mut args = vec![flag];
+            if flag == "--gh-binary" {
+                args.push("/test/gh");
+            }
+            args.push("work");
+            assert!(
+                Cli::try_parse_from(
+                    std::iter::once("roba")
+                        .chain(std::iter::once("run"))
+                        .chain(args)
+                )
+                .is_err()
             );
         }
     }

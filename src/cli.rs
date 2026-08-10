@@ -213,7 +213,7 @@ pub enum SubCommand {
     /// expose the same process-local run handle for its lifetime. Omitting the
     /// prompt is valid only with one of those adapters and leaves the run
     /// suspended until a client starts it.
-    Run(RunArgs),
+    Run(Box<RunArgs>),
     /// Validate and inspect legacy Claude `.roba/` bundles without a provider.
     Bundle {
         #[command(subcommand)]
@@ -390,6 +390,30 @@ pub struct RunArgs {
     /// Resume a provider session/thread id.
     #[arg(long)]
     pub resume: Option<String>,
+
+    /// Scope this finite mission to one GitHub owner/repository.
+    ///
+    /// This enables typed issue and pull-request reads. Repository work is
+    /// sequential in the current checkout; Roba does not create worktrees.
+    #[arg(long, value_name = "OWNER/REPO")]
+    pub github_repo: Option<String>,
+
+    /// Permit the GitHub process to create or reconcile pull requests.
+    #[arg(long, requires = "github_repo")]
+    pub github_pr_write: bool,
+
+    /// Permit the GitHub process to merge an exact reviewed pull-request head.
+    #[arg(long, requires = "github_repo")]
+    pub github_merge: bool,
+
+    /// `gh` binary used by the GitHub process.
+    #[arg(
+        long,
+        value_name = "PATH",
+        requires = "github_repo",
+        default_value = "gh"
+    )]
+    pub gh_binary: PathBuf,
 
     /// Emit the terminal run snapshot as a versioned JSON envelope.
     #[arg(long, conflicts_with_all = ["repl", "mcp"])]

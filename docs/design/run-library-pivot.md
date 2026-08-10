@@ -44,12 +44,15 @@ Repository issue work is an optional process capability. The library now owns
 stable capability, action, and grant identifiers; an immutable root
 `MissionPolicy`; and a host-owned registry that freezes descriptors and
 refuses unknown capabilities or missing grants before provider work. A private
-run-bound MCP dispatcher exposes only declared actions. The first real
-repository capability may encode issue selection, branches, verification,
-PRs, review, and merging, but it must not silently widen filesystem, tool,
-worker, spend, or merge authority. A host such as Ciacola may later consume
-Roba as its mechanical mission harness without making persistence a Roba
-requirement.
+run-bound MCP dispatcher exposes only declared actions. The first concrete
+pack, `roba-process-github`, supplies repository-scoped issue/PR reads,
+idempotent PR creation, and exact-head merging with separate read, PR-write,
+and merge grants. Actions whose grants are absent are omitted from the private
+surface. It is intentionally sequential in the current checkout: parallel
+issue writes remain deferred until the host can issue worktree leases and
+assign trusted worker working directories. A host such as Ciacola may later
+consume Roba as its mechanical mission harness without making persistence a
+Roba requirement.
 
 The public library converges on these concepts:
 
@@ -308,6 +311,23 @@ cancelled, and awaited entirely through the library.
 
 Acceptance: CLI, REPL, MCP, and direct Rust callers produce identical lifecycle
 and outcome semantics.
+
+### Phase 6 -- first repository process pack
+
+- [x] Add action-level grants so one declared capability can expose reads,
+      PR writes, and merges independently.
+- [x] Add an optional library-first GitHub process pack with typed issue and
+      PR actions, exact repository scoping, idempotent PR reconciliation, and
+      exact reviewed-head merge fencing.
+- [x] Add the smallest explicit `roba run` opt-in and deterministic fake-`gh`
+      coverage without widening the public monitoring MCP surface.
+- [ ] Dogfood sequential multi-issue missions across several repositories.
+- [ ] Design host-issued workspace leases before allowing parallel workers to
+      mutate repository worktrees.
+
+Acceptance: a run can receive repository process knowledge and only the exact
+grants selected by its host; no process action appears on the public monitor
+surface, and retries do not duplicate pull requests or merge a moved head.
 
 ## Explicit non-goals
 

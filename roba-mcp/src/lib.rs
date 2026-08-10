@@ -712,6 +712,8 @@ mod tests {
                         "required": ["turn"],
                         "properties": {"turn": {"type": "integer"}}
                     }),
+                    required_grants: Default::default(),
+                    scope: roba_core::ProcessActionScope::RunTree,
                     destructive: false,
                 }],
                 instructions: vec!["Record each process phase through Roba.".to_string()],

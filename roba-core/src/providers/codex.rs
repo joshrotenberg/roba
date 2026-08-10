@@ -519,6 +519,8 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
                 id: crate::ProcessActionId::new("record").unwrap(),
                 description: "record".to_string(),
                 input_schema: serde_json::json!({"type": "object"}),
+                required_grants: Default::default(),
+                scope: crate::ProcessActionScope::RunTree,
                 destructive: false,
             }],
             instructions: vec!["Follow the test process.".to_string()],

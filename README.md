@@ -50,6 +50,12 @@ roba run --provider codex --max-workers 4 --max-worker-depth 2 \
 # Resolve defaults, provider policy, and a named agent from one small file.
 roba run --config examples/run-config/roba.toml --agent builder \
   "Implement the next coherent change and verify it."
+
+# Add a repository-scoped issue/PR process. Reads are always enabled;
+# PR creation and exact-head merging require separate explicit grants.
+roba run --provider codex --full-auto \
+  --github-repo owner/project --github-pr-write --github-merge \
+  "Work the next five actionable issues, one at a time, and finish the mission."
 ```
 
 Worker creation is disabled unless both bounds are explicit. Workers inherit
@@ -106,6 +112,31 @@ merge authority by itself. The current executable completion rule remains
 `root_terminal`; reported work-item completion is observation, not a terminal
 decision.
 
+The optional `roba-process-github` pack is the first concrete process
+capability. `--github-repo OWNER/REPO` enables typed issue and pull-request
+reads against exactly `github.com/OWNER/REPO`. `--github-pr-write` adds
+idempotent pull-request creation/reconciliation; `--github-merge` separately
+adds merge authority fenced to a caller-supplied full head object id. Actions
+without their grant are not shown to the agent. The pack invokes a configurable
+`gh` binary and never includes its stderr in returned errors, so CLI auth
+material is not copied into prompts or monitor output.
+
+This first pack deliberately works sequentially in the process's current
+checkout. Roba does not yet issue workspace leases or assign worker working
+directories, so bounded workers may inspect or review but must not edit the
+same checkout in parallel. Parallel issue implementation belongs behind a
+future host-issued worktree capability rather than an agent-supplied path.
+Read actions remain available to bounded workers for inspection and review;
+PR creation and merge are root-only and are removed from every worker's
+private process surface.
+
+These grants govern Roba's typed process surface; they are not an OS or
+network isolation boundary. A provider that can run an ambient authenticated
+`gh`, `git`, or `curl` command may still act outside the pack. Hosts that need
+adversarial authority separation must also sandbox provider tools and remove
+ambient credentials. The initial pack is intended for trusted-agent dogfood
+with explicit, inspectable host actions.
+
 Configuration resolves in one hierarchy:
 
 ```text
@@ -128,6 +159,7 @@ The public implementation is split by responsibility:
   lifecycle, outcomes, and events
 - `roba-mcp`: run-scoped observation and control over MCP
 - `roba-repl`: line-oriented control over the same `RunHandle`
+- `roba-process-github`: optional typed GitHub issue/PR process knowledge
 - `roba`: the CLI and the compatibility surface for the original Claude runner
 
 See [the run-library design](docs/design/run-library-pivot.md) for the current

@@ -21,7 +21,7 @@ categories = ["command-line-utilities"]
 # run engine) are members. resolver "3" matches the edition-2024 package
 # default so making this a workspace does not change dependency resolution.
 [workspace]
-members = ["roba-types", "roba-core", "roba-mcp", "roba-repl"]
+members = ["roba-types", "roba-core", "roba-mcp", "roba-repl", "roba-process-github"]
 resolver = "3"
 
 [[bin]]
@@ -40,6 +40,7 @@ indicatif = "0.18"
 # programmatic caller / serve (#142) can drive it without clap.
 roba-core = { version = "0.2.0", path = "roba-core" }
 roba-mcp = { version = "0.1.0", path = "roba-mcp" }
+roba-process-github = { version = "0.1.0", path = "roba-process-github" }
 roba-repl = { version = "0.1.0", path = "roba-repl" }
 # The machine contract (envelopes + exit codes), shared so the binary and the
 # published crate cannot disagree. version + path so `roba` can still publish.
