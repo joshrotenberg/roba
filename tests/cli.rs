@@ -3211,6 +3211,27 @@ fn fake_claude(json_stdout: &str) -> tempfile::TempDir {
     dir
 }
 
+/// Like [`fake_claude`], but records one argument per line at
+/// `$ROBA_CAPTURE_ARGS` before returning a successful result.
+#[cfg(unix)]
+fn fake_claude_capturing_args() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("fake claude dir");
+    let path = dir.path().join("claude");
+    let script = r#"#!/bin/sh
+case "$*" in
+  *--version*) echo '1.0.0 (fake)'; exit 0;;
+esac
+printf '%s\n' "$@" > "$ROBA_CAPTURE_ARGS"
+cat >/dev/null 2>&1
+printf '%s\n' '{"result":"ok","session_id":"s1","is_error":false}'
+"#;
+    std::fs::write(&path, script).expect("write fake claude");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod fake claude");
+    dir
+}
+
 /// A roba command wired to a fake claude on PATH, isolated from any real
 /// roba.toml (HOME + XDG_CONFIG_HOME point at empty temp dirs).
 #[cfg(unix)]
@@ -3228,6 +3249,85 @@ fn roba_with_fake_claude(
         .env("XDG_CONFIG_HOME", cfg)
         .current_dir(home);
     cmd
+}
+
+#[cfg(unix)]
+#[test]
+fn hermetic_bundle_provisions_the_exact_claude_child_surface() {
+    let bin = fake_claude_capturing_args();
+    let home = tempfile::tempdir().expect("home");
+    let cfg = tempfile::tempdir().expect("cfg");
+    let bundle = home.path().join(".roba");
+    let capture = home.path().join("args.txt");
+
+    std::fs::create_dir_all(bundle.join("agents")).unwrap();
+    std::fs::write(
+        bundle.join("agents/reviewer.md"),
+        "---\ndescription: Reviews code\ntools: Read, Grep\n---\nReview the change.",
+    )
+    .unwrap();
+    std::fs::write(bundle.join("settings.json"), r#"{"hooks":{}}"#).unwrap();
+    std::fs::write(bundle.join("mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+
+    std::fs::create_dir_all(bundle.join("skills/review")).unwrap();
+    std::fs::create_dir_all(bundle.join(".claude-plugin")).unwrap();
+    std::fs::write(
+        bundle.join(".claude-plugin/plugin.json"),
+        r#"{"name":"bundle"}"#,
+    )
+    .unwrap();
+    let plugin = bundle.join("plugins/lint/.claude-plugin");
+    std::fs::create_dir_all(&plugin).unwrap();
+    std::fs::write(plugin.join("plugin.json"), r#"{"name":"lint"}"#).unwrap();
+
+    roba_with_fake_claude(bin.path(), home.path(), cfg.path())
+        .env("ROBA_CAPTURE_ARGS", &capture)
+        .args([
+            "--hermetic",
+            "--bundle",
+            bundle.to_str().unwrap(),
+            "--agent",
+            "reviewer",
+            "hello",
+        ])
+        .assert()
+        .success()
+        .stdout("ok\n");
+
+    let captured = std::fs::read_to_string(&capture).unwrap();
+    let argv: Vec<&str> = captured.lines().collect();
+    let value_after = |flag: &str| {
+        let index = argv.iter().position(|arg| *arg == flag).unwrap();
+        argv[index + 1]
+    };
+
+    assert_eq!(value_after("--agent"), "reviewer");
+    let agents: serde_json::Value = serde_json::from_str(value_after("--agents")).unwrap();
+    assert_eq!(agents["reviewer"]["description"], "Reviews code");
+    assert_eq!(agents["reviewer"]["prompt"], "Review the change.");
+    assert_eq!(
+        value_after("--settings"),
+        bundle.join("settings.json").to_str().unwrap()
+    );
+    assert_eq!(
+        value_after("--mcp-config"),
+        bundle.join("mcp.json").to_str().unwrap()
+    );
+    assert_eq!(value_after("--setting-sources"), "user");
+    assert!(argv.contains(&"--strict-mcp-config"));
+
+    let plugin_roots: Vec<&str> = argv
+        .windows(2)
+        .filter(|pair| pair[0] == "--plugin-dir")
+        .map(|pair| pair[1])
+        .collect();
+    assert_eq!(
+        plugin_roots,
+        vec![
+            bundle.to_str().unwrap(),
+            bundle.join("plugins/lint").to_str().unwrap()
+        ]
+    );
 }
 
 #[cfg(unix)]

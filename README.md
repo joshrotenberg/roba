@@ -282,8 +282,7 @@ roba --setting-sources user "..."   # claude ignores project/local ambient confi
 roba --hermetic "..."               # seal BOTH: skip roba's pool + ~/.config,
                                     #   and pin claude to a known promptspace
 roba --hermetic=roba "..."          # or seal one axis: roba | claude
-roba --bundle path/.roba "..."      # a .roba/ bundle supplies the run's config
-                                    #   (roba.toml, system-prompt.md, mcp.json)
+roba --bundle path/.roba "..."      # a .roba/ bundle supplies explicit context
 ```
 
 Under `--hermetic`, a `./.roba` bundle (when present) is the sole config
@@ -291,6 +290,17 @@ source, MCP is strict to what the bundle provides, and claude's dynamic
 system-prompt sections are excluded -- the run's capability surface is
 exactly what was declared, which is what makes an unattended `--full-auto`
 run auditable.
+
+A bundle may contain `roba.toml`, `system-prompt.md`, `mcp.json`,
+`settings.json`, and `agents/*.md`. Agent files use Claude's normal Markdown
+frontmatter and must declare a non-empty `description` plus a prompt body; Roba
+assembles them into the run's inline `--agents` object. A root `skills/`
+directory is loaded as a session plugin when the bundle also contains
+`.claude-plugin/plugin.json`. `plugins/` may itself be one manifested plugin,
+or contain multiple manifested plugin directories. Roba validates the JSON and
+required manifests before starting Claude. These bundle controls remain
+Claude-only one-shot packaging; provider-neutral bounded runs use `RunSpec`
+context and worker policy instead.
 
 ## Worker lifecycle
 
