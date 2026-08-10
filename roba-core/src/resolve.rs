@@ -151,6 +151,7 @@ impl RobaConfig {
                     max_depth: resolved.max_worker_depth.unwrap_or(0),
                 },
             },
+            mission: crate::MissionPolicy::default(),
             initial_prompt: overrides.initial_prompt,
         })
     }

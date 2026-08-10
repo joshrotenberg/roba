@@ -3,7 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    LimitSpec, PermissionPolicy, RunId, RunSnapshot, ToolPolicy, WorkerPolicy, WorkerSnapshot,
+    LimitSpec, MissionPolicy, PermissionPolicy, ProcessCapabilityDescriptor, RunId, RunSnapshot,
+    ToolPolicy, WorkerPolicy, WorkerSnapshot,
 };
 
 /// State claimed for one mission work item.
@@ -123,6 +124,9 @@ pub struct MissionAuthority {
     pub tools: ToolPolicy,
     pub limits: LimitSpec,
     pub workers: WorkerPolicy,
+    pub process: MissionPolicy,
+    /// Frozen host descriptors for the declared process capabilities.
+    pub process_capabilities: Vec<ProcessCapabilityDescriptor>,
 }
 
 /// Canonical process-local monitoring projection for one finite mission.

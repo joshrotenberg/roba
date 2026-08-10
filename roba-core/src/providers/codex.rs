@@ -318,6 +318,7 @@ fn mcp_configuration(context: &ProviderContext) -> CodexMcpConfiguration {
                 "report_work_item",
                 "report_blocker",
                 "report_artifact",
+                "invoke_process_action",
             ] {
                 configuration.overrides.push(format!(
                     "mcp_servers.roba_workers.tools.{tool}.approval_mode=\"approve\""
@@ -340,6 +341,15 @@ fn render_prompt(request: &TurnRequest, context: &ProviderContext) -> String {
         .any(|endpoint| endpoint.name() == "roba_workers")
     {
         sections.push(WORKER_GUIDANCE.to_string());
+    }
+    if context
+        .mcp_endpoints()
+        .iter()
+        .any(|endpoint| endpoint.name() == "roba_workers")
+        && let Some(control) = context.process_control()
+    {
+        sections.push("Use only the declared Roba process capabilities and invoke_process_action for granted workflow actions. Process knowledge does not add authority; report any refusal instead of bypassing it.".to_string());
+        sections.extend(control.instructions().map(str::to_string));
     }
     sections.join("\n\n")
 }
@@ -501,12 +511,25 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
 
     #[test]
     fn worker_mcp_configuration_matches_open_and_resume_without_secret_argv() {
-        let context =
-            ProviderContext::default().with_mcp_endpoint(crate::ProviderMcpEndpoint::new(
+        let process = crate::ProcessControl::test_control(crate::ProcessCapabilityDescriptor {
+            id: crate::ProcessCapabilityId::new("test/process").unwrap(),
+            description: "test process".to_string(),
+            required_grants: Default::default(),
+            actions: vec![crate::ProcessActionSpec {
+                id: crate::ProcessActionId::new("record").unwrap(),
+                description: "record".to_string(),
+                input_schema: serde_json::json!({"type": "object"}),
+                destructive: false,
+            }],
+            instructions: vec!["Follow the test process.".to_string()],
+        });
+        let context = ProviderContext::for_run(None, Some(process)).with_mcp_endpoint(
+            crate::ProviderMcpEndpoint::new(
                 "roba_workers",
                 "http://127.0.0.1:4123/mcp",
                 "secret-worker-token",
-            ));
+            ),
+        );
         let request = request();
         let open = CodexProvider::fresh_command(&request, &context).args();
         let resume = CodexProvider::resume_command(&request, "thread-1", &context).args();
@@ -528,6 +551,7 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
             "report_work_item",
             "report_blocker",
             "report_artifact",
+            "invoke_process_action",
         ] {
             assert!(configuration.overrides.iter().any(|value| {
                 value == &format!("mcp_servers.roba_workers.tools.{tool}.approval_mode=\"approve\"")
@@ -551,9 +575,10 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
                 .windows(2)
                 .any(|args| args == ["--disable", "multi_agent"])
         );
-        assert!(prompt.ends_with(WORKER_GUIDANCE));
+        assert!(prompt.contains(WORKER_GUIDANCE));
         assert!(prompt.contains("roba_workers.spawn_worker"));
         assert!(prompt.contains("Never launch Roba or provider CLIs in the shell"));
+        assert!(prompt.contains("Follow the test process."));
         assert!(!format!("{context:?}").contains("secret-worker-token"));
     }
 

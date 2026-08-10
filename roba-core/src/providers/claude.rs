@@ -162,6 +162,29 @@ impl ClaudeProvider {
                 None => WORKER_GUIDANCE.to_string(),
             });
         }
+        if context
+            .mcp_endpoints()
+            .iter()
+            .any(|endpoint| endpoint.name() == "roba_workers")
+            && let Some(control) = context.process_control()
+        {
+            config
+                .allow_tools
+                .push("mcp__roba_workers__process_capabilities".to_string());
+            config
+                .allow_tools
+                .push("mcp__roba_workers__invoke_process_action".to_string());
+            let process_guidance = std::iter::once(
+                "Use only the declared Roba process capabilities and their invoke_process_action tool for granted workflow actions. A declaration is process knowledge, not additional authority; refusals must be reported rather than bypassed.",
+            )
+            .chain(control.instructions())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+            config.append_system_prompt = Some(match config.append_system_prompt.take() {
+                Some(existing) => format!("{existing}\n\n{process_guidance}"),
+                None => process_guidance,
+            });
+        }
     }
 
     /// Normalize Claude's result without converting missing telemetry to zero.
@@ -560,12 +583,25 @@ fi
 
     #[test]
     fn worker_mcp_configuration_is_ephemeral_and_authenticated() {
-        let context =
-            ProviderContext::default().with_mcp_endpoint(crate::ProviderMcpEndpoint::new(
+        let process = crate::ProcessControl::test_control(crate::ProcessCapabilityDescriptor {
+            id: crate::ProcessCapabilityId::new("test/process").unwrap(),
+            description: "test process".to_string(),
+            required_grants: Default::default(),
+            actions: vec![crate::ProcessActionSpec {
+                id: crate::ProcessActionId::new("record").unwrap(),
+                description: "record".to_string(),
+                input_schema: serde_json::json!({"type": "object"}),
+                destructive: false,
+            }],
+            instructions: vec!["Follow the test process.".to_string()],
+        });
+        let context = ProviderContext::for_run(None, Some(process)).with_mcp_endpoint(
+            crate::ProviderMcpEndpoint::new(
                 "roba_workers",
                 "http://127.0.0.1:4123/mcp",
                 "secret-worker-token",
-            ));
+            ),
+        );
         let config = ClaudeProvider::mcp_config(&context).unwrap().unwrap();
         let json = std::fs::read_to_string(config.path()).unwrap();
         let mut request_config = Config::new("test");
@@ -581,12 +617,17 @@ fi
                 "mcp__roba_workers__workers",
                 "mcp__roba_workers__report_work_item",
                 "mcp__roba_workers__report_blocker",
-                "mcp__roba_workers__report_artifact"
+                "mcp__roba_workers__report_artifact",
+                "mcp__roba_workers__process_capabilities",
+                "mcp__roba_workers__invoke_process_action"
             ]
         );
-        assert_eq!(
-            request_config.append_system_prompt.as_deref(),
-            Some(WORKER_GUIDANCE)
+        assert!(
+            request_config
+                .append_system_prompt
+                .as_deref()
+                .unwrap()
+                .starts_with(WORKER_GUIDANCE)
         );
         assert!(
             request_config
@@ -594,6 +635,13 @@ fi
                 .as_deref()
                 .unwrap()
                 .contains("Never launch Roba or provider CLIs in the shell")
+        );
+        assert!(
+            request_config
+                .append_system_prompt
+                .as_deref()
+                .unwrap()
+                .contains("Follow the test process.")
         );
         let args = ClaudeProvider::bounded_command(&request_config).args();
         assert!(args.iter().any(|arg| arg == "--disallowed-tools"));

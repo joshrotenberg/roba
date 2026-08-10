@@ -31,7 +31,7 @@ is incrementally moved onto the mission/run model.
 
 ## Structure
 
-- `roba-core/src/{run,lifecycle,mission,provider,runtime}.rs` -- public mission
+- `roba-core/src/{run,lifecycle,mission,process,provider,runtime}.rs` -- public mission
   and run contracts, lifecycle, projection, provider boundary, and registry
 - `roba-mcp` and `roba-repl` -- thin run-scoped adapters over `RunHandle`
 - `src/main.rs` entry point; `src/lib.rs` dispatch, bounded run and legacy paths

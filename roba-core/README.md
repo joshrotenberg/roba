@@ -15,6 +15,11 @@ can create and control a run without depending on clap or terminal behavior.
   boundary-safe steering, bounded replayable run-tree events, cancellation,
   waiting, and an explicit provider registry. No daemon, database, queue, or
   global session pool.
+- **`mission` / `process`** -- the canonical finite-mission projection plus
+  immutable process-capability declarations, explicit grants, a host-owned
+  capability registry, and run-bound action control. Unknown capabilities,
+  missing grants, and providers without a private control transport fail
+  before provider work.
 - **`resolve`** -- one serializable hierarchy: Roba defaults, selected provider
   defaults, named agent, then run overrides.
 - **`providers`** -- Claude and Codex adapters that normalize provider-native
@@ -44,6 +49,13 @@ terminal recovery and accounting fields such as a resumable session, usage,
 cost, duration, and provider turn count. The same failure snapshot is retained
 by the handle and emitted as a `RunEvent::Failed`; missing telemetry remains
 absent.
+
+Process capabilities are optional. With an empty `MissionPolicy`, no process
+control is minted, no process instructions are added, and no private process
+tools are opened. A host that opts in registers `ProcessCapability`
+implementations on its `Roba` value and supplies the exact capability and grant
+ids in the root specification. Workers inherit that policy; neither a worker
+request nor an agent tool call can add capabilities or grants.
 
 ## Stability
 

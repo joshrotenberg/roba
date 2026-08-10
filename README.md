@@ -59,8 +59,10 @@ the run lifetime. When a parent ends, Roba cancels its live descendants before
 the parent becomes terminal, so a bounded run cannot leave provider work
 behind. Provider limits apply to each child independently; `max_workers` and
 `max_worker_depth` bound the tree, but they are not an aggregate spend limit.
-When workers are enabled, each Claude or Codex provider turn receives a private
-`roba_workers` MCP server with only `spawn_worker` and `workers`. The server is
+When workers or process capabilities are enabled, each Claude or Codex
+provider turn receives a private `roba_workers` MCP server. Worker tools expose
+bounded spawn, observation, and claim-backed progress; process tools expose
+only the capabilities declared for the root mission. The server is
 bound to that exact run, authenticated on an ephemeral loopback listener, and
 removed when the turn ends. Its bearer is transient and is never stored in the
 run specification or snapshots.
@@ -91,6 +93,18 @@ authority with typed claim-backed progress. When bounded workers are enabled,
 the private provider MCP surface also permits the root and owned workers to
 report work items, blockers, and artifacts. Reports enter the event journal
 and cannot alter runtime state or authority.
+
+Rust hosts can register optional `ProcessCapability` implementations on their
+process-local `Roba` runtime. A root `MissionPolicy` names capabilities,
+explicit authority grants, and its completion rule. Roba freezes capability
+descriptors at registration, rejects unknown capabilities or missing grants
+before constructing a run, and copies the root policy unchanged to every
+worker. Capability actions are available only on the private provider MCP
+surface; they are intentionally absent from the public monitoring router.
+Declaring process knowledge never grants filesystem, repository, network, or
+merge authority by itself. The current executable completion rule remains
+`root_terminal`; reported work-item completion is observation, not a terminal
+decision.
 
 Configuration resolves in one hierarchy:
 

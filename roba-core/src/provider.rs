@@ -7,6 +7,7 @@ use std::pin::Pin;
 use serde::{Deserialize, Serialize};
 
 use crate::lifecycle::WorkerControl;
+use crate::process::ProcessControl;
 use crate::run::{FailureKind, ProviderId, RunEvent, RunFailureDetails, RunOutcome, TurnRequest};
 
 /// One ephemeral MCP endpoint made available only to the provider turn being
@@ -67,13 +68,18 @@ impl fmt::Debug for ProviderMcpEndpoint {
 #[derive(Clone, Default)]
 pub struct ProviderContext {
     worker_control: Option<WorkerControl>,
+    process_control: Option<ProcessControl>,
     mcp_endpoints: Vec<ProviderMcpEndpoint>,
 }
 
 impl ProviderContext {
-    pub(crate) fn for_worker(control: WorkerControl) -> Self {
+    pub(crate) fn for_run(
+        worker_control: Option<WorkerControl>,
+        process_control: Option<ProcessControl>,
+    ) -> Self {
         Self {
-            worker_control: Some(control),
+            worker_control,
+            process_control,
             mcp_endpoints: Vec::new(),
         }
     }
@@ -81,6 +87,11 @@ impl ProviderContext {
     /// Narrow worker capability bound to this provider's current run.
     pub fn worker_control(&self) -> Option<&WorkerControl> {
         self.worker_control.as_ref()
+    }
+
+    /// Narrow process capability control bound to this exact run.
+    pub fn process_control(&self) -> Option<&ProcessControl> {
+        self.process_control.as_ref()
     }
 
     /// Ephemeral MCP endpoints a provider adapter must attach to this turn.
@@ -100,6 +111,7 @@ impl fmt::Debug for ProviderContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ProviderContext")
             .field("worker_control", &self.worker_control.is_some())
+            .field("process_control", &self.process_control)
             .field("mcp_endpoints", &self.mcp_endpoints)
             .finish()
     }
@@ -182,6 +194,13 @@ pub trait Provider: Send + Sync {
 
     /// Declared capabilities used for inspection and preflight.
     fn capabilities(&self) -> ProviderCapabilities;
+
+    /// Whether this registered provider boundary can expose a run-bound
+    /// [`ProcessControl`] to the child. Raw adapters default to false;
+    /// middleware that owns a private authenticated transport must opt in.
+    fn supports_process_control(&self) -> bool {
+        false
+    }
 
     /// Validate the complete request before any provider child is spawned.
     fn validate(&self, request: &TurnRequest) -> Result<(), ProviderError>;
