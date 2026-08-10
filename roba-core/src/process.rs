@@ -85,7 +85,10 @@ fn valid_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && value.split('/').all(|segment| {
-            !segment.is_empty()
+            segment
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
                 && segment.bytes().all(|byte| {
                     byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
                 })
@@ -394,7 +397,16 @@ mod tests {
     #[test]
     fn identifiers_and_policy_are_strict_and_deterministic() {
         assert!(ProcessCapabilityId::new("repo/issues").is_ok());
-        for invalid in ["", "Repo/issues", "/repo", "repo//issues", "repo issues"] {
+        for invalid in [
+            "",
+            "Repo/issues",
+            "/repo",
+            "repo//issues",
+            "repo issues",
+            ".",
+            "repo/../issues",
+            "repo/-action",
+        ] {
             assert!(ProcessCapabilityId::new(invalid).is_err(), "{invalid}");
         }
 
