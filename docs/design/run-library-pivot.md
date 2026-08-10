@@ -1,8 +1,9 @@
 > Status: ACTIVE vertical slice, started 2026-08-09 on
 > `codex/run-library-pivot`. Provider-neutral execution, both providers, the
 > process-local lifecycle, and thin CLI/REPL/MCP adapters are implemented.
-> Streaming, child runs, config-file migration, and paid provider smoke tests
-> remain. This document is the resume point if the work moves elsewhere.
+> Codex streaming, bounded child runs, event observation, and paid Codex smoke
+> are implemented. Config-file migration and Claude streaming remain. This
+> document is the resume point if the work moves elsewhere.
 
 # Roba as a bounded, provider-neutral agent run
 
@@ -226,8 +227,8 @@ the only production provider without being the type system's default.
 - [x] Map fresh and resume, session/thread identity, supported limits,
       sandbox/approval posture, usage, and typed failures honestly.
 - [x] Detect unsupported provider-specific settings before spawning a child.
-- [ ] Move Codex output streaming behind the provider-neutral event sink.
-- [ ] Add fake-binary open/resume/stream/cancel tests and one explicit paid
+- [x] Move Codex output streaming behind the provider-neutral event sink.
+- [x] Add fake-binary open/resume/stream/cancel tests and one explicit paid
       smoke outside the normal gate.
 
 Acceptance: the same public `RunSpec` starts and resumes both providers, and no

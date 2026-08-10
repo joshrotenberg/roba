@@ -64,7 +64,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
 
     let mut roba = Roba::new();
     roba.register(roba_mcp::WorkerMcpProvider::new(ClaudeProvider))?;
-    roba.register(roba_mcp::WorkerMcpProvider::new(CodexProvider))?;
+    roba.register(roba_mcp::WorkerMcpProvider::new(CodexProvider::default()))?;
     let run = roba.create_run(spec)?;
     if run.spec().initial_prompt.is_some() {
         run.begin().await?;
