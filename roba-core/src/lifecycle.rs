@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex as StdMutex, Weak};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex as AsyncMutex, broadcast, watch};
 
-use crate::provider::{EventSink, Provider, ProviderError, execute_turn};
+use crate::provider::{EventSink, Provider, ProviderContext, ProviderError, execute_turn};
 use crate::run::{
     FailureKind, Prompt, ProviderId, RunEvent, RunFailure, RunId, RunOutcome, RunSpec, RunState,
     SessionSpec, WorkerPolicy, WorkerSpec,
@@ -117,6 +117,41 @@ impl Run {
 #[derive(Clone)]
 pub struct RunHandle {
     inner: Arc<Inner>,
+}
+
+/// Least-authority child-run capability minted for one executing provider.
+/// It cannot steer, cancel, or replace the parent's execution policy.
+#[derive(Clone)]
+pub struct WorkerControl {
+    inner: Weak<Inner>,
+}
+
+impl fmt::Debug for WorkerControl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WorkerControl")
+            .field("available", &self.inner.strong_count().gt(&0))
+            .finish()
+    }
+}
+
+impl WorkerControl {
+    fn handle(&self) -> Result<RunHandle, RunControlError> {
+        self.inner
+            .upgrade()
+            .map(|inner| RunHandle { inner })
+            .ok_or(RunControlError::Terminal)
+    }
+
+    /// Spawn a child with the same agent, context, and inherited authority as
+    /// the provider's exact parent run.
+    pub async fn spawn(&self, prompt: Prompt) -> Result<RunHandle, RunControlError> {
+        self.handle()?.spawn_inherited(prompt).await
+    }
+
+    /// Observe descendants of the provider's exact parent run.
+    pub fn workers(&self) -> Result<Vec<WorkerSnapshot>, RunControlError> {
+        Ok(self.handle()?.workers())
+    }
 }
 
 impl RunHandle {
@@ -527,8 +562,15 @@ async fn drive(inner: Arc<Inner>, mut prompt: Prompt) {
         };
 
         let mut cancelled = inner.cancel_tx.subscribe();
+        let context = if inner.spec.execution.workers.enabled() {
+            ProviderContext::for_worker(WorkerControl {
+                inner: Arc::downgrade(&inner),
+            })
+        } else {
+            ProviderContext::default()
+        };
         let result = tokio::select! {
-            result = execute_turn(inner.provider.as_ref(), request, &sink) => Some(result),
+            result = execute_turn(inner.provider.as_ref(), request, context, &sink) => Some(result),
             () = wait_for_cancellation(&mut cancelled) => None,
         };
 
@@ -737,6 +779,7 @@ mod tests {
         fn execute<'a>(
             &'a self,
             request: TurnRequest,
+            _context: ProviderContext,
             _events: &'a dyn EventSink,
         ) -> ProviderFuture<'a> {
             Box::pin(async move {
@@ -849,6 +892,7 @@ mod tests {
 
     struct WorkerProvider {
         calls: AtomicUsize,
+        self_spawned: AtomicUsize,
         root_started: Notify,
         worker_started: Notify,
         release_root: Notify,
@@ -873,6 +917,7 @@ mod tests {
         fn execute<'a>(
             &'a self,
             request: TurnRequest,
+            context: ProviderContext,
             _events: &'a dyn EventSink,
         ) -> ProviderFuture<'a> {
             Box::pin(async move {
@@ -885,6 +930,17 @@ mod tests {
                     "block worker" => {
                         self.worker_started.notify_one();
                         std::future::pending::<()>().await;
+                    }
+                    "self spawn" => {
+                        let worker = context
+                            .worker_control()
+                            .expect("enabled root has worker control")
+                            .spawn(Prompt::new("worker").unwrap())
+                            .await
+                            .unwrap();
+                        self.self_spawned
+                            .store(worker.id().get() as usize, Ordering::SeqCst);
+                        assert_eq!(worker.wait().await.state, RunState::Completed);
                     }
                     _ => {}
                 }
@@ -907,6 +963,7 @@ mod tests {
     fn worker_root(policy: WorkerPolicy) -> (Run, Arc<WorkerProvider>) {
         let provider = Arc::new(WorkerProvider {
             calls: AtomicUsize::new(0),
+            self_spawned: AtomicUsize::new(0),
             root_started: Notify::new(),
             worker_started: Notify::new(),
             release_root: Notify::new(),
@@ -1045,6 +1102,32 @@ mod tests {
         assert_eq!(run.handle().wait().await.state, RunState::Cancelled);
     }
 
+    #[tokio::test]
+    async fn executing_provider_gets_only_its_exact_worker_capability() {
+        let provider = Arc::new(WorkerProvider {
+            calls: AtomicUsize::new(0),
+            self_spawned: AtomicUsize::new(0),
+            root_started: Notify::new(),
+            worker_started: Notify::new(),
+            release_root: Notify::new(),
+        });
+        let mut spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+            .with_prompt(Prompt::new("self spawn").unwrap());
+        spec.execution.workers = WorkerPolicy {
+            max_workers: 1,
+            max_depth: 1,
+        };
+        let run = Run::new(spec, provider.clone()).unwrap();
+
+        run.begin().await.unwrap();
+        assert_eq!(run.handle().wait().await.state, RunState::Completed);
+        assert_eq!(provider.self_spawned.load(Ordering::SeqCst), 2);
+        let workers = run.handle().workers();
+        assert_eq!(workers.len(), 1);
+        assert_eq!(workers[0].parent_id, run.id());
+        assert_eq!(workers[0].run.state, RunState::Completed);
+    }
+
     struct ImmediateCodexProvider;
 
     impl Provider for ImmediateCodexProvider {
@@ -1067,6 +1150,7 @@ mod tests {
         fn execute<'a>(
             &'a self,
             request: TurnRequest,
+            _context: ProviderContext,
             _events: &'a dyn EventSink,
         ) -> ProviderFuture<'a> {
             Box::pin(async move {
@@ -1087,6 +1171,7 @@ mod tests {
     async fn trusted_worker_agent_selection_can_change_provider_but_not_execution_authority() {
         let root_provider = Arc::new(WorkerProvider {
             calls: AtomicUsize::new(0),
+            self_spawned: AtomicUsize::new(0),
             root_started: Notify::new(),
             worker_started: Notify::new(),
             release_root: Notify::new(),

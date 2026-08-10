@@ -6,7 +6,104 @@ use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
 
+use crate::lifecycle::WorkerControl;
 use crate::run::{FailureKind, ProviderId, RunEvent, RunOutcome, TurnRequest};
+
+/// One ephemeral MCP endpoint made available only to the provider turn being
+/// executed. Credentials are deliberately omitted from `Debug` output and are
+/// never part of a serializable run specification.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ProviderMcpEndpoint {
+    name: String,
+    url: String,
+    bearer_token: String,
+}
+
+impl ProviderMcpEndpoint {
+    /// Construct an endpoint after its listener and authentication boundary
+    /// are ready.
+    pub fn new(
+        name: impl Into<String>,
+        url: impl Into<String>,
+        bearer_token: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            url: url.into(),
+            bearer_token: bearer_token.into(),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Deliberate secret access for provider adapters configuring the child
+    /// process. Callers must not log or persist this value.
+    pub fn bearer_token(&self) -> &str {
+        &self.bearer_token
+    }
+}
+
+impl fmt::Debug for ProviderMcpEndpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProviderMcpEndpoint")
+            .field("name", &self.name)
+            .field("url", &self.url)
+            .field("bearer_token", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Transient host capabilities for one provider turn.
+///
+/// The worker control is minted by the lifecycle for the exact run being
+/// executed. Middleware may add ephemeral MCP endpoints, but no field is
+/// serialized into [`TurnRequest`].
+#[derive(Clone, Default)]
+pub struct ProviderContext {
+    worker_control: Option<WorkerControl>,
+    mcp_endpoints: Vec<ProviderMcpEndpoint>,
+}
+
+impl ProviderContext {
+    pub(crate) fn for_worker(control: WorkerControl) -> Self {
+        Self {
+            worker_control: Some(control),
+            mcp_endpoints: Vec::new(),
+        }
+    }
+
+    /// Narrow worker capability bound to this provider's current run.
+    pub fn worker_control(&self) -> Option<&WorkerControl> {
+        self.worker_control.as_ref()
+    }
+
+    /// Ephemeral MCP endpoints a provider adapter must attach to this turn.
+    pub fn mcp_endpoints(&self) -> &[ProviderMcpEndpoint] {
+        &self.mcp_endpoints
+    }
+
+    /// Add an already-running endpoint. This is intended for provider
+    /// middleware; it does not change the underlying run authority.
+    pub fn with_mcp_endpoint(mut self, endpoint: ProviderMcpEndpoint) -> Self {
+        self.mcp_endpoints.push(endpoint);
+        self
+    }
+}
+
+impl fmt::Debug for ProviderContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProviderContext")
+            .field("worker_control", &self.worker_control.is_some())
+            .field("mcp_endpoints", &self.mcp_endpoints)
+            .finish()
+    }
+}
 
 /// Capabilities whose absence must cause pre-spawn refusal when requested.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,14 +179,19 @@ pub trait Provider: Send + Sync {
 
     /// Execute a request that has passed [`Provider::validate`]. Adapters
     /// should still call their own validation when invoked directly.
-    fn execute<'a>(&'a self, request: TurnRequest, events: &'a dyn EventSink)
-    -> ProviderFuture<'a>;
+    fn execute<'a>(
+        &'a self,
+        request: TurnRequest,
+        context: ProviderContext,
+        events: &'a dyn EventSink,
+    ) -> ProviderFuture<'a>;
 }
 
 /// Validate and execute one request through a provider.
 pub async fn execute_turn(
     provider: &dyn Provider,
     request: TurnRequest,
+    context: ProviderContext,
     events: &dyn EventSink,
 ) -> Result<RunOutcome, ProviderError> {
     if request.spec.agent.provider != provider.id() {
@@ -100,7 +202,7 @@ pub async fn execute_turn(
         )));
     }
     provider.validate(&request)?;
-    provider.execute(request, events).await
+    provider.execute(request, context, events).await
 }
 
 #[cfg(test)]
@@ -130,6 +232,7 @@ mod tests {
         fn execute<'a>(
             &'a self,
             request: TurnRequest,
+            _context: ProviderContext,
             _events: &'a dyn EventSink,
         ) -> ProviderFuture<'a> {
             self.calls.fetch_add(1, Ordering::SeqCst);
@@ -157,9 +260,14 @@ mod tests {
             .into_turn()
             .unwrap();
 
-        let error = execute_turn(&provider, request, &NoopEventSink)
-            .await
-            .unwrap_err();
+        let error = execute_turn(
+            &provider,
+            request,
+            ProviderContext::default(),
+            &NoopEventSink,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(error.kind, FailureKind::Unsupported);
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
     }
@@ -174,9 +282,14 @@ mod tests {
             .into_turn()
             .unwrap();
 
-        let outcome = execute_turn(&provider, request, &NoopEventSink)
-            .await
-            .unwrap();
+        let outcome = execute_turn(
+            &provider,
+            request,
+            ProviderContext::default(),
+            &NoopEventSink,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.output, "hello");
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     }

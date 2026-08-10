@@ -2,10 +2,12 @@
 
 use anyhow::Result;
 use claude_wrapper::types::QueryResult;
-use claude_wrapper::{Claude, Effort as ClaudeEffort};
+use claude_wrapper::{Claude, Effort as ClaudeEffort, McpConfigBuilder, TempMcpConfig};
 
 use crate::engine::{self, Config, Permissions, Session};
-use crate::provider::{EventSink, Provider, ProviderCapabilities, ProviderError, ProviderFuture};
+use crate::provider::{
+    EventSink, Provider, ProviderCapabilities, ProviderContext, ProviderError, ProviderFuture,
+};
 use crate::run::{
     Cost, Effort, FailureKind, PermissionPolicy, ProviderId, RunEvent, RunOutcome, SessionHandle,
     SessionSpec, TokenUsage, TurnRequest,
@@ -71,6 +73,44 @@ impl ClaudeProvider {
             config.append_system_prompt = Some(instructions.join("\n\n"));
         }
         Ok(config)
+    }
+
+    fn mcp_config(context: &ProviderContext) -> Result<Option<TempMcpConfig>, ProviderError> {
+        if context.mcp_endpoints().is_empty() {
+            return Ok(None);
+        }
+        let mut builder = McpConfigBuilder::new();
+        for endpoint in context.mcp_endpoints() {
+            builder = builder.http_server_with_headers(
+                endpoint.name(),
+                endpoint.url(),
+                [(
+                    "Authorization",
+                    format!("Bearer {}", endpoint.bearer_token()),
+                )],
+            );
+        }
+        builder.build_temp().map(Some).map_err(|error| {
+            ProviderError::new(
+                FailureKind::Provider,
+                format!("failed to build Claude MCP configuration: {error}"),
+            )
+        })
+    }
+
+    fn allow_internal_mcp_tools(config: &mut Config, context: &ProviderContext) {
+        if context
+            .mcp_endpoints()
+            .iter()
+            .any(|endpoint| endpoint.name() == "roba_workers")
+        {
+            config
+                .allow_tools
+                .push("mcp__roba_workers__spawn_worker".to_string());
+            config
+                .allow_tools
+                .push("mcp__roba_workers__workers".to_string());
+        }
     }
 
     /// Normalize Claude's result without converting missing telemetry to zero.
@@ -165,6 +205,7 @@ impl Provider for ClaudeProvider {
     fn execute<'a>(
         &'a self,
         request: TurnRequest,
+        context: ProviderContext,
         events: &'a dyn EventSink,
     ) -> ProviderFuture<'a> {
         Box::pin(async move {
@@ -172,7 +213,12 @@ impl Provider for ClaudeProvider {
             events.emit(RunEvent::TurnStarted {
                 provider: ProviderId::claude(),
             });
-            let config = Self::config(&request)?;
+            let mut config = Self::config(&request)?;
+            let mcp_config = Self::mcp_config(&context)?;
+            if let Some(mcp_config) = &mcp_config {
+                config.mcp_config.push(mcp_config.path().to_string());
+            }
+            Self::allow_internal_mcp_tools(&mut config, &context);
             let result = self.execute_legacy(&config).await.map_err(|error| {
                 ProviderError::new(FailureKind::Provider, format!("Claude failed: {error:#}"))
             })?;
@@ -274,5 +320,31 @@ mod tests {
             provider.validate(&request).unwrap_err().kind,
             FailureKind::Unsupported
         );
+    }
+
+    #[test]
+    fn worker_mcp_configuration_is_ephemeral_and_authenticated() {
+        let context =
+            ProviderContext::default().with_mcp_endpoint(crate::ProviderMcpEndpoint::new(
+                "roba_workers",
+                "http://127.0.0.1:4123/mcp",
+                "secret-worker-token",
+            ));
+        let config = ClaudeProvider::mcp_config(&context).unwrap().unwrap();
+        let json = std::fs::read_to_string(config.path()).unwrap();
+        let mut request_config = Config::new("test");
+        ClaudeProvider::allow_internal_mcp_tools(&mut request_config, &context);
+
+        assert!(json.contains("roba_workers"));
+        assert!(json.contains("http://127.0.0.1:4123/mcp"));
+        assert!(json.contains("Bearer secret-worker-token"));
+        assert_eq!(
+            request_config.allow_tools,
+            [
+                "mcp__roba_workers__spawn_worker",
+                "mcp__roba_workers__workers"
+            ]
+        );
+        assert!(!format!("{context:?}").contains("secret-worker-token"));
     }
 }

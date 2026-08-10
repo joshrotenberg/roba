@@ -32,10 +32,10 @@ pub mod run;
 pub mod runtime;
 pub mod session;
 
-pub use lifecycle::{Run, RunControlError, RunHandle, RunSnapshot, WorkerSnapshot};
+pub use lifecycle::{Run, RunControlError, RunHandle, RunSnapshot, WorkerControl, WorkerSnapshot};
 pub use provider::{
-    EventSink, NoopEventSink, Provider, ProviderCapabilities, ProviderError, ProviderFuture,
-    execute_turn,
+    EventSink, NoopEventSink, Provider, ProviderCapabilities, ProviderContext, ProviderError,
+    ProviderFuture, ProviderMcpEndpoint, execute_turn,
 };
 pub use providers::claude::ClaudeProvider;
 pub use providers::codex::CodexProvider;
