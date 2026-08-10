@@ -16,12 +16,12 @@
 //!   QueryCommand` mapper the engine feeds, plus the permission/notice
 //!   composition it consumes.
 //!
-//! The `roba` binary depends on this crate: its `run_ask` resolves
-//! flags/profiles/prompt into a `Config` (`build_config`) and renders the
-//! result around [`engine::run`]'s seam, so there is one flag->command mapper
-//! and no second copy to drift. Prompt composition, profile/env layering, live
-//! streaming display, output formatting, and exit-code classification stay in
-//! the CLI crate.
+//! The `roba` binary depends on this crate: its `run_ask` resolves the
+//! provider-neutral subset of flags/profiles/prompt through [`RobaConfig`] and
+//! [`RunSpec`], then adapts that result plus Claude-only compatibility controls
+//! to [`engine::Config`]. Prompt composition, legacy profile/env layering,
+//! live streaming display, output formatting, and exit-code classification
+//! stay in the CLI crate.
 
 pub mod engine;
 pub mod lifecycle;

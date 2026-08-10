@@ -84,6 +84,9 @@ run overrides. Unknown fields fail before provider work. This explicit run
 config is separate from the legacy one-shot CLI's discovered `roba.toml`
 profiles while that compatibility surface remains available. See
 [`examples/run-config/roba.toml`](examples/run-config/roba.toml).
+The legacy path resolves its overlapping model, effort, permissions, tools,
+limits, prompt, and resumable-session policy through the same hierarchy before
+applying its remaining Claude-only compatibility controls.
 
 The public implementation is split by responsibility:
 
