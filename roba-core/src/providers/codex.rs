@@ -365,19 +365,24 @@ fn map_error(error: codex_wrapper::Error) -> ProviderError {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::sync::Mutex;
 
     use codex_wrapper::CodexCommand;
     use codex_wrapper::types::{JsonLineEvent, TokenUsage as CodexUsage};
 
     use super::*;
-    use crate::run::{AgentSpec, Prompt, RunSpec, RunState};
+    #[cfg(unix)]
+    use crate::run::RunState;
+    use crate::run::{AgentSpec, Prompt, RunSpec};
 
+    #[cfg(unix)]
     #[derive(Default)]
     struct RecordingSink {
         events: Mutex<Vec<RunEvent>>,
     }
 
+    #[cfg(unix)]
     impl EventSink for RecordingSink {
         fn emit(&self, event: RunEvent) {
             self.events.lock().unwrap().push(event);
