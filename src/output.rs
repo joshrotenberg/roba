@@ -139,7 +139,7 @@ pub fn format_footer(
     effort: Option<&str>,
 ) -> String {
     let mut parts = Vec::new();
-    if let Some((input, output)) = extract_tokens(&r.extra) {
+    if let Some((input, output)) = result_tokens(r) {
         parts.push(format!(
             "tokens {}/{}",
             format_count(input),
@@ -212,7 +212,7 @@ fn strip_claude_prefix(model: &str) -> &str {
 
 /// Resolve the footer's dollar figure: claude's authoritative
 /// `total_cost_usd` first, then a rate-table computation from the
-/// model + usage breakdown in `extra`. `None` when neither is
+/// model + reported usage breakdown. `None` when neither is
 /// available (e.g. a subscription run with no model in the table).
 fn footer_cost(r: &QueryResult, rates: Option<&crate::rates::Rates>) -> Option<f64> {
     if let Some(c) = r.cost_usd {
@@ -220,8 +220,33 @@ fn footer_cost(r: &QueryResult, rates: Option<&crate::rates::Rates>) -> Option<f
     }
     let rates = rates?;
     let model = extract_model(&r.extra)?;
-    let (input, output, cache_read, cache_write) = extract_full_usage(&r.extra)?;
+    let (input, output, cache_read, cache_write) = result_full_usage(r)?;
     rates.cost_usd(&model, input, output, cache_read, cache_write)
+}
+
+/// Prefer the wrapper's typed usage field and retain the old flattened map as
+/// a compatibility fallback for reconstructed or older stored results.
+fn result_tokens(r: &QueryResult) -> Option<(u64, u64)> {
+    r.usage
+        .as_ref()
+        .and_then(|usage| Some((usage.input_tokens?, usage.output_tokens?)))
+        .or_else(|| extract_tokens(&r.extra))
+}
+
+/// Resolve the full rate-table breakdown from typed usage first, treating
+/// unreported buckets as zero only after the usage record itself is present.
+fn result_full_usage(r: &QueryResult) -> Option<(u64, u64, u64, u64)> {
+    r.usage
+        .as_ref()
+        .map(|usage| {
+            (
+                usage.input_tokens.unwrap_or(0),
+                usage.output_tokens.unwrap_or(0),
+                usage.cached_input_tokens.unwrap_or(0),
+                usage.cache_write_input_tokens.unwrap_or(0),
+            )
+        })
+        .or_else(|| extract_full_usage(&r.extra))
 }
 
 /// Best-effort model id from a result's `extra`: a top-level `model`

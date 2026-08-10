@@ -69,8 +69,8 @@ in-memory journal. Pass the returned `next_sequence` as the next `after`
 cursor; an optional `wait_ms` performs bounded long polling. A client that
 falls behind receives `truncated: true` rather than an incomplete history
 presented as complete, and long polling returns that gap immediately. Cursors
-ahead of the current journal are refused. Codex output and usage are emitted
-into this journal as the provider's JSONL stream arrives.
+ahead of the current journal are refused. Claude and Codex output and usage are
+emitted into this journal as each provider's JSONL stream arrives.
 
 Configuration resolves in one hierarchy:
 

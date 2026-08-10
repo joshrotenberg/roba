@@ -264,6 +264,7 @@ fn render_session(
         // is honest about that with a null.
         duration_ms: None,
         num_turns: Some(num_turns),
+        usage: None,
         is_error: terminal.is_some_and(Receipt::failed),
         extra,
     };

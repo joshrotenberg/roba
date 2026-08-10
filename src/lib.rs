@@ -1216,6 +1216,7 @@ mod tests {
             cost_usd: None,
             duration_ms: None,
             num_turns: None,
+            usage: None,
             is_error: false,
             extra: std::collections::HashMap::new(),
         };
@@ -1243,6 +1244,7 @@ mod tests {
             cost_usd: None,
             duration_ms: None,
             num_turns: None,
+            usage: None,
             is_error: false,
             extra: std::collections::HashMap::new(),
         }

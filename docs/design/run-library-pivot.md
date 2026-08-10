@@ -1,10 +1,10 @@
 > Status: ACTIVE vertical slice, started 2026-08-09 on
 > `codex/run-library-pivot`. Provider-neutral execution, both providers, the
 > process-local lifecycle, and thin CLI/REPL/MCP adapters are implemented.
-> Codex streaming, bounded child runs, event observation, paid Codex smoke,
-> and the explicit hierarchical run-config path are implemented. Legacy CLI
-> config cleanup and Claude streaming remain. This document is the resume
-> point if the work moves elsewhere.
+> Claude and Codex streaming, bounded child runs, event observation, paid fresh
+> and resumed smokes for both providers, and the explicit hierarchical
+> run-config path are implemented. Legacy CLI config cleanup remains. This
+> document is the resume point if the work moves elsewhere.
 
 # Roba as a bounded, provider-neutral agent run
 
@@ -213,6 +213,9 @@ when a spawn is refused.
       behind it with the CLI migration.
 - [x] Move `engine::run`'s Claude client construction behind `ClaudeProvider`.
       The existing CLI's direct streaming seam remains a compatibility path.
+- [x] Stream Claude fresh and resumed output plus usage through the normalized
+      event sink, with fake open/resume/cancel/missing-terminal coverage and a
+      paid MCP-observed smoke outside the normal gate.
 - [x] Keep `engine::Config` and `engine::run` as a compatibility adapter so the
       current CLI and tests do not change behavior in this phase.
 - [x] Add contract and adapter tests using fake provider boundaries; no paid
@@ -306,9 +309,9 @@ Current assets to preserve:
 1. Read this document and `AGENTS.md`.
 2. Start from clean `main`, inspect `git status`, and create a focused branch.
 3. Continue the first unchecked item that advances the current vertical slice.
-   The recommended next provider slice is Claude event streaming, followed by
-   adapting the legacy one-shot compatibility path onto the hierarchy without
-   importing its aliases, profiles, or presentation options into `roba-core`.
+   The recommended next slice is adapting the legacy one-shot compatibility
+   path onto the hierarchy without importing its aliases, profiles, or
+   presentation options into `roba-core`.
 4. Preserve current CLI behavior until a phase's acceptance criteria say a
    compatibility surface may change.
 5. Run the repository's four required gates before publishing a review point.
