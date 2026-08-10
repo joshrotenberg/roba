@@ -1,10 +1,10 @@
-> Status: ACTIVE vertical slice, started 2026-08-09 on
-> `codex/run-library-pivot`. Provider-neutral execution, both providers, the
-> process-local lifecycle, and thin CLI/REPL/MCP adapters are implemented.
-> Claude and Codex streaming, bounded child runs, event observation, paid fresh
-> and resumed smokes for both providers, and the explicit hierarchical
-> run-config path are implemented. Legacy CLI config cleanup remains. This
-> document is the resume point if the work moves elsewhere.
+> Status: ACTIVE mission hardening. The original five implementation phases
+> are complete: provider-neutral execution, Claude and Codex, hierarchical
+> config, process-local lifecycle and workers, and thin CLI/REPL/MCP adapters.
+> Current work makes the finite-mission model explicit and gives monitors one
+> canonical runtime projection. Legacy CLI cleanup and broader real-world
+> dogfood remain before a release decision. This document is the resume point
+> if the work moves elsewhere.
 
 # Roba as a bounded, provider-neutral agent run
 
@@ -25,6 +25,26 @@ make durable outputs explicit, and do not hide workflow policy in a resident
 service.
 
 ## Product shape
+
+### One finite mission
+
+"Run" remains the execution substrate, but the product concept is a finite
+mission. The same machinery should handle both `2+2` and "work five issues in
+this backlog": the latter adds explicit worker bounds, authority grants,
+process capabilities, and a completion policy rather than switching to a
+resident orchestration service.
+
+Roba mechanically owns lifecycle, timing, worker state, usage, limits, and
+terminal settlement. Agents may publish typed work items, blockers, and
+artifacts for monitors, but those remain visibly claim-backed and cannot
+overwrite host-derived facts. Rust, CLI JSON, REPL, and MCP consume the same
+`MissionSnapshot`; they do not maintain parallel dashboards.
+
+Repository issue work is an optional process capability. A future capability
+may encode issue selection, branches, verification, PRs, review, and merging,
+but it must not silently widen filesystem, tool, worker, spend, or merge
+authority. A host such as Ciacola may later consume Roba as its mechanical
+mission harness without making persistence a Roba requirement.
 
 The public library converges on these concepts:
 

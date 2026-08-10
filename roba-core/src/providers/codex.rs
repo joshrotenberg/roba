@@ -22,7 +22,7 @@ pub struct CodexProvider {
     binary: Option<PathBuf>,
 }
 
-const WORKER_GUIDANCE: &str = "Roba owns all child work for this run. When the task calls for workers, use only the `roba_workers.spawn_worker` MCP tool, then use `roba_workers.workers` and wait for every spawned worker before answering. Never launch Roba or provider CLIs in the shell to simulate workers, and never substitute provider-native subagents. If Roba refuses a spawn, report that refusal instead of using another mechanism.";
+const WORKER_GUIDANCE: &str = "Roba owns all child work for this run. When the task calls for workers, use only the `roba_workers.spawn_worker` MCP tool, then use `roba_workers.workers` and wait for every spawned worker before answering. Keep monitors current with the report_work_item, report_blocker, and report_artifact tools; those are claims and do not replace your final answer. Never launch Roba or provider CLIs in the shell to simulate workers, and never substitute provider-native subagents. If Roba refuses a spawn, report that refusal instead of using another mechanism.";
 
 impl CodexProvider {
     /// Use an explicit Codex executable instead of resolving `codex` from
@@ -313,9 +313,16 @@ fn mcp_configuration(context: &ProviderContext) -> CodexMcpConfiguration {
                 .config_overrides(),
         );
         if endpoint.name() == "roba_workers" {
-            configuration.overrides.push(
-                "mcp_servers.roba_workers.tools.spawn_worker.approval_mode=\"approve\"".to_string(),
-            );
+            for tool in [
+                "spawn_worker",
+                "report_work_item",
+                "report_blocker",
+                "report_artifact",
+            ] {
+                configuration.overrides.push(format!(
+                    "mcp_servers.roba_workers.tools.{tool}.approval_mode=\"approve\""
+                ));
+            }
         }
     }
     configuration
@@ -516,9 +523,16 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
                 "resume command lacks {value:?}: {resume:?}"
             );
         }
-        assert!(configuration.overrides.iter().any(|value| {
-            value == "mcp_servers.roba_workers.tools.spawn_worker.approval_mode=\"approve\""
-        }));
+        for tool in [
+            "spawn_worker",
+            "report_work_item",
+            "report_blocker",
+            "report_artifact",
+        ] {
+            assert!(configuration.overrides.iter().any(|value| {
+                value == &format!("mcp_servers.roba_workers.tools.{tool}.approval_mode=\"approve\"")
+            }));
+        }
         assert_eq!(
             configuration.environment,
             vec![(

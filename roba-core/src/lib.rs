@@ -25,6 +25,7 @@
 
 pub mod engine;
 pub mod lifecycle;
+pub mod mission;
 pub mod provider;
 pub mod providers;
 pub mod resolve;
@@ -35,6 +36,10 @@ pub mod session;
 pub use lifecycle::{
     RUN_EVENT_CAPACITY, Run, RunControlError, RunEventPage, RunEventRecord, RunEventSubscription,
     RunEventSubscriptionItem, RunHandle, RunSnapshot, WorkerControl, WorkerSnapshot,
+};
+pub use mission::{
+    MissionArtifact, MissionAuthority, MissionBlocker, MissionClaims, MissionReport,
+    MissionReportError, MissionSnapshot, MissionWorkItem, MissionWorkState,
 };
 pub use provider::{
     EventSink, NoopEventSink, Provider, ProviderCapabilities, ProviderContext, ProviderError,

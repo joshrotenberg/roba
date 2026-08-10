@@ -7,31 +7,44 @@ contributing.
 
 ## What this is
 
-A single-prompt CLI runner (Rust, edition 2024) sugaring `claude -p`,
-built on the published `claude-wrapper` crate. One invocation, one
-answer. Lib + bin targets so integration tests drive the same code paths.
+A library-first, provider-neutral runtime for one finite agent mission (Rust,
+edition 2024). A mission may be a single prompt or a bounded multi-turn,
+multi-worker directive. One Roba process owns the mission and exits when it is
+complete, failed, or cancelled. Claude Code and Codex are provider adapters;
+the CLI, REPL, and run-scoped MCP server are clients of the same public API.
+
+The original single-prompt Claude CLI remains a compatibility surface while it
+is incrementally moved onto the mission/run model.
 
 ## Scope line (read before adding any feature)
 
-- IN: wrapping/sugaring the `claude` binary (pass its flags through,
-  clean its I/O), and read-only inspection of claude/roba state that
-  reports (`history`, `cost`, `doctor`, `show`, `worktree list`).
-- OUT: mutating claude's private `.claude/` state, daemons or persistent
-  processes, orchestration policy. Those are different tools.
-- Prefer pushing reusable claude-domain primitives down into
-  claude-wrapper; keep roba the thin CLI over them.
+- IN: provider-neutral finite missions, bounded Roba-owned workers, explicit
+  execution authority, lifecycle/event observation, steering, and thin
+  library/CLI/REPL/MCP adapters.
+- IN: the legacy Claude one-shot compatibility path and its read-only
+  inspection commands while migration remains incomplete.
+- OUT: a daemon, persistent session pool, hidden background work, or mutation
+  of provider-private state.
+- Keep provider mechanics in the wrapper crates where reusable. Keep workflow
+  policy optional and typed rather than baking repository behavior into the
+  core mission abstraction.
 
 ## Structure
 
-- `src/main.rs` entry point; `src/lib.rs` dispatch, `run_ask`, exit codes
+- `roba-core/src/{run,lifecycle,mission,provider,runtime}.rs` -- public mission
+  and run contracts, lifecycle, projection, provider boundary, and registry
+- `roba-mcp` and `roba-repl` -- thin run-scoped adapters over `RunHandle`
+- `src/main.rs` entry point; `src/lib.rs` dispatch, bounded run and legacy paths
 - `src/cli.rs` clap surface -- doc comments here ARE the `--help` reference
-- `src/session.rs` flag -> `QueryCommand` wiring; `src/env.rs` `ROBA_*` overrides
+- `src/session.rs` legacy flag -> `QueryCommand` wiring; `src/env.rs` legacy
+  `ROBA_*` overrides
 - `src/profile/` config layering; `src/show.rs`, `src/history.rs`,
   `src/cost.rs`, `src/worktree.rs`, `src/doctor.rs`, `src/jobs.rs`
   read-only subcommands; `src/receipt.rs` the run-receipt writer (the
   schema lives in `roba-types`)
-- Doc homes: README (concepts + agent ABI), `--help` (reference,
-  generated from `cli.rs`), `roba-config.sample.toml` (parse-tested schema)
+- Doc homes: README (concepts + agent ABI),
+  `docs/design/run-library-pivot.md` (current resume point), `--help`
+  (reference generated from `cli.rs`), and parse-tested config examples
 
 ## Build and test (all must pass before a PR)
 
