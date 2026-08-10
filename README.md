@@ -53,6 +53,9 @@ When workers are enabled, each Claude or Codex provider turn receives a private
 bound to that exact run, authenticated on an ephemeral loopback listener, and
 removed when the turn ends. Its bearer is transient and is never stored in the
 run specification or snapshots.
+Roba disables Claude's native Agent tool and Codex's native multi-agent feature
+on this provider-neutral run path. Otherwise provider-owned subagents could do
+work outside the worker tree's count, depth, cancellation, and event contract.
 
 The run-scoped MCP server also exposes a read-only `events` tool. Events are
 sequenced across the root and its worker tree and retained in a bounded

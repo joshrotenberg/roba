@@ -2,7 +2,9 @@
 
 use anyhow::Result;
 use claude_wrapper::types::QueryResult;
-use claude_wrapper::{Claude, Effort as ClaudeEffort, McpConfigBuilder, TempMcpConfig};
+use claude_wrapper::{
+    Claude, Effort as ClaudeEffort, McpConfigBuilder, QueryCommand, TempMcpConfig,
+};
 
 use crate::engine::{self, Config, Permissions, Session};
 use crate::provider::{
@@ -33,6 +35,28 @@ impl ClaudeProvider {
             engine::surface_structured_output(&mut result);
         }
         Ok(result)
+    }
+
+    async fn execute_bounded(&self, config: &Config) -> Result<QueryResult> {
+        let mut builder = Claude::builder();
+        if let Some(secs) = config.timeout_secs
+            && secs > 0
+        {
+            builder = builder.timeout_secs(secs);
+        }
+        let claude = builder.build()?;
+        let mut result = Self::bounded_command(config).execute_json(&claude).await?;
+        if config.json_schema.is_some() {
+            engine::surface_structured_output(&mut result);
+        }
+        Ok(result)
+    }
+
+    fn bounded_command(config: &Config) -> QueryCommand {
+        // Roba owns bounded child-run creation. Claude's native Agent tool is
+        // not represented in the run tree and would bypass worker count,
+        // depth, cancellation, and event observation.
+        engine::query_command(config).disallowed_tool("Agent")
     }
 
     fn config(request: &TurnRequest) -> Result<Config, ProviderError> {
@@ -219,7 +243,7 @@ impl Provider for ClaudeProvider {
                 config.mcp_config.push(mcp_config.path().to_string());
             }
             Self::allow_internal_mcp_tools(&mut config, &context);
-            let result = self.execute_legacy(&config).await.map_err(|error| {
+            let result = self.execute_bounded(&config).await.map_err(|error| {
                 ProviderError::new(FailureKind::Provider, format!("Claude failed: {error:#}"))
             })?;
             if result.is_error {
@@ -253,6 +277,7 @@ fn map_effort(effort: Effort) -> ClaudeEffort {
 
 #[cfg(test)]
 mod tests {
+    use claude_wrapper::ClaudeCommand;
     use serde_json::json;
 
     use super::*;
@@ -345,6 +370,9 @@ mod tests {
                 "mcp__roba_workers__workers"
             ]
         );
+        let args = ClaudeProvider::bounded_command(&request_config).args();
+        assert!(args.iter().any(|arg| arg == "--disallowed-tools"));
+        assert!(args.iter().any(|arg| arg == "Agent"));
         assert!(!format!("{context:?}").contains("secret-worker-token"));
     }
 }

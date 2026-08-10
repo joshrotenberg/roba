@@ -172,16 +172,23 @@ pub async fn run(config: &Config) -> Result<QueryResult> {
 /// Schema surfacing is the caller's job -- the CLI shares it with its `--trace`
 /// path, and [`run`] does it after this returns.
 pub async fn execute(config: &Config, claude: &Claude) -> Result<QueryResult> {
+    query_command(config)
+        .execute_json(claude)
+        .await
+        .map_err(Into::into)
+}
+
+/// Build the shared Claude command without launching it. Provider middleware
+/// may add run-internal restrictions after every public config option has been
+/// applied.
+pub(crate) fn query_command(config: &Config) -> QueryCommand {
     let name = derive_session_name(&config.prompt);
-    let result = apply_session(
+    apply_session(
         QueryCommand::new(config.prompt.clone())
             .name(name)
             .prompt_via_stdin(true),
         config,
     )
-    .execute_json(claude)
-    .await?;
-    Ok(result)
 }
 
 /// Surface `--json-schema` structured output cleanly (#317).
