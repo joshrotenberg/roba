@@ -1258,7 +1258,7 @@ mod tests {
         )
         .unwrap();
 
-        let child = bundle.join("plugins/lint");
+        let child = bundle.join("plugins").join("lint");
         std::fs::create_dir_all(child.join(".claude-plugin")).unwrap();
         std::fs::write(
             child.join(".claude-plugin/plugin.json"),
