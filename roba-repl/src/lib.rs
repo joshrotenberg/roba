@@ -203,8 +203,9 @@ mod tests {
     use tokio::sync::Notify;
 
     use roba_core::{
-        AgentSpec, EventSink, Provider, ProviderCapabilities, ProviderError, ProviderFuture,
-        ProviderId, Run, RunOutcome, RunSpec, SessionHandle, TurnRequest, WorkerPolicy,
+        AgentSpec, EventSink, Provider, ProviderCapabilities, ProviderContext, ProviderError,
+        ProviderFuture, ProviderId, Run, RunOutcome, RunSpec, SessionHandle, TurnRequest,
+        WorkerPolicy,
     };
 
     use super::*;
@@ -230,6 +231,7 @@ mod tests {
         fn execute<'a>(
             &'a self,
             request: TurnRequest,
+            _context: ProviderContext,
             _events: &'a dyn EventSink,
         ) -> ProviderFuture<'a> {
             Box::pin(async move {
@@ -317,6 +319,7 @@ mod tests {
         fn execute<'a>(
             &'a self,
             request: TurnRequest,
+            _context: ProviderContext,
             _events: &'a dyn EventSink,
         ) -> ProviderFuture<'a> {
             Box::pin(async move {

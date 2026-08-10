@@ -12,8 +12,11 @@ roba-core = { version = "0.2.0", path = "../roba-core" }
 schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tower-mcp = "0.21"
+axum = "0.8"
+tokio = { version = "1", features = ["net", "rt", "sync"] }
+tower-mcp = { version = "0.21", features = ["http"] }
+uuid = { version = "1", default-features = false, features = ["v4"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync"] }
 tower-mcp = { version = "0.21", features = ["testing"] }

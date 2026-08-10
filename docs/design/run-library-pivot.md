@@ -168,6 +168,30 @@ dropped. Provider-facing self-spawn transport is deliberately not implied by
 this layer; it requires an internal run-scoped MCP/broker configuration in a
 later slice.
 
+### Provider-facing worker transport
+
+The next transport binds a narrow worker-control capability to the exact run
+whose provider turn is executing. The capability can spawn an inherited child
+and list that run's descendants; it cannot steer, cancel, replace execution
+policy, or select a broader identity. It is carried beside the transient
+provider request rather than serialized into `RunSpec`.
+
+When workers are enabled, an opt-in provider middleware exposes that capability
+through a short-lived MCP server on an ephemeral loopback listener. Every
+server gets an unpredictable bearer credential, starts before the provider
+process, and shuts down when that provider turn is dropped or completes.
+Claude receives the endpoint through a temporary MCP configuration and Codex
+through equivalent per-command configuration on both open and resume. The
+credential is never part of a run snapshot or durable configuration.
+Each adapter authorizes only the two private worker tools: Claude receives
+exact allowed-tool patterns, while Codex receives an exact per-tool approval
+for `spawn_worker` so non-interactive approval policy can remain fail-closed
+for every other write-capable MCP tool.
+
+The transport remains process-local and is not an operating-system isolation
+claim. Its authority comes from the host-created capability and immutable run
+tree policy, not from a caller-supplied run id or parent field.
+
 ## Implementation sequence
 
 ### Phase 1 -- provider-neutral contracts and Claude compatibility
@@ -225,7 +249,7 @@ without clap or terminal code. Configuration precedence has one implementation.
       where useful, without introducing a database requirement.
 - [x] Add child-run ownership and bounded worker-tree observability for Rust,
       external MCP, and REPL callers.
-- [ ] Give the root provider an internal, policy-bound worker-spawn transport.
+- [x] Give the root provider an internal, policy-bound worker-spawn transport.
 
 Acceptance: a process-local run can be suspended, started, observed, steered,
 cancelled, and awaited entirely through the library.
@@ -272,8 +296,9 @@ Current assets to preserve:
 1. Read this document and `AGENTS.md`.
 2. Confirm the branch is `codex/run-library-pivot` and inspect `git status`.
 3. Continue the first unchecked item that advances the current vertical slice;
-   the recommended next step is the provider-facing, policy-bound worker-spawn
-   transport.
+   the recommended next step is making run events subscribable through the
+   MCP adapter and then exercising the bounded orchestrator with paid Claude
+   and Codex smoke runs.
 4. Preserve current CLI behavior until a phase's acceptance criteria say a
    compatibility surface may change.
 5. Run the repository's four required gates before publishing a review point.

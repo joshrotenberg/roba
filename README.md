@@ -35,6 +35,10 @@ mcp-repl -- roba run --provider codex --mcp
 # Permit an attached MCP client to create up to four process-local workers.
 mcp-repl -- roba run --provider codex --mcp \
   --max-workers 4 --max-worker-depth 2
+
+# Let the root orchestrator create bounded workers itself.
+roba run --provider codex --max-workers 4 --max-worker-depth 2 \
+  "Investigate the failure, delegate independent checks, and return one answer."
 ```
 
 Worker creation is disabled unless both bounds are explicit. Workers inherit
@@ -44,6 +48,11 @@ the run lifetime. When a parent ends, Roba cancels its live descendants before
 the parent becomes terminal, so a bounded run cannot leave provider work
 behind. Provider limits apply to each child independently; `max_workers` and
 `max_worker_depth` bound the tree, but they are not an aggregate spend limit.
+When workers are enabled, each Claude or Codex provider turn receives a private
+`roba_workers` MCP server with only `spawn_worker` and `workers`. The server is
+bound to that exact run, authenticated on an ephemeral loopback listener, and
+removed when the turn ends. Its bearer is transient and is never stored in the
+run specification or snapshots.
 
 Configuration resolves in one hierarchy:
 

@@ -91,7 +91,9 @@ impl std::error::Error for RuntimeError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::{EventSink, ProviderCapabilities, ProviderError, ProviderFuture};
+    use crate::provider::{
+        EventSink, ProviderCapabilities, ProviderContext, ProviderError, ProviderFuture,
+    };
     use crate::run::{AgentSpec, RunOutcome, TurnRequest};
 
     struct FakeProvider;
@@ -112,6 +114,7 @@ mod tests {
         fn execute<'a>(
             &'a self,
             _request: TurnRequest,
+            _context: ProviderContext,
             _events: &'a dyn EventSink,
         ) -> ProviderFuture<'a> {
             Box::pin(async {
