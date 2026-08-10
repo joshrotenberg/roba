@@ -95,10 +95,10 @@ impl<T> SuccessEnvelope<T> {
     }
 }
 
-/// The `--json` success envelope for the read-only management commands
-/// (`cost`, `history`, `last`, `doctor`, `worktree list`, ...): `{ version,
-/// result }`, without the prompt-run-only `refusal` flag. Generic over the
-/// payload `T`, which differs per command.
+/// The `--json` success envelope for read-only management commands and
+/// bounded terminal run snapshots: `{ version, result }`, without the legacy
+/// prompt-run-only `refusal` flag. Generic over the payload `T`, which differs
+/// per command.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionedResult<T> {
     /// ABI version ([`VERSION`]).

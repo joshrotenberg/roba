@@ -386,6 +386,10 @@ pub struct RunArgs {
     #[arg(long)]
     pub resume: Option<String>,
 
+    /// Emit the terminal run snapshot as a versioned JSON envelope.
+    #[arg(long, conflicts_with_all = ["repl", "mcp"])]
+    pub json: bool,
+
     /// Drive the run through a line-oriented REPL on stdin/stdout.
     #[arg(long, conflicts_with = "mcp")]
     pub repl: bool,

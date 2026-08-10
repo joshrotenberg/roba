@@ -160,8 +160,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
 //
 // - `SuccessEnvelope<&QueryResult>` -- the prompt-run `{ version, result,
 //   refusal }` (used here and by `roba show`).
-// - `VersionedResult<&T>` -- the read-only commands' `{ version, result }`
-//   (cost / history / last / doctor / worktree list).
+// - `VersionedResult<&T>` -- `{ version, result }` for read-only commands
+//   (cost / history / last / doctor / worktree list) and bounded terminal
+//   run snapshots.
 pub(crate) use roba_types::{SuccessEnvelope, VersionedResult};
 
 /// Default action: resolve a prompt, send it through claude, render
