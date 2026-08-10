@@ -1151,7 +1151,10 @@ mod tests {
         );
         assert_ne!(config.plugin_dir[0], bundle.to_string_lossy());
         assert_ne!(config.plugin_dir[1], child.to_string_lossy());
-        assert!(config.plugin_dir[1].ends_with("plugins/lint"));
+        assert!(
+            std::path::Path::new(&config.plugin_dir[1])
+                .ends_with(std::path::Path::new("plugins").join("lint"))
+        );
     }
 
     #[test]

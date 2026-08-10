@@ -7,7 +7,7 @@
 //! state lives in claude's own session records. This is `nohup` baked in,
 //! not a daemon (the scope line: roba owns no runtime state).
 //!
-//! The flow ([`run_detached`]):
+//! The internal `run_detached` flow:
 //! 1. Require an explicit prompt source -- the child can't read this
 //!    process's stdin (it's redirected to /dev/null), so a promptless
 //!    invocation would fail into the void. Reject it up front, then reject
