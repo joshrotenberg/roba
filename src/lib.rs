@@ -407,9 +407,11 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
         .as_deref()
         .map(bundle::BundlePlan::load)
         .transpose()?;
-    let bundle = bundle_plan.as_ref().map(bundle::BundlePlan::root);
     let cwd = std::env::current_dir().context("getting current dir")?;
-    let pool = profile::load_pool_with_bundle(&cwd, bundle, roba_hermetic)?;
+    let pool = match &bundle_plan {
+        Some(plan) => plan.resolve_pool(&cwd, roba_hermetic)?,
+        None => profile::load_pool_with_bundle(&cwd, None, roba_hermetic)?,
+    };
     if let Some(chosen) = profile::resolve(&args, &pool)? {
         let source = profile::profile_source_label(&args, &pool);
         profile::merge_into_args(&mut args, chosen, &source);

@@ -27,12 +27,12 @@ const RECOGNIZED_TOP_LEVEL: &[&str] = &[
 /// Provider-specific bundle material validated once before it is inspected or
 /// passed into the legacy Claude one-shot path.
 pub(crate) struct BundlePlan {
-    root: PathBuf,
     system_prompt: Option<String>,
     mcp_config: Option<PathBuf>,
     settings: Option<PathBuf>,
     agents_json: Option<String>,
     plugin_roots: Vec<String>,
+    config: crate::profile::Pool,
     inspection: BundleInspection,
 }
 
@@ -81,9 +81,15 @@ impl BundlePlan {
         }
         validate_recognized_entry_types(root)?;
 
-        // Use the same strict config parser as an actual bundle-backed run.
-        crate::profile::load_pool_with_bundle(root, Some(root), true)
-            .with_context(|| format!("validating bundle config in {}", root.display()))?;
+        // Snapshot the parsed config once. Validation and execution must not
+        // reopen potentially changed bytes, and parse diagnostics must not
+        // echo a source line that may contain a secret.
+        let config = crate::profile::pool::load_bundle_pool(root).map_err(|_| {
+            anyhow::anyhow!(
+                "bundle config {} could not be read or parsed; source details redacted",
+                root.join("roba.toml").display()
+            )
+        })?;
 
         let mut artifacts = Vec::new();
         let mut warnings = unknown_top_level_entries(root)?;
@@ -111,7 +117,7 @@ impl BundlePlan {
         push_artifact(&mut artifacts, "mcp.json", &mcp_path);
         let (mcp_config, mcp_servers) = if mcp_path.is_file() {
             let value = read_json_object(&mcp_path, "bundle MCP config")?;
-            let servers = object_keys(&value, "mcpServers", &mcp_path, "bundle MCP config")?;
+            let servers = inspect_mcp_servers(&value, &mcp_path)?;
             (Some(mcp_path), servers)
         } else {
             (None, Vec::new())
@@ -154,18 +160,26 @@ impl BundlePlan {
         };
 
         Ok(Self {
-            root: root.to_path_buf(),
             system_prompt,
             mcp_config,
             settings,
             agents_json,
             plugin_roots,
+            config,
             inspection,
         })
     }
 
-    pub(crate) fn root(&self) -> &Path {
-        &self.root
+    pub(crate) fn resolve_pool(
+        &self,
+        cwd: &Path,
+        bundle_only: bool,
+    ) -> Result<crate::profile::Pool> {
+        crate::profile::pool::load_pool_with_preparsed_bundle(
+            cwd,
+            Some(self.config.clone()),
+            bundle_only,
+        )
     }
 
     pub(crate) fn apply_context(&self, args: &mut AskArgs) {
@@ -242,9 +256,12 @@ fn load_agents(agents_dir: &Path) -> Result<(Option<String>, Vec<AgentInspection
     let mut inspections = Vec::new();
     let mut artifacts = Vec::new();
     for stem in stems {
-        let agent = root
-            .get(&stem)
-            .with_context(|| format!("reading bundle agent {stem}"))?;
+        let agent = root.get(&stem).map_err(|_| {
+            anyhow::anyhow!(
+                "bundle agent {} could not be parsed; source details redacted",
+                agents_dir.join(format!("{stem}.md")).display()
+            )
+        })?;
         let description = agent
             .description
             .filter(|value| !value.trim().is_empty())
@@ -324,8 +341,12 @@ fn load_plugins(root: &Path) -> Result<(Vec<String>, Vec<PluginInspection>, Vec<
                     children.push(path);
                 }
             }
-            children.sort();
-            plugin_paths.extend(children);
+            let mut normalized = Vec::with_capacity(children.len());
+            for child in children {
+                normalized.push((relative_display(root, &child)?, child));
+            }
+            normalized.sort_by(|left, right| left.0.cmp(&right.0));
+            plugin_paths.extend(normalized.into_iter().map(|(_, path)| path));
         }
     }
 
@@ -422,6 +443,29 @@ fn object_keys(
     Ok(keys)
 }
 
+fn inspect_mcp_servers(object: &JsonMap<String, JsonValue>, path: &Path) -> Result<Vec<String>> {
+    let Some(value) = object.get("mcpServers") else {
+        return Ok(Vec::new());
+    };
+    let servers = value.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "bundle MCP config {} field `mcpServers` must be a JSON object",
+            path.display()
+        )
+    })?;
+    for (name, definition) in servers {
+        if !definition.is_object() {
+            bail!(
+                "bundle MCP config {} server `{name}` must be a JSON object",
+                path.display()
+            );
+        }
+    }
+    let mut names: Vec<String> = servers.keys().cloned().collect();
+    names.sort();
+    Ok(names)
+}
+
 fn inspect_settings(
     object: &JsonMap<String, JsonValue>,
     path: &Path,
@@ -434,16 +478,30 @@ fn inspect_settings(
                 path.display()
             )
         })?;
-        for (kind, rules) in permissions {
-            let count = match rules {
-                JsonValue::Array(values) => values.len(),
-                JsonValue::Null => 0,
-                _ => 1,
+        for kind in ["allow", "ask", "deny"] {
+            let Some(rules) = permissions.get(kind) else {
+                continue;
             };
-            permission_rule_counts.insert(kind.clone(), count);
+            let rules = rules.as_array().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "bundle settings {} permission `{kind}` must be a JSON array",
+                    path.display()
+                )
+            })?;
+            permission_rule_counts.insert(kind.to_string(), rules.len());
         }
     }
     let hook_events = object_keys(object, "hooks", path, "bundle settings")?;
+    if let Some(hooks) = object.get("hooks").and_then(JsonValue::as_object) {
+        for (event, definitions) in hooks {
+            if !definitions.is_array() {
+                bail!(
+                    "bundle settings {} hook event `{event}` must be a JSON array",
+                    path.display()
+                );
+            }
+        }
+    }
     Ok(SettingsInspection {
         permission_rule_counts,
         hook_events,
@@ -737,6 +795,48 @@ mod tests {
         );
 
         let bundle = tempfile::tempdir().unwrap();
+        std::fs::write(
+            bundle.path().join("mcp.json"),
+            r#"{"mcpServers":{"bad":[]}}"#,
+        )
+        .unwrap();
+        assert!(
+            BundlePlan::load(bundle.path())
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("server `bad` must be a JSON object")
+        );
+
+        let bundle = tempfile::tempdir().unwrap();
+        std::fs::write(
+            bundle.path().join("settings.json"),
+            r#"{"permissions":{"allow":"Read"}}"#,
+        )
+        .unwrap();
+        assert!(
+            BundlePlan::load(bundle.path())
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("permission `allow` must be a JSON array")
+        );
+
+        let bundle = tempfile::tempdir().unwrap();
+        std::fs::write(
+            bundle.path().join("settings.json"),
+            r#"{"hooks":{"PreToolUse":{}}}"#,
+        )
+        .unwrap();
+        assert!(
+            BundlePlan::load(bundle.path())
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("hook event `PreToolUse` must be a JSON array")
+        );
+
+        let bundle = tempfile::tempdir().unwrap();
         std::fs::create_dir(bundle.path().join("mcp.json")).unwrap();
         assert!(
             BundlePlan::load(bundle.path())
@@ -757,5 +857,60 @@ mod tests {
         plan.apply_provisioning(&mut config);
 
         assert_eq!(config.settings.as_deref(), Some("existing-settings.json"));
+    }
+
+    #[test]
+    fn parsed_bundle_config_is_redacted_and_snapshotted_for_execution() {
+        let bundle = tempfile::tempdir().unwrap();
+        let config = bundle.path().join("roba.toml");
+        std::fs::write(&config, "model = \"sonnet\"\n").unwrap();
+        let plan = BundlePlan::load(bundle.path()).unwrap();
+
+        // Execution uses the already-inspected config even if the file moves.
+        std::fs::write(&config, "model = \"opus\"\nSECRET = \"value\"\n").unwrap();
+        let resolved = plan.resolve_pool(bundle.path(), true).unwrap();
+        assert_eq!(resolved.defaults.model.as_deref(), Some("sonnet"));
+
+        let malformed = tempfile::tempdir().unwrap();
+        let secret = "SUPER_SECRET_CONFIG_VALUE";
+        std::fs::write(
+            malformed.path().join("roba.toml"),
+            format!("unknown = \"{secret}\"\n"),
+        )
+        .unwrap();
+        let error = BundlePlan::load(malformed.path())
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("source details redacted"));
+        assert!(!error.contains(secret));
+    }
+
+    #[test]
+    fn plugin_order_uses_normalized_unicode_paths_on_every_platform() {
+        let bundle = tempfile::tempdir().unwrap();
+        for name in ["\u{10000}", "\u{e000}"] {
+            let manifest = bundle
+                .path()
+                .join("plugins")
+                .join(name)
+                .join(".claude-plugin");
+            std::fs::create_dir_all(&manifest).unwrap();
+            std::fs::write(
+                manifest.join("plugin.json"),
+                format!(r#"{{"name":"{name}"}}"#),
+            )
+            .unwrap();
+        }
+
+        let plan = BundlePlan::load(bundle.path()).unwrap();
+        assert_eq!(
+            plan.inspection
+                .plugins
+                .iter()
+                .map(|plugin| plugin.root.as_str())
+                .collect::<Vec<_>>(),
+            ["plugins/\u{e000}", "plugins/\u{10000}"]
+        );
     }
 }

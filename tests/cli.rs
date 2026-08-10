@@ -203,6 +203,33 @@ fn bundle_inspect_json_uses_versioned_inventory_and_structured_errors() {
             .unwrap()
             .contains("does not exist")
     );
+
+    let malformed = tempfile::tempdir().unwrap();
+    let secret = "SUPER_SECRET_BUNDLE_CONFIG";
+    std::fs::write(
+        malformed.path().join("roba.toml"),
+        format!("unknown = \"{secret}\"\n"),
+    )
+    .unwrap();
+    let output = roba()
+        .args([
+            "bundle",
+            "inspect",
+            malformed.path().to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("inspect malformed bundle as JSON");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let error: serde_json::Value = serde_json::from_str(&stderr).unwrap();
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("source details redacted")
+    );
+    assert!(!stderr.contains(secret));
 }
 
 #[test]
