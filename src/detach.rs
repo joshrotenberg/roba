@@ -108,9 +108,6 @@ pub(crate) fn run_detached(
     if let Some(path) = crate::receipt::path_for(&handle) {
         cmd.env(crate::receipt::RECEIPT_ENV, path);
     }
-    if let Some(snapshot) = &bundle_snapshot {
-        cmd.env(crate::bundle::DETACHED_SNAPSHOT_TOKEN_ENV, snapshot.token());
-    }
     detach_process_group(&mut cmd);
     cmd.spawn()
         .map_err(|e| anyhow::anyhow!("--detach: failed to spawn the detached run: {e}"))?;
