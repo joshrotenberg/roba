@@ -12,8 +12,8 @@ repository = "https://github.com/joshrotenberg/roba"
 homepage = "https://github.com/joshrotenberg/roba"
 documentation = "https://docs.rs/roba"
 readme = "README.md"
-description = "A single-prompt CLI runner on top of claude -p: one invocation, one answer. Composable input, pipe-clean output, re-enterable sessions, a stable scripting ABI."
-keywords = ["claude", "cli", "ai", "llm", "anthropic"]
+description = "A library-first bounded agent run with Claude and Codex adapters, plus thin CLI, REPL, and MCP surfaces."
+keywords = ["agent", "claude", "codex", "cli", "llm"]
 categories = ["command-line-utilities"]
 
 # Root package + workspace: `roba` stays at the repo root; `roba-types` (the
@@ -21,7 +21,7 @@ categories = ["command-line-utilities"]
 # run engine) are members. resolver "3" matches the edition-2024 package
 # default so making this a workspace does not change dependency resolution.
 [workspace]
-members = ["roba-types", "roba-core"]
+members = ["roba-types", "roba-core", "roba-mcp", "roba-repl"]
 resolver = "3"
 
 [[bin]]
@@ -39,6 +39,8 @@ indicatif = "0.18"
 # The clap-free run engine (Config -> QueryResult), split out of the CLI so a
 # programmatic caller / serve (#142) can drive it without clap.
 roba-core = { version = "0.2.0", path = "roba-core" }
+roba-mcp = { version = "0.1.0", path = "roba-mcp" }
+roba-repl = { version = "0.1.0", path = "roba-repl" }
 # The machine contract (envelopes + exit codes), shared so the binary and the
 # published crate cannot disagree. version + path so `roba` can still publish.
 roba-types = { version = "0.1.1", path = "roba-types" }
@@ -47,7 +49,7 @@ serde_json = "1"
 tempfile = "3"
 termimad = "0.34"
 toml = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread"] }
 # v4 UUID minting for `--detach` (client-side session handle). Minimal
 # features: just the v4 generator, no serde / no formatting extras.
 uuid = { version = "1", default-features = false, features = ["v4"] }

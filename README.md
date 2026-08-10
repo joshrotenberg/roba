@@ -6,13 +6,55 @@
 [![Downloads](https://img.shields.io/crates/d/roba.svg)](https://crates.io/crates/roba)
 [![License](https://img.shields.io/crates/l/roba.svg)](#license)
 
-A single-prompt CLI runner on top of `claude -p`: one invocation, one
-answer. Adds composable input, pipe-clean output, re-enterable sessions,
-and a stable scripting ABI.
+A library-first, bounded agent run. One Roba process owns one intention,
+may steer its provider through multiple turns, and exits when the work is
+complete. Claude Code and Codex are provider adapters; the CLI, REPL, and
+run-scoped MCP server are thin clients of the same process-local run API.
 
-roba is sugar over the one binary -- not a platform, orchestrator,
-daemon, or skills framework. Point it at a quick question, a CI step, or
-an unattended worker.
+Roba is not a daemon or a persistent session pool. A suspended run does no
+provider work until its first prompt arrives. While it is alive, a caller can
+observe, steer, cancel, and await it through Rust, a REPL, or MCP.
+
+The established single-prompt Claude CLI remains available as a compatibility
+surface while it migrates onto the new library model.
+
+## Bounded runs
+
+The new `roba run` path is the first end-to-end slice of the library design:
+
+```bash
+# One blocking run. Stdout is the final answer.
+roba run --provider codex "inspect this repository and propose the next task"
+
+# Create a suspended run and provide its first prompt from the REPL.
+roba run --provider claude --repl
+
+# Expose one suspended run as a run-scoped MCP server over stdio.
+mcp-repl -- roba run --provider codex --mcp
+```
+
+Configuration resolves in one hierarchy:
+
+```text
+Roba defaults -> selected provider defaults -> named agent -> run overrides
+```
+
+The public implementation is split by responsibility:
+
+- `roba-core`: provider-neutral specifications, resolution, provider registry,
+  lifecycle, outcomes, and events
+- `roba-mcp`: run-scoped observation and control over MCP
+- `roba-repl`: line-oriented control over the same `RunHandle`
+- `roba`: the CLI and the compatibility surface for the original Claude runner
+
+See [the run-library design](docs/design/run-library-pivot.md) for the current
+contract, completed work, and remaining migration plan.
+
+## Legacy one-shot CLI
+
+The original command remains a composable single-prompt runner on top of
+`claude -p`, with pipe-clean output, re-enterable sessions, and a stable
+scripting ABI.
 
 - **Humans:** prompt from files / stdin / git context, rendered markdown
   on a TTY, flag bundles as profiles, history, cost.
@@ -20,7 +62,8 @@ an unattended worker.
   stdout is the answer, stderr is metadata, a versioned `--json`
   envelope, typed exit codes, `--trace` to watch a run.
 
-Built on [`claude-wrapper`](https://crates.io/crates/claude-wrapper).
+Built on [`claude-wrapper`](https://crates.io/crates/claude-wrapper) and
+[`codex-wrapper`](https://crates.io/crates/codex-wrapper).
 
 ```console
 $ roba "summarize the rust ownership model in 3 bullets"
@@ -41,14 +84,14 @@ tokens 1.2k/450 . $0.0042 . 2.0s . session abc12345
 | Homebrew | `brew install joshrotenberg/brew/roba` |
 | Prebuilt binary | [latest release](https://github.com/joshrotenberg/roba/releases/latest) -- macOS (arm64 / x86_64), Linux (arm64 / x86_64), Windows; shell and PowerShell installers included |
 
-`roba` shells out to the `claude` binary, so you need
-[claude-code](https://github.com/anthropics/claude-code) installed and
-authenticated (or `ANTHROPIC_API_KEY` set) on your `PATH`.
+The legacy command shells out to `claude`. `roba run` shells out to the
+selected `claude` or `codex` binary. Install and authenticate the provider you
+select and keep it on `PATH`.
 
 **The full flag, env-var, and config reference lives in the binary:
 `roba --help`.** This README is the overview.
 
-## vs. `claude -p` directly
+## Legacy CLI vs. `claude -p` directly
 
 `claude -p` is the one-shot primitive: prompt in, response to stdout,
 exit. roba keeps that model and adds:
@@ -62,10 +105,8 @@ exit. roba keeps that model and adds:
 | **Read-only inspection** | `roba show <ID>` prints a stored run's result (`--metrics`, `--wait`); `roba worktree list`; `roba history --worktree NAME` finds a runner's session |
 | **A stable scripting ABI** | typed exit codes, versioned `--json` envelope, clean stream split -- see [For agents & scripts](#for-agents--scripts) |
 
-For interactive, multi-turn work, use `claude` itself; for multiple
-providers, [`llm`](https://llm.datasette.com/). roba is Claude-only: the
-Claude-Code-native integration (sessions, permissions, history) is the
-point.
+These details describe the compatibility command. The bounded `roba run`
+surface is provider-neutral and supports Claude and Codex.
 
 ## Quick examples
 

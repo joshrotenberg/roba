@@ -12,6 +12,7 @@ use std::io::IsTerminal;
 
 pub mod agent_check;
 pub mod aliases;
+pub mod bounded;
 pub mod cli;
 pub mod config;
 pub mod cost;
@@ -61,6 +62,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             .with_context(|| format!("--cwd: cannot change directory to {}", path.display()))?;
     }
     match cli.command {
+        Some(SubCommand::Run(args)) => bounded::run(args).await,
         Some(SubCommand::History(args)) => run_history(args),
         Some(SubCommand::Last(args)) => run_last(args),
         // Profile inspection is synchronous; `draft` makes one claude call

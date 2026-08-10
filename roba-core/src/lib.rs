@@ -1,13 +1,17 @@
 //! roba-core: the clap-free, side-effect-free run engine.
 //!
-//! This crate is roba's resolve-free core, split out from the CLI (#416). It
-//! owns two things:
+//! This crate is Roba's resolve-free core. It owns the provider-neutral
+//! bounded-run contract plus the compatibility engine used by the current
+//! CLI:
 //!
-//! - [`engine`] -- the config-and-run seam. [`engine::run`] takes a
-//!   [`engine::Config`] and returns a [`claude_wrapper::types::QueryResult`]:
-//!   no clap, no stdout/stderr, no `process::exit`, no TTY. It is the down
-//!   payment on `serve` (#142), where a request maps to a `Config` and calls
-//!   `engine::run`.
+//! - [`run`] and [`provider`] -- provider-neutral specifications, outcomes,
+//!   events, and the one-turn provider boundary. A prompt-less [`RunSpec`]
+//!   is explicitly suspended and causes no provider work.
+//! - [`providers`] -- built-in Claude and Codex adapters behind the same run
+//!   model. Claude also remains the compatibility provider for the legacy CLI.
+//! - [`engine`] -- the pre-pivot config-and-run seam. [`engine::run`] remains
+//!   available while the CLI migrates, and delegates execution through
+//!   [`ClaudeProvider`].
 //! - [`session`] -- [`session::apply_session`], the single `Config ->
 //!   QueryCommand` mapper the engine feeds, plus the permission/notice
 //!   composition it consumes.
@@ -20,4 +24,25 @@
 //! the CLI crate.
 
 pub mod engine;
+pub mod lifecycle;
+pub mod provider;
+pub mod providers;
+pub mod resolve;
+pub mod run;
+pub mod runtime;
 pub mod session;
+
+pub use lifecycle::{Run, RunControlError, RunHandle, RunSnapshot};
+pub use provider::{
+    EventSink, NoopEventSink, Provider, ProviderCapabilities, ProviderError, ProviderFuture,
+    execute_turn,
+};
+pub use providers::claude::ClaudeProvider;
+pub use providers::codex::CodexProvider;
+pub use resolve::{ConfigLayer, ResolveError, RobaConfig, RunOverrides};
+pub use run::{
+    AgentSpec, ContextSpec, Cost, Effort, ExecutionSpec, FailureKind, LimitSpec, PermissionPolicy,
+    Prompt, PromptError, ProviderId, ProviderIdError, RunEvent, RunFailure, RunOutcome, RunSpec,
+    RunSpecError, RunState, SessionHandle, SessionSpec, TokenUsage, ToolPolicy, TurnRequest,
+};
+pub use runtime::{Roba, RuntimeError};
