@@ -1,33 +1,36 @@
 # roba-core
 
-roba's clap-free, side-effect-free run engine: a `Config` in, a claude
-`QueryResult` out.
+Provider-neutral contracts and a process-local lifecycle for one bounded Roba
+agent run.
 
-[roba](https://github.com/joshrotenberg/roba) is a single-prompt CLI runner
-over `claude -p`. This crate is the run engine underneath it, split out from
-the CLI so a programmatic caller (and, later, `serve`) can drive a run without
-depending on clap or the terminal.
+[roba](https://github.com/joshrotenberg/roba) is library-first. This crate owns
+the run model beneath its CLI, REPL, and run-scoped MCP adapters, so a Rust host
+can create and control a run without depending on clap or terminal behavior.
 
 ## What's here
 
-- **`engine`** -- the config-and-run seam. `engine::run(&Config)` builds the
-  claude client, maps the `Config` onto a `QueryCommand`, executes, and returns
-  the typed `QueryResult`. No clap, no stdout/stderr, no `process::exit`, no
-  TTY. `Config` is a curated struct: a `Permissions` posture, a `Session`
-  selector, and the run knobs (model, effort, caps, timeout, MCP, system-prompt
-  overrides, ...).
+- **`run` / `provider`** -- provider-neutral specifications, events, outcomes,
+  failures, sessions, and the one-turn provider contract.
+- **`lifecycle` / `runtime`** -- suspended creation, exact-once start,
+  boundary-safe steering, observation, cancellation, waiting, and an explicit
+  provider registry. No daemon, database, queue, or global session pool.
+- **`resolve`** -- one serializable hierarchy: Roba defaults, selected provider
+  defaults, named agent, then run overrides.
+- **`providers`** -- Claude and Codex adapters that normalize provider-native
+  results without inventing missing usage or cost.
+- **`engine`** -- the legacy Claude `Config -> QueryResult` seam retained while
+  the established CLI migrates onto the new run model.
 - **`session`** -- `apply_session`, the single `Config -> QueryCommand` mapper
-  the engine feeds, plus the permission and agent-notice composition it
-  consumes.
+  the compatibility engine feeds.
 
-The `roba` binary resolves flags, profiles, and prompt composition into a
-`Config` and renders the result around this seam, so there is one
-flag-to-command mapper and no second copy to drift.
+The new API has no stdout/stderr, `process::exit`, TTY, clap, or persistent
+server dependency. Provider adapters do spawn the selected provider CLI once a
+run starts; a prompt-less suspended run spawns nothing.
 
 ## Stability
 
-Internal to roba for now: the API may change without a major bump until the
-`serve` surface (roba#142) settles. Depend on it directly at your own risk.
+The bounded-run API is under active development and may change before the next
+stable Roba release. The legacy engine remains available for compatibility.
 
 ## License
 

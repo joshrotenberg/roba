@@ -206,6 +206,13 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum SubCommand {
+    /// Run the new bounded, provider-neutral Roba agent.
+    ///
+    /// With no adapter, waits for one terminal outcome. `--repl` and `--mcp`
+    /// expose the same process-local run handle for its lifetime. Omitting the
+    /// prompt is valid only with one of those adapters and leaves the run
+    /// suspended until a client starts it.
+    Run(RunArgs),
     /// List recent sessions (current project by default).
     History(HistoryArgs),
     /// Reprint the most recent session's last answer.
@@ -314,6 +321,70 @@ pub enum SubCommand {
     /// pool (or errors with close-match suggestions).
     #[command(external_subcommand)]
     External(Vec<String>),
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunProvider {
+    Claude,
+    Codex,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct RunArgs {
+    /// Initial intention. Omit with --repl or --mcp to create a suspended run.
+    pub prompt: Option<String>,
+
+    /// Provider for the root agent.
+    #[arg(long, value_enum, default_value_t = RunProvider::Claude)]
+    pub provider: RunProvider,
+
+    /// Provider model id.
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Provider-neutral reasoning effort.
+    #[arg(long, value_enum)]
+    pub effort: Option<EffortLevel>,
+
+    /// Persistent root-agent instruction. Repeat to compose in order.
+    #[arg(long = "instruction")]
+    pub instructions: Vec<String>,
+
+    /// Run-specific context. Repeat to compose in order.
+    #[arg(long = "context")]
+    pub context: Vec<String>,
+
+    /// Permit edits in the current workspace.
+    #[arg(long, conflicts_with = "full_auto")]
+    pub writable: bool,
+
+    /// Run unattended inside a workspace-write sandbox.
+    #[arg(long, conflicts_with = "writable")]
+    pub full_auto: bool,
+
+    /// Provider turn ceiling. Unsupported providers refuse before launch.
+    #[arg(long)]
+    pub max_turns: Option<u32>,
+
+    /// Provider-reported dollar ceiling. Unsupported providers refuse before launch.
+    #[arg(long)]
+    pub max_cost_usd: Option<f64>,
+
+    /// Wall-clock provider deadline in seconds.
+    #[arg(long)]
+    pub timeout: Option<u64>,
+
+    /// Resume a provider session/thread id.
+    #[arg(long)]
+    pub resume: Option<String>,
+
+    /// Drive the run through a line-oriented REPL on stdin/stdout.
+    #[arg(long, conflicts_with = "mcp")]
+    pub repl: bool,
+
+    /// Serve run control as MCP over stdin/stdout.
+    #[arg(long, conflicts_with = "repl")]
+    pub mcp: bool,
 }
 
 #[derive(Subcommand, Debug)]

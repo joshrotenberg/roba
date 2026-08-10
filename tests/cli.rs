@@ -74,6 +74,49 @@ fn history_help_describes_subcommand() {
 }
 
 #[test]
+fn bounded_run_help_exposes_provider_and_run_adapters() {
+    roba()
+        .args(["run", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--provider"))
+        .stdout(predicate::str::contains("--repl"))
+        .stdout(predicate::str::contains("--mcp"));
+}
+
+#[test]
+fn promptless_bounded_run_requires_a_control_adapter() {
+    roba()
+        .arg("run")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("prompt-less run is suspended"));
+}
+
+#[test]
+fn bounded_repl_can_inspect_and_quit_a_suspended_run_without_provider_work() {
+    roba()
+        .args(["run", "--provider", "codex", "--repl"])
+        .write_stdin("/status\n/quit\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"state\":\"suspended\""));
+}
+
+#[test]
+fn codex_unsupported_limit_refuses_before_cli_launch() {
+    roba()
+        .args(["run", "--provider", "codex", "--max-turns", "1", "hello"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "Codex provider does not support a max-turn ceiling",
+        ));
+}
+
+#[test]
 fn history_paths_flag_no_arg() {
     // --paths with no value should parse and run without panicking.
     // No real sessions may exist in CI; exit 0 is the contract.

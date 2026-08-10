@@ -1,0 +1,19 @@
+[package]
+name = "roba-mcp"
+version = "0.1.0"
+edition = "2024"
+authors = ["Josh Rotenberg <joshrotenberg@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/joshrotenberg/roba"
+description = "Run-scoped MCP adapter for Roba"
+
+[dependencies]
+roba-core = { version = "0.2.0", path = "../roba-core" }
+schemars = "1.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tower-mcp = "0.21"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+tower-mcp = { version = "0.21", features = ["testing"] }

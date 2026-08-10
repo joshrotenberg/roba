@@ -27,6 +27,7 @@ use anyhow::Result;
 use claude_wrapper::types::QueryResult;
 use claude_wrapper::{Claude, Effort, PermissionMode, QueryCommand};
 
+use crate::providers::claude::ClaudeProvider;
 use crate::session::{apply_session, derive_session_name};
 
 /// What to do about session continuity, mirroring the CLI's `-c` / `--resume`
@@ -159,22 +160,7 @@ impl Config {
 /// the same way the CLI does. Errors propagate as `anyhow` (the CLI maps them
 /// to typed exit codes; a programmatic caller inspects them directly).
 pub async fn run(config: &Config) -> Result<QueryResult> {
-    let mut builder = Claude::builder();
-    if let Some(secs) = config.timeout_secs
-        && secs > 0
-    {
-        builder = builder.timeout_secs(secs);
-    }
-    let claude = builder.build()?;
-
-    let mut result = execute(config, &claude).await?;
-
-    // Parity with run_ask: with a schema active, surface the structured answer
-    // onto `structured_output` / an unfenced `result` (see #317).
-    if config.json_schema.is_some() {
-        surface_structured_output(&mut result);
-    }
-    Ok(result)
+    ClaudeProvider.execute_legacy(config).await
 }
 
 /// Build the `QueryCommand` for `config` -- through the one proven

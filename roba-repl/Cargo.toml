@@ -1,0 +1,16 @@
+[package]
+name = "roba-repl"
+version = "0.1.0"
+edition = "2024"
+authors = ["Josh Rotenberg <joshrotenberg@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/joshrotenberg/roba"
+description = "Run-scoped REPL adapter for Roba"
+
+[dependencies]
+roba-core = { version = "0.2.0", path = "../roba-core" }
+serde_json = "1"
+tokio = { version = "1", features = ["io-util"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "macros", "rt", "sync"] }
