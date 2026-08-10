@@ -34,7 +34,7 @@ pub mod session;
 
 pub use lifecycle::{
     RUN_EVENT_CAPACITY, Run, RunControlError, RunEventPage, RunEventRecord, RunEventSubscription,
-    RunHandle, RunSnapshot, WorkerControl, WorkerSnapshot,
+    RunEventSubscriptionItem, RunHandle, RunSnapshot, WorkerControl, WorkerSnapshot,
 };
 pub use provider::{
     EventSink, NoopEventSink, Provider, ProviderCapabilities, ProviderContext, ProviderError,

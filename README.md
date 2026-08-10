@@ -62,7 +62,8 @@ sequenced across the root and its worker tree and retained in a bounded
 in-memory journal. Pass the returned `next_sequence` as the next `after`
 cursor; an optional `wait_ms` performs bounded long polling. A client that
 falls behind receives `truncated: true` rather than an incomplete history
-presented as complete.
+presented as complete, and long polling returns that gap immediately. Cursors
+ahead of the current journal are refused.
 
 Configuration resolves in one hierarchy:
 
