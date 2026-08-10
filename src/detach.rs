@@ -35,7 +35,10 @@ use crate::cli::AskArgs;
 /// Called from [`crate::run_ask`] AFTER the env/profile merge (so the
 /// rails-nudge predicate sees resolved `--max-turns` / `--max-budget-usd`)
 /// and BEFORE prompt resolution (the child re-resolves the prompt itself).
-pub fn run_detached(args: &AskArgs) -> Result<()> {
+pub(crate) fn run_detached(
+    args: &AskArgs,
+    mut bundle_snapshot: Option<crate::bundle::DetachedBundleSnapshot>,
+) -> Result<()> {
     // (1) Promptless guard FIRST. The detached child re-resolves its own
     // prompt; it can only do so from an explicit source (positional / -p /
     // -f). `-e`/`--editor` is a clap conflict, and stdin is unavailable to
@@ -84,7 +87,10 @@ pub fn run_detached(args: &AskArgs) -> Result<()> {
     // (4) Build the child argv and spawn it disowned.
     let exe = std::env::current_exe()
         .map_err(|e| anyhow::anyhow!("--detach: cannot locate the roba binary to re-exec: {e}"))?;
-    let child_args = detached_argv(std::env::args().skip(1), mint.then_some(handle.as_str()));
+    let mut child_args = detached_argv(std::env::args().skip(1), mint.then_some(handle.as_str()));
+    if let Some(snapshot) = &bundle_snapshot {
+        child_args = with_bundle_snapshot(child_args, snapshot.path())?;
+    }
 
     let mut cmd = Command::new(exe);
     cmd.args(child_args)
@@ -102,9 +108,15 @@ pub fn run_detached(args: &AskArgs) -> Result<()> {
     if let Some(path) = crate::receipt::path_for(&handle) {
         cmd.env(crate::receipt::RECEIPT_ENV, path);
     }
+    if let Some(snapshot) = &bundle_snapshot {
+        cmd.env(crate::bundle::DETACHED_SNAPSHOT_TOKEN_ENV, snapshot.token());
+    }
     detach_process_group(&mut cmd);
     cmd.spawn()
         .map_err(|e| anyhow::anyhow!("--detach: failed to spawn the detached run: {e}"))?;
+    if let Some(snapshot) = &mut bundle_snapshot {
+        snapshot.transfer_to_child();
+    }
     // Drop the child handle without waiting -- the run is on its own now.
 
     // (5) Emit the handle (stdout = the answer) and metadata (stderr).
@@ -116,6 +128,36 @@ pub fn run_detached(args: &AskArgs) -> Result<()> {
     eprintln!("re-attach: roba show {handle} --wait");
     println!("{handle}");
     Ok(())
+}
+
+fn with_bundle_snapshot(args: Vec<String>, snapshot: &std::path::Path) -> Result<Vec<String>> {
+    let snapshot = snapshot.to_str().ok_or_else(|| {
+        anyhow::anyhow!(
+            "detached bundle snapshot path is not valid UTF-8: {}",
+            snapshot.display()
+        )
+    })?;
+    let mut filtered = Vec::with_capacity(args.len() + 2);
+    let mut iter = args.into_iter().peekable();
+    let mut past_separator = false;
+    while let Some(argument) = iter.next() {
+        if !past_separator && argument == "--" {
+            past_separator = true;
+            filtered.push(argument);
+            continue;
+        }
+        if !past_separator && argument == "--bundle" {
+            let _ = iter.next();
+            continue;
+        }
+        if !past_separator && argument.starts_with("--bundle=") {
+            continue;
+        }
+        filtered.push(argument);
+    }
+    filtered.insert(0, snapshot.to_string());
+    filtered.insert(0, "--bundle".to_string());
+    Ok(filtered)
 }
 
 /// Resolve the session handle to print, and whether roba minted it (and so
@@ -236,6 +278,40 @@ mod tests {
     fn strips_detach_token() {
         let out = detached_argv(argv(&["--detach", "prompt"]), None);
         assert_eq!(out, vec!["prompt".to_string()]);
+    }
+
+    #[test]
+    fn detached_bundle_replaces_original_before_the_prompt_boundary() {
+        let snapshot = std::path::Path::new("/tmp/roba-bundle-snapshot");
+        let args = with_bundle_snapshot(
+            argv(&[
+                "--model",
+                "sonnet",
+                "--bundle",
+                "original",
+                "--",
+                "--bundle=literal prompt",
+            ]),
+            snapshot,
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            argv(&[
+                "--bundle",
+                "/tmp/roba-bundle-snapshot",
+                "--model",
+                "sonnet",
+                "--",
+                "--bundle=literal prompt",
+            ])
+        );
+
+        let args = with_bundle_snapshot(argv(&["--bundle=original", "prompt"]), snapshot).unwrap();
+        assert_eq!(
+            args,
+            argv(&["--bundle", "/tmp/roba-bundle-snapshot", "prompt"])
+        );
     }
 
     #[test]

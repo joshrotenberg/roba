@@ -23,12 +23,66 @@ const RECOGNIZED_TOP_LEVEL: &[&str] = &[
     "skills",
     "system-prompt.md",
 ];
+pub(crate) const DETACHED_SNAPSHOT_TOKEN_ENV: &str = "ROBA_DETACHED_BUNDLE_SNAPSHOT_TOKEN";
+const DETACHED_SNAPSHOT_OWNER_FILE: &str = ".roba-detached-snapshot-owner";
+
+enum BundleSnapshot {
+    Temporary(tempfile::TempDir),
+    Detached(DetachedSnapshotDir),
+}
+
+impl BundleSnapshot {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Temporary(directory) => directory.path(),
+            Self::Detached(directory) => &directory.path,
+        }
+    }
+}
+
+struct DetachedSnapshotDir {
+    path: PathBuf,
+}
+
+impl Drop for DetachedSnapshotDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+pub(crate) struct DetachedBundleSnapshot {
+    path: PathBuf,
+    token: String,
+    cleanup: bool,
+}
+
+impl DetachedBundleSnapshot {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn token(&self) -> &str {
+        &self.token
+    }
+
+    pub(crate) fn transfer_to_child(&mut self) {
+        self.cleanup = false;
+    }
+}
+
+impl Drop for DetachedBundleSnapshot {
+    fn drop(&mut self) {
+        if self.cleanup {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
 
 /// Provider-specific bundle material validated once before it is inspected or
 /// passed into the legacy Claude one-shot path.
 pub(crate) struct BundlePlan {
     // Owns every path handed to Claude for the full awaited provider call.
-    _snapshot: tempfile::TempDir,
+    snapshot: BundleSnapshot,
     system_prompt: Option<String>,
     mcp_config: Option<PathBuf>,
     settings: Option<PathBuf>,
@@ -94,12 +148,20 @@ impl BundlePlan {
         // Claude accepts paths, not already-open bytes. Copy the complete
         // bundle first so validation and the provider observe the same
         // run-local tree even if the caller later edits or deletes the source.
-        // Refusing symlinks and special files keeps that tree self-contained.
-        let snapshot = tempfile::Builder::new()
-            .prefix("roba-bundle-")
-            .tempdir()
-            .context("creating private bundle snapshot")?;
-        copy_bundle_tree(root, snapshot.path(), snapshot.path())?;
+        // Refusing symlinks and special files observed during capture keeps
+        // an otherwise-quiescent source tree self-contained.
+        let snapshot = if let Some(adopted) =
+            claim_detached_snapshot(root, std::env::var_os(DETACHED_SNAPSHOT_TOKEN_ENV))?
+        {
+            BundleSnapshot::Detached(adopted)
+        } else {
+            let temporary = tempfile::Builder::new()
+                .prefix("roba-bundle-")
+                .tempdir()
+                .context("creating private bundle snapshot")?;
+            copy_bundle_tree(root, temporary.path(), temporary.path())?;
+            BundleSnapshot::Temporary(temporary)
+        };
         let snapshot_root = snapshot.path();
         validate_recognized_entry_types(snapshot_root)?;
 
@@ -182,7 +244,7 @@ impl BundlePlan {
         };
 
         Ok(Self {
-            _snapshot: snapshot,
+            snapshot,
             system_prompt,
             mcp_config,
             settings,
@@ -205,6 +267,20 @@ impl BundlePlan {
         )
     }
 
+    pub(crate) fn into_detached_snapshot(self) -> Result<DetachedBundleSnapshot> {
+        let BundleSnapshot::Temporary(snapshot) = self.snapshot else {
+            bail!("an adopted detached bundle snapshot cannot be detached again");
+        };
+        let token = uuid::Uuid::new_v4().to_string();
+        std::fs::write(snapshot.path().join(DETACHED_SNAPSHOT_OWNER_FILE), &token)
+            .context("marking detached bundle snapshot ownership")?;
+        Ok(DetachedBundleSnapshot {
+            path: snapshot.keep(),
+            token,
+            cleanup: true,
+        })
+    }
+
     pub(crate) fn apply_context(&self, args: &mut AskArgs) {
         if let Some(content) = &self.system_prompt {
             args.append_system_prompt = Some(match args.append_system_prompt.take() {
@@ -224,6 +300,50 @@ impl BundlePlan {
         config.agents_json.clone_from(&self.agents_json);
         config.plugin_dir.extend(self.plugin_roots.iter().cloned());
     }
+}
+
+fn claim_detached_snapshot(
+    root: &Path,
+    token: Option<std::ffi::OsString>,
+) -> Result<Option<DetachedSnapshotDir>> {
+    let Some(token) = token else {
+        return Ok(None);
+    };
+    let token = token
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("detached bundle snapshot token is not valid UTF-8"))?;
+    uuid::Uuid::parse_str(&token).context("detached bundle snapshot token is malformed")?;
+
+    let parent = root.parent().ok_or_else(|| {
+        anyhow::anyhow!("detached bundle snapshot has no parent: {}", root.display())
+    })?;
+    let temp_root = std::env::temp_dir();
+    let parent = std::fs::canonicalize(parent)
+        .with_context(|| format!("resolving detached snapshot parent {}", parent.display()))?;
+    let temp_root = std::fs::canonicalize(&temp_root)
+        .with_context(|| format!("resolving temp directory {}", temp_root.display()))?;
+    let named_like_snapshot = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("roba-bundle-"));
+    if parent != temp_root || !named_like_snapshot {
+        bail!(
+            "refusing detached bundle snapshot outside Roba's temp namespace: {}",
+            root.display()
+        );
+    }
+
+    let owner = root.join(DETACHED_SNAPSHOT_OWNER_FILE);
+    let recorded = std::fs::read_to_string(&owner)
+        .with_context(|| format!("reading detached bundle owner marker {}", owner.display()))?;
+    if recorded != token {
+        bail!("detached bundle snapshot owner marker does not match this child");
+    }
+    std::fs::remove_file(&owner)
+        .with_context(|| format!("claiming detached bundle snapshot {}", root.display()))?;
+    Ok(Some(DetachedSnapshotDir {
+        path: root.to_path_buf(),
+    }))
 }
 
 fn copy_bundle_tree(source: &Path, target: &Path, snapshot_root: &Path) -> Result<()> {
@@ -1008,6 +1128,29 @@ mod tests {
                 .as_deref(),
             Some("sonnet")
         );
+    }
+
+    #[test]
+    fn detached_child_claims_and_cleans_the_parents_exact_snapshot() {
+        let bundle = complete_bundle();
+        let plan = BundlePlan::load(bundle.path()).unwrap();
+        let mut transfer = plan.into_detached_snapshot().unwrap();
+        let snapshot = transfer.path().to_path_buf();
+        let token = transfer.token().to_string();
+        assert!(snapshot.is_dir());
+        assert!(snapshot.join(DETACHED_SNAPSHOT_OWNER_FILE).is_file());
+
+        // A successful spawn hands cleanup responsibility to the re-exec.
+        transfer.transfer_to_child();
+        drop(transfer);
+        assert!(snapshot.is_dir());
+
+        let owner = claim_detached_snapshot(&snapshot, Some(token.into()))
+            .unwrap()
+            .expect("matching detached child owns the snapshot");
+        assert!(!snapshot.join(DETACHED_SNAPSHOT_OWNER_FILE).exists());
+        drop(owner);
+        assert!(!snapshot.exists());
     }
 
     #[cfg(unix)]

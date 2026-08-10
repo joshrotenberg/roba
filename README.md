@@ -314,11 +314,13 @@ Inspection reports sorted artifact paths, agent declarations, MCP server
 names, settings permission-rule counts and hook event names, and manifested
 plugin roots. It deliberately omits prompt bodies, hook commands, environment
 values, and MCP command details. An explicit missing bundle, malformed JSON,
-incomplete agent/plugin, symlink, or special file fails before provider work.
-Roba copies the complete bundle into a private run-local directory before
-validation and gives Claude only those snapshot paths, so later mutation or
-deletion of the original cannot change the run. This is not an OS isolation
-boundary: Claude and other same-UID processes may still inspect or modify the
+incomplete agent/plugin, or a symlink or special file observed during capture
+fails before provider work. Roba copies the complete bundle into a private
+run-local directory before validation and gives Claude only those snapshot
+paths, so mutation or deletion of the original after capture cannot change the
+run. Capture is not atomic against a concurrent same-UID writer: keep the
+source quiescent and trusted while Roba copies it. This is not an OS isolation
+boundary; Claude and other same-UID processes may still inspect or modify the
 run-local copy, and inspection is not proof of Claude's final merged permission
 surface.
 
