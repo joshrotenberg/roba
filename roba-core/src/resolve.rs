@@ -77,6 +77,15 @@ pub struct RunOverrides {
 }
 
 impl RobaConfig {
+    /// Parse the public hierarchical configuration format from TOML.
+    ///
+    /// The format is intentionally the serde shape of [`RobaConfig`]:
+    /// `[defaults]`, `[providers.NAME]`, and `[agents.NAME]`. Unknown fields
+    /// are rejected so a misspelled safety setting cannot be ignored.
+    pub fn from_toml(input: &str) -> Result<Self, ConfigParseError> {
+        toml::from_str(input).map_err(ConfigParseError)
+    }
+
     /// Resolve a complete, inspectable specification.
     pub fn resolve(
         &self,
@@ -144,6 +153,22 @@ impl RobaConfig {
             },
             initial_prompt: overrides.initial_prompt,
         })
+    }
+}
+
+/// A public hierarchical Roba configuration could not be decoded.
+#[derive(Debug)]
+pub struct ConfigParseError(toml::de::Error);
+
+impl fmt::Display for ConfigParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid Roba run config: {}", self.0)
+    }
+}
+
+impl std::error::Error for ConfigParseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
     }
 }
 
@@ -387,5 +412,67 @@ mod tests {
             config.resolve(None, RunOverrides::default()).unwrap_err(),
             ResolveError::InvalidWorkerPolicy
         );
+    }
+
+    #[test]
+    fn public_toml_shape_loads_hierarchy_and_rejects_unknown_fields() {
+        let config = RobaConfig::from_toml(
+            r#"
+[defaults]
+provider = "claude"
+instructions = ["default"]
+
+[providers.codex]
+model = "gpt-5.6"
+effort = "high"
+
+[agents.builder]
+provider = "codex"
+instructions = ["build the requested change"]
+permissions = "workspace_write"
+max_workers = 3
+max_worker_depth = 2
+"#,
+        )
+        .unwrap();
+
+        let spec = config
+            .resolve(Some("builder"), RunOverrides::default())
+            .unwrap();
+        assert_eq!(spec.agent.provider, ProviderId::codex());
+        assert_eq!(spec.agent.model.as_deref(), Some("gpt-5.6"));
+        assert_eq!(spec.agent.effort, Some(Effort::High));
+        assert_eq!(
+            spec.agent.instructions,
+            ["default", "build the requested change"]
+        );
+        assert_eq!(spec.execution.permissions, PermissionPolicy::WorkspaceWrite);
+        assert_eq!(spec.execution.workers.max_workers, 3);
+        assert_eq!(spec.execution.workers.max_depth, 2);
+
+        let error = RobaConfig::from_toml(
+            r#"
+[defaults]
+provider = "codex"
+timeuot_secs = 30
+"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown field `timeuot_secs`"));
+    }
+
+    #[test]
+    fn shipped_run_config_example_stays_on_the_public_parser() {
+        let config =
+            RobaConfig::from_toml(include_str!("../../examples/run-config/roba.toml")).unwrap();
+        let spec = config
+            .resolve(Some("builder"), RunOverrides::default())
+            .unwrap();
+
+        assert_eq!(spec.agent.provider, ProviderId::codex());
+        assert_eq!(spec.execution.permissions, PermissionPolicy::WorkspaceWrite);
+        assert_eq!(spec.execution.limits.timeout_secs, Some(600));
+        assert_eq!(spec.execution.workers.max_workers, 4);
+        assert_eq!(spec.execution.workers.max_depth, 2);
     }
 }

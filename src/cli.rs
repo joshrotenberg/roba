@@ -334,9 +334,17 @@ pub struct RunArgs {
     /// Initial intention. Omit with --repl or --mcp to create a suspended run.
     pub prompt: Option<String>,
 
-    /// Provider for the root agent.
-    #[arg(long, value_enum, default_value_t = RunProvider::Claude)]
-    pub provider: RunProvider,
+    /// Explicit hierarchical run config. This does not discover legacy roba.toml files.
+    #[arg(long, value_name = "PATH")]
+    pub config: Option<PathBuf>,
+
+    /// Named agent from --config.
+    #[arg(long, requires = "config")]
+    pub agent: Option<String>,
+
+    /// Provider override for the root agent. Defaults to config, then Claude.
+    #[arg(long, value_enum)]
+    pub provider: Option<RunProvider>,
 
     /// Provider model id.
     #[arg(long)]

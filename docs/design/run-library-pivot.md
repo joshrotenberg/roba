@@ -1,9 +1,10 @@
 > Status: ACTIVE vertical slice, started 2026-08-09 on
 > `codex/run-library-pivot`. Provider-neutral execution, both providers, the
 > process-local lifecycle, and thin CLI/REPL/MCP adapters are implemented.
-> Codex streaming, bounded child runs, event observation, and paid Codex smoke
-> are implemented. Config-file migration and Claude streaming remain. This
-> document is the resume point if the work moves elsewhere.
+> Codex streaming, bounded child runs, event observation, paid Codex smoke,
+> and the explicit hierarchical run-config path are implemented. Legacy CLI
+> config cleanup and Claude streaming remain. This document is the resume
+> point if the work moves elsewhere.
 
 # Roba as a bounded, provider-neutral agent run
 
@@ -240,9 +241,10 @@ provider silently ignores a requested safety or limit setting.
 - [x] Introduce named `AgentSpec` values and the fixed instruction stack.
 - [x] Make the resolved specification serializable and inspectable.
 - [x] Snapshot the resolved specification before the first provider call.
-- [ ] Adapt the existing CLI, then remove or deprecate redundant flat config
-      fields and concepts.
-- [ ] Load the new hierarchy from a small public config-file format.
+- [x] Adapt `roba run` to the hierarchy; keep its flags as final run overrides.
+- [x] Load the new hierarchy from a small, explicit public TOML format.
+- [ ] Remove or deprecate redundant legacy one-shot config fields and concepts
+      only after its compatibility adapter consumes the hierarchy.
 
 Acceptance: a caller can build, resolve, inspect, serialize, and execute a run
 without clap or terminal code. Configuration precedence has one implementation.
@@ -302,11 +304,11 @@ Current assets to preserve:
 ## Resume checklist
 
 1. Read this document and `AGENTS.md`.
-2. Confirm the branch is `codex/run-library-pivot` and inspect `git status`.
-3. Continue the first unchecked item that advances the current vertical slice;
-   run events now have bounded cursor replay through the MCP adapter, so the
-   recommended next step is exercising the observable bounded orchestrator
-   with paid Claude and Codex smoke runs.
+2. Start from clean `main`, inspect `git status`, and create a focused branch.
+3. Continue the first unchecked item that advances the current vertical slice.
+   The recommended next provider slice is Claude event streaming, followed by
+   adapting the legacy one-shot compatibility path onto the hierarchy without
+   importing its aliases, profiles, or presentation options into `roba-core`.
 4. Preserve current CLI behavior until a phase's acceptance criteria say a
    compatibility surface may change.
 5. Run the repository's four required gates before publishing a review point.
