@@ -182,6 +182,7 @@ pub fn router(handle: RunHandle) -> McpRouter {
                     let page = match handle.event_page(args.after, args.limit).await {
                         Ok(page)
                             if page.events.is_empty()
+                                && !page.truncated
                                 && !page.terminal
                                 && args.wait_ms > 0 =>
                         {
@@ -570,6 +571,15 @@ mod tests {
             .call_tool_expect_error("events", json!({"wait_ms": 30_001}))
             .await;
         assert!(bad_wait.to_string().contains("between 0 and 30000"));
+
+        let future_cursor = client
+            .call_tool_expect_error("events", json!({"after": 1, "wait_ms": 1}))
+            .await;
+        assert!(
+            future_cursor
+                .to_string()
+                .contains("event cursor 1 is ahead of newest sequence 0")
+        );
     }
 
     #[tokio::test]

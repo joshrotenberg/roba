@@ -33,7 +33,10 @@ and then waits for new events. Each record carries a tree-wide sequence and the
 emitting run id. The root sees its entire worker tree; a child sees only itself
 and its descendants. Hosts that keep their own cursor can use `event_page` and
 `wait_for_events`. The in-memory journal retains 256 records and reports
-truncation instead of pretending older events still exist.
+subtree-scoped truncation instead of pretending older events still exist.
+Subscriptions return `RunEventSubscriptionItem::HistoryTruncated` before
+replaying retained records after a gap, and cursors ahead of the journal are
+refused.
 
 ## Stability
 

@@ -59,10 +59,11 @@ pub struct RunEventPage {
     /// Highest tree-wide sequence inspected by this page. Supply this as the
     /// next `after` cursor, even when no scoped event was returned.
     pub next_sequence: u64,
-    /// Oldest sequence still retained by the bounded journal.
+    /// Oldest sequence still retained for this run subtree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oldest_sequence: Option<u64>,
-    /// True when the requested cursor predates retained history.
+    /// True when the requested cursor predates retained history for this run
+    /// subtree.
     pub truncated: bool,
     /// True when this run and all of its descendants can emit no more events.
     pub terminal: bool,
@@ -72,6 +73,17 @@ pub struct RunEventPage {
 pub struct RunEventSubscription {
     handle: RunHandle,
     cursor: u64,
+    reported_truncation_at: Option<u64>,
+}
+
+/// One item returned by a replayable event subscription.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RunEventSubscriptionItem {
+    /// The subscription cursor predates retained history for this run subtree.
+    /// The next call replays the oldest retained scoped event, if any.
+    HistoryTruncated { oldest_sequence: Option<u64> },
+    /// One retained or newly emitted event.
+    Event(Box<RunEventRecord>),
 }
 
 /// Maximum records retained for one process-local run tree and returned in one
@@ -347,6 +359,7 @@ impl RunHandle {
         RunEventSubscription {
             handle: self.clone(),
             cursor: sequence,
+            reported_truncation_at: None,
         }
     }
 
@@ -357,7 +370,7 @@ impl RunHandle {
         limit: usize,
     ) -> Result<RunEventPage, RunControlError> {
         validate_event_limit(limit)?;
-        Ok(self.scoped_event_page(sequence, limit).await)
+        self.scoped_event_page(sequence, limit).await
     }
 
     /// Wait until at least one scoped event is available or this run becomes
@@ -372,19 +385,20 @@ impl RunHandle {
         let mut changed = self.inner.tree.events.subscribe();
         let mut cursor = sequence;
         loop {
-            let page = self.scoped_event_page(cursor, limit).await;
-            if !page.events.is_empty() || page.terminal {
+            let page = self.scoped_event_page(cursor, limit).await?;
+            if !page.events.is_empty() || page.truncated || page.terminal {
                 return Ok(page);
             }
             cursor = page.next_sequence;
             if changed.changed().await.is_err() {
-                return Ok(self.scoped_event_page(cursor, limit).await);
+                return self.scoped_event_page(cursor, limit).await;
             }
         }
     }
 
     /// Cancel a suspended, ready, or running run. Running provider futures are
-    /// dropped at the cancellation boundary.
+    /// dropped at the cancellation boundary. A run already finishing retains
+    /// the outcome chosen before cancellation while its descendants settle.
     pub async fn cancel(&self) -> Result<(), RunControlError> {
         self.cancel_self().await?;
         cancel_children(&self.inner).await;
@@ -396,14 +410,13 @@ impl RunHandle {
         if control.snapshot.is_terminal() {
             return Err(RunControlError::Terminal);
         }
-        if matches!(
-            control.snapshot.state,
-            RunState::Running | RunState::Waiting
-        ) {
-            self.inner.cancel_tx.send_replace(true);
-            set_state(&self.inner, &mut control, RunState::Finishing);
-        } else {
-            set_state(&self.inner, &mut control, RunState::Cancelled);
+        match control.snapshot.state {
+            RunState::Running | RunState::Waiting => {
+                self.inner.cancel_tx.send_replace(true);
+                set_state(&self.inner, &mut control, RunState::Finishing);
+            }
+            RunState::Finishing => {}
+            _ => set_state(&self.inner, &mut control, RunState::Cancelled),
         }
         Ok(())
     }
@@ -422,13 +435,28 @@ impl RunHandle {
         }
     }
 
-    async fn scoped_event_page(&self, sequence: u64, limit: usize) -> RunEventPage {
-        let retained = self.inner.tree.events.page(sequence);
+    async fn scoped_event_page(
+        &self,
+        sequence: u64,
+        limit: usize,
+    ) -> Result<RunEventPage, RunControlError> {
+        let retained = self.inner.tree.events.page();
+        if sequence > retained.next_sequence {
+            return Err(RunControlError::EventCursorAhead {
+                requested: sequence,
+                newest: retained.next_sequence,
+            });
+        }
         let journal_sequence = retained.next_sequence;
         let mut next_sequence = journal_sequence;
         let mut events = Vec::with_capacity(limit);
-        for record in retained.events {
+        let mut oldest_sequence = None;
+        for record in retained.records {
             if self.inner.tree.includes(self.inner.id, record.run_id) {
+                oldest_sequence.get_or_insert(record.sequence);
+                if record.sequence <= sequence {
+                    continue;
+                }
                 next_sequence = record.sequence;
                 events.push(record);
                 if events.len() == limit {
@@ -439,13 +467,16 @@ impl RunHandle {
         if events.len() < limit {
             next_sequence = journal_sequence;
         }
-        RunEventPage {
+        let truncated = retained.evicted_through.iter().any(|(run_id, evicted)| {
+            sequence < *evicted && self.inner.tree.includes(self.inner.id, *run_id)
+        });
+        Ok(RunEventPage {
             events,
             next_sequence,
-            oldest_sequence: retained.oldest_sequence,
-            truncated: retained.truncated,
+            oldest_sequence,
+            truncated,
             terminal: self.status().await.is_terminal(),
-        }
+        })
     }
 }
 
@@ -457,19 +488,25 @@ impl RunEventSubscription {
 
     /// Wait for and return the next retained or future scoped event. Returns
     /// `None` only after the run is terminal and no further event is pending.
-    pub async fn next(&mut self) -> Option<RunEventRecord> {
+    pub async fn next(&mut self) -> Result<Option<RunEventSubscriptionItem>, RunControlError> {
         loop {
-            let page = self
-                .handle
-                .wait_for_events(self.cursor, 1)
-                .await
-                .expect("subscription uses a valid event page size");
+            let page = self.handle.wait_for_events(self.cursor, 1).await?;
+            if page.truncated && self.reported_truncation_at != Some(self.cursor) {
+                self.reported_truncation_at = Some(self.cursor);
+                return Ok(Some(RunEventSubscriptionItem::HistoryTruncated {
+                    oldest_sequence: page.oldest_sequence,
+                }));
+            }
+            let previous = self.cursor;
             self.cursor = page.next_sequence;
+            if self.cursor != previous {
+                self.reported_truncation_at = None;
+            }
             if let Some(record) = page.events.into_iter().next() {
-                return Some(record);
+                return Ok(Some(RunEventSubscriptionItem::Event(Box::new(record))));
             }
             if page.terminal {
-                return None;
+                return Ok(None);
             }
         }
     }
@@ -503,13 +540,13 @@ struct EventJournal {
 struct EventJournalState {
     next_sequence: u64,
     records: VecDeque<RunEventRecord>,
+    evicted_through: BTreeMap<RunId, u64>,
 }
 
 struct RetainedEventPage {
-    events: Vec<RunEventRecord>,
+    records: Vec<RunEventRecord>,
     next_sequence: u64,
-    oldest_sequence: Option<u64>,
-    truncated: bool,
+    evicted_through: BTreeMap<RunId, u64>,
 }
 
 struct WorkerRecord {
@@ -625,6 +662,7 @@ impl EventJournal {
             state: StdMutex::new(EventJournalState {
                 next_sequence: 1,
                 records: VecDeque::with_capacity(RUN_EVENT_CAPACITY),
+                evicted_through: BTreeMap::new(),
             }),
             revision,
         }
@@ -637,9 +675,18 @@ impl EventJournal {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let sequence = state.next_sequence;
-            state.next_sequence = state.next_sequence.saturating_add(1);
-            if state.records.len() == RUN_EVENT_CAPACITY {
-                state.records.pop_front();
+            state.next_sequence = state
+                .next_sequence
+                .checked_add(1)
+                .expect("run event sequence exhausted");
+            if state.records.len() == RUN_EVENT_CAPACITY
+                && let Some(evicted) = state.records.pop_front()
+            {
+                state
+                    .evicted_through
+                    .entry(evicted.run_id)
+                    .and_modify(|sequence| *sequence = (*sequence).max(evicted.sequence))
+                    .or_insert(evicted.sequence);
             }
             state.records.push_back(RunEventRecord {
                 sequence,
@@ -655,24 +702,16 @@ impl EventJournal {
         self.revision.subscribe()
     }
 
-    fn page(&self, after: u64) -> RetainedEventPage {
+    fn page(&self) -> RetainedEventPage {
         let state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let next_sequence = after.max(state.next_sequence.saturating_sub(1));
-        let oldest_sequence = state.records.front().map(|record| record.sequence);
-        let truncated = oldest_sequence.is_some_and(|oldest| after.saturating_add(1) < oldest);
+        let next_sequence = state.next_sequence.saturating_sub(1);
         RetainedEventPage {
-            events: state
-                .records
-                .iter()
-                .filter(|record| record.sequence > after)
-                .cloned()
-                .collect(),
+            records: state.records.iter().cloned().collect(),
             next_sequence,
-            oldest_sequence,
-            truncated,
+            evicted_through: state.evicted_through.clone(),
         }
     }
 }
@@ -929,6 +968,10 @@ pub enum RunControlError {
     InvalidEventLimit {
         maximum: usize,
     },
+    EventCursorAhead {
+        requested: u64,
+        newest: u64,
+    },
 }
 
 impl fmt::Display for RunControlError {
@@ -964,6 +1007,10 @@ impl fmt::Display for RunControlError {
             Self::InvalidEventLimit { maximum } => {
                 write!(f, "event page limit must be between 1 and {maximum}")
             }
+            Self::EventCursorAhead { requested, newest } => write!(
+                f,
+                "event cursor {requested} is ahead of newest sequence {newest}"
+            ),
         }
     }
 }
@@ -1162,8 +1209,13 @@ mod tests {
 
         let mut subscription = handle.subscribe();
         let mut replayed = Vec::new();
-        while let Some(record) = subscription.next().await {
-            replayed.push(record);
+        while let Some(item) = subscription.next().await.unwrap() {
+            match item {
+                RunEventSubscriptionItem::Event(record) => replayed.push(*record),
+                RunEventSubscriptionItem::HistoryTruncated { .. } => {
+                    panic!("complete retained history must not report a gap")
+                }
+            }
         }
         assert_eq!(replayed.len(), first.events.len() + rest.events.len());
         assert_eq!(subscription.cursor(), rest.next_sequence);
@@ -1209,16 +1261,28 @@ mod tests {
             );
         }
 
-        let page = journal.page(0);
-        assert_eq!(page.events.len(), RUN_EVENT_CAPACITY);
-        assert_eq!(page.oldest_sequence, Some(2));
+        let page = journal.page();
+        assert_eq!(page.records.len(), RUN_EVENT_CAPACITY);
+        assert_eq!(page.records.first().unwrap().sequence, 2);
         assert_eq!(page.next_sequence, RUN_EVENT_CAPACITY as u64 + 1);
-        assert!(page.truncated);
+        assert_eq!(page.evicted_through.get(&RunId::ROOT), Some(&1));
+    }
 
-        let future = journal.page(999);
-        assert!(future.events.is_empty());
-        assert_eq!(future.next_sequence, 999);
-        assert!(!future.truncated);
+    #[tokio::test]
+    async fn future_event_cursors_are_refused() {
+        let run = Run::new(
+            RunSpec::suspended(AgentSpec::new(ProviderId::claude())),
+            provider(false),
+        )
+        .unwrap();
+
+        assert_eq!(
+            run.handle().event_page(1, 1).await.unwrap_err(),
+            RunControlError::EventCursorAhead {
+                requested: 1,
+                newest: 0,
+            }
+        );
     }
 
     struct WorkerProvider {
@@ -1303,6 +1367,158 @@ mod tests {
             .with_prompt(Prompt::new("root").unwrap());
         spec.execution.workers = policy;
         (Run::new(spec, provider.clone()).unwrap(), provider)
+    }
+
+    #[tokio::test]
+    async fn scoped_history_gaps_return_immediately_and_subscriptions_report_them() {
+        let (run, provider) = worker_root(WorkerPolicy {
+            max_workers: 1,
+            max_depth: 1,
+        });
+        run.begin().await.unwrap();
+        provider.root_started.notified().await;
+        let worker = run
+            .handle()
+            .spawn_inherited(Prompt::new("block worker").unwrap())
+            .await
+            .unwrap();
+        provider.worker_started.notified().await;
+
+        for index in 0..=RUN_EVENT_CAPACITY {
+            run.handle()
+                .steer(Prompt::new(format!("guidance {index}")).unwrap())
+                .await
+                .unwrap();
+        }
+
+        let page = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            worker.wait_for_events(0, 1),
+        )
+        .await
+        .expect("a known history gap must not long poll")
+        .unwrap();
+        assert!(page.events.is_empty());
+        assert!(page.truncated);
+        assert_eq!(page.oldest_sequence, None);
+        assert!(!page.terminal);
+
+        let mut subscription = run.handle().subscribe();
+        assert!(matches!(
+            subscription.next().await.unwrap(),
+            Some(RunEventSubscriptionItem::HistoryTruncated {
+                oldest_sequence: Some(_)
+            })
+        ));
+        assert!(matches!(
+            subscription.next().await.unwrap(),
+            Some(RunEventSubscriptionItem::Event(_))
+        ));
+
+        run.handle().cancel().await.unwrap();
+        assert_eq!(run.handle().wait().await.state, RunState::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn unrelated_evictions_do_not_truncate_a_new_child_scope() {
+        let (run, provider) = worker_root(WorkerPolicy {
+            max_workers: 1,
+            max_depth: 1,
+        });
+        run.begin().await.unwrap();
+        provider.root_started.notified().await;
+        for index in 0..=RUN_EVENT_CAPACITY {
+            run.handle()
+                .steer(Prompt::new(format!("guidance {index}")).unwrap())
+                .await
+                .unwrap();
+        }
+
+        let worker = run
+            .handle()
+            .spawn_inherited(Prompt::new("block worker").unwrap())
+            .await
+            .unwrap();
+        provider.worker_started.notified().await;
+        let page = worker.event_page(0, RUN_EVENT_CAPACITY).await.unwrap();
+        assert!(!page.events.is_empty());
+        assert!(!page.truncated);
+
+        run.handle().cancel().await.unwrap();
+        assert_eq!(run.handle().wait().await.state, RunState::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn cancelling_while_finishing_does_not_publish_an_early_terminal_state() {
+        let (run, provider) = worker_root(WorkerPolicy {
+            max_workers: 1,
+            max_depth: 1,
+        });
+        run.begin().await.unwrap();
+        provider.root_started.notified().await;
+        let worker = run
+            .handle()
+            .spawn_inherited(Prompt::new("block worker").unwrap())
+            .await
+            .unwrap();
+        provider.worker_started.notified().await;
+
+        let worker_control = worker.inner.control.lock().await;
+        provider.release_root.notify_one();
+        loop {
+            if run.handle().status().await.state == RunState::Finishing {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        let cancellation = tokio::spawn({
+            let handle = run.handle();
+            async move { handle.cancel().await }
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(run.handle().status().await.state, RunState::Finishing);
+        drop(worker_control);
+
+        cancellation.await.unwrap().unwrap();
+        assert_eq!(run.handle().wait().await.state, RunState::Completed);
+        let page = run
+            .handle()
+            .event_page(0, RUN_EVENT_CAPACITY)
+            .await
+            .unwrap();
+        assert!(!page.events.iter().any(|record| {
+            record.run_id == run.id()
+                && record.event
+                    == RunEvent::StateChanged {
+                        state: RunState::Cancelled,
+                    }
+        }));
+        let child_cancelled = page
+            .events
+            .iter()
+            .find(|record| {
+                record.run_id == worker.id()
+                    && record.event
+                        == RunEvent::StateChanged {
+                            state: RunState::Cancelled,
+                        }
+            })
+            .unwrap()
+            .sequence;
+        let root_completed = page
+            .events
+            .iter()
+            .find(|record| {
+                record.run_id == run.id()
+                    && record.event
+                        == RunEvent::StateChanged {
+                            state: RunState::Completed,
+                        }
+            })
+            .unwrap()
+            .sequence;
+        assert!(child_cancelled < root_completed);
     }
 
     #[tokio::test]
