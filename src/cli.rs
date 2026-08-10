@@ -374,6 +374,15 @@ pub struct RunArgs {
     #[arg(long)]
     pub timeout: Option<u64>,
 
+    /// Maximum number of process-local child runs created by this run.
+    /// Requires --max-worker-depth.
+    #[arg(long, requires = "max_worker_depth")]
+    pub max_workers: Option<u32>,
+
+    /// Maximum child-run depth from the root. Requires --max-workers.
+    #[arg(long, requires = "max_workers")]
+    pub max_worker_depth: Option<u32>,
+
     /// Resume a provider session/thread id.
     #[arg(long)]
     pub resume: Option<String>,

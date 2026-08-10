@@ -145,6 +145,29 @@ The REPL can create a suspended run, inspect its resolved specification, start
 it, observe it, steer it, and wait for its terminal outcome. It calls the same
 library methods as MCP.
 
+## Child-run ownership
+
+The process-local tree has one root identity and monotonically assigned child
+identities. Its root specification captures `max_workers` and
+`max_worker_depth`; zero/zero disables workers, and specifying only one bound
+is invalid. The total limit counts terminal workers as well as live workers, so
+sequential spawning cannot evade it.
+
+A trusted library caller may select a registered worker agent/provider, but a
+worker request carries no execution policy. Roba copies permissions, tools,
+provider limits, and worker bounds from the parent and forces a fresh provider
+session. Those provider limits apply independently to each child, so worker
+bounds limit the tree but do not currently impose an aggregate spend ceiling.
+The public MCP and REPL spawn commands are narrower still: they clone the
+parent agent and context and accept only a prompt.
+
+Parent completion, failure, or cancellation closes its spawn boundary and
+cancels live descendants before publishing the parent's terminal state.
+Terminal child snapshots remain queryable until the owning root tree is
+dropped. Provider-facing self-spawn transport is deliberately not implied by
+this layer; it requires an internal run-scoped MCP/broker configuration in a
+later slice.
+
 ## Implementation sequence
 
 ### Phase 1 -- provider-neutral contracts and Claude compatibility
@@ -200,7 +223,9 @@ without clap or terminal code. Configuration precedence has one implementation.
 - [x] Define boundary-safe steering and provider resume behavior.
 - [ ] Promote receipts from detached-CLI artifacts into run outcomes/events
       where useful, without introducing a database requirement.
-- [ ] Add child-run ownership and bounded worker-tree observability.
+- [x] Add child-run ownership and bounded worker-tree observability for Rust,
+      external MCP, and REPL callers.
+- [ ] Give the root provider an internal, policy-bound worker-spawn transport.
 
 Acceptance: a process-local run can be suspended, started, observed, steered,
 cancelled, and awaited entirely through the library.
@@ -211,7 +236,8 @@ cancelled, and awaited entirely through the library.
 - [x] Add the initial REPL over the same `RunHandle`.
 - [x] Make `roba run` the thin CLI constructor/attachment path.
 - [x] Preserve pipe-clean one-off usage as a convenience over the same API.
-- [ ] Add event and worker observation to MCP after child runs exist.
+- [x] Add worker spawn and observation to MCP and the REPL.
+- [ ] Add subscribable event observation to MCP.
 
 Acceptance: CLI, REPL, MCP, and direct Rust callers produce identical lifecycle
 and outcome semantics.
@@ -246,7 +272,8 @@ Current assets to preserve:
 1. Read this document and `AGENTS.md`.
 2. Confirm the branch is `codex/run-library-pivot` and inspect `git status`.
 3. Continue the first unchecked item that advances the current vertical slice;
-   the recommended next step is child-run ownership and worker observation.
+   the recommended next step is the provider-facing, policy-bound worker-spawn
+   transport.
 4. Preserve current CLI behavior until a phase's acceptance criteria say a
    compatibility surface may change.
 5. Run the repository's four required gates before publishing a review point.

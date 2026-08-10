@@ -52,12 +52,12 @@ impl Roba {
 
     /// Construct one bounded run without starting provider work.
     pub fn create_run(&self, spec: RunSpec) -> Result<Run, RuntimeError> {
-        let provider = self
-            .providers
-            .get(&spec.agent.provider)
-            .cloned()
-            .ok_or_else(|| RuntimeError::ProviderUnavailable(spec.agent.provider.clone()))?;
-        Run::new(spec, provider).map_err(RuntimeError::Run)
+        if !self.providers.contains_key(&spec.agent.provider) {
+            return Err(RuntimeError::ProviderUnavailable(
+                spec.agent.provider.clone(),
+            ));
+        }
+        Run::with_providers(spec, self.providers.clone()).map_err(RuntimeError::Run)
     }
 }
 

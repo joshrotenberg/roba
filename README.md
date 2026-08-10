@@ -31,7 +31,19 @@ roba run --provider claude --repl
 
 # Expose one suspended run as a run-scoped MCP server over stdio.
 mcp-repl -- roba run --provider codex --mcp
+
+# Permit an attached MCP client to create up to four process-local workers.
+mcp-repl -- roba run --provider codex --mcp \
+  --max-workers 4 --max-worker-depth 2
 ```
+
+Worker creation is disabled unless both bounds are explicit. Workers inherit
+the parent's permissions, tools, provider limits, and worker policy, and begin
+with a fresh provider session. Terminal worker snapshots remain observable for
+the run lifetime. When a parent ends, Roba cancels its live descendants before
+the parent becomes terminal, so a bounded run cannot leave provider work
+behind. Provider limits apply to each child independently; `max_workers` and
+`max_worker_depth` bound the tree, but they are not an aggregate spend limit.
 
 Configuration resolves in one hierarchy:
 

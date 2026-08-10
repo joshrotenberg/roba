@@ -85,6 +85,41 @@ pub fn router(handle: RunHandle) -> McpRouter {
             .build()
     };
 
+    let spawn_worker = {
+        let handle = handle.clone();
+        ToolBuilder::new("spawn_worker")
+            .description(
+                "Start a child run with the root agent's provider, context, and execution policy.",
+            )
+            .non_destructive()
+            .handler(move |args: PromptArgs| {
+                let handle = handle.clone();
+                async move {
+                    let prompt = match Prompt::new(args.text) {
+                        Ok(prompt) => prompt,
+                        Err(error) => return Ok(CallToolResult::error(error.to_string())),
+                    };
+                    match handle.spawn_inherited(prompt).await {
+                        Ok(worker) => snapshot_result(&worker).await,
+                        Err(error) => Ok(CallToolResult::error(error.to_string())),
+                    }
+                }
+            })
+            .build()
+    };
+
+    let workers = {
+        let handle = handle.clone();
+        ToolBuilder::new("workers")
+            .description("List every child run owned by this run, including terminal workers.")
+            .read_only()
+            .no_params_handler(move || {
+                let handle = handle.clone();
+                async move { json_result(handle.workers()) }
+            })
+            .build()
+    };
+
     let cancel = ToolBuilder::new("cancel")
         .description("Cancel the active Roba provider turn and end this run.")
         .destructive()
@@ -102,12 +137,14 @@ pub fn router(handle: RunHandle) -> McpRouter {
     McpRouter::new()
         .server_info("roba-run", env!("CARGO_PKG_VERSION"))
         .instructions(
-            "This MCP server controls one bounded Roba run. Start supplies the first prompt; status and wait observe it; steer queues guidance for the next turn boundary; cancel ends it.",
+            "This MCP server controls one bounded Roba run. Start supplies the first prompt; status, wait, and workers observe it; steer queues root guidance; spawn_worker starts an inherited child within explicit bounds; cancel ends the tree.",
         )
         .tool(start)
         .tool(status)
         .tool(wait)
         .tool(steer)
+        .tool(spawn_worker)
+        .tool(workers)
         .tool(cancel)
 }
 
@@ -133,12 +170,13 @@ mod tests {
     use std::sync::Arc;
 
     use serde_json::json;
+    use tokio::sync::Notify;
     use tower_mcp::TestClient;
 
     use super::*;
     use roba_core::{
         AgentSpec, EventSink, Provider, ProviderCapabilities, ProviderError, ProviderFuture,
-        ProviderId, Run, RunOutcome, RunSpec, SessionHandle, TurnRequest,
+        ProviderId, Run, RunOutcome, RunSpec, SessionHandle, TurnRequest, WorkerPolicy,
     };
 
     struct FakeProvider;
@@ -221,5 +259,92 @@ mod tests {
             .call_tool_expect_error("start", json!({"text": "again"}))
             .await;
         assert!(error.to_string().contains("already started"));
+    }
+
+    struct BlockingRootProvider {
+        root_started: Notify,
+        release_root: Notify,
+    }
+
+    impl Provider for BlockingRootProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::new("fake").unwrap()
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                resume: true,
+                ..ProviderCapabilities::default()
+            }
+        }
+
+        fn validate(&self, _request: &TurnRequest) -> Result<(), ProviderError> {
+            Ok(())
+        }
+
+        fn execute<'a>(
+            &'a self,
+            request: TurnRequest,
+            _events: &'a dyn EventSink,
+        ) -> ProviderFuture<'a> {
+            Box::pin(async move {
+                if request.prompt.as_str() == "root" {
+                    self.root_started.notify_one();
+                    self.release_root.notified().await;
+                }
+                Ok(RunOutcome {
+                    output: request.prompt.into_inner(),
+                    session: Some(SessionHandle {
+                        provider: ProviderId::new("fake").unwrap(),
+                        id: "session-1".to_string(),
+                    }),
+                    usage: None,
+                    cost: None,
+                    duration_ms: None,
+                    provider_turns: None,
+                    structured_output: None,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_spawns_and_observes_a_bounded_inherited_worker() {
+        let provider = Arc::new(BlockingRootProvider {
+            root_started: Notify::new(),
+            release_root: Notify::new(),
+        });
+        let mut spec = RunSpec::suspended(AgentSpec::new(ProviderId::new("fake").unwrap()))
+            .with_prompt(Prompt::new("root").unwrap());
+        spec.execution.workers = WorkerPolicy {
+            max_workers: 1,
+            max_depth: 1,
+        };
+        let run = Run::new(spec, provider.clone()).unwrap();
+        run.begin().await.unwrap();
+        provider.root_started.notified().await;
+
+        let mut client = TestClient::from_router(router(run.handle()));
+        client.initialize().await;
+        let spawned = client
+            .call_tool_json("spawn_worker", json!({"text": "worker"}))
+            .await;
+        assert_eq!(spawned["parent_id"], 1);
+        assert_eq!(spawned["depth"], 1);
+
+        let workers = client.call_tool_json("workers", json!({})).await;
+        assert_eq!(workers.as_array().unwrap().len(), 1);
+        assert_eq!(workers[0]["provider"], "fake");
+
+        let refusal = client
+            .call_tool_expect_error("spawn_worker", json!({"text": "second"}))
+            .await;
+        assert!(refusal.to_string().contains("maximum of 1 workers"));
+
+        provider.release_root.notify_one();
+        assert_eq!(
+            run.handle().wait().await.state,
+            roba_core::RunState::Completed
+        );
     }
 }

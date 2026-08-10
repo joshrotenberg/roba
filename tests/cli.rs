@@ -81,7 +81,19 @@ fn bounded_run_help_exposes_provider_and_run_adapters() {
         .success()
         .stdout(predicate::str::contains("--provider"))
         .stdout(predicate::str::contains("--repl"))
-        .stdout(predicate::str::contains("--mcp"));
+        .stdout(predicate::str::contains("--mcp"))
+        .stdout(predicate::str::contains("--max-workers"))
+        .stdout(predicate::str::contains("--max-worker-depth"));
+}
+
+#[test]
+fn bounded_worker_limits_must_be_supplied_together() {
+    roba()
+        .args(["run", "--max-workers", "2", "hello"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("--max-worker-depth"));
 }
 
 #[test]
