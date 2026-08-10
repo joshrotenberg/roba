@@ -73,6 +73,11 @@ ahead of the current journal are refused. Claude and Codex output and usage are
 emitted into this journal as each provider's JSONL stream arrives. Status,
 wait, worker snapshots, and the REPL's `/status` JSON expose created, started,
 finished, and monotonic elapsed timing without requiring durable storage.
+Provider limit terminals remain failures, but retain every reported recovery
+and accounting field -- session id, usage, cost, duration, and provider turns
+-- so a caller can distinguish a resumable boundary from an opaque provider
+crash without parsing provider-specific output. Missing fields stay absent
+rather than being rendered as zero.
 
 Configuration resolves in one hierarchy:
 

@@ -835,6 +835,7 @@ async fn drive(inner: Arc<Inner>, mut prompt: Prompt) {
                     RunFailure {
                         kind: FailureKind::Provider,
                         message: error.to_string(),
+                        details: Default::default(),
                     },
                 )
                 .await;
@@ -880,6 +881,7 @@ async fn drive(inner: Arc<Inner>, mut prompt: Prompt) {
                             kind: FailureKind::Provider,
                             message: "provider returned no session handle required for steering"
                                 .to_string(),
+                            details: Default::default(),
                         };
                         drop(control);
                         fail(&inner, failure).await;
@@ -980,12 +982,13 @@ impl From<ProviderError> for RunFailure {
         Self {
             kind: error.kind,
             message: error.message,
+            details: error.details.map(|details| *details).unwrap_or_default(),
         }
     }
 }
 
 /// Invalid lifecycle operation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RunControlError {
     ProviderMismatch {
         selected: ProviderId,
@@ -1076,8 +1079,8 @@ mod tests {
     use super::*;
     use crate::provider::{ProviderCapabilities, ProviderFuture};
     use crate::run::{
-        AgentSpec, ContextSpec, PermissionPolicy, RunOutcome, SessionHandle, TurnRequest,
-        WorkerPolicy, WorkerSpec,
+        AgentSpec, ContextSpec, Cost, PermissionPolicy, RunFailureDetails, RunOutcome,
+        SessionHandle, TokenUsage, TurnRequest, WorkerPolicy, WorkerSpec,
     };
 
     struct RecordingProvider {
@@ -1142,6 +1145,50 @@ mod tests {
         })
     }
 
+    struct LimitProvider;
+
+    impl Provider for LimitProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::claude()
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities::default()
+        }
+
+        fn validate(&self, _request: &TurnRequest) -> Result<(), ProviderError> {
+            Ok(())
+        }
+
+        fn execute<'a>(
+            &'a self,
+            _request: TurnRequest,
+            _context: ProviderContext,
+            _events: &'a dyn EventSink,
+        ) -> ProviderFuture<'a> {
+            Box::pin(async {
+                Err(
+                    ProviderError::new(FailureKind::Limit, "turn limit reached").with_details(
+                        RunFailureDetails {
+                            session: Some(SessionHandle {
+                                provider: ProviderId::claude(),
+                                id: "limit-session".to_string(),
+                            }),
+                            usage: Some(TokenUsage {
+                                input: Some(100),
+                                output: Some(20),
+                                ..TokenUsage::default()
+                            }),
+                            cost: Some(Cost::usd(1.25)),
+                            duration_ms: Some(321),
+                            provider_turns: Some(30),
+                        },
+                    ),
+                )
+            })
+        }
+    }
+
     #[tokio::test]
     async fn suspended_run_does_no_work_until_started() {
         let provider = provider(false);
@@ -1198,6 +1245,40 @@ mod tests {
                 .iter()
                 .all(|record| record.occurred_at_unix_ms.is_some())
         );
+    }
+
+    #[tokio::test]
+    async fn failed_turn_details_survive_snapshot_and_event_settlement() {
+        let spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+            .with_prompt(Prompt::new("bounded work").unwrap());
+        let run = Run::new(spec, Arc::new(LimitProvider)).unwrap();
+        run.begin().await.unwrap();
+
+        let terminal = run.handle().wait().await;
+        assert_eq!(terminal.state, RunState::Failed);
+        let failure = terminal.failure.unwrap();
+        assert_eq!(failure.kind, FailureKind::Limit);
+        assert_eq!(
+            failure.details.session.as_ref().unwrap().id,
+            "limit-session"
+        );
+        assert_eq!(failure.details.provider_turns, Some(30));
+        assert_eq!(failure.details.cost, Some(Cost::usd(1.25)));
+
+        let events = run
+            .handle()
+            .event_page(0, RUN_EVENT_CAPACITY)
+            .await
+            .unwrap();
+        assert!(events.events.iter().any(|record| {
+            matches!(
+                &record.event,
+                RunEvent::Failed { failure }
+                    if failure.kind == FailureKind::Limit
+                        && failure.details.session.as_ref().is_some_and(|session| session.id == "limit-session")
+                        && failure.details.provider_turns == Some(30)
+            )
+        }));
     }
 
     #[tokio::test]

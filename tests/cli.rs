@@ -3423,6 +3423,13 @@ fn fake_claude(json_stdout: &str) -> tempfile::TempDir {
 /// provider-neutral bounded-run adapter.
 #[cfg(unix)]
 fn fake_claude_streaming_result(result_event: &str) -> tempfile::TempDir {
+    fake_claude_streaming_terminal(result_event, 0)
+}
+
+/// Write an executable `claude` shim that emits one streaming terminal event
+/// and then exits with the requested status.
+#[cfg(unix)]
+fn fake_claude_streaming_terminal(result_event: &str, exit_code: i32) -> tempfile::TempDir {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().expect("fake claude dir");
     let path = dir.path().join("claude");
@@ -3433,6 +3440,7 @@ case "$*" in
 esac
 cat >/dev/null 2>&1
 printf '%s\n' '{result_event}'
+exit {exit_code}
 "#
     );
     std::fs::write(&path, script).expect("write fake claude");
@@ -3845,6 +3853,38 @@ fn bounded_run_json_preserves_a_failed_snapshot_and_structured_error() {
     assert_eq!(error["version"], roba_types::VERSION);
     assert_eq!(error["error"]["exit_code"], 1);
     assert_eq!(error["error"]["message"], "bounded failure");
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_run_json_preserves_recoverable_limit_details_after_nonzero_exit() {
+    let bin = fake_claude_streaming_terminal(
+        r#"{"type":"result","subtype":"error_max_turns","session_id":"limit-session","total_cost_usd":1.25,"duration_ms":321,"num_turns":30,"is_error":true,"usage":{"input_tokens":100,"output_tokens":20},"errors":["Reached maximum number of turns (30)"]}"#,
+        1,
+    );
+    let home = tempfile::tempdir().expect("home");
+    let cfg = tempfile::tempdir().expect("cfg");
+
+    let output = roba_with_fake_claude(bin.path(), home.path(), cfg.path())
+        .args(["run", "--provider", "claude", "--json", "hello"])
+        .output()
+        .expect("run capped bounded JSON adapter");
+    assert_eq!(output.status.code(), Some(1));
+
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let failure = &envelope["result"]["failure"];
+    assert_eq!(failure["kind"], "limit");
+    assert_eq!(failure["details"]["session"]["id"], "limit-session");
+    assert_eq!(failure["details"]["usage"]["input"], 100);
+    assert_eq!(failure["details"]["usage"]["output"], 20);
+    assert_eq!(failure["details"]["cost"]["amount"], 1.25);
+    assert_eq!(failure["details"]["duration_ms"], 321);
+    assert_eq!(failure["details"]["provider_turns"], 30);
+
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("max-turns limit after 30 provider turns"));
+    assert!(!message.contains("--output-format"));
 }
 
 #[cfg(unix)]

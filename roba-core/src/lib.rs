@@ -45,8 +45,8 @@ pub use providers::codex::CodexProvider;
 pub use resolve::{ConfigLayer, ConfigParseError, ResolveError, RobaConfig, RunOverrides};
 pub use run::{
     AgentSpec, ContextSpec, Cost, Effort, ExecutionSpec, FailureKind, LimitSpec, PermissionPolicy,
-    Prompt, PromptError, ProviderId, ProviderIdError, RunEvent, RunFailure, RunId, RunOutcome,
-    RunSpec, RunSpecError, RunState, SessionHandle, SessionSpec, TokenUsage, ToolPolicy,
-    TurnRequest, WorkerPolicy, WorkerPolicyError, WorkerSpec,
+    Prompt, PromptError, ProviderId, ProviderIdError, RunEvent, RunFailure, RunFailureDetails,
+    RunId, RunOutcome, RunSpec, RunSpecError, RunState, SessionHandle, SessionSpec, TokenUsage,
+    ToolPolicy, TurnRequest, WorkerPolicy, WorkerPolicyError, WorkerSpec,
 };
 pub use runtime::{Roba, RuntimeError};

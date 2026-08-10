@@ -7,7 +7,7 @@ use std::pin::Pin;
 use serde::{Deserialize, Serialize};
 
 use crate::lifecycle::WorkerControl;
-use crate::run::{FailureKind, ProviderId, RunEvent, RunOutcome, TurnRequest};
+use crate::run::{FailureKind, ProviderId, RunEvent, RunFailureDetails, RunOutcome, TurnRequest};
 
 /// One ephemeral MCP endpoint made available only to the provider turn being
 /// executed. Credentials are deliberately omitted from `Debug` output and are
@@ -119,10 +119,12 @@ pub struct ProviderCapabilities {
 }
 
 /// A normalized provider failure with a stable category.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderError {
     pub kind: FailureKind,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Box<RunFailureDetails>>,
 }
 
 impl ProviderError {
@@ -131,7 +133,14 @@ impl ProviderError {
         Self {
             kind,
             message: message.into(),
+            details: None,
         }
+    }
+
+    /// Attach provider-reported terminal details to this failure.
+    pub fn with_details(mut self, details: RunFailureDetails) -> Self {
+        self.details = (!details.is_empty()).then(|| Box::new(details));
+        self
     }
 
     /// Construct a refusal for a setting the provider cannot honor.

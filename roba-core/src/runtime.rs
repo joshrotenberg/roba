@@ -62,7 +62,7 @@ impl Roba {
 }
 
 /// Runtime construction error.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeError {
     DuplicateProvider(ProviderId),
     ProviderUnavailable(ProviderId),

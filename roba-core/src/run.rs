@@ -491,11 +491,43 @@ pub enum FailureKind {
     Provider,
 }
 
+/// Provider-reported terminal details retained when a failed turn supplied
+/// them. Every field is optional because absence means unreported, never zero.
+///
+/// Limit terminals commonly carry enough information to resume the provider
+/// session and account for the work completed before the boundary. Keeping
+/// that evidence beside the failure lets library, CLI, REPL, and MCP callers
+/// make the same recovery decision without parsing a provider-specific
+/// message.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RunFailureDetails {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionHandle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TokenUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<Cost>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_turns: Option<u32>,
+}
+
+impl RunFailureDetails {
+    /// True when the provider reported no terminal recovery or accounting
+    /// field. Empty details are omitted from serialized failures.
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 /// Terminal failure retained by a run handle.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunFailure {
     pub kind: FailureKind,
     pub message: String,
+    #[serde(default, skip_serializing_if = "RunFailureDetails::is_empty")]
+    pub details: RunFailureDetails,
 }
 
 #[cfg(test)]
@@ -533,6 +565,41 @@ mod tests {
         let usage = TokenUsage::default();
         assert!(usage.is_unreported());
         assert_eq!(serde_json::to_string(&usage).unwrap(), "{}");
+    }
+
+    #[test]
+    fn failure_details_are_additive_and_omit_unreported_fields() {
+        let legacy: RunFailure = serde_json::from_value(serde_json::json!({
+            "kind": "provider",
+            "message": "failed"
+        }))
+        .unwrap();
+        assert!(legacy.details.is_empty());
+        assert_eq!(
+            serde_json::to_value(&legacy).unwrap(),
+            serde_json::json!({"kind": "provider", "message": "failed"})
+        );
+
+        let failure = RunFailure {
+            kind: FailureKind::Limit,
+            message: "limit reached".to_string(),
+            details: RunFailureDetails {
+                session: Some(SessionHandle {
+                    provider: ProviderId::claude(),
+                    id: "session-1".to_string(),
+                }),
+                usage: None,
+                cost: Some(Cost::usd(1.25)),
+                duration_ms: None,
+                provider_turns: Some(30),
+            },
+        };
+        let json = serde_json::to_value(&failure).unwrap();
+        assert_eq!(json["details"]["session"]["id"], "session-1");
+        assert_eq!(json["details"]["cost"]["amount"], 1.25);
+        assert_eq!(json["details"]["provider_turns"], 30);
+        assert!(json["details"].get("usage").is_none());
+        assert_eq!(serde_json::from_value::<RunFailure>(json).unwrap(), failure);
     }
 
     #[test]
