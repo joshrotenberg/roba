@@ -302,6 +302,21 @@ required manifests before starting Claude. These bundle controls remain
 Claude-only one-shot packaging; provider-neutral bounded runs use `RunSpec`
 context and worker policy instead.
 
+Validate and inspect that provisioning plan without starting Claude:
+
+```bash
+roba bundle inspect path/.roba
+roba bundle inspect path/.roba --json
+```
+
+Inspection reports sorted artifact paths, agent declarations, MCP server
+names, settings permission-rule counts and hook event names, and manifested
+plugin roots. It deliberately omits prompt bodies, hook commands, environment
+values, and MCP command details. An explicit missing bundle, malformed JSON,
+or incomplete agent/plugin fails before provider work. This is Roba's input
+and provisioning plan—not proof of Claude's final merged permission surface,
+bundle containment, or artifact integrity.
+
 ## Worker lifecycle
 
 A single issue moves through four verbs: `issue` (plan, read-only) ->

@@ -71,6 +71,9 @@ fn wants_json(cli: &Cli) -> bool {
             cmd: ConfigCmd::Show(args),
         }) => args.json,
         Some(SubCommand::Run(args)) => args.json,
+        Some(SubCommand::Bundle {
+            cmd: roba::cli::BundleCmd::Inspect(args),
+        }) => args.json,
         _ => false,
     }
 }
