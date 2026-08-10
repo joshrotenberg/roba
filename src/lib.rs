@@ -391,6 +391,7 @@ fn bundle_plugin_roots(bundle: &std::path::Path) -> Result<Vec<String>> {
         return Ok(roots);
     }
     if has_plugin_manifest(&plugins) {
+        require_plugin_manifest(&plugins)?;
         roots.push(plugins.to_string_lossy().into_owned());
         return Ok(roots);
     }
@@ -1336,6 +1337,17 @@ mod tests {
         let error =
             apply_bundle_provisioning(&mut engine::Config::new("p"), Some(tmp.path())).unwrap_err();
         assert!(error.to_string().contains("parsing bundle settings"));
+
+        let plugin = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(plugin.path().join("plugins/.claude-plugin")).unwrap();
+        std::fs::write(
+            plugin.path().join("plugins/.claude-plugin/plugin.json"),
+            "not json",
+        )
+        .unwrap();
+        let error = apply_bundle_provisioning(&mut engine::Config::new("p"), Some(plugin.path()))
+            .unwrap_err();
+        assert!(error.to_string().contains("parsing bundle plugin manifest"));
     }
 
     #[test]
