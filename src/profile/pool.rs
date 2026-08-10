@@ -138,6 +138,30 @@ pub fn load_pool_from(cwd: &Path) -> Result<Pool> {
 /// (`Pool::default()` if it has no `roba.toml`). Otherwise the bundle layers as
 /// the CLOSEST (highest-precedence) source on top of the ambient pool.
 pub fn load_pool_with_bundle(cwd: &Path, bundle: Option<&Path>, bundle_only: bool) -> Result<Pool> {
+    let bundle = bundle.map(load_bundle_pool).transpose()?;
+    load_pool_with_preparsed_bundle(cwd, bundle, bundle_only)
+}
+
+/// Parse only one bundle's optional `roba.toml` into an owned snapshot.
+/// Callers can retain this so validation/inspection and later execution use
+/// the same bytes rather than reopening the file.
+pub(crate) fn load_bundle_pool(bundle: &Path) -> Result<Pool> {
+    let mut pool = Pool::default();
+    let path = bundle.join("roba.toml");
+    if path.is_file() {
+        let config = load_file(&path)?;
+        merge_config_file(&mut pool, path, config);
+    }
+    Ok(pool)
+}
+
+/// Merge ambient configuration with an already-parsed bundle snapshot.
+/// The bundle remains the closest/highest-precedence layer.
+pub(crate) fn load_pool_with_preparsed_bundle(
+    cwd: &Path,
+    bundle: Option<Pool>,
+    bundle_only: bool,
+) -> Result<Pool> {
     let mut pool = Pool::default();
 
     let mut layers: Vec<PathBuf> = Vec::new();
@@ -149,39 +173,38 @@ pub fn load_pool_with_bundle(cwd: &Path, bundle: Option<&Path>, bundle_only: boo
         }
         layers.extend(discover_project_configs(cwd));
     }
-    // The bundle's roba.toml is the closest layer (loaded last -> wins per-key).
-    if let Some(dir) = bundle {
-        let bundle_toml = dir.join("roba.toml");
-        if bundle_toml.is_file() {
-            layers.push(bundle_toml);
-        }
-    }
-
     for path in layers {
         let cfg = load_file(&path)?;
-        pool.defaults.merge_in(cfg.defaults);
-        for (name, profile) in cfg.profile {
-            pool.profiles
-                .entry(name)
-                .or_insert_with(Profile::default)
-                .merge_in(profile);
-        }
-        // Aliases don't merge field-by-field; the closest-to-cwd file
-        // wins wholesale. Layers load farther-first, so a later insert
-        // (closer file) overwrites.
-        for (name, alias) in cfg.alias {
-            pool.aliases.insert(name, alias);
-        }
-        // Session bindings, same wholesale closest-to-cwd-wins rule as
-        // aliases: a later insert (closer file) overwrites the name.
-        for (name, uuid) in cfg.session {
-            pool.sessions.insert(name, uuid);
-        }
-        pool.sources.push(path);
+        merge_config_file(&mut pool, path, cfg);
+    }
+    if let Some(bundle) = bundle {
+        merge_pool(&mut pool, bundle);
     }
 
     warn_on_shadowed_aliases(&pool);
     Ok(pool)
+}
+
+fn merge_config_file(pool: &mut Pool, path: PathBuf, config: ConfigFile) {
+    pool.defaults.merge_in(config.defaults);
+    for (name, profile) in config.profile {
+        pool.profiles.entry(name).or_default().merge_in(profile);
+    }
+    // Aliases and session bindings merge wholesale; the later/closer layer
+    // wins on name collisions.
+    pool.aliases.extend(config.alias);
+    pool.sessions.extend(config.session);
+    pool.sources.push(path);
+}
+
+fn merge_pool(pool: &mut Pool, bundle: Pool) {
+    pool.defaults.merge_in(bundle.defaults);
+    for (name, profile) in bundle.profiles {
+        pool.profiles.entry(name).or_default().merge_in(profile);
+    }
+    pool.aliases.extend(bundle.aliases);
+    pool.sessions.extend(bundle.sessions);
+    pool.sources.extend(bundle.sources);
 }
 
 /// Warn (loudly, on stderr) when a loaded alias name collides with a

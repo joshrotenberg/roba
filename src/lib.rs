@@ -7,14 +7,13 @@
 //! See the README for positioning and the agent ABI.
 
 use anyhow::{Context, Result, bail};
-use claude_wrapper::{Claude, artifacts::AgentsRoot};
-use serde_json::{Map as JsonMap, Value as JsonValue};
-use std::collections::BTreeMap;
+use claude_wrapper::Claude;
 use std::io::IsTerminal;
 
 pub mod agent_check;
 pub mod aliases;
 pub mod bounded;
+pub mod bundle;
 pub mod cli;
 pub mod config;
 pub mod cost;
@@ -68,6 +67,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
     }
     match cli.command {
         Some(SubCommand::Run(args)) => bounded::run(args).await,
+        Some(SubCommand::Bundle { cmd }) => bundle::run(cmd),
         Some(SubCommand::History(args)) => run_history(args),
         Some(SubCommand::Last(args)) => run_last(args),
         // Profile inspection is synchronous; `draft` makes one claude call
@@ -259,190 +259,6 @@ fn resolve_bundle(args: &AskArgs, roba_hermetic: bool) -> Option<std::path::Path
     None
 }
 
-/// Provide a bundle's context files to claude: `system-prompt.md` composes into
-/// `--append-system-prompt`, `mcp.json` adds to `--mcp-config`. Agent provision
-/// under a strict seal (`--agents` JSON) is a separate concern (#422).
-fn apply_bundle_context(args: &mut AskArgs, bundle: Option<&std::path::Path>) -> Result<()> {
-    let Some(dir) = bundle else {
-        return Ok(());
-    };
-    let sp = dir.join("system-prompt.md");
-    if sp.is_file() {
-        let content = std::fs::read_to_string(&sp)
-            .with_context(|| format!("reading bundle system prompt {}", sp.display()))?
-            .trim()
-            .to_string();
-        if !content.is_empty() {
-            args.append_system_prompt = Some(match args.append_system_prompt.take() {
-                Some(existing) => format!("{existing}\n\n{content}"),
-                None => content,
-            });
-        }
-    }
-    let mcp = dir.join("mcp.json");
-    if mcp.is_file() {
-        args.mcp_config.push(mcp.to_string_lossy().into_owned());
-    }
-    Ok(())
-}
-
-/// Provision the Claude-only parts of a legacy `.roba/` bundle after the
-/// provider-neutral run policy has resolved. The public bounded-run model does
-/// not learn these provider-specific controls.
-fn apply_bundle_provisioning(
-    config: &mut engine::Config,
-    bundle: Option<&std::path::Path>,
-) -> Result<()> {
-    let Some(dir) = bundle else {
-        return Ok(());
-    };
-
-    let settings = dir.join("settings.json");
-    if settings.is_file() {
-        validate_json_object(&settings, "bundle settings")?;
-        config.settings = Some(settings.to_string_lossy().into_owned());
-    }
-
-    config.agents_json = bundle_agents_json(&dir.join("agents"))?;
-    config.plugin_dir.extend(bundle_plugin_roots(dir)?);
-    Ok(())
-}
-
-fn bundle_agents_json(agents_dir: &std::path::Path) -> Result<Option<String>> {
-    if !agents_dir.is_dir() {
-        return Ok(None);
-    }
-
-    let root = AgentsRoot::at(agents_dir);
-    let mut stems = Vec::new();
-    for entry in std::fs::read_dir(agents_dir)
-        .with_context(|| format!("reading bundle agents {}", agents_dir.display()))?
-    {
-        let entry =
-            entry.with_context(|| format!("reading bundle agents {}", agents_dir.display()))?;
-        let path = entry.path();
-        if !path.is_file() || path.extension().and_then(|value| value.to_str()) != Some("md") {
-            continue;
-        }
-        let stem = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "bundle agent filename is not valid UTF-8: {}",
-                    path.display()
-                )
-            })?;
-        stems.push(stem.to_string());
-    }
-    stems.sort();
-
-    let mut definitions = BTreeMap::new();
-    for stem in stems {
-        let agent = root
-            .get(&stem)
-            .with_context(|| format!("reading bundle agent {stem}"))?;
-        let description = agent
-            .description
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "bundle agent {} needs a non-empty `description` in its frontmatter",
-                    agent.file_path.display()
-                )
-            })?;
-        if agent.body.trim().is_empty() {
-            bail!(
-                "bundle agent {} needs a non-empty prompt body",
-                agent.file_path.display()
-            );
-        }
-
-        let mut definition = JsonMap::new();
-        definition.insert("description".to_string(), JsonValue::String(description));
-        definition.insert("prompt".to_string(), JsonValue::String(agent.body));
-        if !agent.tools.is_empty() {
-            definition.insert("tools".to_string(), serde_json::to_value(agent.tools)?);
-        }
-        if let Some(model) = agent.model {
-            definition.insert("model".to_string(), JsonValue::String(model));
-        }
-        if !agent.skills.is_empty() {
-            definition.insert("skills".to_string(), serde_json::to_value(agent.skills)?);
-        }
-        definitions.insert(stem, JsonValue::Object(definition));
-    }
-
-    if definitions.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(serde_json::to_string(&definitions)?))
-    }
-}
-
-fn bundle_plugin_roots(bundle: &std::path::Path) -> Result<Vec<String>> {
-    let mut roots = Vec::new();
-    if bundle.join("skills").is_dir() {
-        require_plugin_manifest(bundle)?;
-        roots.push(bundle.to_string_lossy().into_owned());
-    }
-
-    let plugins = bundle.join("plugins");
-    if !plugins.is_dir() {
-        return Ok(roots);
-    }
-    if has_plugin_manifest(&plugins) {
-        require_plugin_manifest(&plugins)?;
-        roots.push(plugins.to_string_lossy().into_owned());
-        return Ok(roots);
-    }
-
-    let mut children = Vec::new();
-    for entry in std::fs::read_dir(&plugins)
-        .with_context(|| format!("reading bundle plugins {}", plugins.display()))?
-    {
-        let path = entry
-            .with_context(|| format!("reading bundle plugins {}", plugins.display()))?
-            .path();
-        if path.is_dir() {
-            children.push(path);
-        }
-    }
-    children.sort();
-    for child in children {
-        require_plugin_manifest(&child)?;
-        roots.push(child.to_string_lossy().into_owned());
-    }
-    Ok(roots)
-}
-
-fn has_plugin_manifest(root: &std::path::Path) -> bool {
-    root.join(".claude-plugin/plugin.json").is_file()
-}
-
-fn require_plugin_manifest(root: &std::path::Path) -> Result<()> {
-    let manifest = root.join(".claude-plugin/plugin.json");
-    if !manifest.is_file() {
-        bail!(
-            "bundle plugin {} needs .claude-plugin/plugin.json before it can be passed to Claude",
-            root.display()
-        );
-    }
-    validate_json_object(&manifest, "bundle plugin manifest")?;
-    Ok(())
-}
-
-fn validate_json_object(path: &std::path::Path, label: &str) -> Result<()> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {label} {}", path.display()))?;
-    let value: JsonValue = serde_json::from_str(&raw)
-        .with_context(|| format!("parsing {label} {}", path.display()))?;
-    if !value.is_object() {
-        bail!("{label} {} must contain a JSON object", path.display());
-    }
-    Ok(())
-}
-
 /// The `(roba, claude)` axes sealed by hermetic mode, honoring `--no-hermetic`.
 fn hermetic_axes(args: &AskArgs) -> (bool, bool) {
     use crate::cli::HermeticWhich;
@@ -587,8 +403,15 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     // layer on top of the ambient pool.
     let (roba_hermetic, _) = hermetic_axes(&args);
     let bundle = resolve_bundle(&args, roba_hermetic);
+    let bundle_plan = bundle
+        .as_deref()
+        .map(bundle::BundlePlan::load)
+        .transpose()?;
     let cwd = std::env::current_dir().context("getting current dir")?;
-    let pool = profile::load_pool_with_bundle(&cwd, bundle.as_deref(), roba_hermetic)?;
+    let pool = match &bundle_plan {
+        Some(plan) => plan.resolve_pool(&cwd, roba_hermetic)?,
+        None => profile::load_pool_with_bundle(&cwd, None, roba_hermetic)?,
+    };
     if let Some(chosen) = profile::resolve(&args, &pool)? {
         let source = profile::profile_source_label(&args, &pool);
         profile::merge_into_args(&mut args, chosen, &source);
@@ -769,12 +592,16 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     // Provide a bundle's context files to claude (system-prompt.md ->
     // --append-system-prompt, mcp.json -> --mcp-config); after profile
     // resolution so a bundle system prompt composes on top.
-    apply_bundle_context(&mut args, bundle.as_deref())?;
+    if let Some(plan) = &bundle_plan {
+        plan.apply_context(&mut args);
+    }
     // Collapse the resolved args + composed prompt into the engine Config. Both
     // exec paths below run through it, and the engine::run public entry uses the
     // same Config -> apply_session mapper, so nothing drifts.
     let mut config = build_config(&args, prompt)?;
-    apply_bundle_provisioning(&mut config, bundle.as_deref())?;
+    if let Some(plan) = &bundle_plan {
+        plan.apply_provisioning(&mut config);
+    }
 
     // The anonymous-worktree-defeats-continue advisory (#328): stderr only, so
     // stdout / --json stay byte-clean. Emitted here in the CLI layer -- the
@@ -1216,23 +1043,25 @@ mod tests {
 
         // No prior append: the (trimmed) bundle system prompt becomes it.
         let mut a = ask(&["roba", "p"]);
-        apply_bundle_context(&mut a, Some(bundle)).unwrap();
+        let plan = bundle::BundlePlan::load(bundle).unwrap();
+        plan.apply_context(&mut a);
         assert_eq!(a.append_system_prompt.as_deref(), Some("be terse"));
         assert_eq!(a.mcp_config.len(), 1);
         assert!(a.mcp_config[0].ends_with("mcp.json"));
 
         // Prior append (e.g. from a profile): the bundle composes on top.
         let mut a = ask(&["roba", "--append-system-prompt", "first", "p"]);
-        apply_bundle_context(&mut a, Some(bundle)).unwrap();
+        plan.apply_context(&mut a);
         assert_eq!(a.append_system_prompt.as_deref(), Some("first\n\nbe terse"));
     }
 
     #[test]
     fn apply_bundle_context_noop_without_files() {
         let mut a = ask(&["roba", "p"]);
-        apply_bundle_context(&mut a, None).unwrap();
         let empty = tempfile::tempdir().unwrap();
-        apply_bundle_context(&mut a, Some(empty.path())).unwrap();
+        bundle::BundlePlan::load(empty.path())
+            .unwrap()
+            .apply_context(&mut a);
         assert!(a.append_system_prompt.is_none());
         assert!(a.mcp_config.is_empty());
     }
@@ -1268,7 +1097,9 @@ mod tests {
         .unwrap();
 
         let mut config = engine::Config::new("p");
-        apply_bundle_provisioning(&mut config, Some(bundle)).unwrap();
+        bundle::BundlePlan::load(bundle)
+            .unwrap()
+            .apply_provisioning(&mut config);
 
         assert!(
             config
@@ -1277,7 +1108,7 @@ mod tests {
                 .unwrap()
                 .ends_with("settings.json")
         );
-        let definitions: JsonValue =
+        let definitions: serde_json::Value =
             serde_json::from_str(config.agents_json.as_deref().unwrap()).unwrap();
         assert_eq!(definitions["reviewer"]["description"], "Reviews code");
         assert_eq!(definitions["reviewer"]["prompt"], "Review the change.");
@@ -1308,11 +1139,9 @@ mod tests {
             "Review it.",
         )
         .unwrap();
-        let error = apply_bundle_provisioning(
-            &mut engine::Config::new("p"),
-            Some(missing_description.path()),
-        )
-        .unwrap_err();
+        let error = bundle::BundlePlan::load(missing_description.path())
+            .err()
+            .unwrap();
         assert!(
             error
                 .to_string()
@@ -1321,9 +1150,9 @@ mod tests {
 
         let missing_manifest = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(missing_manifest.path().join("skills/review")).unwrap();
-        let error =
-            apply_bundle_provisioning(&mut engine::Config::new("p"), Some(missing_manifest.path()))
-                .unwrap_err();
+        let error = bundle::BundlePlan::load(missing_manifest.path())
+            .err()
+            .unwrap();
         assert!(
             error
                 .to_string()
@@ -1335,8 +1164,7 @@ mod tests {
     fn bundle_provisioning_refuses_malformed_json_before_provider_launch() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("settings.json"), "not json").unwrap();
-        let error =
-            apply_bundle_provisioning(&mut engine::Config::new("p"), Some(tmp.path())).unwrap_err();
+        let error = bundle::BundlePlan::load(tmp.path()).err().unwrap();
         assert!(error.to_string().contains("parsing bundle settings"));
 
         let plugin = tempfile::tempdir().unwrap();
@@ -1346,8 +1174,7 @@ mod tests {
             "not json",
         )
         .unwrap();
-        let error = apply_bundle_provisioning(&mut engine::Config::new("p"), Some(plugin.path()))
-            .unwrap_err();
+        let error = bundle::BundlePlan::load(plugin.path()).err().unwrap();
         assert!(error.to_string().contains("parsing bundle plugin manifest"));
     }
 

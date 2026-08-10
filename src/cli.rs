@@ -214,6 +214,11 @@ pub enum SubCommand {
     /// prompt is valid only with one of those adapters and leaves the run
     /// suspended until a client starts it.
     Run(RunArgs),
+    /// Validate and inspect legacy Claude `.roba/` bundles without a provider.
+    Bundle {
+        #[command(subcommand)]
+        cmd: BundleCmd,
+    },
     /// List recent sessions (current project by default).
     History(HistoryArgs),
     /// Reprint the most recent session's last answer.
@@ -471,6 +476,22 @@ pub enum WorktreeCmd {
     /// worktrees claude's `--worktree` flag creates -- so it includes
     /// user-made worktrees too, not just claude's.
     List(WorktreeListArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BundleCmd {
+    /// Print Roba's validated, redacted provisioning plan for a bundle.
+    Inspect(BundleInspectArgs),
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct BundleInspectArgs {
+    /// Bundle directory to validate and inspect.
+    pub path: PathBuf,
+
+    /// Emit a versioned JSON inventory instead of the human view.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(ClapArgs, Debug)]

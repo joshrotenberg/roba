@@ -24,7 +24,8 @@ fn help_prints_usage_and_exits_zero() {
         .success()
         .stdout(predicate::str::contains("Usage: roba"))
         .stdout(predicate::str::contains("history"))
-        .stdout(predicate::str::contains("last"));
+        .stdout(predicate::str::contains("last"))
+        .stdout(predicate::str::contains("bundle"));
 }
 
 #[test]
@@ -87,6 +88,176 @@ fn bounded_run_help_exposes_provider_and_run_adapters() {
         .stdout(predicate::str::contains("--json"))
         .stdout(predicate::str::contains("--max-workers"))
         .stdout(predicate::str::contains("--max-worker-depth"));
+}
+
+fn inspectable_bundle_fixture() -> tempfile::TempDir {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::write(root.join("unknown.txt"), "ignored").unwrap();
+    std::fs::write(root.join("system-prompt.md"), "SECRET PROMPT").unwrap();
+    std::fs::write(
+        root.join("mcp.json"),
+        r#"{"mcpServers":{"zeta":{"command":"SECRET MCP"},"alpha":{"command":"safe"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("settings.json"),
+        r#"{"permissions":{"allow":["Read"]},"hooks":{"PreToolUse":[{"command":"SECRET HOOK"}]}}"#,
+    )
+    .unwrap();
+    let agents = root.join("agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("zeta.md"),
+        "---\ndescription: Zeta agent\n---\nSECRET ZETA BODY",
+    )
+    .unwrap();
+    std::fs::write(
+        agents.join("alpha.md"),
+        "---\ndescription: Alpha agent\ntools: Read\n---\nSECRET ALPHA BODY",
+    )
+    .unwrap();
+    temp
+}
+
+#[test]
+fn bundle_inspect_is_zero_provider_sorted_and_redacted() {
+    let bundle = inspectable_bundle_fixture();
+    let output = roba()
+        .env("PATH", "")
+        .args(["bundle", "inspect", bundle.path().to_str().unwrap()])
+        .output()
+        .expect("inspect bundle without provider PATH");
+    assert!(
+        output.status.success(),
+        "inspection failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("mcp servers (2)"));
+    assert!(stdout.contains("permission allow: 1 rule(s)"));
+    assert!(stdout.contains("hook event: PreToolUse"));
+    assert!(stdout.contains("unknown top-level entry: unknown.txt"));
+    assert!(
+        stdout.find("alpha — Alpha agent").unwrap() < stdout.find("zeta — Zeta agent").unwrap()
+    );
+    assert!(stdout.find("  alpha\n").unwrap() < stdout.find("  zeta\n").unwrap());
+    for secret in [
+        "SECRET PROMPT",
+        "SECRET MCP",
+        "SECRET HOOK",
+        "SECRET ALPHA BODY",
+        "SECRET ZETA BODY",
+    ] {
+        assert!(!stdout.contains(secret), "inspection leaked {secret:?}");
+    }
+}
+
+#[test]
+fn bundle_inspect_json_uses_versioned_inventory_and_structured_errors() {
+    let bundle = inspectable_bundle_fixture();
+    let output = roba()
+        .env("PATH", "")
+        .args([
+            "bundle",
+            "inspect",
+            bundle.path().to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("inspect bundle as JSON");
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["version"], roba_types::VERSION);
+    assert_eq!(envelope["result"]["agents"][0]["name"], "alpha");
+    assert_eq!(
+        envelope["result"]["mcp_servers"],
+        serde_json::json!(["alpha", "zeta"])
+    );
+    assert_eq!(
+        envelope["result"]["settings"]["permission_rule_counts"]["allow"],
+        1
+    );
+    assert_eq!(
+        envelope["result"]["settings"]["hook_events"],
+        serde_json::json!(["PreToolUse"])
+    );
+    let serialized = String::from_utf8(output.stdout).unwrap();
+    assert!(!serialized.contains("SECRET"));
+
+    let missing = bundle.path().join("missing");
+    let output = roba()
+        .args(["bundle", "inspect", missing.to_str().unwrap(), "--json"])
+        .output()
+        .expect("inspect missing bundle as JSON");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["version"], roba_types::VERSION);
+    assert_eq!(error["error"]["exit_code"], 1);
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not exist")
+    );
+
+    let malformed = tempfile::tempdir().unwrap();
+    let secret = "SUPER_SECRET_BUNDLE_CONFIG";
+    std::fs::write(
+        malformed.path().join("roba.toml"),
+        format!("unknown = \"{secret}\"\n"),
+    )
+    .unwrap();
+    let output = roba()
+        .args([
+            "bundle",
+            "inspect",
+            malformed.path().to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("inspect malformed bundle as JSON");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let error: serde_json::Value = serde_json::from_str(&stderr).unwrap();
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("source details redacted")
+    );
+    assert!(!stderr.contains(secret));
+}
+
+#[test]
+fn explicit_missing_bundle_refuses_before_provider_resolution() {
+    let temp = tempfile::tempdir().unwrap();
+    let missing = temp.path().join("missing");
+    roba()
+        .env("PATH", "")
+        .args(["--bundle", missing.to_str().unwrap(), "hello"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("bundle").and(predicate::str::contains("does not exist")));
+}
+
+#[test]
+fn one_shot_bundle_uses_the_same_mcp_validation_before_provider_resolution() {
+    let bundle = tempfile::tempdir().unwrap();
+    std::fs::write(bundle.path().join("mcp.json"), r#"{"mcpServers":[]}"#).unwrap();
+    roba()
+        .env("PATH", "")
+        .args(["--bundle", bundle.path().to_str().unwrap(), "hello"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "field `mcpServers` must be a JSON object",
+        ));
 }
 
 #[test]
