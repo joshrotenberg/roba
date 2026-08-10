@@ -171,6 +171,10 @@ fn bundle_inspect_json_uses_versioned_inventory_and_structured_errors() {
     assert!(output.stderr.is_empty());
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(envelope["version"], roba_types::VERSION);
+    assert_eq!(
+        envelope["result"]["root"],
+        bundle.path().display().to_string()
+    );
     assert_eq!(envelope["result"]["agents"][0]["name"], "alpha");
     assert_eq!(
         envelope["result"]["mcp_servers"],
@@ -3449,6 +3453,17 @@ case "$*" in
   *--version*) echo '1.0.0 (fake)'; exit 0;;
 esac
 printf '%s\n' "$@" > "$ROBA_CAPTURE_ARGS"
+if [ "${ROBA_VALIDATE_BUNDLE_PATHS:-}" = 1 ]; then
+  previous=''
+  for argument in "$@"; do
+    case "$previous" in
+      --settings|--mcp-config|--plugin-dir)
+        [ -e "$argument" ] || exit 97
+        ;;
+    esac
+    previous="$argument"
+  done
+fi
 cat >/dev/null 2>&1
 printf '%s\n' '{"result":"ok","session_id":"s1","is_error":false}'
 "#;
@@ -3508,6 +3523,7 @@ fn hermetic_bundle_provisions_the_exact_claude_child_surface() {
 
     roba_with_fake_claude(bin.path(), home.path(), cfg.path())
         .env("ROBA_CAPTURE_ARGS", &capture)
+        .env("ROBA_VALIDATE_BUNDLE_PATHS", "1")
         .args([
             "--hermetic",
             "--bundle",
@@ -3531,14 +3547,12 @@ fn hermetic_bundle_provisions_the_exact_claude_child_surface() {
     let agents: serde_json::Value = serde_json::from_str(value_after("--agents")).unwrap();
     assert_eq!(agents["reviewer"]["description"], "Reviews code");
     assert_eq!(agents["reviewer"]["prompt"], "Review the change.");
-    assert_eq!(
-        value_after("--settings"),
-        bundle.join("settings.json").to_str().unwrap()
-    );
-    assert_eq!(
-        value_after("--mcp-config"),
-        bundle.join("mcp.json").to_str().unwrap()
-    );
+    let settings = value_after("--settings");
+    assert_ne!(settings, bundle.join("settings.json").to_str().unwrap());
+    assert!(settings.ends_with("settings.json"));
+    let mcp = value_after("--mcp-config");
+    assert_ne!(mcp, bundle.join("mcp.json").to_str().unwrap());
+    assert!(mcp.ends_with("mcp.json"));
     assert_eq!(value_after("--setting-sources"), "");
     assert!(argv.contains(&"--strict-mcp-config"));
 
@@ -3547,13 +3561,19 @@ fn hermetic_bundle_provisions_the_exact_claude_child_surface() {
         .filter(|pair| pair[0] == "--plugin-dir")
         .map(|pair| pair[1])
         .collect();
-    assert_eq!(
-        plugin_roots,
-        vec![
-            bundle.to_str().unwrap(),
-            bundle.join("plugins/lint").to_str().unwrap()
-        ]
+    assert_eq!(plugin_roots.len(), 2);
+    assert_ne!(plugin_roots[0], bundle.to_str().unwrap());
+    assert_ne!(
+        plugin_roots[1],
+        bundle.join("plugins/lint").to_str().unwrap()
     );
+    assert!(plugin_roots[1].ends_with("plugins/lint"));
+    for snapshot_path in [settings, mcp, plugin_roots[0], plugin_roots[1]] {
+        assert!(
+            !std::path::Path::new(snapshot_path).exists(),
+            "run-local snapshot survived provider completion: {snapshot_path}"
+        );
+    }
 
     let override_capture = home.path().join("override-args.txt");
     roba_with_fake_claude(bin.path(), home.path(), cfg.path())
