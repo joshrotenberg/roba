@@ -38,6 +38,13 @@ Subscriptions return `RunEventSubscriptionItem::HistoryTruncated` before
 replaying retained records after a gap, and cursors ahead of the journal are
 refused.
 
+`RunFailure` carries a portable failure category and optional
+`RunFailureDetails`. Providers use those details for honestly reported
+terminal recovery and accounting fields such as a resumable session, usage,
+cost, duration, and provider turn count. The same failure snapshot is retained
+by the handle and emitted as a `RunEvent::Failed`; missing telemetry remains
+absent.
+
 ## Stability
 
 The bounded-run API is under active development and may change before the next

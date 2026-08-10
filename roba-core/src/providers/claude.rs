@@ -14,8 +14,8 @@ use crate::provider::{
     EventSink, Provider, ProviderCapabilities, ProviderContext, ProviderError, ProviderFuture,
 };
 use crate::run::{
-    Cost, Effort, FailureKind, PermissionPolicy, ProviderId, RunEvent, RunOutcome, SessionHandle,
-    SessionSpec, TokenUsage, TurnRequest,
+    Cost, Effort, FailureKind, PermissionPolicy, ProviderId, RunEvent, RunFailureDetails,
+    RunOutcome, SessionHandle, SessionSpec, TokenUsage, TurnRequest,
 };
 
 /// Claude Code implementation of Roba's provider-neutral turn boundary.
@@ -260,7 +260,7 @@ impl Provider for ClaudeProvider {
             })?;
             let mut terminal = None;
             let mut terminal_error = None;
-            stream_query(&claude, &Self::bounded_command(&config), |event| {
+            let stream_result = stream_query(&claude, &Self::bounded_command(&config), |event| {
                 emit_stream_event(&event, events);
                 if event.is_result() {
                     match serde_json::from_value::<QueryResult>(event.data) {
@@ -276,14 +276,17 @@ impl Provider for ClaudeProvider {
                     }
                 }
             })
-            .await
-            .map_err(map_error)?;
+            .await;
             if let Some(error) = terminal_error {
                 return Err(ProviderError::new(
                     FailureKind::Provider,
                     format!("Claude result event was invalid: {error}"),
                 ));
             }
+            if terminal.as_ref().is_some_and(|result| result.is_error) {
+                return Err(terminal_failure(terminal.expect("checked above")));
+            }
+            stream_result.map_err(map_error)?;
             let mut result = terminal.ok_or_else(|| {
                 ProviderError::new(
                     FailureKind::Provider,
@@ -293,22 +296,71 @@ impl Provider for ClaudeProvider {
             if config.json_schema.is_some() {
                 engine::surface_structured_output(&mut result);
             }
-            if result.is_error {
-                return Err(ProviderError::new(
-                    FailureKind::Provider,
-                    if result.result.is_empty() {
-                        "Claude returned an unusable error result".to_string()
-                    } else {
-                        result.result
-                    },
-                ));
-            }
             let outcome = Self::normalize(result);
             events.emit(RunEvent::TurnCompleted {
                 outcome: outcome.clone(),
             });
             Ok(outcome)
         })
+    }
+}
+
+fn terminal_failure(result: QueryResult) -> ProviderError {
+    let subtype = result
+        .extra
+        .get("subtype")
+        .and_then(serde_json::Value::as_str);
+    let kind = match subtype {
+        Some("error_max_turns" | "error_max_budget_usd") => FailureKind::Limit,
+        _ => FailureKind::Provider,
+    };
+    let reported_reason = result
+        .extra
+        .get("errors")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|errors| errors.iter().find_map(serde_json::Value::as_str))
+        .or_else(|| (!result.result.is_empty()).then_some(result.result.as_str()));
+    let details = terminal_details(&result);
+    let message = if kind == FailureKind::Limit {
+        let turns = result
+            .num_turns
+            .map(|turns| format!(" after {turns} provider turns"))
+            .unwrap_or_default();
+        let label = match subtype {
+            Some("error_max_turns") => "max-turns limit",
+            Some("error_max_budget_usd") => "max-budget limit",
+            _ => "provider limit",
+        };
+        let reason = reported_reason
+            .map(|reason| format!(": {reason}"))
+            .unwrap_or_default();
+        format!("Claude hit {label}{turns}{reason}")
+    } else {
+        reported_reason.map(str::to_owned).unwrap_or_else(|| {
+            subtype
+                .map(|subtype| format!("Claude returned {subtype}"))
+                .unwrap_or_else(|| "Claude returned an unusable error result".to_string())
+        })
+    };
+
+    ProviderError::new(kind, message).with_details(details)
+}
+
+fn terminal_details(result: &QueryResult) -> RunFailureDetails {
+    let usage = result
+        .usage
+        .as_ref()
+        .map(normalize_usage)
+        .filter(|usage| !usage.is_unreported());
+    RunFailureDetails {
+        session: (!result.session_id.is_empty()).then(|| SessionHandle {
+            provider: ProviderId::claude(),
+            id: result.session_id.clone(),
+        }),
+        usage,
+        cost: result.cost_usd.map(Cost::usd),
+        duration_ms: result.duration_ms,
+        provider_turns: result.num_turns,
     }
 }
 
@@ -393,6 +445,18 @@ case "$prompt" in
   block)
     printf '%s' "$$" > '{}'
     exec sleep 30
+    ;;
+  limit-turns)
+    printf '{{"type":"result","subtype":"error_max_turns","session_id":"limit-session","total_cost_usd":1.25,"duration_ms":321,"num_turns":30,"is_error":true,"usage":{{"input_tokens":100,"output_tokens":20}},"errors":["Reached maximum number of turns (30)"]}}\n'
+    exit 1
+    ;;
+  limit-budget)
+    printf '{{"type":"result","subtype":"error_max_budget_usd","session_id":"budget-session","total_cost_usd":2.75,"duration_ms":654,"num_turns":12,"is_error":true,"usage":{{"input_tokens":50,"output_tokens":10}},"errors":["Reached maximum budget ($2.00)"]}}\n'
+    exit 1
+    ;;
+  failed)
+    printf 'provider exploded\n' >&2
+    exit 9
     ;;
   unterminated)
     text=partial
@@ -657,5 +721,76 @@ fi
                 .iter()
                 .any(|event| matches!(event, RunEvent::TurnCompleted { .. }))
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn streamed_limit_terminal_precedes_generic_process_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, _) = fake_claude(&temp);
+
+        for (prompt, session, turns, cost, reason) in [
+            (
+                "limit-turns",
+                "limit-session",
+                30,
+                1.25,
+                "max-turns limit after 30 provider turns",
+            ),
+            (
+                "limit-budget",
+                "budget-session",
+                12,
+                2.75,
+                "max-budget limit after 12 provider turns",
+            ),
+        ] {
+            let request = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+                .with_prompt(Prompt::new(prompt).unwrap())
+                .into_turn()
+                .unwrap();
+            let events = RecordingSink::default();
+            let error = provider
+                .execute(request, ProviderContext::default(), &events)
+                .await
+                .unwrap_err();
+
+            assert_eq!(error.kind, FailureKind::Limit);
+            assert!(error.message.contains(reason), "{}", error.message);
+            assert!(!error.message.contains("--output-format"));
+            let details = error.details.as_deref().unwrap();
+            assert_eq!(details.session.as_ref().unwrap().id, session);
+            assert_eq!(details.provider_turns, Some(turns));
+            assert_eq!(details.cost, Some(Cost::usd(cost)));
+            assert!(details.duration_ms.is_some());
+            assert!(details.usage.is_some());
+            assert!(events.events.into_inner().unwrap().iter().any(|event| {
+                matches!(event, RunEvent::Usage { usage } if usage.input.is_some())
+            }));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unrelated_nonzero_stream_exit_remains_a_provider_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, _) = fake_claude(&temp);
+        let request = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+            .with_prompt(Prompt::new("failed").unwrap())
+            .into_turn()
+            .unwrap();
+
+        let error = provider
+            .execute(
+                request,
+                ProviderContext::default(),
+                &RecordingSink::default(),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind, FailureKind::Provider);
+        assert!(error.message.contains("provider exploded"));
+        assert!(error.details.is_none());
     }
 }

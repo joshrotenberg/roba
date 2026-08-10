@@ -220,7 +220,10 @@ model = "configured"
 
     #[test]
     fn terminal_json_preserves_each_terminal_snapshot_without_reshaping() {
-        use roba_core::{FailureKind, RunFailure, RunId, RunOutcome};
+        use roba_core::{
+            Cost, FailureKind, ProviderId, RunFailure, RunFailureDetails, RunId, RunOutcome,
+            SessionHandle,
+        };
 
         let snapshot =
             |state: RunState, outcome: Option<RunOutcome>, failure: Option<RunFailure>| {
@@ -255,8 +258,18 @@ model = "configured"
             RunState::Failed,
             None,
             Some(RunFailure {
-                kind: FailureKind::Provider,
-                message: "provider failed".to_string(),
+                kind: FailureKind::Limit,
+                message: "turn limit reached".to_string(),
+                details: RunFailureDetails {
+                    session: Some(SessionHandle {
+                        provider: ProviderId::claude(),
+                        id: "limit-session".to_string(),
+                    }),
+                    usage: None,
+                    cost: Some(Cost::usd(1.25)),
+                    duration_ms: None,
+                    provider_turns: Some(30),
+                },
             }),
         );
         let cancelled = snapshot(RunState::Cancelled, None, None);
