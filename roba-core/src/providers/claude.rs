@@ -466,6 +466,7 @@ case "$prompt" in
   unterminated)
     text=partial
     terminal=false
+    settle_delay=true
     ;;
   *)
     if [ "$resuming" = true ]; then
@@ -477,6 +478,9 @@ case "$prompt" in
     ;;
 esac
 printf '{{"type":"stream_event","session_id":"session-1","event":{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"%s"}}}}}}\n' "$text"
+if [ "$settle_delay" = true ]; then
+  sleep 0.1
+fi
 if [ "$terminal" = true ]; then
   printf '{{"type":"result","subtype":"success","result":"%s","session_id":"session-1","total_cost_usd":0.02,"duration_ms":10,"num_turns":1,"is_error":false,"usage":{{"input_tokens":3,"output_tokens":2}}}}\n' "$text"
 fi
@@ -719,7 +723,11 @@ fi
             .unwrap_err();
 
         assert_eq!(error.kind, FailureKind::Provider);
-        assert!(error.message.contains("without a result event"));
+        assert!(
+            error.message.contains("without a result event"),
+            "unexpected provider error: {}",
+            error.message
+        );
         let events = events.events.into_inner().unwrap();
         assert!(events.contains(&RunEvent::OutputDelta {
             text: "partial".to_string(),
