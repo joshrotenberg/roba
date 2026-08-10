@@ -32,7 +32,7 @@ pub mod run;
 pub mod runtime;
 pub mod session;
 
-pub use lifecycle::{Run, RunControlError, RunHandle, RunSnapshot};
+pub use lifecycle::{Run, RunControlError, RunHandle, RunSnapshot, WorkerSnapshot};
 pub use provider::{
     EventSink, NoopEventSink, Provider, ProviderCapabilities, ProviderError, ProviderFuture,
     execute_turn,
@@ -42,7 +42,8 @@ pub use providers::codex::CodexProvider;
 pub use resolve::{ConfigLayer, ResolveError, RobaConfig, RunOverrides};
 pub use run::{
     AgentSpec, ContextSpec, Cost, Effort, ExecutionSpec, FailureKind, LimitSpec, PermissionPolicy,
-    Prompt, PromptError, ProviderId, ProviderIdError, RunEvent, RunFailure, RunOutcome, RunSpec,
-    RunSpecError, RunState, SessionHandle, SessionSpec, TokenUsage, ToolPolicy, TurnRequest,
+    Prompt, PromptError, ProviderId, ProviderIdError, RunEvent, RunFailure, RunId, RunOutcome,
+    RunSpec, RunSpecError, RunState, SessionHandle, SessionSpec, TokenUsage, ToolPolicy,
+    TurnRequest, WorkerPolicy, WorkerPolicyError, WorkerSpec,
 };
 pub use runtime::{Roba, RuntimeError};

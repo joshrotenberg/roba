@@ -1,27 +1,44 @@
 //! Process-local lifecycle for one bounded Roba run.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, Weak};
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, broadcast, watch};
+use tokio::sync::{Mutex as AsyncMutex, broadcast, watch};
 
 use crate::provider::{EventSink, Provider, ProviderError, execute_turn};
 use crate::run::{
-    FailureKind, Prompt, ProviderId, RunEvent, RunFailure, RunOutcome, RunSpec, RunState,
-    SessionSpec,
+    FailureKind, Prompt, ProviderId, RunEvent, RunFailure, RunId, RunOutcome, RunSpec, RunState,
+    SessionSpec, WorkerPolicy, WorkerSpec,
 };
 
 /// Read-only view of a live or terminal run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunSnapshot {
+    pub id: RunId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<RunId>,
+    pub depth: u32,
     pub state: RunState,
     pub turns_completed: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_outcome: Option<RunOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<RunFailure>,
+}
+
+/// Read-only child-run view retained for the lifetime of the owning tree.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkerSnapshot {
+    pub id: RunId,
+    pub parent_id: RunId,
+    pub depth: u32,
+    pub provider: ProviderId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub run: RunSnapshot,
 }
 
 impl RunSnapshot {
@@ -50,32 +67,34 @@ impl Run {
                 adapter: provider_id,
             });
         }
-        let state = spec.initial_state();
-        let snapshot = RunSnapshot {
-            state,
-            turns_completed: 0,
-            last_outcome: None,
-            failure: None,
-        };
-        let (snapshot_tx, _) = watch::channel(snapshot.clone());
-        let (cancel_tx, _) = watch::channel(false);
-        let (events, _) = broadcast::channel(256);
+        let mut providers = BTreeMap::new();
+        providers.insert(provider_id, provider);
+        Self::with_providers(spec, providers)
+    }
+
+    pub(crate) fn with_providers(
+        spec: RunSpec,
+        providers: BTreeMap<ProviderId, Arc<dyn Provider>>,
+    ) -> Result<Self, RunControlError> {
+        spec.execution
+            .workers
+            .validate()
+            .map_err(|_| RunControlError::InvalidWorkerPolicy)?;
+        let provider = providers
+            .get(&spec.agent.provider)
+            .cloned()
+            .ok_or_else(|| RunControlError::ProviderUnavailable(spec.agent.provider.clone()))?;
+        let tree = Arc::new(RunTree::new(spec.execution.workers, providers));
+        let inner = new_inner(spec, provider, tree.clone(), RunId::ROOT, None, 0);
+        tree.register(&inner);
         Ok(Self {
-            handle: RunHandle {
-                inner: Arc::new(Inner {
-                    spec,
-                    provider,
-                    control: Mutex::new(Control {
-                        snapshot,
-                        started: false,
-                        steering: VecDeque::new(),
-                    }),
-                    snapshot_tx,
-                    cancel_tx,
-                    events,
-                }),
-            },
+            handle: RunHandle { inner },
         })
+    }
+
+    /// Identity of the root run within its process-local tree.
+    pub fn id(&self) -> RunId {
+        self.handle.inner.id
     }
 
     /// Clone a control and observation handle.
@@ -101,6 +120,26 @@ pub struct RunHandle {
 }
 
 impl RunHandle {
+    /// Inspect the immutable resolved specification for this root or worker.
+    pub fn spec(&self) -> &RunSpec {
+        &self.inner.spec
+    }
+
+    /// Identity within this process-local run tree.
+    pub fn id(&self) -> RunId {
+        self.inner.id
+    }
+
+    /// Parent identity, absent only for the root.
+    pub fn parent_id(&self) -> Option<RunId> {
+        self.inner.parent_id
+    }
+
+    /// Distance from the root. The root has depth zero.
+    pub fn depth(&self) -> u32 {
+        self.inner.depth
+    }
+
     /// Start a suspended run with its first prompt.
     pub async fn start(&self, prompt: Prompt) -> Result<(), RunControlError> {
         let mut control = self.inner.control.lock().await;
@@ -155,6 +194,71 @@ impl RunHandle {
         self.inner.control.lock().await.snapshot.clone()
     }
 
+    /// Spawn a child with an explicitly selected agent while inheriting the
+    /// parent's execution authority and a fresh provider session.
+    pub async fn spawn_worker(&self, worker: WorkerSpec) -> Result<RunHandle, RunControlError> {
+        let parent = self.inner.control.lock().await;
+        if !matches!(parent.snapshot.state, RunState::Running | RunState::Waiting) {
+            return Err(RunControlError::NotRunning);
+        }
+
+        let depth = self.inner.depth.saturating_add(1);
+        let provider = self.inner.tree.provider(&worker.agent.provider)?;
+
+        let mut execution = self.inner.spec.execution.clone();
+        execution.session = SessionSpec::Fresh;
+        let spec = RunSpec {
+            agent: worker.agent,
+            context: worker.context,
+            execution,
+            initial_prompt: Some(worker.prompt),
+        };
+        let request = spec
+            .clone()
+            .into_turn()
+            .map_err(|_| RunControlError::WorkerPromptMissing)?;
+        if let Err(error) = provider.validate(&request) {
+            return Err(RunControlError::WorkerPreflight(error));
+        }
+        let id = self.inner.tree.reserve(depth)?;
+
+        let inner = new_inner(
+            spec,
+            provider,
+            self.inner.tree.clone(),
+            id,
+            Some(self.inner.id),
+            depth,
+        );
+        self.inner.tree.register(&inner);
+        let handle = RunHandle { inner };
+        let _ = self.inner.events.send(RunEvent::WorkerSpawned {
+            id,
+            parent_id: self.inner.id,
+            depth,
+            provider: handle.inner.spec.agent.provider.clone(),
+        });
+        drop(parent);
+        handle.begin().await?;
+        Ok(handle)
+    }
+
+    /// Spawn a child using the same agent and context as the parent.
+    pub async fn spawn_inherited(&self, prompt: Prompt) -> Result<RunHandle, RunControlError> {
+        self.spawn_worker(WorkerSpec {
+            agent: self.inner.spec.agent.clone(),
+            context: self.inner.spec.context.clone(),
+            prompt,
+        })
+        .await
+    }
+
+    /// All descendants owned by this run, ordered by creation id. Terminal
+    /// snapshots remain observable until the root tree is dropped.
+    pub fn workers(&self) -> Vec<WorkerSnapshot> {
+        self.inner.tree.descendants(self.inner.id)
+    }
+
     /// Subscribe to normalized lifecycle and provider events.
     pub fn subscribe(&self) -> broadcast::Receiver<RunEvent> {
         self.inner.events.subscribe()
@@ -163,6 +267,12 @@ impl RunHandle {
     /// Cancel a suspended, ready, or running run. Running provider futures are
     /// dropped at the cancellation boundary.
     pub async fn cancel(&self) -> Result<(), RunControlError> {
+        self.cancel_self().await?;
+        cancel_children(&self.inner).await;
+        Ok(())
+    }
+
+    async fn cancel_self(&self) -> Result<(), RunControlError> {
         let mut control = self.inner.control.lock().await;
         if control.snapshot.is_terminal() {
             return Err(RunControlError::Terminal);
@@ -172,9 +282,10 @@ impl RunHandle {
             RunState::Running | RunState::Waiting
         ) {
             self.inner.cancel_tx.send_replace(true);
-            return Ok(());
+            set_state(&self.inner, &mut control, RunState::Finishing);
+        } else {
+            set_state(&self.inner, &mut control, RunState::Cancelled);
         }
-        set_state(&self.inner, &mut control, RunState::Cancelled);
         Ok(())
     }
 
@@ -194,18 +305,184 @@ impl RunHandle {
 }
 
 struct Inner {
+    id: RunId,
+    parent_id: Option<RunId>,
+    depth: u32,
     spec: RunSpec,
     provider: Arc<dyn Provider>,
-    control: Mutex<Control>,
+    tree: Arc<RunTree>,
+    control: AsyncMutex<Control>,
     snapshot_tx: watch::Sender<RunSnapshot>,
     cancel_tx: watch::Sender<bool>,
     events: broadcast::Sender<RunEvent>,
+}
+
+struct RunTree {
+    policy: WorkerPolicy,
+    next_id: AtomicU64,
+    providers: BTreeMap<ProviderId, Arc<dyn Provider>>,
+    records: StdMutex<BTreeMap<RunId, WorkerRecord>>,
+}
+
+struct WorkerRecord {
+    parent_id: Option<RunId>,
+    depth: u32,
+    provider: ProviderId,
+    model: Option<String>,
+    snapshot: watch::Receiver<RunSnapshot>,
+    handle: Weak<Inner>,
 }
 
 struct Control {
     snapshot: RunSnapshot,
     started: bool,
     steering: VecDeque<Prompt>,
+}
+
+impl RunTree {
+    fn new(policy: WorkerPolicy, providers: BTreeMap<ProviderId, Arc<dyn Provider>>) -> Self {
+        Self {
+            policy,
+            next_id: AtomicU64::new(RunId::ROOT.get() + 1),
+            providers,
+            records: StdMutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn provider(&self, provider_id: &ProviderId) -> Result<Arc<dyn Provider>, RunControlError> {
+        self.providers
+            .get(provider_id)
+            .cloned()
+            .ok_or_else(|| RunControlError::ProviderUnavailable(provider_id.clone()))
+    }
+
+    fn reserve(&self, depth: u32) -> Result<RunId, RunControlError> {
+        if !self.policy.enabled() {
+            return Err(RunControlError::WorkersDisabled);
+        }
+        if depth > self.policy.max_depth {
+            return Err(RunControlError::WorkerDepthExceeded {
+                requested: depth,
+                maximum: self.policy.max_depth,
+            });
+        }
+        let value = self
+            .next_id
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |next| {
+                let already_reserved = next.saturating_sub(RunId::ROOT.get() + 1);
+                (already_reserved < u64::from(self.policy.max_workers)).then_some(next + 1)
+            })
+            .map_err(|_| RunControlError::WorkerLimitReached {
+                maximum: self.policy.max_workers,
+            })?;
+        Ok(RunId::from_counter(value))
+    }
+
+    fn register(&self, inner: &Arc<Inner>) {
+        lock_records(&self.records).insert(
+            inner.id,
+            WorkerRecord {
+                parent_id: inner.parent_id,
+                depth: inner.depth,
+                provider: inner.spec.agent.provider.clone(),
+                model: inner.spec.agent.model.clone(),
+                snapshot: inner.snapshot_tx.subscribe(),
+                handle: Arc::downgrade(inner),
+            },
+        );
+    }
+
+    fn descendants(&self, ancestor: RunId) -> Vec<WorkerSnapshot> {
+        let records = lock_records(&self.records);
+        records
+            .iter()
+            .filter(|(id, _)| **id != ancestor && is_descendant(&records, **id, ancestor))
+            .filter_map(|(id, record)| {
+                record.parent_id.map(|parent_id| WorkerSnapshot {
+                    id: *id,
+                    parent_id,
+                    depth: record.depth,
+                    provider: record.provider.clone(),
+                    model: record.model.clone(),
+                    run: record.snapshot.borrow().clone(),
+                })
+            })
+            .collect()
+    }
+
+    fn descendant_handles(&self, ancestor: RunId) -> Vec<RunHandle> {
+        let records = lock_records(&self.records);
+        let mut descendants = records
+            .iter()
+            .filter(|(id, _)| **id != ancestor && is_descendant(&records, **id, ancestor))
+            .filter_map(|(_, record)| record.handle.upgrade().map(|inner| (record.depth, inner)))
+            .collect::<Vec<_>>();
+        descendants.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
+        descendants
+            .into_iter()
+            .map(|(_, inner)| RunHandle { inner })
+            .collect()
+    }
+}
+
+fn lock_records(
+    records: &StdMutex<BTreeMap<RunId, WorkerRecord>>,
+) -> std::sync::MutexGuard<'_, BTreeMap<RunId, WorkerRecord>> {
+    records
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn is_descendant(
+    records: &BTreeMap<RunId, WorkerRecord>,
+    mut candidate: RunId,
+    ancestor: RunId,
+) -> bool {
+    while let Some(parent) = records.get(&candidate).and_then(|record| record.parent_id) {
+        if parent == ancestor {
+            return true;
+        }
+        candidate = parent;
+    }
+    false
+}
+
+fn new_inner(
+    spec: RunSpec,
+    provider: Arc<dyn Provider>,
+    tree: Arc<RunTree>,
+    id: RunId,
+    parent_id: Option<RunId>,
+    depth: u32,
+) -> Arc<Inner> {
+    let snapshot = RunSnapshot {
+        id,
+        parent_id,
+        depth,
+        state: spec.initial_state(),
+        turns_completed: 0,
+        last_outcome: None,
+        failure: None,
+    };
+    let (snapshot_tx, _) = watch::channel(snapshot.clone());
+    let (cancel_tx, _) = watch::channel(false);
+    let (events, _) = broadcast::channel(256);
+    Arc::new(Inner {
+        id,
+        parent_id,
+        depth,
+        spec,
+        provider,
+        tree,
+        control: AsyncMutex::new(Control {
+            snapshot,
+            started: false,
+            steering: VecDeque::new(),
+        }),
+        snapshot_tx,
+        cancel_tx,
+        events,
+    })
 }
 
 struct BroadcastSink {
@@ -257,6 +534,10 @@ async fn drive(inner: Arc<Inner>, mut prompt: Prompt) {
 
         let Some(result) = result else {
             let mut control = inner.control.lock().await;
+            set_state(&inner, &mut control, RunState::Finishing);
+            drop(control);
+            cancel_children(&inner).await;
+            let mut control = inner.control.lock().await;
             set_state(&inner, &mut control, RunState::Cancelled);
             return;
         };
@@ -277,9 +558,8 @@ async fn drive(inner: Arc<Inner>, mut prompt: Prompt) {
                             message: "provider returned no session handle required for steering"
                                 .to_string(),
                         };
-                        control.snapshot.failure = Some(failure.clone());
-                        set_state(&inner, &mut control, RunState::Failed);
-                        let _ = inner.events.send(RunEvent::Failed { failure });
+                        drop(control);
+                        fail(&inner, failure).await;
                         return;
                     };
                     session = SessionSpec::Resume {
@@ -291,6 +571,10 @@ async fn drive(inner: Arc<Inner>, mut prompt: Prompt) {
                     drop(control);
                     continue;
                 }
+                set_state(&inner, &mut control, RunState::Finishing);
+                drop(control);
+                cancel_children(&inner).await;
+                let mut control = inner.control.lock().await;
                 set_state(&inner, &mut control, RunState::Completed);
                 return;
             }
@@ -312,8 +596,22 @@ async fn wait_for_cancellation(receiver: &mut watch::Receiver<bool>) {
 async fn fail(inner: &Inner, failure: RunFailure) {
     let mut control = inner.control.lock().await;
     control.snapshot.failure = Some(failure.clone());
+    set_state(inner, &mut control, RunState::Finishing);
+    drop(control);
+    cancel_children(inner).await;
+    let mut control = inner.control.lock().await;
     set_state(inner, &mut control, RunState::Failed);
     let _ = inner.events.send(RunEvent::Failed { failure });
+}
+
+async fn cancel_children(inner: &Inner) {
+    let children = inner.tree.descendant_handles(inner.id);
+    for child in &children {
+        let _ = child.cancel_self().await;
+    }
+    for child in children {
+        let _ = child.wait().await;
+    }
 }
 
 fn set_state(inner: &Inner, control: &mut Control, state: RunState) {
@@ -343,6 +641,18 @@ pub enum RunControlError {
     NotRunning,
     SteeringUnsupported,
     Terminal,
+    InvalidWorkerPolicy,
+    ProviderUnavailable(ProviderId),
+    WorkersDisabled,
+    WorkerDepthExceeded {
+        requested: u32,
+        maximum: u32,
+    },
+    WorkerLimitReached {
+        maximum: u32,
+    },
+    WorkerPromptMissing,
+    WorkerPreflight(ProviderError),
 }
 
 impl fmt::Display for RunControlError {
@@ -359,11 +669,34 @@ impl fmt::Display for RunControlError {
                 f.write_str("provider cannot resume and does not support steering")
             }
             Self::Terminal => f.write_str("run is already terminal"),
+            Self::InvalidWorkerPolicy => f.write_str(
+                "max_workers and max_depth must either both be zero or both be greater than zero",
+            ),
+            Self::ProviderUnavailable(provider) => {
+                write!(f, "provider {provider} is not registered for this run tree")
+            }
+            Self::WorkersDisabled => f.write_str("this run does not permit child workers"),
+            Self::WorkerDepthExceeded { requested, maximum } => write!(
+                f,
+                "worker depth {requested} exceeds this run's maximum depth {maximum}"
+            ),
+            Self::WorkerLimitReached { maximum } => {
+                write!(f, "this run has reached its maximum of {maximum} workers")
+            }
+            Self::WorkerPromptMissing => f.write_str("worker prompt is missing"),
+            Self::WorkerPreflight(error) => write!(f, "worker preflight refused: {error}"),
         }
     }
 }
 
-impl std::error::Error for RunControlError {}
+impl std::error::Error for RunControlError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::WorkerPreflight(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -373,7 +706,10 @@ mod tests {
 
     use super::*;
     use crate::provider::{ProviderCapabilities, ProviderFuture};
-    use crate::run::{AgentSpec, RunOutcome, SessionHandle, TurnRequest};
+    use crate::run::{
+        AgentSpec, ContextSpec, PermissionPolicy, RunOutcome, SessionHandle, TurnRequest,
+        WorkerPolicy, WorkerSpec,
+    };
 
     struct RecordingProvider {
         calls: AtomicUsize,
@@ -509,5 +845,288 @@ mod tests {
         );
         handle.cancel().await.unwrap();
         assert_eq!(handle.wait().await.state, RunState::Cancelled);
+    }
+
+    struct WorkerProvider {
+        calls: AtomicUsize,
+        root_started: Notify,
+        worker_started: Notify,
+        release_root: Notify,
+    }
+
+    impl Provider for WorkerProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::claude()
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                resume: true,
+                ..ProviderCapabilities::default()
+            }
+        }
+
+        fn validate(&self, _request: &TurnRequest) -> Result<(), ProviderError> {
+            Ok(())
+        }
+
+        fn execute<'a>(
+            &'a self,
+            request: TurnRequest,
+            _events: &'a dyn EventSink,
+        ) -> ProviderFuture<'a> {
+            Box::pin(async move {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                match request.prompt.as_str() {
+                    "root" => {
+                        self.root_started.notify_one();
+                        self.release_root.notified().await;
+                    }
+                    "block worker" => {
+                        self.worker_started.notify_one();
+                        std::future::pending::<()>().await;
+                    }
+                    _ => {}
+                }
+                Ok(RunOutcome {
+                    output: request.prompt.into_inner(),
+                    session: Some(SessionHandle {
+                        provider: ProviderId::claude(),
+                        id: "session-1".to_string(),
+                    }),
+                    usage: None,
+                    cost: None,
+                    duration_ms: None,
+                    provider_turns: None,
+                    structured_output: None,
+                })
+            })
+        }
+    }
+
+    fn worker_root(policy: WorkerPolicy) -> (Run, Arc<WorkerProvider>) {
+        let provider = Arc::new(WorkerProvider {
+            calls: AtomicUsize::new(0),
+            root_started: Notify::new(),
+            worker_started: Notify::new(),
+            release_root: Notify::new(),
+        });
+        let mut spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+            .with_prompt(Prompt::new("root").unwrap());
+        spec.execution.workers = policy;
+        (Run::new(spec, provider.clone()).unwrap(), provider)
+    }
+
+    #[tokio::test]
+    async fn child_runs_are_owned_observable_and_counted_for_the_tree_lifetime() {
+        let (run, provider) = worker_root(WorkerPolicy {
+            max_workers: 2,
+            max_depth: 1,
+        });
+        run.begin().await.unwrap();
+        provider.root_started.notified().await;
+
+        let worker = run
+            .handle()
+            .spawn_inherited(Prompt::new("worker").unwrap())
+            .await
+            .unwrap();
+        assert_eq!(worker.parent_id(), Some(run.id()));
+        assert_eq!(worker.depth(), 1);
+        assert_eq!(worker.wait().await.state, RunState::Completed);
+
+        let workers = run.handle().workers();
+        assert_eq!(workers.len(), 1);
+        assert_eq!(workers[0].id, worker.id());
+        assert_eq!(workers[0].parent_id, run.id());
+        assert_eq!(workers[0].run.state, RunState::Completed);
+        assert_eq!(
+            workers[0].run.last_outcome.as_ref().unwrap().output,
+            "worker"
+        );
+
+        provider.release_root.notify_one();
+        assert_eq!(run.handle().wait().await.state, RunState::Completed);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn disabled_depth_and_total_limits_fail_closed() {
+        let (disabled, provider) = worker_root(WorkerPolicy::default());
+        disabled.begin().await.unwrap();
+        provider.root_started.notified().await;
+        assert_eq!(
+            disabled
+                .handle()
+                .spawn_inherited(Prompt::new("worker").unwrap())
+                .await
+                .err()
+                .unwrap(),
+            RunControlError::WorkersDisabled
+        );
+        provider.release_root.notify_one();
+        disabled.handle().wait().await;
+
+        let (limited, provider) = worker_root(WorkerPolicy {
+            max_workers: 1,
+            max_depth: 1,
+        });
+        limited.begin().await.unwrap();
+        provider.root_started.notified().await;
+        let first = limited
+            .handle()
+            .spawn_inherited(Prompt::new("block worker").unwrap())
+            .await
+            .unwrap();
+        provider.worker_started.notified().await;
+        assert_eq!(
+            first
+                .spawn_inherited(Prompt::new("grandchild").unwrap())
+                .await
+                .err()
+                .unwrap(),
+            RunControlError::WorkerDepthExceeded {
+                requested: 2,
+                maximum: 1,
+            }
+        );
+        assert_eq!(
+            limited
+                .handle()
+                .spawn_inherited(Prompt::new("two").unwrap())
+                .await
+                .err()
+                .unwrap(),
+            RunControlError::WorkerLimitReached { maximum: 1 }
+        );
+        provider.release_root.notify_one();
+        limited.handle().wait().await;
+    }
+
+    #[tokio::test]
+    async fn parent_completion_cancels_live_descendants_before_it_finishes() {
+        let (run, provider) = worker_root(WorkerPolicy {
+            max_workers: 2,
+            max_depth: 2,
+        });
+        run.begin().await.unwrap();
+        provider.root_started.notified().await;
+        let worker = run
+            .handle()
+            .spawn_inherited(Prompt::new("block worker").unwrap())
+            .await
+            .unwrap();
+        provider.worker_started.notified().await;
+
+        provider.release_root.notify_one();
+        let root_terminal = run.handle().wait().await;
+        assert_eq!(root_terminal.state, RunState::Completed);
+        assert_eq!(worker.wait().await.state, RunState::Cancelled);
+        assert_eq!(run.handle().workers()[0].run.state, RunState::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn cancellation_closes_the_spawn_boundary_immediately() {
+        let (run, provider) = worker_root(WorkerPolicy {
+            max_workers: 1,
+            max_depth: 1,
+        });
+        run.begin().await.unwrap();
+        provider.root_started.notified().await;
+        run.handle().cancel().await.unwrap();
+        assert_eq!(
+            run.handle()
+                .spawn_inherited(Prompt::new("too late").unwrap())
+                .await
+                .err()
+                .unwrap(),
+            RunControlError::NotRunning
+        );
+        assert_eq!(run.handle().wait().await.state, RunState::Cancelled);
+    }
+
+    struct ImmediateCodexProvider;
+
+    impl Provider for ImmediateCodexProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::codex()
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities::default()
+        }
+
+        fn validate(&self, request: &TurnRequest) -> Result<(), ProviderError> {
+            if request.spec.agent.provider == ProviderId::codex() {
+                Ok(())
+            } else {
+                Err(ProviderError::unsupported("wrong provider"))
+            }
+        }
+
+        fn execute<'a>(
+            &'a self,
+            request: TurnRequest,
+            _events: &'a dyn EventSink,
+        ) -> ProviderFuture<'a> {
+            Box::pin(async move {
+                Ok(RunOutcome {
+                    output: request.prompt.into_inner(),
+                    session: None,
+                    usage: None,
+                    cost: None,
+                    duration_ms: None,
+                    provider_turns: None,
+                    structured_output: None,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn trusted_worker_agent_selection_can_change_provider_but_not_execution_authority() {
+        let root_provider = Arc::new(WorkerProvider {
+            calls: AtomicUsize::new(0),
+            root_started: Notify::new(),
+            worker_started: Notify::new(),
+            release_root: Notify::new(),
+        });
+        let mut spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+            .with_prompt(Prompt::new("root").unwrap());
+        spec.execution.permissions = PermissionPolicy::WorkspaceWrite;
+        spec.execution.workers = WorkerPolicy {
+            max_workers: 1,
+            max_depth: 1,
+        };
+        let mut providers: BTreeMap<ProviderId, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert(ProviderId::claude(), root_provider.clone());
+        providers.insert(ProviderId::codex(), Arc::new(ImmediateCodexProvider));
+        let run = Run::with_providers(spec, providers).unwrap();
+        run.begin().await.unwrap();
+        root_provider.root_started.notified().await;
+
+        let worker = run
+            .handle()
+            .spawn_worker(WorkerSpec {
+                agent: AgentSpec::new(ProviderId::codex()),
+                context: ContextSpec::default(),
+                prompt: Prompt::new("worker").unwrap(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            worker.spec().execution.permissions,
+            PermissionPolicy::WorkspaceWrite
+        );
+        assert_eq!(worker.spec().execution.session, SessionSpec::Fresh);
+        assert_eq!(
+            worker.spec().execution.workers,
+            run.spec().execution.workers
+        );
+        assert_eq!(worker.wait().await.state, RunState::Completed);
+        assert_eq!(worker.status().await.last_outcome.unwrap().output, "worker");
+
+        root_provider.release_root.notify_one();
+        run.handle().wait().await;
     }
 }

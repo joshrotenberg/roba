@@ -36,6 +36,8 @@ pub async fn run(args: RunArgs) -> Result<()> {
             max_turns: args.max_turns,
             max_cost_usd: args.max_cost_usd,
             timeout_secs: args.timeout,
+            max_workers: args.max_workers,
+            max_worker_depth: args.max_worker_depth,
             ..ConfigLayer::default()
         },
         ..RobaConfig::default()

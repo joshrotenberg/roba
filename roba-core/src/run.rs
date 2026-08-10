@@ -188,6 +188,49 @@ pub struct LimitSpec {
     pub timeout_secs: Option<u64>,
 }
 
+/// Process-local worker-tree bounds captured from the root run.
+///
+/// Both values are zero by default, which disables child runs. Once a tree is
+/// created, descendants cannot widen this policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerPolicy {
+    /// Maximum number of descendants created during this run, including
+    /// workers that have already reached a terminal state.
+    pub max_workers: u32,
+    /// Maximum distance from the root. A direct child has depth 1.
+    pub max_depth: u32,
+}
+
+impl WorkerPolicy {
+    /// True when the policy permits at least one direct child.
+    pub fn enabled(self) -> bool {
+        self.max_workers > 0 && self.max_depth > 0
+    }
+
+    /// Require either a fully disabled or fully bounded policy.
+    pub fn validate(self) -> Result<(), WorkerPolicyError> {
+        if (self.max_workers == 0) == (self.max_depth == 0) {
+            Ok(())
+        } else {
+            Err(WorkerPolicyError)
+        }
+    }
+}
+
+/// A worker policy specified only one of its required bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkerPolicyError;
+
+impl fmt::Display for WorkerPolicyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(
+            "max_workers and max_depth must either both be zero or both be greater than zero",
+        )
+    }
+}
+
+impl std::error::Error for WorkerPolicyError {}
+
 /// Opaque provider conversation identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionHandle {
@@ -217,6 +260,10 @@ pub struct ExecutionSpec {
     pub limits: LimitSpec,
     #[serde(default)]
     pub session: SessionSpec,
+    /// Root-owned process-local child-run bounds. Descendants inherit this
+    /// value; worker spawn requests cannot replace it.
+    #[serde(default)]
+    pub workers: WorkerPolicy,
 }
 
 /// Fully inspectable intent for one bounded Roba run.
@@ -289,6 +336,41 @@ pub struct TurnRequest {
     pub prompt: Prompt,
 }
 
+/// Identity unique within one process-local run tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RunId(u64);
+
+impl RunId {
+    pub(crate) const ROOT: Self = Self(1);
+
+    /// Numeric identity, useful for display and adapter arguments.
+    pub fn get(self) -> u64 {
+        self.0
+    }
+
+    pub(crate) fn from_counter(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl fmt::Display for RunId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Trusted host input for one child run. Execution authority is intentionally
+/// absent: the child inherits its parent's permissions, tools, limits, and
+/// worker policy, and always begins a fresh provider session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerSpec {
+    pub agent: AgentSpec,
+    #[serde(default)]
+    pub context: ContextSpec,
+    pub prompt: Prompt,
+}
+
 /// Coarse lifecycle state shared by library, CLI, REPL, and MCP adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -297,6 +379,7 @@ pub enum RunState {
     Ready,
     Running,
     Waiting,
+    Finishing,
     Completed,
     Failed,
     Cancelled,
@@ -366,14 +449,34 @@ pub struct RunOutcome {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunEvent {
-    StateChanged { state: RunState },
-    TurnStarted { provider: ProviderId },
-    OutputDelta { text: String },
-    Usage { usage: TokenUsage },
-    Warning { message: String },
+    StateChanged {
+        state: RunState,
+    },
+    TurnStarted {
+        provider: ProviderId,
+    },
+    OutputDelta {
+        text: String,
+    },
+    Usage {
+        usage: TokenUsage,
+    },
+    Warning {
+        message: String,
+    },
     SteeringQueued,
-    TurnCompleted { outcome: RunOutcome },
-    Failed { failure: RunFailure },
+    WorkerSpawned {
+        id: RunId,
+        parent_id: RunId,
+        depth: u32,
+        provider: ProviderId,
+    },
+    TurnCompleted {
+        outcome: RunOutcome,
+    },
+    Failed {
+        failure: RunFailure,
+    },
 }
 
 /// Portable failure category. Provider-native details remain in the message.
@@ -430,5 +533,26 @@ mod tests {
         let usage = TokenUsage::default();
         assert!(usage.is_unreported());
         assert_eq!(serde_json::to_string(&usage).unwrap(), "{}");
+    }
+
+    #[test]
+    fn worker_policy_requires_both_bounds() {
+        assert!(WorkerPolicy::default().validate().is_ok());
+        assert!(
+            WorkerPolicy {
+                max_workers: 4,
+                max_depth: 2,
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            WorkerPolicy {
+                max_workers: 4,
+                max_depth: 0,
+            }
+            .validate()
+            .is_err()
+        );
     }
 }

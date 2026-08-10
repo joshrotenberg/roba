@@ -9,7 +9,7 @@ use std::fmt;
 use roba_core::{Prompt, RunHandle, RunState};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
-const HELP: &str = "commands: /start TEXT, /steer TEXT, /status, /wait, /cancel, /help, /quit; a bare line starts a suspended run or steers a running run";
+const HELP: &str = "commands: /start TEXT, /steer TEXT, /spawn TEXT, /workers, /status, /wait, /cancel, /help, /quit; a bare line starts a suspended run or steers a running run";
 
 /// One parsed REPL command result.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +65,11 @@ impl Repl {
         if line == "/status" {
             return snapshot(self.handle.status().await);
         }
+        if line == "/workers" {
+            return Ok(ReplResponse::output(serde_json::to_string(
+                &self.handle.workers(),
+            )?));
+        }
         if line == "/wait" {
             return snapshot(self.handle.wait().await);
         }
@@ -79,6 +84,10 @@ impl Repl {
         if let Some(text) = argument(line, "/steer") {
             self.handle.steer(Prompt::new(text)?).await?;
             return snapshot(self.handle.status().await);
+        }
+        if let Some(text) = argument(line, "/spawn") {
+            let worker = self.handle.spawn_inherited(Prompt::new(text)?).await?;
+            return snapshot(worker.status().await);
         }
         if line.starts_with('/') {
             return Err(ReplError::UnknownCommand(line.to_string()));
@@ -191,9 +200,11 @@ impl From<serde_json::Error> for ReplError {
 mod tests {
     use std::sync::Arc;
 
+    use tokio::sync::Notify;
+
     use roba_core::{
         AgentSpec, EventSink, Provider, ProviderCapabilities, ProviderError, ProviderFuture,
-        ProviderId, Run, RunOutcome, RunSpec, SessionHandle, TurnRequest,
+        ProviderId, Run, RunOutcome, RunSpec, SessionHandle, TurnRequest, WorkerPolicy,
     };
 
     use super::*;
@@ -280,5 +291,81 @@ mod tests {
             .unwrap()["state"],
             "suspended"
         );
+    }
+
+    struct BlockingRootProvider {
+        root_started: Notify,
+        release_root: Notify,
+    }
+
+    impl Provider for BlockingRootProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::new("fake").unwrap()
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                resume: true,
+                ..ProviderCapabilities::default()
+            }
+        }
+
+        fn validate(&self, _request: &TurnRequest) -> Result<(), ProviderError> {
+            Ok(())
+        }
+
+        fn execute<'a>(
+            &'a self,
+            request: TurnRequest,
+            _events: &'a dyn EventSink,
+        ) -> ProviderFuture<'a> {
+            Box::pin(async move {
+                if request.prompt.as_str() == "root" {
+                    self.root_started.notify_one();
+                    self.release_root.notified().await;
+                }
+                Ok(RunOutcome {
+                    output: request.prompt.into_inner(),
+                    session: Some(SessionHandle {
+                        provider: ProviderId::new("fake").unwrap(),
+                        id: "session-1".to_string(),
+                    }),
+                    usage: None,
+                    cost: None,
+                    duration_ms: None,
+                    provider_turns: None,
+                    structured_output: None,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn repl_spawns_and_lists_a_worker_through_the_same_handle() {
+        let provider = Arc::new(BlockingRootProvider {
+            root_started: Notify::new(),
+            release_root: Notify::new(),
+        });
+        let mut spec = RunSpec::suspended(AgentSpec::new(ProviderId::new("fake").unwrap()));
+        spec.execution.workers = WorkerPolicy {
+            max_workers: 1,
+            max_depth: 1,
+        };
+        let run = Run::new(spec, provider.clone()).unwrap();
+        let repl = Repl::new(run.handle());
+
+        repl.command("/start root").await.unwrap();
+        provider.root_started.notified().await;
+        let spawned = repl.command("/spawn worker").await.unwrap();
+        assert!(spawned.output.unwrap().contains("\"parent_id\":1"));
+
+        let workers = repl.command("/workers").await.unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(workers.output.as_deref().unwrap()).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        assert_eq!(json[0]["provider"], "fake");
+
+        provider.release_root.notify_one();
+        assert_eq!(run.handle().wait().await.state, RunState::Completed);
     }
 }

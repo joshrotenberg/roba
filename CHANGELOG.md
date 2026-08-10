@@ -14,6 +14,11 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+### Added
+
+- bounded process-local child runs with inherited authority, explicit depth
+  and total limits, lifecycle-safe cancellation, and MCP/REPL observation
+
 ## [0.11.0] - 2026-07-22
 
 ### Added

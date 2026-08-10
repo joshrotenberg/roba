@@ -43,6 +43,10 @@ pub struct ConfigLayer {
     pub max_cost_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_workers: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_worker_depth: Option<u32>,
 }
 
 /// Small persistent Roba configuration. Named agents replace profiles,
@@ -133,6 +137,10 @@ impl RobaConfig {
                     timeout_secs: resolved.timeout_secs,
                 },
                 session: overrides.session,
+                workers: crate::run::WorkerPolicy {
+                    max_workers: resolved.max_workers.unwrap_or(0),
+                    max_depth: resolved.max_worker_depth.unwrap_or(0),
+                },
             },
             initial_prompt: overrides.initial_prompt,
         })
@@ -151,6 +159,8 @@ struct Resolved {
     max_turns: Option<u32>,
     max_cost_usd: Option<f64>,
     timeout_secs: Option<u64>,
+    max_workers: Option<u32>,
+    max_worker_depth: Option<u32>,
 }
 
 impl Resolved {
@@ -182,6 +192,12 @@ impl Resolved {
         if let Some(timeout_secs) = layer.timeout_secs {
             self.timeout_secs = Some(timeout_secs);
         }
+        if let Some(max_workers) = layer.max_workers {
+            self.max_workers = Some(max_workers);
+        }
+        if let Some(max_worker_depth) = layer.max_worker_depth {
+            self.max_worker_depth = Some(max_worker_depth);
+        }
     }
 }
 
@@ -205,6 +221,13 @@ fn validate(resolved: &Resolved) -> Result<(), ResolveError> {
     {
         return Err(ResolveError::InvalidMaxCost);
     }
+    let worker_policy = crate::run::WorkerPolicy {
+        max_workers: resolved.max_workers.unwrap_or(0),
+        max_depth: resolved.max_worker_depth.unwrap_or(0),
+    };
+    if worker_policy.validate().is_err() {
+        return Err(ResolveError::InvalidWorkerPolicy);
+    }
     Ok(())
 }
 
@@ -217,6 +240,7 @@ pub enum ResolveError {
     InvalidMaxTurns,
     InvalidMaxCost,
     InvalidTimeout,
+    InvalidWorkerPolicy,
 }
 
 impl fmt::Display for ResolveError {
@@ -230,6 +254,9 @@ impl fmt::Display for ResolveError {
                 f.write_str("max_cost_usd must be finite and greater than zero")
             }
             Self::InvalidTimeout => f.write_str("timeout_secs must be greater than zero"),
+            Self::InvalidWorkerPolicy => f.write_str(
+                "max_workers and max_worker_depth must either both be zero or both be greater than zero",
+            ),
         }
     }
 }
@@ -337,6 +364,28 @@ mod tests {
         assert_eq!(
             config.resolve(None, RunOverrides::default()).unwrap_err(),
             ResolveError::InvalidMaxCost
+        );
+    }
+
+    #[test]
+    fn worker_bounds_resolve_together_or_fail_closed() {
+        let mut config = RobaConfig {
+            defaults: ConfigLayer {
+                provider: Some(ProviderId::claude()),
+                max_workers: Some(3),
+                max_worker_depth: Some(2),
+                ..ConfigLayer::default()
+            },
+            ..RobaConfig::default()
+        };
+        let spec = config.resolve(None, RunOverrides::default()).unwrap();
+        assert_eq!(spec.execution.workers.max_workers, 3);
+        assert_eq!(spec.execution.workers.max_depth, 2);
+
+        config.defaults.max_worker_depth = None;
+        assert_eq!(
+            config.resolve(None, RunOverrides::default()).unwrap_err(),
+            ResolveError::InvalidWorkerPolicy
         );
     }
 }
