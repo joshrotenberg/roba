@@ -471,6 +471,9 @@ pub enum RunEvent {
         depth: u32,
         provider: ProviderId,
     },
+    MissionReported {
+        report: crate::mission::MissionReport,
+    },
     TurnCompleted {
         outcome: RunOutcome,
     },

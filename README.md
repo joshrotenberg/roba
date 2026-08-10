@@ -15,6 +15,13 @@ Roba is not a daemon or a persistent session pool. A suspended run does no
 provider work until its first prompt arrives. While it is alive, a caller can
 observe, steer, cancel, and await it through Rust, a REPL, or MCP.
 
+The product boundary is a finite **mission**. A mission can be a trivial
+single-answer prompt or a directive that uses explicitly bounded workers and
+optional process capabilities to complete several related work items. Roba
+maintains one canonical mission projection for monitors: runtime facts remain
+host-derived, while agent-reported work items, blockers, and artifacts remain
+identified as claims.
+
 The established single-prompt Claude CLI remains available as a compatibility
 surface while it migrates onto the new library model.
 
@@ -78,6 +85,12 @@ and accounting field -- session id, usage, cost, duration, and provider turns
 -- so a caller can distinguish a resumable boundary from an opaque provider
 crash without parsing provider-specific output. Missing fields stay absent
 rather than being rendered as zero.
+The read-only `mission` tool and REPL `/mission` command return the same
+library `MissionSnapshot`, combining root/worker lifecycle and immutable
+authority with typed claim-backed progress. When bounded workers are enabled,
+the private provider MCP surface also permits the root and owned workers to
+report work items, blockers, and artifacts. Reports enter the event journal
+and cannot alter runtime state or authority.
 
 Configuration resolves in one hierarchy:
 

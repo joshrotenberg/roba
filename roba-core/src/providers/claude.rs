@@ -29,7 +29,7 @@ pub struct ClaudeProvider {
 #[allow(non_upper_case_globals)]
 pub const ClaudeProvider: ClaudeProvider = ClaudeProvider { binary: None };
 
-const WORKER_GUIDANCE: &str = "Roba owns all child work for this run. When the task calls for workers, use only the `mcp__roba_workers__spawn_worker` tool, then use `mcp__roba_workers__workers` and wait for every spawned worker before answering. Never launch Roba or provider CLIs in the shell to simulate workers, and never substitute provider-native subagents. If Roba refuses a spawn, report that refusal instead of using another mechanism.";
+const WORKER_GUIDANCE: &str = "Roba owns all child work for this run. When the task calls for workers, use only the `mcp__roba_workers__spawn_worker` tool, then use `mcp__roba_workers__workers` and wait for every spawned worker before answering. Keep monitors current with the report_work_item, report_blocker, and report_artifact tools; those are claims and do not replace your final answer. Never launch Roba or provider CLIs in the shell to simulate workers, and never substitute provider-native subagents. If Roba refuses a spawn, report that refusal instead of using another mechanism.";
 
 impl ClaudeProvider {
     /// Use an explicit Claude executable instead of resolving `claude` from
@@ -152,6 +152,11 @@ impl ClaudeProvider {
             config
                 .allow_tools
                 .push("mcp__roba_workers__workers".to_string());
+            config.allow_tools.extend([
+                "mcp__roba_workers__report_work_item".to_string(),
+                "mcp__roba_workers__report_blocker".to_string(),
+                "mcp__roba_workers__report_artifact".to_string(),
+            ]);
             config.append_system_prompt = Some(match config.append_system_prompt.take() {
                 Some(existing) => format!("{existing}\n\n{WORKER_GUIDANCE}"),
                 None => WORKER_GUIDANCE.to_string(),
@@ -569,7 +574,10 @@ fi
             request_config.allow_tools,
             [
                 "mcp__roba_workers__spawn_worker",
-                "mcp__roba_workers__workers"
+                "mcp__roba_workers__workers",
+                "mcp__roba_workers__report_work_item",
+                "mcp__roba_workers__report_blocker",
+                "mcp__roba_workers__report_artifact"
             ]
         );
         assert_eq!(

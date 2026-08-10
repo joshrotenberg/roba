@@ -20,9 +20,9 @@ use tower_mcp::{CallToolResult, HttpTransport, McpRouter, ToolBuilder};
 use uuid::Uuid;
 
 use roba_core::{
-    FailureKind, Prompt, Provider, ProviderCapabilities, ProviderContext, ProviderError,
-    ProviderFuture, ProviderId, ProviderMcpEndpoint, RUN_EVENT_CAPACITY, RunHandle, TurnRequest,
-    WorkerControl,
+    FailureKind, MissionReport, MissionWorkState, Prompt, Provider, ProviderCapabilities,
+    ProviderContext, ProviderError, ProviderFuture, ProviderId, ProviderMcpEndpoint,
+    RUN_EVENT_CAPACITY, RunHandle, TurnRequest, WorkerControl,
 };
 
 const INTERNAL_SERVER_NAME: &str = "roba_workers";
@@ -48,6 +48,49 @@ struct EventsArgs {
     /// up. The maximum is 30 seconds.
     #[serde(default)]
     wait_ms: u64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum ReportWorkState {
+    Planned,
+    InProgress,
+    Completed,
+    Blocked,
+}
+
+impl From<ReportWorkState> for MissionWorkState {
+    fn from(value: ReportWorkState) -> Self {
+        match value {
+            ReportWorkState::Planned => Self::Planned,
+            ReportWorkState::InProgress => Self::InProgress,
+            ReportWorkState::Completed => Self::Completed,
+            ReportWorkState::Blocked => Self::Blocked,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ReportWorkItemArgs {
+    id: String,
+    title: String,
+    state: ReportWorkState,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ReportBlockerArgs {
+    id: String,
+    message: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ReportArtifactArgs {
+    id: String,
+    artifact_kind: String,
+    reference: String,
 }
 
 const MAX_EVENT_WAIT_MS: u64 = 30_000;
@@ -87,6 +130,18 @@ pub fn router(handle: RunHandle) -> McpRouter {
             .no_params_handler(move || {
                 let handle = handle.clone();
                 async move { snapshot_result(&handle).await }
+            })
+            .build()
+    };
+
+    let mission = {
+        let handle = handle.clone();
+        ToolBuilder::new("mission")
+            .description("Inspect the canonical mission projection, including runtime facts and agent-reported work state.")
+            .read_only()
+            .no_params_handler(move || {
+                let handle = handle.clone();
+                async move { json_result(handle.mission().await) }
             })
             .build()
     };
@@ -224,10 +279,11 @@ pub fn router(handle: RunHandle) -> McpRouter {
     McpRouter::new()
         .server_info("roba-run", env!("CARGO_PKG_VERSION"))
         .instructions(
-            "This MCP server controls one bounded Roba run. Start supplies the first prompt; status, wait, events, and workers observe it; steer queues root guidance; spawn_worker starts an inherited child within explicit bounds; cancel ends the tree.",
+            "This MCP server controls one finite Roba mission. Start supplies the first prompt; mission returns the canonical monitoring projection; status, wait, events, and workers expose its underlying run tree; steer queues root guidance; spawn_worker starts an inherited child within explicit bounds; cancel ends the tree.",
         )
         .tool(start)
         .tool(status)
+        .tool(mission)
         .tool(wait)
         .tool(steer)
         .tool(spawn_worker)
@@ -401,14 +457,85 @@ fn worker_router(control: WorkerControl) -> McpRouter {
             })
             .build()
     };
-    let workers = ToolBuilder::new("workers")
-        .description("List descendants owned by this exact provider run.")
-        .read_only()
-        .no_params_handler(move || {
+    let workers = {
+        let control = control.clone();
+        ToolBuilder::new("workers")
+            .description("List descendants owned by this exact provider run.")
+            .read_only()
+            .no_params_handler(move || {
+                let control = control.clone();
+                async move {
+                    match control.workers() {
+                        Ok(workers) => json_result(serde_json::json!({ "workers": workers })),
+                        Err(error) => Ok(CallToolResult::error(error.to_string())),
+                    }
+                }
+            })
+            .build()
+    };
+
+    let report_work_item = {
+        let control = control.clone();
+        ToolBuilder::new("report_work_item")
+            .description("Upsert this run's claimed mission work-item state for monitors.")
+            .non_destructive()
+            .handler(move |args: ReportWorkItemArgs| {
+                let control = control.clone();
+                async move {
+                    match control
+                        .report(MissionReport::WorkItem {
+                            id: args.id,
+                            title: args.title,
+                            state: args.state.into(),
+                        })
+                        .await
+                    {
+                        Ok(()) => Ok(CallToolResult::text("mission work item recorded")),
+                        Err(error) => Ok(CallToolResult::error(error.to_string())),
+                    }
+                }
+            })
+            .build()
+    };
+    let report_blocker = {
+        let control = control.clone();
+        ToolBuilder::new("report_blocker")
+            .description("Upsert this run's claimed mission blocker for monitors.")
+            .non_destructive()
+            .handler(move |args: ReportBlockerArgs| {
+                let control = control.clone();
+                async move {
+                    match control
+                        .report(MissionReport::Blocker {
+                            id: args.id,
+                            message: args.message,
+                        })
+                        .await
+                    {
+                        Ok(()) => Ok(CallToolResult::text("mission blocker recorded")),
+                        Err(error) => Ok(CallToolResult::error(error.to_string())),
+                    }
+                }
+            })
+            .build()
+    };
+    let report_artifact = ToolBuilder::new("report_artifact")
+        .description(
+            "Upsert this run's claimed mission artifact or external reference for monitors.",
+        )
+        .non_destructive()
+        .handler(move |args: ReportArtifactArgs| {
             let control = control.clone();
             async move {
-                match control.workers() {
-                    Ok(workers) => json_result(serde_json::json!({ "workers": workers })),
+                match control
+                    .report(MissionReport::Artifact {
+                        id: args.id,
+                        artifact_kind: args.artifact_kind,
+                        reference: args.reference,
+                    })
+                    .await
+                {
+                    Ok(()) => Ok(CallToolResult::text("mission artifact recorded")),
                     Err(error) => Ok(CallToolResult::error(error.to_string())),
                 }
             }
@@ -418,10 +545,13 @@ fn worker_router(control: WorkerControl) -> McpRouter {
     McpRouter::new()
         .server_info("roba-worker-control", env!("CARGO_PKG_VERSION"))
         .instructions(
-            "This private server can spawn inherited workers and inspect their state. It cannot widen run authority or control unrelated runs.",
+            "This private server can spawn inherited workers, inspect their state, and publish explicitly claim-backed mission progress. It cannot widen run authority or overwrite host-derived runtime facts.",
         )
         .tool(spawn_worker)
         .tool(workers)
+        .tool(report_work_item)
+        .tool(report_blocker)
+        .tool(report_artifact)
 }
 
 async fn snapshot_result(handle: &RunHandle) -> tower_mcp::Result<CallToolResult> {
@@ -506,6 +636,15 @@ mod tests {
         assert_eq!(before["state"], "suspended");
         assert!(before["created_at_unix_ms"].is_u64());
         assert!(before.get("started_at_unix_ms").is_none());
+        let mission = client.call_tool_json("mission", json!({})).await;
+        assert_eq!(mission["root"]["state"], "suspended");
+        assert!(mission["workers"].as_array().unwrap().is_empty());
+        assert!(
+            mission["claims"]["work_items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
 
         let started = client
             .call_tool_json("start", json!({"text": "hello"}))
@@ -695,9 +834,11 @@ mod tests {
         assert!(refusal.to_string().contains("maximum of 1 workers"));
 
         provider.release_root.notify_one();
+        let terminal = run.handle().wait().await;
         assert_eq!(
-            run.handle().wait().await.state,
-            roba_core::RunState::Completed
+            terminal.state,
+            roba_core::RunState::Completed,
+            "{terminal:?}"
         );
     }
 
@@ -756,6 +897,26 @@ mod tests {
                     let mut client = TestClient::from_router(worker_router(control));
                     client.initialize().await;
                     client
+                        .call_tool(
+                            "report_work_item",
+                            json!({
+                                "id": "issue-1",
+                                "title": "Implement issue 1",
+                                "state": "in_progress"
+                            }),
+                        )
+                        .await;
+                    client
+                        .call_tool(
+                            "report_artifact",
+                            json!({
+                                "id": "branch-1",
+                                "artifact_kind": "branch",
+                                "reference": "agent/issue-1"
+                            }),
+                        )
+                        .await;
+                    client
                         .call_tool_json("spawn_worker", json!({"text": "worker"}))
                         .await;
                     let workers = client.call_tool_json("workers", json!({})).await;
@@ -786,13 +947,19 @@ mod tests {
         let run = Run::new(spec, provider).unwrap();
 
         run.begin().await.unwrap();
+        let terminal = run.handle().wait().await;
         assert_eq!(
-            run.handle().wait().await.state,
-            roba_core::RunState::Completed
+            terminal.state,
+            roba_core::RunState::Completed,
+            "{terminal:?}"
         );
         let workers = run.handle().workers();
         assert_eq!(workers.len(), 1);
         assert_eq!(workers[0].parent_id, run.id());
         assert!(workers[0].run.is_terminal());
+        let mission = run.handle().mission().await;
+        assert_eq!(mission.claims.work_items.len(), 1);
+        assert_eq!(mission.claims.work_items[0].id, "issue-1");
+        assert_eq!(mission.claims.artifacts.len(), 1);
     }
 }

@@ -9,7 +9,7 @@ use std::fmt;
 use roba_core::{Prompt, RunHandle, RunState};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
-const HELP: &str = "commands: /start TEXT, /steer TEXT, /spawn TEXT, /workers, /status, /wait, /cancel, /help, /quit; a bare line starts a suspended run or steers a running run";
+const HELP: &str = "commands: /start TEXT, /steer TEXT, /spawn TEXT, /workers, /status, /mission, /wait, /cancel, /help, /quit; a bare line starts a suspended run or steers a running run";
 
 /// One parsed REPL command result.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +64,11 @@ impl Repl {
         }
         if line == "/status" {
             return snapshot(self.handle.status().await);
+        }
+        if line == "/mission" {
+            return Ok(ReplResponse::output(serde_json::to_string(
+                &self.handle.mission().await,
+            )?));
         }
         if line == "/workers" {
             return Ok(ReplResponse::output(serde_json::to_string(
@@ -292,6 +297,22 @@ mod tests {
             )
             .unwrap()["state"],
             "suspended"
+        );
+        let mission: serde_json::Value = serde_json::from_str(
+            repl.command("/mission")
+                .await
+                .unwrap()
+                .output
+                .as_deref()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(mission["root"]["state"], "suspended");
+        assert!(
+            mission["claims"]["work_items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
         );
     }
 

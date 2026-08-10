@@ -9,6 +9,10 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
+use crate::mission::{
+    MissionArtifact, MissionAuthority, MissionBlocker, MissionClaims, MissionReport,
+    MissionReportError, MissionSnapshot, MissionWorkItem,
+};
 use crate::provider::{EventSink, Provider, ProviderContext, ProviderError, execute_turn};
 use crate::run::{
     FailureKind, Prompt, ProviderId, RunEvent, RunFailure, RunId, RunOutcome, RunSpec, RunState,
@@ -217,6 +221,14 @@ impl WorkerControl {
     pub fn workers(&self) -> Result<Vec<WorkerSnapshot>, RunControlError> {
         Ok(self.handle()?.workers())
     }
+
+    /// Publish a typed, explicitly agent-reported mission claim.
+    pub async fn report(&self, report: MissionReport) -> Result<(), MissionReportError> {
+        self.handle()
+            .map_err(|_| MissionReportError::RunUnavailable)?
+            .report(report)
+            .await
+    }
 }
 
 impl RunHandle {
@@ -362,6 +374,37 @@ impl RunHandle {
     /// snapshots remain observable until the root tree is dropped.
     pub fn workers(&self) -> Vec<WorkerSnapshot> {
         self.inner.tree.descendants(self.inner.id)
+    }
+
+    /// Return the canonical mission projection shared by library adapters.
+    pub async fn mission(&self) -> MissionSnapshot {
+        MissionSnapshot {
+            root: self.status().await,
+            workers: self.workers(),
+            authority: MissionAuthority {
+                permissions: self.inner.spec.execution.permissions,
+                tools: self.inner.spec.execution.tools.clone(),
+                limits: self.inner.spec.execution.limits.clone(),
+                workers: self.inner.tree.policy,
+            },
+            claims: self.inner.tree.claims(self.inner.id),
+        }
+    }
+
+    /// Publish a typed claim while preserving runtime-derived mission facts.
+    pub async fn report(&self, report: MissionReport) -> Result<(), MissionReportError> {
+        let control = self.inner.control.lock().await;
+        if control.snapshot.is_terminal() {
+            return Err(MissionReportError::MissionClosed);
+        }
+        report.validate()?;
+        self.inner.tree.report(self.inner.id, report.clone());
+        self.inner
+            .tree
+            .events
+            .emit(self.inner.id, RunEvent::MissionReported { report });
+        drop(control);
+        Ok(())
     }
 
     /// Subscribe to retained and future normalized events for this run and its
@@ -547,7 +590,15 @@ struct RunTree {
     next_id: AtomicU64,
     providers: BTreeMap<ProviderId, Arc<dyn Provider>>,
     records: StdMutex<BTreeMap<RunId, WorkerRecord>>,
+    claims: StdMutex<MissionClaimState>,
     events: EventJournal,
+}
+
+#[derive(Default)]
+struct MissionClaimState {
+    work_items: BTreeMap<(RunId, String), MissionWorkItem>,
+    blockers: BTreeMap<(RunId, String), MissionBlocker>,
+    artifacts: BTreeMap<(RunId, String), MissionArtifact>,
 }
 
 struct EventJournal {
@@ -590,6 +641,7 @@ impl RunTree {
             next_id: AtomicU64::new(RunId::ROOT.get() + 1),
             providers,
             records: StdMutex::new(BTreeMap::new()),
+            claims: StdMutex::new(MissionClaimState::default()),
             events: EventJournal::new(),
         }
     }
@@ -671,6 +723,79 @@ impl RunTree {
 
     fn includes(&self, ancestor: RunId, candidate: RunId) -> bool {
         candidate == ancestor || is_descendant(&lock_records(&self.records), candidate, ancestor)
+    }
+
+    fn report(&self, reported_by: RunId, report: MissionReport) {
+        let mut claims = self
+            .claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match report {
+            MissionReport::WorkItem { id, title, state } => {
+                claims.work_items.insert(
+                    (reported_by, id.clone()),
+                    MissionWorkItem {
+                        id,
+                        title,
+                        state,
+                        reported_by,
+                    },
+                );
+            }
+            MissionReport::Blocker { id, message } => {
+                claims.blockers.insert(
+                    (reported_by, id.clone()),
+                    MissionBlocker {
+                        id,
+                        message,
+                        reported_by,
+                    },
+                );
+            }
+            MissionReport::Artifact {
+                id,
+                artifact_kind,
+                reference,
+            } => {
+                claims.artifacts.insert(
+                    (reported_by, id.clone()),
+                    MissionArtifact {
+                        id,
+                        kind: artifact_kind,
+                        reference,
+                        reported_by,
+                    },
+                );
+            }
+        }
+    }
+
+    fn claims(&self, ancestor: RunId) -> MissionClaims {
+        let claims = self
+            .claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let visible = |run_id| self.includes(ancestor, run_id);
+        MissionClaims {
+            work_items: claims
+                .work_items
+                .values()
+                .filter(|item| visible(item.reported_by))
+                .cloned()
+                .collect(),
+            blockers: claims
+                .blockers
+                .values()
+                .filter(|item| visible(item.reported_by))
+                .cloned()
+                .collect(),
+            artifacts: claims
+                .artifacts
+                .values()
+                .filter(|item| visible(item.reported_by))
+                .cloned()
+                .collect(),
+        }
     }
 }
 
@@ -1082,6 +1207,7 @@ mod tests {
         AgentSpec, ContextSpec, Cost, PermissionPolicy, RunFailureDetails, RunOutcome,
         SessionHandle, TokenUsage, TurnRequest, WorkerPolicy, WorkerSpec,
     };
+    use crate::{MissionReport, MissionWorkState};
 
     struct RecordingProvider {
         calls: AtomicUsize,
@@ -1208,6 +1334,70 @@ mod tests {
         assert_eq!(terminal.state, RunState::Completed);
         assert_eq!(terminal.last_outcome.unwrap().output, "hello");
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn mission_projection_separates_runtime_facts_from_reported_claims() {
+        let provider = provider(false);
+        let spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()));
+        let run = Run::new(spec, provider.clone()).unwrap();
+
+        let empty = run.handle().mission().await;
+        assert_eq!(empty.root.state, RunState::Suspended);
+        assert!(empty.workers.is_empty());
+        assert!(empty.claims.work_items.is_empty());
+        assert_eq!(empty.authority.workers, WorkerPolicy::default());
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+
+        run.handle()
+            .report(MissionReport::WorkItem {
+                id: "issue-1".to_string(),
+                title: "Implement the first issue".to_string(),
+                state: MissionWorkState::InProgress,
+            })
+            .await
+            .unwrap();
+        run.handle()
+            .report(MissionReport::Artifact {
+                id: "pr-1".to_string(),
+                artifact_kind: "pull_request".to_string(),
+                reference: "https://example.invalid/pr/1".to_string(),
+            })
+            .await
+            .unwrap();
+        run.handle()
+            .report(MissionReport::WorkItem {
+                id: "issue-1".to_string(),
+                title: "Implement the first issue".to_string(),
+                state: MissionWorkState::Completed,
+            })
+            .await
+            .unwrap();
+
+        let mission = run.handle().mission().await;
+        assert_eq!(mission.root.state, RunState::Suspended);
+        assert_eq!(mission.claims.work_items.len(), 1);
+        assert_eq!(mission.claims.work_items[0].reported_by, run.id());
+        assert_eq!(
+            mission.claims.work_items[0].state,
+            MissionWorkState::Completed
+        );
+        assert_eq!(mission.claims.artifacts.len(), 1);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+
+        let events = run
+            .handle()
+            .event_page(0, RUN_EVENT_CAPACITY)
+            .await
+            .unwrap();
+        assert_eq!(
+            events
+                .events
+                .iter()
+                .filter(|record| matches!(record.event, RunEvent::MissionReported { .. }))
+                .count(),
+            3
+        );
     }
 
     #[tokio::test]
@@ -1727,7 +1917,6 @@ mod tests {
             workers[0].run.last_outcome.as_ref().unwrap().output,
             "worker"
         );
-
         let root_events = run
             .handle()
             .event_page(0, RUN_EVENT_CAPACITY)
@@ -1751,6 +1940,66 @@ mod tests {
         provider.release_root.notify_one();
         assert_eq!(run.handle().wait().await.state, RunState::Completed);
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn reporters_cannot_overwrite_sibling_claims_or_report_after_terminal() {
+        let (run, provider) = worker_root(WorkerPolicy {
+            max_workers: 1,
+            max_depth: 1,
+        });
+        run.begin().await.unwrap();
+        provider.root_started.notified().await;
+        let worker = run
+            .handle()
+            .spawn_inherited(Prompt::new("block worker").unwrap())
+            .await
+            .unwrap();
+        provider.worker_started.notified().await;
+
+        for (handle, title, state) in [
+            (run.handle(), "root claim", MissionWorkState::InProgress),
+            (worker.clone(), "worker claim", MissionWorkState::Completed),
+        ] {
+            handle
+                .report(MissionReport::WorkItem {
+                    id: "shared-id".to_string(),
+                    title: title.to_string(),
+                    state,
+                })
+                .await
+                .unwrap();
+        }
+        let mission = run.handle().mission().await;
+        assert_eq!(mission.claims.work_items.len(), 2);
+        assert!(
+            mission
+                .claims
+                .work_items
+                .iter()
+                .any(|item| { item.reported_by == run.id() && item.title == "root claim" })
+        );
+        assert!(
+            mission
+                .claims
+                .work_items
+                .iter()
+                .any(|item| { item.reported_by == worker.id() && item.title == "worker claim" })
+        );
+
+        provider.release_root.notify_one();
+        assert_eq!(run.handle().wait().await.state, RunState::Completed);
+        assert_eq!(worker.wait().await.state, RunState::Cancelled);
+        assert_eq!(
+            worker
+                .report(MissionReport::Blocker {
+                    id: "late".to_string(),
+                    message: "too late".to_string(),
+                })
+                .await
+                .unwrap_err(),
+            MissionReportError::MissionClosed
+        );
     }
 
     #[tokio::test]
