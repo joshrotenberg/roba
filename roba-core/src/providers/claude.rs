@@ -1,9 +1,12 @@
 //! Claude Code provider adapter.
 
+use std::path::PathBuf;
+
 use anyhow::Result;
+use claude_wrapper::streaming::{BlockDelta, PartialMessageEvent, StreamEvent, stream_query};
 use claude_wrapper::types::QueryResult;
 use claude_wrapper::{
-    Claude, Effort as ClaudeEffort, McpConfigBuilder, QueryCommand, TempMcpConfig,
+    Claude, Effort as ClaudeEffort, McpConfigBuilder, OutputFormat, QueryCommand, TempMcpConfig,
 };
 
 use crate::engine::{self, Config, Permissions, Session};
@@ -16,38 +19,45 @@ use crate::run::{
 };
 
 /// Claude Code implementation of Roba's provider-neutral turn boundary.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ClaudeProvider;
+#[derive(Debug, Clone, Default)]
+pub struct ClaudeProvider {
+    binary: Option<PathBuf>,
+}
+
+/// Backward-compatible default provider value for callers that constructed the
+/// former unit struct as `ClaudeProvider`.
+#[allow(non_upper_case_globals)]
+pub const ClaudeProvider: ClaudeProvider = ClaudeProvider { binary: None };
 
 const WORKER_GUIDANCE: &str = "Roba owns all child work for this run. When the task calls for workers, use only the `mcp__roba_workers__spawn_worker` tool, then use `mcp__roba_workers__workers` and wait for every spawned worker before answering. Never launch Roba or provider CLIs in the shell to simulate workers, and never substitute provider-native subagents. If Roba refuses a spawn, report that refusal instead of using another mechanism.";
 
 impl ClaudeProvider {
+    /// Use an explicit Claude executable instead of resolving `claude` from
+    /// `PATH`. This is useful for embedded hosts and deterministic tests.
+    pub fn with_binary(binary: impl Into<PathBuf>) -> Self {
+        Self {
+            binary: Some(binary.into()),
+        }
+    }
+
+    fn client(&self, config: &Config) -> Result<Claude> {
+        let mut builder = Claude::builder();
+        if let Some(binary) = &self.binary {
+            builder = builder.binary(binary);
+        }
+        if let Some(secs) = config.timeout_secs
+            && secs > 0
+        {
+            builder = builder.timeout_secs(secs);
+        }
+        builder.build().map_err(Into::into)
+    }
+
     /// Execute the pre-pivot Claude config without changing its behavior.
     /// This is the compatibility seam used by [`crate::engine::run`].
     pub async fn execute_legacy(&self, config: &Config) -> Result<QueryResult> {
-        let mut builder = Claude::builder();
-        if let Some(secs) = config.timeout_secs
-            && secs > 0
-        {
-            builder = builder.timeout_secs(secs);
-        }
-        let claude = builder.build()?;
+        let claude = self.client(config)?;
         let mut result = engine::execute(config, &claude).await?;
-        if config.json_schema.is_some() {
-            engine::surface_structured_output(&mut result);
-        }
-        Ok(result)
-    }
-
-    async fn execute_bounded(&self, config: &Config) -> Result<QueryResult> {
-        let mut builder = Claude::builder();
-        if let Some(secs) = config.timeout_secs
-            && secs > 0
-        {
-            builder = builder.timeout_secs(secs);
-        }
-        let claude = builder.build()?;
-        let mut result = Self::bounded_command(config).execute_json(&claude).await?;
         if config.json_schema.is_some() {
             engine::surface_structured_output(&mut result);
         }
@@ -58,7 +68,13 @@ impl ClaudeProvider {
         // Roba owns bounded child-run creation. Claude's native Agent tool is
         // not represented in the run tree and would bypass worker count,
         // depth, cancellation, and event observation.
-        engine::query_command(config).disallowed_tool("Agent")
+        engine::query_command(config)
+            // `stream_query` consumes NDJSON but does not override the command's
+            // output format or forward a stdin prompt itself.
+            .output_format(OutputFormat::StreamJson)
+            .prompt_via_stdin(false)
+            .disallowed_tool("Agent")
+            .include_partial_messages()
     }
 
     fn config(request: &TurnRequest) -> Result<Config, ProviderError> {
@@ -146,10 +162,7 @@ impl ClaudeProvider {
     /// Normalize Claude's result without converting missing telemetry to zero.
     pub fn normalize(result: QueryResult) -> RunOutcome {
         let structured_output = result.extra.get("structured_output").cloned();
-        // claude-wrapper 0.13.0 preserves newer usage payloads in `extra`.
-        // Reading the observed value here keeps this adapter compatible with
-        // that stable wrapper release without pretending absent fields are 0.
-        let usage = result.extra.get("usage").map(normalize_usage);
+        let usage = result.usage.as_ref().map(normalize_usage);
         RunOutcome {
             output: result.result,
             session: (!result.session_id.is_empty()).then(|| SessionHandle {
@@ -165,19 +178,14 @@ impl ClaudeProvider {
     }
 }
 
-fn normalize_usage(value: &serde_json::Value) -> TokenUsage {
-    let field = |names: &[&str]| {
-        names
-            .iter()
-            .find_map(|name| value.get(name).and_then(serde_json::Value::as_u64))
-    };
+fn normalize_usage(usage: &claude_wrapper::types::TokenUsage) -> TokenUsage {
     TokenUsage {
-        input: field(&["input_tokens"]),
-        cached_input: field(&["cached_input_tokens", "cache_read_input_tokens"]),
-        cache_write_input: field(&["cache_write_input_tokens", "cache_creation_input_tokens"]),
-        output: field(&["output_tokens"]),
-        reasoning_output: field(&["reasoning_output_tokens"]),
-        total: field(&["total_tokens"]),
+        input: usage.input_tokens,
+        cached_input: usage.cached_input_tokens,
+        cache_write_input: usage.cache_write_input_tokens,
+        output: usage.output_tokens,
+        reasoning_output: usage.reasoning_output_tokens,
+        total: usage.total_tokens,
     }
 }
 
@@ -189,9 +197,7 @@ impl Provider for ClaudeProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             resume: true,
-            // The compatibility adapter is non-streaming. The existing CLI
-            // streaming path moves behind this boundary in a later slice.
-            streaming: false,
+            streaming: true,
             read_only: true,
             workspace_write: true,
             full_auto: true,
@@ -249,9 +255,44 @@ impl Provider for ClaudeProvider {
                 config.mcp_config.push(mcp_config.path().to_string());
             }
             Self::configure_internal_worker_control(&mut config, &context);
-            let result = self.execute_bounded(&config).await.map_err(|error| {
+            let claude = self.client(&config).map_err(|error| {
                 ProviderError::new(FailureKind::Provider, format!("Claude failed: {error:#}"))
             })?;
+            let mut terminal = None;
+            let mut terminal_error = None;
+            stream_query(&claude, &Self::bounded_command(&config), |event| {
+                emit_stream_event(&event, events);
+                if event.is_result() {
+                    match serde_json::from_value::<QueryResult>(event.data) {
+                        Ok(result) => {
+                            if let Some(usage) = result.usage.as_ref() {
+                                events.emit(RunEvent::Usage {
+                                    usage: normalize_usage(usage),
+                                });
+                            }
+                            terminal = Some(result);
+                        }
+                        Err(error) => terminal_error = Some(error),
+                    }
+                }
+            })
+            .await
+            .map_err(map_error)?;
+            if let Some(error) = terminal_error {
+                return Err(ProviderError::new(
+                    FailureKind::Provider,
+                    format!("Claude result event was invalid: {error}"),
+                ));
+            }
+            let mut result = terminal.ok_or_else(|| {
+                ProviderError::new(
+                    FailureKind::Provider,
+                    "Claude stream ended without a result event",
+                )
+            })?;
+            if config.json_schema.is_some() {
+                engine::surface_structured_output(&mut result);
+            }
             if result.is_error {
                 return Err(ProviderError::new(
                     FailureKind::Provider,
@@ -271,6 +312,31 @@ impl Provider for ClaudeProvider {
     }
 }
 
+fn emit_stream_event(event: &StreamEvent, sink: &dyn EventSink) {
+    if let Some(PartialMessageEvent::BlockDelta {
+        delta: BlockDelta::Text(text),
+        ..
+    }) = event.partial_message()
+    {
+        sink.emit(RunEvent::OutputDelta { text });
+    }
+}
+
+fn map_error(error: claude_wrapper::Error) -> ProviderError {
+    let kind = match error {
+        claude_wrapper::Error::Auth { .. } => FailureKind::Authentication,
+        claude_wrapper::Error::Timeout { .. } => FailureKind::Timeout,
+        claude_wrapper::Error::MaxTurnsExceeded { .. }
+        | claude_wrapper::Error::MaxBudgetExceeded { .. }
+        | claude_wrapper::Error::BudgetExceeded { .. } => FailureKind::Limit,
+        claude_wrapper::Error::VersionMismatch { .. }
+        | claude_wrapper::Error::UntestedCliVersion { .. }
+        | claude_wrapper::Error::DangerousNotAllowed { .. } => FailureKind::Unsupported,
+        _ => FailureKind::Provider,
+    };
+    ProviderError::new(kind, format!("Claude failed: {error}"))
+}
+
 fn map_effort(effort: Effort) -> ClaudeEffort {
     match effort {
         Effort::Low => ClaudeEffort::Low,
@@ -283,11 +349,77 @@ fn map_effort(effort: Effort) -> ClaudeEffort {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::sync::Mutex;
+
     use claude_wrapper::ClaudeCommand;
     use serde_json::json;
 
     use super::*;
+    #[cfg(unix)]
+    use crate::run::RunState;
     use crate::run::{AgentSpec, Prompt, RunSpec};
+
+    #[cfg(unix)]
+    #[derive(Default)]
+    struct RecordingSink {
+        events: Mutex<Vec<RunEvent>>,
+    }
+
+    #[cfg(unix)]
+    impl EventSink for RecordingSink {
+        fn emit(&self, event: RunEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    #[cfg(unix)]
+    fn fake_claude(temp: &tempfile::TempDir) -> (ClaudeProvider, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let marker = temp.path().join("blocked.pid");
+        let binary = temp.path().join("claude");
+        let script = format!(
+            r#"#!/bin/sh
+prompt=
+resuming=false
+for arg do
+  prompt=$arg
+  if [ "$arg" = --resume ]; then
+    resuming=true
+  fi
+done
+case "$prompt" in
+  block)
+    printf '%s' "$$" > '{}'
+    exec sleep 30
+    ;;
+  unterminated)
+    text=partial
+    terminal=false
+    ;;
+  *)
+    if [ "$resuming" = true ]; then
+      text=resumed
+    else
+      text=opened
+    fi
+    terminal=true
+    ;;
+esac
+printf '{{"type":"stream_event","session_id":"session-1","event":{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"%s"}}}}}}\n' "$text"
+if [ "$terminal" = true ]; then
+  printf '{{"type":"result","subtype":"success","result":"%s","session_id":"session-1","total_cost_usd":0.02,"duration_ms":10,"num_turns":1,"is_error":false,"usage":{{"input_tokens":3,"output_tokens":2}}}}\n' "$text"
+fi
+"#,
+            marker.display()
+        );
+        std::fs::write(&binary, script).unwrap();
+        let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&binary, permissions).unwrap();
+        (ClaudeProvider::with_binary(binary), marker)
+    }
 
     fn request(provider: ProviderId) -> TurnRequest {
         RunSpec::suspended(AgentSpec::new(provider))
@@ -339,7 +471,7 @@ mod tests {
 
     #[test]
     fn rejects_cross_provider_session_resume() {
-        let provider = ClaudeProvider;
+        let provider = ClaudeProvider::default();
         let mut request = request(ProviderId::claude());
         request.spec.execution.session = SessionSpec::Resume {
             session: SessionHandle {
@@ -390,6 +522,140 @@ mod tests {
         let args = ClaudeProvider::bounded_command(&request_config).args();
         assert!(args.iter().any(|arg| arg == "--disallowed-tools"));
         assert!(args.iter().any(|arg| arg == "Agent"));
+        assert!(args.iter().any(|arg| arg == "--include-partial-messages"));
+        assert!(
+            args.windows(2)
+                .any(|args| args[0] == "--output-format" && args[1] == "stream-json")
+        );
         assert!(!format!("{context:?}").contains("secret-worker-token"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_binary_streams_open_and_resume_into_normalized_events() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, _) = fake_claude(&temp);
+
+        let fresh_events = RecordingSink::default();
+        let fresh = provider
+            .execute(
+                request(ProviderId::claude()),
+                ProviderContext::default(),
+                &fresh_events,
+            )
+            .await
+            .unwrap();
+        assert_eq!(fresh.output, "opened");
+        assert_eq!(fresh.session.as_ref().unwrap().id, "session-1");
+        assert_eq!(fresh.usage.as_ref().unwrap().input, Some(3));
+        assert_eq!(fresh.usage.as_ref().unwrap().output, Some(2));
+        assert_eq!(fresh.cost, Some(Cost::usd(0.02)));
+        let fresh_events = fresh_events.events.into_inner().unwrap();
+        assert!(fresh_events.contains(&RunEvent::OutputDelta {
+            text: "opened".to_string(),
+        }));
+        assert!(fresh_events.iter().any(|event| matches!(
+            event,
+            RunEvent::Usage { usage }
+                if usage.input == Some(3) && usage.output == Some(2)
+        )));
+        assert!(matches!(
+            fresh_events.last(),
+            Some(RunEvent::TurnCompleted { .. })
+        ));
+
+        let mut resumed = request(ProviderId::claude());
+        resumed.spec.execution.session = SessionSpec::Resume {
+            session: SessionHandle {
+                provider: ProviderId::claude(),
+                id: "session-1".to_string(),
+            },
+        };
+        let resume_events = RecordingSink::default();
+        let resumed = provider
+            .execute(resumed, ProviderContext::default(), &resume_events)
+            .await
+            .unwrap();
+        assert_eq!(resumed.output, "resumed");
+        assert!(
+            resume_events
+                .events
+                .into_inner()
+                .unwrap()
+                .contains(&RunEvent::OutputDelta {
+                    text: "resumed".to_string(),
+                })
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_a_streamed_turn_kills_the_fake_process() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, marker) = fake_claude(&temp);
+        let run = crate::Run::new(
+            RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+                .with_prompt(Prompt::new("block").unwrap()),
+            std::sync::Arc::new(provider),
+        )
+        .unwrap();
+        run.begin().await.unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !marker.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fake Claude process did not start");
+        let pid = std::fs::read_to_string(&marker).unwrap();
+
+        run.handle().cancel().await.unwrap();
+        assert_eq!(run.handle().wait().await.state, RunState::Cancelled);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let alive = std::process::Command::new("kill")
+                    .args(["-0", pid.as_str()])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|status| status.success());
+                if !alive {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cancelled Claude process remained alive");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn successful_process_without_result_event_fails_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, _) = fake_claude(&temp);
+        let request = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+            .with_prompt(Prompt::new("unterminated").unwrap())
+            .into_turn()
+            .unwrap();
+        let events = RecordingSink::default();
+
+        let error = provider
+            .execute(request, ProviderContext::default(), &events)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind, FailureKind::Provider);
+        assert!(error.message.contains("without a result event"));
+        let events = events.events.into_inner().unwrap();
+        assert!(events.contains(&RunEvent::OutputDelta {
+            text: "partial".to_string(),
+        }));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, RunEvent::TurnCompleted { .. }))
+        );
     }
 }

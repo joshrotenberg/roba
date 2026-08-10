@@ -11,7 +11,7 @@
 //!   model. Claude also remains the compatibility provider for the legacy CLI.
 //! - [`engine`] -- the pre-pivot config-and-run seam. [`engine::run`] remains
 //!   available while the CLI migrates, and delegates execution through
-//!   [`ClaudeProvider`].
+//!   [`struct@ClaudeProvider`].
 //! - [`session`] -- [`session::apply_session`], the single `Config ->
 //!   QueryCommand` mapper the engine feeds, plus the permission/notice
 //!   composition it consumes.
