@@ -195,6 +195,9 @@ tree policy, not from a caller-supplied run id or parent field.
 Provider-native subagent facilities are disabled on the bounded-run path.
 Claude's Agent tool and Codex's multi-agent feature would otherwise create
 work outside Roba's worker count, depth, cancellation, and observation model.
+Provider instructions name the exact private worker tools, require waiting for
+owned workers, and forbid shell-launched Roba/provider processes as substitutes
+when a spawn is refused.
 
 ## Implementation sequence
 
