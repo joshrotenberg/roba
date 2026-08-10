@@ -18,6 +18,8 @@ use crate::run::{
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CodexProvider;
 
+const WORKER_GUIDANCE: &str = "Roba owns all child work for this run. When the task calls for workers, use only the `roba_workers.spawn_worker` MCP tool, then use `roba_workers.workers` and wait for every spawned worker before answering. Never launch Roba or provider CLIs in the shell to simulate workers, and never substitute provider-native subagents. If Roba refuses a spawn, report that refusal instead of using another mechanism.";
+
 impl CodexProvider {
     fn client(request: &TurnRequest, context: &ProviderContext) -> Result<Codex, ProviderError> {
         let mut builder = Codex::builder();
@@ -34,7 +36,7 @@ impl CodexProvider {
         // Roba owns bounded child-run creation. Codex's native multi-agent
         // feature is not represented in the run tree and would bypass worker
         // count, depth, cancellation, and event observation.
-        let mut command = ExecCommand::new(render_prompt(request))
+        let mut command = ExecCommand::new(render_prompt(request, context))
             .prompt_via_stdin()
             .disable("multi_agent");
         if let Some(model) = &request.spec.agent.model {
@@ -67,7 +69,7 @@ impl CodexProvider {
     ) -> ExecResumeCommand {
         let mut command = ExecResumeCommand::new()
             .session_id(session_id)
-            .prompt(render_prompt(request))
+            .prompt(render_prompt(request, context))
             .disable("multi_agent");
         if let Some(model) = &request.spec.agent.model {
             command = command.model(model.clone());
@@ -266,12 +268,19 @@ fn mcp_configuration(context: &ProviderContext) -> CodexMcpConfiguration {
     configuration
 }
 
-fn render_prompt(request: &TurnRequest) -> String {
+fn render_prompt(request: &TurnRequest, context: &ProviderContext) -> String {
     let mut sections = Vec::new();
     sections.extend(request.spec.agent.instructions.iter().cloned());
     sections.extend(request.spec.context.project.iter().cloned());
     sections.extend(request.spec.context.run.iter().cloned());
     sections.push(request.prompt.as_str().to_string());
+    if context
+        .mcp_endpoints()
+        .iter()
+        .any(|endpoint| endpoint.name() == "roba_workers")
+    {
+        sections.push(WORKER_GUIDANCE.to_string());
+    }
     sections.join("\n\n")
 }
 
@@ -359,7 +368,10 @@ mod tests {
         turn.spec.agent.instructions = vec!["agent".to_string()];
         turn.spec.context.project = vec!["project".to_string()];
         turn.spec.context.run = vec!["run".to_string()];
-        assert_eq!(render_prompt(&turn), "agent\n\nproject\n\nrun\n\nhello");
+        assert_eq!(
+            render_prompt(&turn, &ProviderContext::default()),
+            "agent\n\nproject\n\nrun\n\nhello"
+        );
     }
 
     #[test]
@@ -386,6 +398,7 @@ mod tests {
         let open = CodexProvider::fresh_command(&request, &context).args();
         let resume = CodexProvider::resume_command(&request, "thread-1", &context).args();
         let configuration = mcp_configuration(&context);
+        let prompt = render_prompt(&request, &context);
 
         for value in &configuration.overrides {
             assert!(
@@ -418,6 +431,9 @@ mod tests {
                 .windows(2)
                 .any(|args| args == ["--disable", "multi_agent"])
         );
+        assert!(prompt.ends_with(WORKER_GUIDANCE));
+        assert!(prompt.contains("roba_workers.spawn_worker"));
+        assert!(prompt.contains("Never launch Roba or provider CLIs in the shell"));
         assert!(!format!("{context:?}").contains("secret-worker-token"));
     }
 }

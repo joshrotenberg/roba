@@ -19,6 +19,8 @@ use crate::run::{
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ClaudeProvider;
 
+const WORKER_GUIDANCE: &str = "Roba owns all child work for this run. When the task calls for workers, use only the `mcp__roba_workers__spawn_worker` tool, then use `mcp__roba_workers__workers` and wait for every spawned worker before answering. Never launch Roba or provider CLIs in the shell to simulate workers, and never substitute provider-native subagents. If Roba refuses a spawn, report that refusal instead of using another mechanism.";
+
 impl ClaudeProvider {
     /// Execute the pre-pivot Claude config without changing its behavior.
     /// This is the compatibility seam used by [`crate::engine::run`].
@@ -122,7 +124,7 @@ impl ClaudeProvider {
         })
     }
 
-    fn allow_internal_mcp_tools(config: &mut Config, context: &ProviderContext) {
+    fn configure_internal_worker_control(config: &mut Config, context: &ProviderContext) {
         if context
             .mcp_endpoints()
             .iter()
@@ -134,6 +136,10 @@ impl ClaudeProvider {
             config
                 .allow_tools
                 .push("mcp__roba_workers__workers".to_string());
+            config.append_system_prompt = Some(match config.append_system_prompt.take() {
+                Some(existing) => format!("{existing}\n\n{WORKER_GUIDANCE}"),
+                None => WORKER_GUIDANCE.to_string(),
+            });
         }
     }
 
@@ -242,7 +248,7 @@ impl Provider for ClaudeProvider {
             if let Some(mcp_config) = &mcp_config {
                 config.mcp_config.push(mcp_config.path().to_string());
             }
-            Self::allow_internal_mcp_tools(&mut config, &context);
+            Self::configure_internal_worker_control(&mut config, &context);
             let result = self.execute_bounded(&config).await.map_err(|error| {
                 ProviderError::new(FailureKind::Provider, format!("Claude failed: {error:#}"))
             })?;
@@ -358,7 +364,7 @@ mod tests {
         let config = ClaudeProvider::mcp_config(&context).unwrap().unwrap();
         let json = std::fs::read_to_string(config.path()).unwrap();
         let mut request_config = Config::new("test");
-        ClaudeProvider::allow_internal_mcp_tools(&mut request_config, &context);
+        ClaudeProvider::configure_internal_worker_control(&mut request_config, &context);
 
         assert!(json.contains("roba_workers"));
         assert!(json.contains("http://127.0.0.1:4123/mcp"));
@@ -369,6 +375,17 @@ mod tests {
                 "mcp__roba_workers__spawn_worker",
                 "mcp__roba_workers__workers"
             ]
+        );
+        assert_eq!(
+            request_config.append_system_prompt.as_deref(),
+            Some(WORKER_GUIDANCE)
+        );
+        assert!(
+            request_config
+                .append_system_prompt
+                .as_deref()
+                .unwrap()
+                .contains("Never launch Roba or provider CLIs in the shell")
         );
         let args = ClaudeProvider::bounded_command(&request_config).args();
         assert!(args.iter().any(|arg| arg == "--disallowed-tools"));

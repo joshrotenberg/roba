@@ -56,6 +56,8 @@ run specification or snapshots.
 Roba disables Claude's native Agent tool and Codex's native multi-agent feature
 on this provider-neutral run path. Otherwise provider-owned subagents could do
 work outside the worker tree's count, depth, cancellation, and event contract.
+The adapters also direct the model to use only Roba's private worker tools and
+to report a refused spawn instead of launching shell or native substitutes.
 
 The run-scoped MCP server also exposes a read-only `events` tool. Events are
 sequenced across the root and its worker tree and retained in a bounded
