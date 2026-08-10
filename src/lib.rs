@@ -1097,17 +1097,13 @@ mod tests {
         .unwrap();
 
         let mut config = engine::Config::new("p");
-        bundle::BundlePlan::load(bundle)
-            .unwrap()
-            .apply_provisioning(&mut config);
+        let plan = bundle::BundlePlan::load(bundle).unwrap();
+        plan.apply_provisioning(&mut config);
 
-        assert!(
-            config
-                .settings
-                .as_deref()
-                .unwrap()
-                .ends_with("settings.json")
-        );
+        let settings = config.settings.as_deref().unwrap();
+        assert!(settings.ends_with("settings.json"));
+        assert!(std::path::Path::new(settings).is_file());
+        assert_ne!(settings, bundle.join("settings.json").to_str().unwrap());
         let definitions: serde_json::Value =
             serde_json::from_str(config.agents_json.as_deref().unwrap()).unwrap();
         assert_eq!(definitions["reviewer"]["description"], "Reviews code");
@@ -1121,13 +1117,16 @@ mod tests {
             definitions["reviewer"]["skills"],
             serde_json::json!(["rust", "api"])
         );
-        assert_eq!(
-            config.plugin_dir,
-            vec![
-                bundle.to_string_lossy().into_owned(),
-                child.to_string_lossy().into_owned()
-            ]
+        assert_eq!(config.plugin_dir.len(), 2);
+        assert!(
+            config
+                .plugin_dir
+                .iter()
+                .all(|root| std::path::Path::new(root).is_dir())
         );
+        assert_ne!(config.plugin_dir[0], bundle.to_string_lossy());
+        assert_ne!(config.plugin_dir[1], child.to_string_lossy());
+        assert!(config.plugin_dir[1].ends_with("plugins/lint"));
     }
 
     #[test]
