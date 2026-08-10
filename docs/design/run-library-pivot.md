@@ -260,8 +260,8 @@ without clap or terminal code. Configuration precedence has one implementation.
       cancellation.
 - [x] Support prompt-less suspended creation and exactly one initial start.
 - [x] Define boundary-safe steering and provider resume behavior.
-- [ ] Promote receipts from detached-CLI artifacts into run outcomes/events
-      where useful, without introducing a database requirement.
+- [x] Promote useful receipt-like lifecycle timing into snapshots and
+      replayable events without introducing persistence or a database.
 - [x] Add child-run ownership and bounded worker-tree observability for Rust,
       external MCP, and REPL callers.
 - [x] Give the root provider an internal, policy-bound worker-spawn transport.
@@ -310,11 +310,9 @@ Current assets to preserve:
 
 1. Read this document and `AGENTS.md`.
 2. Start from clean `main`, inspect `git status`, and create a focused branch.
-3. Continue the first unchecked item that advances the current vertical slice.
-   The recommended next slice is promoting useful detached-run receipts into
-   bounded run outcomes/events without introducing persistence into the
-   library. Keep Claude-only session, worktree, MCP, and presentation controls
-   in the compatibility layer.
+3. All planned pivot phases are complete. Choose the next work from direct
+   library/CLI dogfood, API stabilization, or a new explicit issue; do not add
+   always-running server responsibilities to Roba by default.
 4. Preserve current CLI behavior until a phase's acceptance criteria say a
    compatibility surface may change.
 5. Run the repository's four required gates before publishing a review point.

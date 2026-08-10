@@ -64,13 +64,15 @@ The adapters also direct the model to use only Roba's private worker tools and
 to report a refused spawn instead of launching shell or native substitutes.
 
 The run-scoped MCP server also exposes a read-only `events` tool. Events are
-sequenced across the root and its worker tree and retained in a bounded
-in-memory journal. Pass the returned `next_sequence` as the next `after`
-cursor; an optional `wait_ms` performs bounded long polling. A client that
-falls behind receives `truncated: true` rather than an incomplete history
+timestamped, sequenced across the root and its worker tree, and retained in a
+bounded in-memory journal. Pass the returned `next_sequence` as the next
+`after` cursor; an optional `wait_ms` performs bounded long polling. A client
+that falls behind receives `truncated: true` rather than an incomplete history
 presented as complete, and long polling returns that gap immediately. Cursors
 ahead of the current journal are refused. Claude and Codex output and usage are
-emitted into this journal as each provider's JSONL stream arrives.
+emitted into this journal as each provider's JSONL stream arrives. Status,
+wait, worker snapshots, and the REPL's `/status` JSON expose created, started,
+finished, and monotonic elapsed timing without requiring durable storage.
 
 Configuration resolves in one hierarchy:
 

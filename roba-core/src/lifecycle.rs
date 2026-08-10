@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex as AsyncMutex, watch};
@@ -22,6 +23,18 @@ pub struct RunSnapshot {
     pub parent_id: Option<RunId>,
     pub depth: u32,
     pub state: RunState,
+    /// Wall-clock creation time when the host clock can represent Unix time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_unix_ms: Option<u64>,
+    /// Wall-clock time at which provider work became eligible to start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_unix_ms: Option<u64>,
+    /// Wall-clock time at which the run entered a terminal state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at_unix_ms: Option<u64>,
+    /// Monotonic elapsed time from start to terminal settlement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
     pub turns_completed: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_outcome: Option<RunOutcome>,
@@ -49,6 +62,9 @@ pub struct WorkerSnapshot {
 pub struct RunEventRecord {
     pub sequence: u64,
     pub run_id: RunId,
+    /// Wall-clock occurrence time when the host clock can represent Unix time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at_unix_ms: Option<u64>,
     pub event: RunEvent,
 }
 
@@ -231,6 +247,7 @@ impl RunHandle {
             return Err(RunControlError::AlreadyStarted);
         }
         control.started = true;
+        mark_started(&mut control);
         set_state(&self.inner, &mut control, RunState::Running);
         drop(control);
         spawn_driver(self.inner.clone(), prompt);
@@ -250,6 +267,7 @@ impl RunHandle {
             return Err(RunControlError::AlreadyStarted);
         }
         control.started = true;
+        mark_started(&mut control);
         set_state(&self.inner, &mut control, RunState::Running);
         drop(control);
         spawn_driver(self.inner.clone(), prompt);
@@ -561,6 +579,7 @@ struct WorkerRecord {
 struct Control {
     snapshot: RunSnapshot,
     started: bool,
+    started_at: Option<Instant>,
     steering: VecDeque<Prompt>,
 }
 
@@ -691,6 +710,7 @@ impl EventJournal {
             state.records.push_back(RunEventRecord {
                 sequence,
                 run_id,
+                occurred_at_unix_ms: unix_time_ms(),
                 event,
             });
             sequence
@@ -751,6 +771,10 @@ fn new_inner(
         parent_id,
         depth,
         state: spec.initial_state(),
+        created_at_unix_ms: unix_time_ms(),
+        started_at_unix_ms: None,
+        finished_at_unix_ms: None,
+        elapsed_ms: None,
         turns_completed: 0,
         last_outcome: None,
         failure: None,
@@ -767,6 +791,7 @@ fn new_inner(
         control: AsyncMutex::new(Control {
             snapshot,
             started: false,
+            started_at: None,
             steering: VecDeque::new(),
         }),
         snapshot_tx,
@@ -914,8 +939,26 @@ async fn cancel_children(inner: &Inner) {
 
 fn set_state(inner: &Inner, control: &mut Control, state: RunState) {
     control.snapshot.state = state;
+    if control.snapshot.is_terminal() && control.snapshot.finished_at_unix_ms.is_none() {
+        control.snapshot.finished_at_unix_ms = unix_time_ms();
+        control.snapshot.elapsed_ms = control
+            .started_at
+            .map(|started| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+    }
     inner.snapshot_tx.send_replace(control.snapshot.clone());
     emit(inner, RunEvent::StateChanged { state });
+}
+
+fn mark_started(control: &mut Control) {
+    control.snapshot.started_at_unix_ms = unix_time_ms();
+    control.started_at = Some(Instant::now());
+}
+
+fn unix_time_ms() -> Option<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
 }
 
 fn emit(inner: &Inner, event: RunEvent) {
@@ -1118,6 +1161,61 @@ mod tests {
         assert_eq!(terminal.state, RunState::Completed);
         assert_eq!(terminal.last_outcome.unwrap().output, "hello");
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn snapshots_and_events_expose_process_local_run_timing() {
+        let provider = provider(true);
+        let spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+            .with_prompt(Prompt::new("hello").unwrap());
+        let run = Run::new(spec, provider.clone()).unwrap();
+        let handle = run.handle();
+
+        let created = handle.status().await;
+        assert!(created.created_at_unix_ms.is_some());
+        assert!(created.started_at_unix_ms.is_none());
+        assert!(created.finished_at_unix_ms.is_none());
+        assert!(created.elapsed_ms.is_none());
+
+        run.begin().await.unwrap();
+        provider.first_started.notified().await;
+        let running = handle.status().await;
+        assert!(running.started_at_unix_ms.is_some());
+        assert!(running.finished_at_unix_ms.is_none());
+        assert!(running.elapsed_ms.is_none());
+
+        provider.release_first.notify_one();
+        let terminal = handle.wait().await;
+        assert_eq!(terminal.state, RunState::Completed);
+        assert!(terminal.finished_at_unix_ms.is_some());
+        assert!(terminal.elapsed_ms.is_some());
+
+        let events = handle.event_page(0, RUN_EVENT_CAPACITY).await.unwrap();
+        assert!(!events.events.is_empty());
+        assert!(
+            events
+                .events
+                .iter()
+                .all(|record| record.occurred_at_unix_ms.is_some())
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_before_start_has_no_fabricated_start_or_elapsed_time() {
+        let run = Run::new(
+            RunSpec::suspended(AgentSpec::new(ProviderId::claude())),
+            provider(false),
+        )
+        .unwrap();
+        let handle = run.handle();
+        handle.cancel().await.unwrap();
+        let terminal = handle.wait().await;
+
+        assert_eq!(terminal.state, RunState::Cancelled);
+        assert!(terminal.created_at_unix_ms.is_some());
+        assert!(terminal.started_at_unix_ms.is_none());
+        assert!(terminal.finished_at_unix_ms.is_some());
+        assert!(terminal.elapsed_ms.is_none());
     }
 
     #[tokio::test]

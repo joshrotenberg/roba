@@ -163,7 +163,7 @@ pub fn router(handle: RunHandle) -> McpRouter {
         let handle = handle.clone();
         ToolBuilder::new("events")
             .description(
-                "Read sequenced lifecycle and provider events for this run tree. Use next_sequence as the next after cursor; wait_ms enables bounded long polling.",
+                "Read timestamped, sequenced lifecycle and provider events for this run tree. Use next_sequence as the next after cursor; wait_ms enables bounded long polling.",
             )
             .read_only()
             .handler(move |args: EventsArgs| {
@@ -504,6 +504,8 @@ mod tests {
 
         let before = client.call_tool_json("status", json!({})).await;
         assert_eq!(before["state"], "suspended");
+        assert!(before["created_at_unix_ms"].is_u64());
+        assert!(before.get("started_at_unix_ms").is_none());
 
         let started = client
             .call_tool_json("start", json!({"text": "hello"}))
@@ -516,12 +518,16 @@ mod tests {
         let terminal = client.call_tool_json("wait", json!({})).await;
         assert_eq!(terminal["state"], "completed");
         assert_eq!(terminal["last_outcome"]["output"], "hello");
+        assert!(terminal["started_at_unix_ms"].is_u64());
+        assert!(terminal["finished_at_unix_ms"].is_u64());
+        assert!(terminal["elapsed_ms"].is_u64());
 
         let first = client
             .call_tool_json("events", json!({"after": 0, "limit": 1}))
             .await;
         assert_eq!(first["events"].as_array().unwrap().len(), 1);
         assert_eq!(first["events"][0]["run_id"], 1);
+        assert!(first["events"][0]["occurred_at_unix_ms"].is_u64());
         assert!(!first["truncated"].as_bool().unwrap());
         let cursor = first["next_sequence"].as_u64().unwrap();
 
