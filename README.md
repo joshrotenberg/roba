@@ -39,6 +39,10 @@ mcp-repl -- roba run --provider codex --mcp \
 # Let the root orchestrator create bounded workers itself.
 roba run --provider codex --max-workers 4 --max-worker-depth 2 \
   "Investigate the failure, delegate independent checks, and return one answer."
+
+# Resolve defaults, provider policy, and a named agent from one small file.
+roba run --config examples/run-config/roba.toml --agent builder \
+  "Implement the next coherent change and verify it."
 ```
 
 Worker creation is disabled unless both bounds are explicit. Workers inherit
@@ -73,6 +77,13 @@ Configuration resolves in one hierarchy:
 ```text
 Roba defaults -> selected provider defaults -> named agent -> run overrides
 ```
+
+`roba run --config PATH` loads the public TOML shape directly. It has only
+`[defaults]`, `[providers.NAME]`, and `[agents.NAME]`; CLI flags are the final
+run overrides. Unknown fields fail before provider work. This explicit run
+config is separate from the legacy one-shot CLI's discovered `roba.toml`
+profiles while that compatibility surface remains available. See
+[`examples/run-config/roba.toml`](examples/run-config/roba.toml).
 
 The public implementation is split by responsibility:
 

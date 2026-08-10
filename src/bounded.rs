@@ -1,11 +1,11 @@
 //! Thin CLI adapter for the new bounded-run library API.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use tokio::io::BufReader;
 
 use roba_core::{
     ClaudeProvider, CodexProvider, ConfigLayer, Effort, PermissionPolicy, Prompt, ProviderId, Roba,
-    RobaConfig, RunOverrides, RunState, SessionHandle, SessionSpec,
+    RobaConfig, RunOverrides, RunSpec, RunState, SessionHandle, SessionSpec,
 };
 
 use crate::cli::{EffortLevel, RunArgs, RunProvider};
@@ -15,52 +15,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
         bail!("a prompt-less run is suspended; add --repl or --mcp so it can be started");
     }
 
-    let provider = match args.provider {
-        RunProvider::Claude => ProviderId::claude(),
-        RunProvider::Codex => ProviderId::codex(),
-    };
-    let permissions = if args.full_auto {
-        PermissionPolicy::FullAuto
-    } else if args.writable {
-        PermissionPolicy::WorkspaceWrite
-    } else {
-        PermissionPolicy::ReadOnly
-    };
-    let config = RobaConfig {
-        defaults: ConfigLayer {
-            provider: Some(provider.clone()),
-            model: args.model,
-            effort: args.effort.map(map_effort),
-            instructions: args.instructions,
-            permissions: Some(permissions),
-            max_turns: args.max_turns,
-            max_cost_usd: args.max_cost_usd,
-            timeout_secs: args.timeout,
-            max_workers: args.max_workers,
-            max_worker_depth: args.max_worker_depth,
-            ..ConfigLayer::default()
-        },
-        ..RobaConfig::default()
-    };
-    let initial_prompt = args.prompt.map(Prompt::new).transpose()?;
-    let session = args
-        .resume
-        .map(|id| SessionSpec::Resume {
-            session: SessionHandle {
-                provider: provider.clone(),
-                id,
-            },
-        })
-        .unwrap_or_default();
-    let spec = config.resolve(
-        None,
-        RunOverrides {
-            context: args.context,
-            session,
-            initial_prompt,
-            ..RunOverrides::default()
-        },
-    )?;
+    let spec = resolve_spec(&args)?;
 
     let mut roba = Roba::new();
     roba.register(roba_mcp::WorkerMcpProvider::new(ClaudeProvider))?;
@@ -104,6 +59,68 @@ pub async fn run(args: RunArgs) -> Result<()> {
     }
 }
 
+fn resolve_spec(args: &RunArgs) -> Result<RunSpec> {
+    let mut config = match &args.config {
+        Some(path) => {
+            let input = std::fs::read_to_string(path)
+                .with_context(|| format!("reading run config {}", path.display()))?;
+            RobaConfig::from_toml(&input)
+                .with_context(|| format!("parsing run config {}", path.display()))?
+        }
+        None => RobaConfig::default(),
+    };
+    config
+        .defaults
+        .provider
+        .get_or_insert_with(ProviderId::claude);
+
+    let permissions = if args.full_auto {
+        Some(PermissionPolicy::FullAuto)
+    } else if args.writable {
+        Some(PermissionPolicy::WorkspaceWrite)
+    } else {
+        None
+    };
+    let provider = args.provider.map(map_provider);
+    let mut spec = config.resolve(
+        args.agent.as_deref(),
+        RunOverrides {
+            policy: ConfigLayer {
+                provider,
+                model: args.model.clone(),
+                effort: args.effort.map(map_effort),
+                instructions: args.instructions.clone(),
+                permissions,
+                max_turns: args.max_turns,
+                max_cost_usd: args.max_cost_usd,
+                timeout_secs: args.timeout,
+                max_workers: args.max_workers,
+                max_worker_depth: args.max_worker_depth,
+                ..ConfigLayer::default()
+            },
+            context: args.context.clone(),
+            initial_prompt: args.prompt.clone().map(Prompt::new).transpose()?,
+            ..RunOverrides::default()
+        },
+    )?;
+    if let Some(id) = &args.resume {
+        spec.execution.session = SessionSpec::Resume {
+            session: SessionHandle {
+                provider: spec.agent.provider.clone(),
+                id: id.clone(),
+            },
+        };
+    }
+    Ok(spec)
+}
+
+fn map_provider(provider: RunProvider) -> ProviderId {
+    match provider {
+        RunProvider::Claude => ProviderId::claude(),
+        RunProvider::Codex => ProviderId::codex(),
+    }
+}
+
 fn map_effort(effort: EffortLevel) -> Effort {
     match effort {
         EffortLevel::Low => Effort::Low,
@@ -111,5 +128,79 @@ fn map_effort(effort: EffortLevel) -> Effort {
         EffortLevel::High => Effort::High,
         EffortLevel::Xhigh => Effort::XHigh,
         EffortLevel::Max => Effort::Max,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+    use crate::cli::{Cli, SubCommand};
+
+    fn parse_run_args(args: &[&str]) -> RunArgs {
+        let cli = Cli::try_parse_from(
+            std::iter::once("roba")
+                .chain(std::iter::once("run"))
+                .chain(args.iter().copied()),
+        )
+        .unwrap();
+        match cli.command.unwrap() {
+            SubCommand::Run(args) => args,
+            other => panic!("expected run args, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_resolution_preserves_config_policy_and_fences_resume_to_selected_provider() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("run.toml");
+        std::fs::write(
+            &path,
+            r#"
+[defaults]
+provider = "claude"
+permissions = "full_auto"
+
+[agents.builder]
+provider = "codex"
+model = "configured"
+"#,
+        )
+        .unwrap();
+        let path = path.to_str().unwrap();
+
+        let args = parse_run_args(&[
+            "--config",
+            path,
+            "--agent",
+            "builder",
+            "--model",
+            "overridden",
+            "--resume",
+            "thread-1",
+            "hello",
+        ]);
+        let spec = resolve_spec(&args).unwrap();
+        assert_eq!(spec.agent.provider, ProviderId::codex());
+        assert_eq!(spec.agent.model.as_deref(), Some("overridden"));
+        assert_eq!(spec.execution.permissions, PermissionPolicy::FullAuto);
+        assert!(matches!(
+            spec.execution.session,
+            SessionSpec::Resume {
+                session: SessionHandle { provider, ref id }
+            } if provider == ProviderId::codex() && id == "thread-1"
+        ));
+
+        let args = parse_run_args(&[
+            "--config",
+            path,
+            "--agent",
+            "builder",
+            "--writable",
+            "hello",
+        ]);
+        let spec = resolve_spec(&args).unwrap();
+        assert_eq!(spec.execution.permissions, PermissionPolicy::WorkspaceWrite);
     }
 }

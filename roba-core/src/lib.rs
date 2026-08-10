@@ -42,7 +42,7 @@ pub use provider::{
 };
 pub use providers::claude::ClaudeProvider;
 pub use providers::codex::CodexProvider;
-pub use resolve::{ConfigLayer, ResolveError, RobaConfig, RunOverrides};
+pub use resolve::{ConfigLayer, ConfigParseError, ResolveError, RobaConfig, RunOverrides};
 pub use run::{
     AgentSpec, ContextSpec, Cost, Effort, ExecutionSpec, FailureKind, LimitSpec, PermissionPolicy,
     Prompt, PromptError, ProviderId, ProviderIdError, RunEvent, RunFailure, RunId, RunOutcome,

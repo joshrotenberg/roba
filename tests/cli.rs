@@ -80,10 +80,68 @@ fn bounded_run_help_exposes_provider_and_run_adapters() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--provider"))
+        .stdout(predicate::str::contains("--config"))
+        .stdout(predicate::str::contains("--agent"))
         .stdout(predicate::str::contains("--repl"))
         .stdout(predicate::str::contains("--mcp"))
         .stdout(predicate::str::contains("--max-workers"))
         .stdout(predicate::str::contains("--max-worker-depth"));
+}
+
+#[test]
+fn bounded_run_loads_a_named_agent_from_hierarchical_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("run.toml");
+    std::fs::write(
+        &config,
+        r#"
+[defaults]
+provider = "claude"
+
+[agents.builder]
+provider = "codex"
+max_turns = 1
+"#,
+    )
+    .unwrap();
+
+    roba()
+        .args([
+            "run",
+            "--config",
+            config.to_str().unwrap(),
+            "--agent",
+            "builder",
+            "hello",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "Codex provider does not support a max-turn ceiling",
+        ));
+}
+
+#[test]
+fn bounded_run_config_rejects_unknown_fields_before_provider_launch() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("run.toml");
+    std::fs::write(
+        &config,
+        r#"
+[defaults]
+provider = "codex"
+timeuot_secs = 30
+"#,
+    )
+    .unwrap();
+
+    roba()
+        .args(["run", "--config", config.to_str().unwrap(), "hello"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("unknown field `timeuot_secs`"));
 }
 
 #[test]
