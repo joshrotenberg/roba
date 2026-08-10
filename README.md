@@ -54,6 +54,13 @@ bound to that exact run, authenticated on an ephemeral loopback listener, and
 removed when the turn ends. Its bearer is transient and is never stored in the
 run specification or snapshots.
 
+The run-scoped MCP server also exposes a read-only `events` tool. Events are
+sequenced across the root and its worker tree and retained in a bounded
+in-memory journal. Pass the returned `next_sequence` as the next `after`
+cursor; an optional `wait_ms` performs bounded long polling. A client that
+falls behind receives `truncated: true` rather than an incomplete history
+presented as complete.
+
 Configuration resolves in one hierarchy:
 
 ```text

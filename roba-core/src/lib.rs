@@ -32,7 +32,10 @@ pub mod run;
 pub mod runtime;
 pub mod session;
 
-pub use lifecycle::{Run, RunControlError, RunHandle, RunSnapshot, WorkerControl, WorkerSnapshot};
+pub use lifecycle::{
+    RUN_EVENT_CAPACITY, Run, RunControlError, RunEventPage, RunEventRecord, RunEventSubscription,
+    RunHandle, RunSnapshot, WorkerControl, WorkerSnapshot,
+};
 pub use provider::{
     EventSink, NoopEventSink, Provider, ProviderCapabilities, ProviderContext, ProviderError,
     ProviderFuture, ProviderMcpEndpoint, execute_turn,
