@@ -14,6 +14,13 @@ async fn main() {
     // ROBA_RECEIPT the detaching parent sets, i.e. for every ordinary run.
     roba::receipt::start();
     if let Err(err) = roba::dispatch(cli).await {
+        if let Some(unusable) = err.downcast_ref::<roba::UnusableResultError>() {
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            eprintln!("roba: {} (exit {})", unusable.note(), unusable.code());
+            roba::receipt::finish(unusable.code());
+            std::process::exit(unusable.code());
+        }
         let exit_code = roba::classify_exit_code(&err);
         if json {
             eprintln!("{}", roba::error::render_json(&err, exit_code));
@@ -41,7 +48,8 @@ async fn main() {
         roba::receipt::finish(exit_code);
         std::process::exit(exit_code);
     }
-    // The success seam. `exit_unusable` (code 6) records its own.
+    // The success seam. A typed unusable-result error (code 6) is handled
+    // above after `dispatch` has unwound and dropped run-owned resources.
     roba::receipt::finish(0);
 }
 

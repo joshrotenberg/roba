@@ -23,10 +23,60 @@ const RECOGNIZED_TOP_LEVEL: &[&str] = &[
     "skills",
     "system-prompt.md",
 ];
+const DETACHED_SNAPSHOT_OWNER_FILE: &str = ".roba-detached-snapshot-owner";
+
+enum BundleSnapshot {
+    Temporary(tempfile::TempDir),
+    Detached(DetachedSnapshotDir),
+}
+
+impl BundleSnapshot {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Temporary(directory) => directory.path(),
+            Self::Detached(directory) => &directory.path,
+        }
+    }
+}
+
+struct DetachedSnapshotDir {
+    path: PathBuf,
+}
+
+impl Drop for DetachedSnapshotDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+pub(crate) struct DetachedBundleSnapshot {
+    path: PathBuf,
+    cleanup: bool,
+}
+
+impl DetachedBundleSnapshot {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn transfer_to_child(&mut self) {
+        self.cleanup = false;
+    }
+}
+
+impl Drop for DetachedBundleSnapshot {
+    fn drop(&mut self) {
+        if self.cleanup {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
 
 /// Provider-specific bundle material validated once before it is inspected or
 /// passed into the legacy Claude one-shot path.
 pub(crate) struct BundlePlan {
+    // Owns every path handed to Claude for the full awaited provider call.
+    snapshot: BundleSnapshot,
     system_prompt: Option<String>,
     mcp_config: Option<PathBuf>,
     settings: Option<PathBuf>,
@@ -73,18 +123,44 @@ struct PluginInspection {
 
 impl BundlePlan {
     pub(crate) fn load(root: &Path) -> Result<Self> {
-        if !root.exists() {
-            bail!("bundle {} does not exist", root.display());
+        let metadata = match std::fs::symlink_metadata(root) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                bail!("bundle {} does not exist", root.display())
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading bundle {}", root.display()));
+            }
+        };
+        if metadata.file_type().is_symlink() {
+            bail!("bundle {} must not be a symbolic link", root.display());
         }
-        if !root.is_dir() {
+        if !metadata.is_dir() {
             bail!("bundle {} is not a directory", root.display());
         }
-        validate_recognized_entry_types(root)?;
+
+        // Claude accepts paths, not already-open bytes. Copy the complete
+        // bundle first so validation and the provider observe the same
+        // run-local tree even if the caller later edits or deletes the source.
+        // Refusing symlinks and special files observed during capture keeps
+        // an otherwise-quiescent source tree self-contained.
+        let snapshot = if let Some(adopted) = claim_detached_snapshot(root)? {
+            BundleSnapshot::Detached(adopted)
+        } else {
+            let temporary = tempfile::Builder::new()
+                .prefix("roba-bundle-")
+                .tempdir()
+                .context("creating private bundle snapshot")?;
+            copy_bundle_tree(root, temporary.path(), temporary.path())?;
+            BundleSnapshot::Temporary(temporary)
+        };
+        let snapshot_root = snapshot.path();
+        validate_recognized_entry_types(snapshot_root)?;
 
         // Snapshot the parsed config once. Validation and execution must not
         // reopen potentially changed bytes, and parse diagnostics must not
         // echo a source line that may contain a secret.
-        let config = crate::profile::pool::load_bundle_pool(root).map_err(|_| {
+        let config = crate::profile::pool::load_bundle_pool(snapshot_root).map_err(|_| {
             anyhow::anyhow!(
                 "bundle config {} could not be read or parsed; source details redacted",
                 root.join("roba.toml").display()
@@ -92,11 +168,11 @@ impl BundlePlan {
         })?;
 
         let mut artifacts = Vec::new();
-        let mut warnings = unknown_top_level_entries(root)?;
-        let roba_toml = root.join("roba.toml");
+        let mut warnings = unknown_top_level_entries(snapshot_root)?;
+        let roba_toml = snapshot_root.join("roba.toml");
         push_artifact(&mut artifacts, "roba.toml", &roba_toml);
 
-        let system_prompt_path = root.join("system-prompt.md");
+        let system_prompt_path = snapshot_root.join("system-prompt.md");
         push_artifact(&mut artifacts, "system-prompt.md", &system_prompt_path);
         let system_prompt = if system_prompt_path.is_file() {
             let content = std::fs::read_to_string(&system_prompt_path)
@@ -113,7 +189,7 @@ impl BundlePlan {
             None
         };
 
-        let mcp_path = root.join("mcp.json");
+        let mcp_path = snapshot_root.join("mcp.json");
         push_artifact(&mut artifacts, "mcp.json", &mcp_path);
         let (mcp_config, mcp_servers) = if mcp_path.is_file() {
             let value = read_json_object(&mcp_path, "bundle MCP config")?;
@@ -123,7 +199,7 @@ impl BundlePlan {
             (None, Vec::new())
         };
 
-        let settings_path = root.join("settings.json");
+        let settings_path = snapshot_root.join("settings.json");
         push_artifact(&mut artifacts, "settings.json", &settings_path);
         let (settings, settings_inspection) = if settings_path.is_file() {
             let value = read_json_object(&settings_path, "bundle settings")?;
@@ -133,16 +209,16 @@ impl BundlePlan {
             (None, None)
         };
 
-        let agents_dir = root.join("agents");
+        let agents_dir = snapshot_root.join("agents");
         push_artifact(&mut artifacts, "agents/", &agents_dir);
         let (agents_json, agents, agent_artifacts) = load_agents(&agents_dir)?;
         artifacts.extend(agent_artifacts);
 
-        let skills_dir = root.join("skills");
+        let skills_dir = snapshot_root.join("skills");
         push_artifact(&mut artifacts, "skills/", &skills_dir);
-        let plugins_dir = root.join("plugins");
+        let plugins_dir = snapshot_root.join("plugins");
         push_artifact(&mut artifacts, "plugins/", &plugins_dir);
-        let (plugin_roots, plugins, plugin_artifacts) = load_plugins(root)?;
+        let (plugin_roots, plugins, plugin_artifacts) = load_plugins(snapshot_root)?;
         artifacts.extend(plugin_artifacts);
 
         artifacts.sort();
@@ -160,6 +236,7 @@ impl BundlePlan {
         };
 
         Ok(Self {
+            snapshot,
             system_prompt,
             mcp_config,
             settings,
@@ -182,6 +259,23 @@ impl BundlePlan {
         )
     }
 
+    pub(crate) fn into_detached_snapshot(self) -> Result<DetachedBundleSnapshot> {
+        let BundleSnapshot::Temporary(snapshot) = self.snapshot else {
+            bail!("an adopted detached bundle snapshot cannot be detached again");
+        };
+        let owner = snapshot
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("tempfile bundle names are valid UTF-8");
+        std::fs::write(snapshot.path().join(DETACHED_SNAPSHOT_OWNER_FILE), owner)
+            .context("marking detached bundle snapshot ownership")?;
+        Ok(DetachedBundleSnapshot {
+            path: snapshot.keep(),
+            cleanup: true,
+        })
+    }
+
     pub(crate) fn apply_context(&self, args: &mut AskArgs) {
         if let Some(content) = &self.system_prompt {
             args.append_system_prompt = Some(match args.append_system_prompt.take() {
@@ -201,6 +295,101 @@ impl BundlePlan {
         config.agents_json.clone_from(&self.agents_json);
         config.plugin_dir.extend(self.plugin_roots.iter().cloned());
     }
+}
+
+fn claim_detached_snapshot(root: &Path) -> Result<Option<DetachedSnapshotDir>> {
+    let Some(snapshot_name) = root.file_name().and_then(|name| name.to_str()) else {
+        return Ok(None);
+    };
+    if !snapshot_name.starts_with("roba-bundle-") {
+        return Ok(None);
+    }
+
+    let owner = root.join(DETACHED_SNAPSHOT_OWNER_FILE);
+    let recorded = match std::fs::read_to_string(&owner) {
+        Ok(recorded) => recorded,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("reading detached bundle owner marker {}", owner.display())
+            });
+        }
+    };
+    let parent = root.parent().ok_or_else(|| {
+        anyhow::anyhow!("detached bundle snapshot has no parent: {}", root.display())
+    })?;
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    let temp_root = std::env::temp_dir();
+    let parent = std::fs::canonicalize(parent)
+        .with_context(|| format!("resolving detached snapshot parent {}", parent.display()))?;
+    let temp_root = std::fs::canonicalize(&temp_root)
+        .with_context(|| format!("resolving temp directory {}", temp_root.display()))?;
+    if parent != temp_root {
+        return Ok(None);
+    }
+    if recorded != snapshot_name {
+        bail!("detached bundle snapshot owner marker does not match this child");
+    }
+
+    std::fs::remove_file(&owner)
+        .with_context(|| format!("claiming detached bundle snapshot {}", root.display()))?;
+    Ok(Some(DetachedSnapshotDir {
+        path: root.to_path_buf(),
+    }))
+}
+
+fn copy_bundle_tree(source: &Path, target: &Path, snapshot_root: &Path) -> Result<()> {
+    let mut entries = std::fs::read_dir(source)
+        .with_context(|| format!("reading bundle {}", source.display()))?
+        .collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+
+    for entry in entries {
+        let source_path = entry.path();
+        // A caller can technically point at the platform temp root itself.
+        // In that case tempfile creates our destination inside the source;
+        // never recurse into the snapshot while constructing it.
+        if source_path == snapshot_root {
+            continue;
+        }
+        let target_path = target.join(entry.file_name());
+        copy_bundle_entry(&source_path, &target_path, snapshot_root)?;
+    }
+    Ok(())
+}
+
+fn copy_bundle_entry(source: &Path, target: &Path, snapshot_root: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(source)
+        .with_context(|| format!("reading bundle entry {}", source.display()))?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        bail!(
+            "bundle entry {} must not be a symbolic link",
+            source.display()
+        );
+    }
+    if file_type.is_dir() {
+        std::fs::create_dir(target)
+            .with_context(|| format!("creating bundle snapshot directory {}", target.display()))?;
+        return copy_bundle_tree(source, target, snapshot_root);
+    }
+    if file_type.is_file() {
+        std::fs::copy(source, target).with_context(|| {
+            format!(
+                "copying bundle entry {} into the private snapshot",
+                source.display()
+            )
+        })?;
+        return Ok(());
+    }
+    bail!(
+        "bundle entry {} must be a regular file or directory",
+        source.display()
+    )
 }
 
 /// Dispatch the zero-provider `roba bundle` inspection surface.
@@ -727,13 +916,28 @@ mod tests {
             Some("TOP SECRET PROMPT")
         );
         assert_eq!(
-            args.mcp_config,
-            [temp.path().join("mcp.json").display().to_string()]
+            std::fs::read_to_string(&args.mcp_config[0]).unwrap(),
+            r#"{"mcpServers":{"zeta":{"command":"SECRET MCP"},"alpha":{"command":"safe"}}}"#
+        );
+        assert_ne!(
+            args.mcp_config[0],
+            temp.path().join("mcp.json").display().to_string()
         );
 
         let mut config = engine::Config::new("prompt");
         plan.apply_provisioning(&mut config);
         assert_eq!(config.plugin_dir.len(), 3);
+        assert!(
+            config
+                .plugin_dir
+                .iter()
+                .all(|path| !path.starts_with(temp.path().to_string_lossy().as_ref()))
+        );
+        assert!(
+            std::fs::read_to_string(config.settings.as_ref().unwrap())
+                .unwrap()
+                .contains("SECRET COMMAND")
+        );
         assert!(
             config
                 .agents_json
@@ -884,6 +1088,103 @@ mod tests {
             .to_string();
         assert!(error.contains("source details redacted"));
         assert!(!error.contains(secret));
+    }
+
+    #[test]
+    fn provider_inputs_survive_original_bundle_mutation_and_deletion() {
+        let bundle = complete_bundle();
+        let original_root = bundle.path().display().to_string();
+        let plan = BundlePlan::load(bundle.path()).unwrap();
+        drop(bundle);
+
+        let mut args = crate::cli::Cli::try_parse_from(["roba", "prompt"])
+            .unwrap()
+            .ask;
+        plan.apply_context(&mut args);
+        let mcp = PathBuf::from(&args.mcp_config[0]);
+        assert!(mcp.is_file());
+        assert!(!mcp.starts_with(&original_root));
+        assert!(std::fs::read_to_string(mcp).unwrap().contains("SECRET MCP"));
+
+        let mut config = engine::Config::new("prompt");
+        plan.apply_provisioning(&mut config);
+        assert!(Path::new(config.settings.as_ref().unwrap()).is_file());
+        assert!(
+            config
+                .plugin_dir
+                .iter()
+                .all(|root| Path::new(root).is_dir())
+        );
+        assert_eq!(plan.inspection.root, original_root);
+        assert_eq!(
+            plan.resolve_pool(Path::new("."), true)
+                .unwrap()
+                .defaults
+                .model
+                .as_deref(),
+            Some("sonnet")
+        );
+    }
+
+    #[test]
+    fn detached_child_claims_and_cleans_the_parents_exact_snapshot() {
+        assert!(
+            claim_detached_snapshot(Path::new("relative-bundle"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            claim_detached_snapshot(Path::new("roba-bundle-without-marker"))
+                .unwrap()
+                .is_none()
+        );
+
+        let bundle = complete_bundle();
+        let plan = BundlePlan::load(bundle.path()).unwrap();
+        let mut transfer = plan.into_detached_snapshot().unwrap();
+        let snapshot = transfer.path().to_path_buf();
+        assert!(snapshot.is_dir());
+        assert!(snapshot.join(DETACHED_SNAPSHOT_OWNER_FILE).is_file());
+
+        // A successful spawn hands cleanup responsibility to the re-exec.
+        transfer.transfer_to_child();
+        drop(transfer);
+        assert!(snapshot.is_dir());
+
+        let owner = claim_detached_snapshot(&snapshot)
+            .unwrap()
+            .expect("matching detached child owns the snapshot");
+        assert!(!snapshot.join(DETACHED_SNAPSHOT_OWNER_FILE).exists());
+        drop(owner);
+        assert!(!snapshot.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plan_refuses_root_and_nested_symbolic_links() {
+        use std::os::unix::fs::symlink;
+
+        let target = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let root_link = parent.path().join("bundle-link");
+        symlink(target.path(), &root_link).unwrap();
+        assert!(
+            BundlePlan::load(&root_link)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("must not be a symbolic link")
+        );
+
+        let bundle = tempfile::tempdir().unwrap();
+        let external = parent.path().join("external.json");
+        std::fs::write(&external, r#"{"name":"outside"}"#).unwrap();
+        let manifest = bundle.path().join("plugins/p/.claude-plugin");
+        std::fs::create_dir_all(&manifest).unwrap();
+        symlink(&external, manifest.join("plugin.json")).unwrap();
+        let error = BundlePlan::load(bundle.path()).err().unwrap().to_string();
+        assert!(error.contains("must not be a symbolic link"), "{error}");
+        assert!(error.contains("plugin.json"), "{error}");
     }
 
     #[test]

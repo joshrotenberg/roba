@@ -403,7 +403,7 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     // layer on top of the ambient pool.
     let (roba_hermetic, _) = hermetic_axes(&args);
     let bundle = resolve_bundle(&args, roba_hermetic);
-    let bundle_plan = bundle
+    let mut bundle_plan = bundle
         .as_deref()
         .map(bundle::BundlePlan::load)
         .transpose()?;
@@ -462,7 +462,11 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     // The child re-execs the full argv minus `--detach`, so anything below
     // this seam runs in the child, not the parent.
     if args.detach {
-        return detach::run_detached(&args);
+        let detached_bundle = bundle_plan
+            .take()
+            .map(bundle::BundlePlan::into_detached_snapshot)
+            .transpose()?;
+        return detach::run_detached(&args, detached_bundle);
     }
     // --json-schema names a PATH to a JSON Schema file. Resolve it here,
     // after the full CLI > env > profile merge, by reading the file and
@@ -639,10 +643,12 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
             // event is "no usable output", which is exit 6, not the generic
             // exit 1 a `bail!` would map to via classify_exit_code. Same
             // condition, same code on both paths.
-            None => exit_unusable(
-                EXIT_UNUSABLE_RESULT,
-                "no result event: the streaming run produced no usable output",
-            ),
+            None => {
+                return Err(unusable_result_error(
+                    EXIT_UNUSABLE_RESULT,
+                    "no result event: the streaming run produced no usable output",
+                ));
+            }
         }
     } else {
         // The non-streaming run flows through the shared engine build+execute
@@ -724,7 +730,7 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     // that trusts `$?`. The body/envelope above already emitted (so
     // `--json` stays byte-clean); the exit code carries the signal.
     if let Some((code, note)) = classify_result(&result) {
-        exit_unusable(code, note);
+        return Err(unusable_result_error(code, note));
     }
     Ok(())
 }
@@ -844,9 +850,9 @@ fn expand_continue_prefix(args: &mut AskArgs) -> Result<()> {
 /// the wrapper returned `Ok` with an empty or `is_error: true`
 /// [`QueryResult`](claude_wrapper::types::QueryResult), OR a streaming /
 /// `--trace` run completed with no result event at all. Distinct from the
-/// `Err`-path codes in [`classify_exit_code`] (1-5 and 7) so an orchestrator can
-/// branch on "the call did not fail, but produced nothing usable" without
-/// parsing output.
+/// ordinary provider-error codes in [`classify_exit_code`] (1-5 and 7) so an
+/// orchestrator can branch on "the call did not fail, but produced nothing
+/// usable" without parsing output.
 ///
 /// Structured-signal asymmetry (deliberate). Unlike the `Err`-path codes
 /// -- which have no stdout and so emit a structured error envelope on
@@ -905,19 +911,36 @@ pub(crate) fn classify_result(
     None
 }
 
-/// Print the clean stderr note for an unusable result and exit with
-/// `code`. stdout is flushed first so the already-rendered answer body
-/// or `--json` envelope is not lost behind the immediate exit -- the
-/// envelope still emits; the exit code carries the failure signal.
-pub(crate) fn exit_unusable(code: i32, note: &str) -> ! {
-    use std::io::Write;
-    let _ = std::io::stdout().flush();
-    eprintln!("roba: {note} (exit {code})");
-    // One of the three seams where a detached child's typed exit code is
-    // known; record it so `roba show` reports the outcome instead of
-    // reconstructing success (#441). A no-op for a foreground run.
-    receipt::finish(code);
-    std::process::exit(code);
+/// Typed internal signal for an otherwise-successful provider call that did
+/// not produce a usable answer. It unwinds through `run_ask` so run-owned
+/// resources are dropped before `main` preserves the historical exit-6
+/// rendering and process status.
+#[derive(Debug)]
+pub struct UnusableResultError {
+    code: i32,
+    note: &'static str,
+}
+
+impl UnusableResultError {
+    pub fn code(&self) -> i32 {
+        self.code
+    }
+
+    pub fn note(&self) -> &'static str {
+        self.note
+    }
+}
+
+impl std::fmt::Display for UnusableResultError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.note)
+    }
+}
+
+impl std::error::Error for UnusableResultError {}
+
+pub(crate) fn unusable_result_error(code: i32, note: &'static str) -> anyhow::Error {
+    anyhow::Error::new(UnusableResultError { code, note })
 }
 
 /// Observed spend carried by a typed error, when the failure happened after
@@ -941,14 +964,16 @@ pub fn error_cost_usd(err: &anyhow::Error) -> Option<f64> {
 /// - 4: request timed out
 /// - 5: `--max-turns` cap hit (recoverable; finish the lifecycle)
 ///
-/// Exit code 6 ([`EXIT_UNUSABLE_RESULT`]) is NOT produced here -- it is
-/// the `Ok`-path "empty / is_error result" signal set by
-/// `classify_result`, not an error-chain mapping.
+/// Exit code 6 ([`EXIT_UNUSABLE_RESULT`]) is carried through the error chain
+/// only as [`UnusableResultError`], allowing run-owned resources to unwind
+/// before `main` preserves its distinct rendering contract.
 pub fn classify_exit_code(err: &anyhow::Error) -> i32 {
     use roba_types::{
         EXIT_AUTH, EXIT_BUDGET, EXIT_FAILURE, EXIT_MAX_BUDGET, EXIT_MAX_TURNS, EXIT_TIMEOUT,
     };
-    if let Some(wrapper_err) = err.downcast_ref::<claude_wrapper::Error>() {
+    if let Some(unusable) = err.downcast_ref::<UnusableResultError>() {
+        unusable.code()
+    } else if let Some(wrapper_err) = err.downcast_ref::<claude_wrapper::Error>() {
         match wrapper_err {
             claude_wrapper::Error::Auth { .. } => EXIT_AUTH,
             claude_wrapper::Error::BudgetExceeded { .. } => EXIT_BUDGET,
@@ -1097,17 +1122,13 @@ mod tests {
         .unwrap();
 
         let mut config = engine::Config::new("p");
-        bundle::BundlePlan::load(bundle)
-            .unwrap()
-            .apply_provisioning(&mut config);
+        let plan = bundle::BundlePlan::load(bundle).unwrap();
+        plan.apply_provisioning(&mut config);
 
-        assert!(
-            config
-                .settings
-                .as_deref()
-                .unwrap()
-                .ends_with("settings.json")
-        );
+        let settings = config.settings.as_deref().unwrap();
+        assert!(settings.ends_with("settings.json"));
+        assert!(std::path::Path::new(settings).is_file());
+        assert_ne!(settings, bundle.join("settings.json").to_str().unwrap());
         let definitions: serde_json::Value =
             serde_json::from_str(config.agents_json.as_deref().unwrap()).unwrap();
         assert_eq!(definitions["reviewer"]["description"], "Reviews code");
@@ -1121,12 +1142,18 @@ mod tests {
             definitions["reviewer"]["skills"],
             serde_json::json!(["rust", "api"])
         );
-        assert_eq!(
-            config.plugin_dir,
-            vec![
-                bundle.to_string_lossy().into_owned(),
-                child.to_string_lossy().into_owned()
-            ]
+        assert_eq!(config.plugin_dir.len(), 2);
+        assert!(
+            config
+                .plugin_dir
+                .iter()
+                .all(|root| std::path::Path::new(root).is_dir())
+        );
+        assert_ne!(config.plugin_dir[0], bundle.to_string_lossy());
+        assert_ne!(config.plugin_dir[1], child.to_string_lossy());
+        assert!(
+            std::path::Path::new(&config.plugin_dir[1])
+                .ends_with(std::path::Path::new("plugins").join("lint"))
         );
     }
 

@@ -171,6 +171,10 @@ fn bundle_inspect_json_uses_versioned_inventory_and_structured_errors() {
     assert!(output.stderr.is_empty());
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(envelope["version"], roba_types::VERSION);
+    assert_eq!(
+        envelope["result"]["root"],
+        bundle.path().display().to_string()
+    );
     assert_eq!(envelope["result"]["agents"][0]["name"], "alpha");
     assert_eq!(
         envelope["result"]["mcp_servers"],
@@ -3449,8 +3453,23 @@ case "$*" in
   *--version*) echo '1.0.0 (fake)'; exit 0;;
 esac
 printf '%s\n' "$@" > "$ROBA_CAPTURE_ARGS"
+if [ "${ROBA_VALIDATE_BUNDLE_PATHS:-}" = 1 ]; then
+  previous=''
+  for argument in "$@"; do
+    case "$previous" in
+      --settings|--mcp-config|--plugin-dir)
+        [ -e "$argument" ] || exit 97
+        ;;
+    esac
+    previous="$argument"
+  done
+fi
 cat >/dev/null 2>&1
-printf '%s\n' '{"result":"ok","session_id":"s1","is_error":false}'
+if [ "${ROBA_EMPTY_RESULT:-}" = 1 ]; then
+  printf '%s\n' '{"result":"","session_id":"s1","is_error":false}'
+else
+  printf '%s\n' '{"result":"ok","session_id":"s1","is_error":false}'
+fi
 "#;
     std::fs::write(&path, script).expect("write fake claude");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
@@ -3508,6 +3527,7 @@ fn hermetic_bundle_provisions_the_exact_claude_child_surface() {
 
     roba_with_fake_claude(bin.path(), home.path(), cfg.path())
         .env("ROBA_CAPTURE_ARGS", &capture)
+        .env("ROBA_VALIDATE_BUNDLE_PATHS", "1")
         .args([
             "--hermetic",
             "--bundle",
@@ -3531,14 +3551,12 @@ fn hermetic_bundle_provisions_the_exact_claude_child_surface() {
     let agents: serde_json::Value = serde_json::from_str(value_after("--agents")).unwrap();
     assert_eq!(agents["reviewer"]["description"], "Reviews code");
     assert_eq!(agents["reviewer"]["prompt"], "Review the change.");
-    assert_eq!(
-        value_after("--settings"),
-        bundle.join("settings.json").to_str().unwrap()
-    );
-    assert_eq!(
-        value_after("--mcp-config"),
-        bundle.join("mcp.json").to_str().unwrap()
-    );
+    let settings = value_after("--settings");
+    assert_ne!(settings, bundle.join("settings.json").to_str().unwrap());
+    assert!(settings.ends_with("settings.json"));
+    let mcp = value_after("--mcp-config");
+    assert_ne!(mcp, bundle.join("mcp.json").to_str().unwrap());
+    assert!(mcp.ends_with("mcp.json"));
     assert_eq!(value_after("--setting-sources"), "");
     assert!(argv.contains(&"--strict-mcp-config"));
 
@@ -3547,13 +3565,19 @@ fn hermetic_bundle_provisions_the_exact_claude_child_surface() {
         .filter(|pair| pair[0] == "--plugin-dir")
         .map(|pair| pair[1])
         .collect();
-    assert_eq!(
-        plugin_roots,
-        vec![
-            bundle.to_str().unwrap(),
-            bundle.join("plugins/lint").to_str().unwrap()
-        ]
+    assert_eq!(plugin_roots.len(), 2);
+    assert_ne!(plugin_roots[0], bundle.to_str().unwrap());
+    assert_ne!(
+        plugin_roots[1],
+        bundle.join("plugins/lint").to_str().unwrap()
     );
+    assert!(plugin_roots[1].ends_with("plugins/lint"));
+    for snapshot_path in [settings, mcp, plugin_roots[0], plugin_roots[1]] {
+        assert!(
+            !std::path::Path::new(snapshot_path).exists(),
+            "run-local snapshot survived provider completion: {snapshot_path}"
+        );
+    }
 
     let override_capture = home.path().join("override-args.txt");
     roba_with_fake_claude(bin.path(), home.path(), cfg.path())
@@ -3569,6 +3593,127 @@ fn hermetic_bundle_provisions_the_exact_claude_child_surface() {
         .position(|arg| *arg == "--setting-sources")
         .unwrap();
     assert_eq!(override_argv[index + 1], "user");
+}
+
+#[cfg(unix)]
+#[test]
+fn unusable_bundle_result_still_cleans_the_run_local_snapshot() {
+    let bin = fake_claude_capturing_args();
+    let home = tempfile::tempdir().expect("home");
+    let cfg = tempfile::tempdir().expect("cfg");
+    let bundle = home.path().join("bundle");
+    let capture = home.path().join("empty-result-args.txt");
+
+    std::fs::create_dir_all(bundle.join("plugins/lint/.claude-plugin")).unwrap();
+    std::fs::write(bundle.join("settings.json"), r#"{"hooks":{}}"#).unwrap();
+    std::fs::write(bundle.join("mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+    std::fs::write(
+        bundle.join("plugins/lint/.claude-plugin/plugin.json"),
+        r#"{"name":"lint"}"#,
+    )
+    .unwrap();
+
+    roba_with_fake_claude(bin.path(), home.path(), cfg.path())
+        .env("ROBA_CAPTURE_ARGS", &capture)
+        .env("ROBA_VALIDATE_BUNDLE_PATHS", "1")
+        .env("ROBA_EMPTY_RESULT", "1")
+        .args(["--bundle", bundle.to_str().unwrap(), "hello"])
+        .assert()
+        .code(6)
+        .stderr(predicate::str::contains("empty result"));
+
+    let captured = std::fs::read_to_string(&capture).unwrap();
+    let argv: Vec<&str> = captured.lines().collect();
+    let mut snapshot_paths = argv.windows(2).filter_map(|pair| {
+        matches!(pair[0], "--settings" | "--mcp-config" | "--plugin-dir").then_some(pair[1])
+    });
+    let first = snapshot_paths.next().expect("captured bundle path");
+    assert!(!std::path::Path::new(first).exists());
+    for snapshot_path in snapshot_paths {
+        assert!(!std::path::Path::new(snapshot_path).exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn detached_bundle_uses_and_cleans_the_parents_snapshot() {
+    let bin = fake_claude_capturing_args();
+    let home = tempfile::tempdir().expect("home");
+    let cfg = tempfile::tempdir().expect("cfg");
+    let bundle = home.path().join("detached-bundle");
+    let capture = home.path().join("detached-args.txt");
+    let state = home.path().join("state");
+    let session = "123e4567-e89b-42d3-a456-426614174000";
+
+    std::fs::create_dir_all(bundle.join("plugins/lint/.claude-plugin")).unwrap();
+    std::fs::write(bundle.join("settings.json"), r#"{"hooks":{}}"#).unwrap();
+    std::fs::write(bundle.join("mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+    std::fs::write(
+        bundle.join("plugins/lint/.claude-plugin/plugin.json"),
+        r#"{"name":"lint"}"#,
+    )
+    .unwrap();
+
+    let output = roba_with_fake_claude(bin.path(), home.path(), cfg.path())
+        .env("ROBA_CAPTURE_ARGS", &capture)
+        .env("ROBA_VALIDATE_BUNDLE_PATHS", "1")
+        .env("ROBA_STATE_DIR", &state)
+        .args([
+            "--detach",
+            "--bundle",
+            bundle.to_str().unwrap(),
+            "--session-id",
+            session,
+            "--max-turns",
+            "1",
+            "hello",
+        ])
+        .output()
+        .expect("launch detached bundle run");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), session);
+
+    // The parent has already captured every provider input. Removing the
+    // source before the detached provider reports proves the re-exec does not
+    // reopen the caller's path.
+    std::fs::remove_dir_all(&bundle).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !capture.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let captured = std::fs::read_to_string(&capture).expect("detached provider captured argv");
+    let argv: Vec<&str> = captured.lines().collect();
+    let snapshot_paths: Vec<&str> = argv
+        .windows(2)
+        .filter_map(|pair| {
+            matches!(pair[0], "--settings" | "--mcp-config" | "--plugin-dir").then_some(pair[1])
+        })
+        .collect();
+    assert!(!snapshot_paths.is_empty());
+    assert!(
+        snapshot_paths
+            .iter()
+            .all(|path| !path.starts_with(bundle.to_str().unwrap()))
+    );
+
+    let cleanup_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while snapshot_paths
+        .iter()
+        .any(|path| std::path::Path::new(path).exists())
+        && std::time::Instant::now() < cleanup_deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    for snapshot_path in snapshot_paths {
+        assert!(
+            !std::path::Path::new(snapshot_path).exists(),
+            "detached run-local snapshot survived child completion: {snapshot_path}"
+        );
+    }
 }
 
 #[cfg(unix)]

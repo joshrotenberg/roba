@@ -53,10 +53,11 @@
 //!
 //! ## Exit 6 has no stderr error envelope (deliberate)
 //!
-//! The `{ version, error }` stderr envelope is emitted only on the
-//! `Err`-path nonzero exits (codes 1-5, via [`render_json`]). Exit 6
-//! ([`crate::EXIT_UNUSABLE_RESULT`]) never emits one -- the reliable
-//! signal is the exit code itself. What is on stdout depends on the
+//! The `{ version, error }` stderr envelope is emitted only for ordinary
+//! nonzero errors (codes 1-5 and 7, via [`render_json`]). The internal typed
+//! signal for exit 6 ([`crate::EXIT_UNUSABLE_RESULT`]) is handled separately
+//! after run-owned resources unwind and never emits that envelope -- the
+//! reliable signal is the exit code itself. What is on stdout depends on the
 //! subcase: for an empty / `is_error` `Ok`-path result the success-shaped
 //! `{ version, result }` envelope is already written there; for a
 //! streaming / `--trace` run that completed with no result event, exit 6

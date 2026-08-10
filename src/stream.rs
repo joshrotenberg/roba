@@ -207,13 +207,15 @@ pub async fn run_streaming(
     match &final_result {
         Some(qr) => {
             if let Some((code, note)) = crate::classify_result(qr) {
-                crate::exit_unusable(code, note);
+                return Err(crate::unusable_result_error(code, note));
             }
         }
-        None => crate::exit_unusable(
-            crate::EXIT_UNUSABLE_RESULT,
-            "no result event: the streaming run produced no usable output",
-        ),
+        None => {
+            return Err(crate::unusable_result_error(
+                crate::EXIT_UNUSABLE_RESULT,
+                "no result event: the streaming run produced no usable output",
+            ));
+        }
     }
     Ok(None)
 }
