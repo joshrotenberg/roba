@@ -84,8 +84,21 @@ fn bounded_run_help_exposes_provider_and_run_adapters() {
         .stdout(predicate::str::contains("--agent"))
         .stdout(predicate::str::contains("--repl"))
         .stdout(predicate::str::contains("--mcp"))
+        .stdout(predicate::str::contains("--json"))
         .stdout(predicate::str::contains("--max-workers"))
         .stdout(predicate::str::contains("--max-worker-depth"));
+}
+
+#[test]
+fn bounded_run_json_conflicts_with_stdio_control_adapters() {
+    for adapter in ["--repl", "--mcp"] {
+        roba()
+            .args(["run", "--json", adapter])
+            .assert()
+            .failure()
+            .code(2)
+            .stderr(predicate::str::contains("cannot be used with"));
+    }
 }
 
 #[test]
@@ -162,6 +175,26 @@ fn promptless_bounded_run_requires_a_control_adapter() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains("prompt-less run is suspended"));
+}
+
+#[test]
+fn promptless_bounded_run_json_uses_the_structured_error_envelope() {
+    let output = roba()
+        .args(["run", "--json"])
+        .output()
+        .expect("run prompt-less JSON invocation");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["version"], roba_types::VERSION);
+    assert_eq!(error["error"]["kind"], "other");
+    assert_eq!(error["error"]["exit_code"], 1);
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("prompt-less run is suspended")
+    );
 }
 
 #[test]
@@ -3211,6 +3244,28 @@ fn fake_claude(json_stdout: &str) -> tempfile::TempDir {
     dir
 }
 
+/// Write an executable `claude` shim that emits one streaming event for the
+/// provider-neutral bounded-run adapter.
+#[cfg(unix)]
+fn fake_claude_streaming_result(result_event: &str) -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("fake claude dir");
+    let path = dir.path().join("claude");
+    let script = format!(
+        r#"#!/bin/sh
+case "$*" in
+  *--version*) echo '1.0.0 (fake)'; exit 0;;
+esac
+cat >/dev/null 2>&1
+printf '%s\n' '{result_event}'
+"#
+    );
+    std::fs::write(&path, script).expect("write fake claude");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod fake claude");
+    dir
+}
+
 /// Like [`fake_claude`], but records one argument per line at
 /// `$ROBA_CAPTURE_ARGS` before returning a successful result.
 #[cfg(unix)]
@@ -3387,6 +3442,78 @@ fn nonempty_result_exits_zero() {
         .assert()
         .success()
         .stdout(predicate::str::contains("the answer is 42"));
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_run_json_emits_the_complete_terminal_snapshot() {
+    let bin = fake_claude_streaming_result(
+        r#"{"type":"result","subtype":"success","result":"bounded answer","session_id":"session-1","total_cost_usd":0.02,"duration_ms":10,"num_turns":1,"is_error":false,"usage":{"input_tokens":3,"output_tokens":2}}"#,
+    );
+    let home = tempfile::tempdir().expect("home");
+    let cfg = tempfile::tempdir().expect("cfg");
+
+    let output = roba_with_fake_claude(bin.path(), home.path(), cfg.path())
+        .args(["run", "--provider", "claude", "--json", "hello"])
+        .output()
+        .expect("run bounded JSON adapter");
+    assert!(
+        output.status.success(),
+        "bounded run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["version"], roba_types::VERSION);
+    let snapshot = &envelope["result"];
+    assert_eq!(snapshot["state"], "completed");
+    assert_eq!(snapshot["turns_completed"], 1);
+    assert_eq!(snapshot["last_outcome"]["output"], "bounded answer");
+    assert_eq!(snapshot["last_outcome"]["session"]["id"], "session-1");
+    assert_eq!(snapshot["last_outcome"]["usage"]["input"], 3);
+    assert_eq!(snapshot["last_outcome"]["usage"]["output"], 2);
+    assert_eq!(snapshot["last_outcome"]["cost"]["currency"], "USD");
+    assert_eq!(snapshot["last_outcome"]["cost"]["amount"], 0.02);
+    assert_eq!(snapshot["last_outcome"]["duration_ms"], 10);
+    assert_eq!(snapshot["last_outcome"]["provider_turns"], 1);
+    assert!(snapshot["created_at_unix_ms"].is_u64());
+    assert!(snapshot["started_at_unix_ms"].is_u64());
+    assert!(snapshot["finished_at_unix_ms"].is_u64());
+    assert!(snapshot["elapsed_ms"].is_u64());
+
+    roba_with_fake_claude(bin.path(), home.path(), cfg.path())
+        .args(["run", "--provider", "claude", "hello"])
+        .assert()
+        .success()
+        .stdout("bounded answer\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_run_json_preserves_a_failed_snapshot_and_structured_error() {
+    let bin = fake_claude_streaming_result(
+        r#"{"type":"result","subtype":"error_during_execution","result":"bounded failure","session_id":"session-1","is_error":true}"#,
+    );
+    let home = tempfile::tempdir().expect("home");
+    let cfg = tempfile::tempdir().expect("cfg");
+
+    let output = roba_with_fake_claude(bin.path(), home.path(), cfg.path())
+        .args(["run", "--provider", "claude", "--json", "hello"])
+        .output()
+        .expect("run failed bounded JSON adapter");
+    assert_eq!(output.status.code(), Some(1));
+
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["version"], roba_types::VERSION);
+    assert_eq!(envelope["result"]["state"], "failed");
+    assert_eq!(envelope["result"]["failure"]["kind"], "provider");
+    assert_eq!(envelope["result"]["failure"]["message"], "bounded failure");
+
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["version"], roba_types::VERSION);
+    assert_eq!(error["error"]["exit_code"], 1);
+    assert_eq!(error["error"]["message"], "bounded failure");
 }
 
 #[cfg(unix)]

@@ -13,7 +13,8 @@ exit code without depending on the whole `roba` binary.
 - **Exit codes** -- `EXIT_FAILURE` (1) through `EXIT_MAX_BUDGET` (7), the full
   map the binary returns. The `roba` binary references these same constants.
 - **Envelopes** -- `SuccessEnvelope<T>` (`{ version, result, refusal }`),
-  `VersionedResult<T>` (`{ version, result }`, the read-only commands), and
+  `VersionedResult<T>` (`{ version, result }`, read-only commands and bounded
+  terminal run snapshots), and
   `ErrorEnvelope` (`{ version, error }`). Each derives `Serialize` and
   `Deserialize`, so producer and consumer share one type per shape.
 - **`QueryResult`** -- claude's result payload, re-exported (not mirrored).

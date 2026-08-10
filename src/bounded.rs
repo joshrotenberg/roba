@@ -8,6 +8,7 @@ use roba_core::{
     RobaConfig, RunOverrides, RunSpec, RunState, SessionHandle, SessionSpec,
 };
 
+use crate::VersionedResult;
 use crate::cli::{EffortLevel, RunArgs, RunProvider};
 
 pub async fn run(args: RunArgs) -> Result<()> {
@@ -40,9 +41,17 @@ pub async fn run(args: RunArgs) -> Result<()> {
     }
 
     let terminal = run.handle().wait().await;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&VersionedResult::new(&terminal))?
+        );
+    }
     match terminal.state {
         RunState::Completed => {
-            if let Some(outcome) = terminal.last_outcome {
+            if !args.json
+                && let Some(outcome) = terminal.last_outcome
+            {
                 println!("{}", outcome.output);
             }
             Ok(())
@@ -57,6 +66,11 @@ pub async fn run(args: RunArgs) -> Result<()> {
         RunState::Cancelled => bail!("run was cancelled"),
         state => bail!("run ended wait in unexpected state {state:?}"),
     }
+}
+
+#[cfg(test)]
+fn terminal_json(snapshot: &roba_core::RunSnapshot) -> serde_json::Value {
+    serde_json::to_value(VersionedResult::new(snapshot)).unwrap()
 }
 
 fn resolve_spec(args: &RunArgs) -> Result<RunSpec> {
@@ -202,5 +216,64 @@ model = "configured"
         ]);
         let spec = resolve_spec(&args).unwrap();
         assert_eq!(spec.execution.permissions, PermissionPolicy::WorkspaceWrite);
+    }
+
+    #[test]
+    fn terminal_json_preserves_each_terminal_snapshot_without_reshaping() {
+        use roba_core::{FailureKind, RunFailure, RunId, RunOutcome};
+
+        let snapshot =
+            |state: RunState, outcome: Option<RunOutcome>, failure: Option<RunFailure>| {
+                roba_core::RunSnapshot {
+                    id: serde_json::from_value::<RunId>(serde_json::json!(1)).unwrap(),
+                    parent_id: None,
+                    depth: 0,
+                    state,
+                    created_at_unix_ms: Some(10),
+                    started_at_unix_ms: Some(20),
+                    finished_at_unix_ms: Some(30),
+                    elapsed_ms: Some(10),
+                    turns_completed: u32::from(outcome.is_some()),
+                    last_outcome: outcome,
+                    failure,
+                }
+            };
+        let completed = snapshot(
+            RunState::Completed,
+            Some(RunOutcome {
+                output: "done".to_string(),
+                session: None,
+                usage: None,
+                cost: None,
+                duration_ms: Some(8),
+                provider_turns: Some(1),
+                structured_output: None,
+            }),
+            None,
+        );
+        let failed = snapshot(
+            RunState::Failed,
+            None,
+            Some(RunFailure {
+                kind: FailureKind::Provider,
+                message: "provider failed".to_string(),
+            }),
+        );
+        let cancelled = snapshot(RunState::Cancelled, None, None);
+
+        for (snapshot, state) in [
+            (completed, "completed"),
+            (failed, "failed"),
+            (cancelled, "cancelled"),
+        ] {
+            let json = terminal_json(&snapshot);
+            assert_eq!(json["version"], roba_types::VERSION);
+            assert_eq!(json["result"]["state"], state);
+            assert_eq!(
+                json["result"],
+                serde_json::to_value(snapshot).unwrap(),
+                "the adapter must wrap the public snapshot without reshaping it"
+            );
+        }
     }
 }

@@ -70,6 +70,7 @@ fn wants_json(cli: &Cli) -> bool {
         Some(SubCommand::Config {
             cmd: ConfigCmd::Show(args),
         }) => args.json,
+        Some(SubCommand::Run(args)) => args.json,
         _ => false,
     }
 }
