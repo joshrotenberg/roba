@@ -89,14 +89,15 @@ Environment variables:
     NO_COLOR=1             disable color (help and answer rendering)
   Precedence: CLI > ROBA_* env > profile > top-level keys > built-in default.
 
-Configuration (roba.toml):
+Legacy one-shot configuration (roba.toml):
   Most flags are also keys under [profile.NAME] or at the top level of a
   roba.toml -- discovered by walking up from the cwd, plus
   ~/.config/roba.toml. Closer-to-cwd files win; a `default` profile
   auto-applies. [alias.NAME] defines shortcut verbs; [session] binds
   NAME = \"uuid\" handles for --session NAME. roba-config.sample.toml
   (written by `roba profile init`) lists every valid key. See the
-  `roba profile` and `roba alias` subcommands.";
+  `roba profile` and `roba alias` subcommands. Profiles remain readable for
+  compatibility; new bounded runs use `roba run --config` and [agents.NAME].";
 
 /// The blurb shown when `roba` is run with no resolvable prompt on a TTY.
 ///
@@ -217,7 +218,7 @@ pub enum SubCommand {
     History(HistoryArgs),
     /// Reprint the most recent session's last answer.
     Last(LastArgs),
-    /// Inspect or initialize the user profiles config.
+    /// Inspect the legacy one-shot profiles config.
     Profile {
         #[command(subcommand)]
         action: ProfileAction,
@@ -245,16 +246,6 @@ pub enum SubCommand {
         #[command(subcommand)]
         action: AliasAction,
     },
-    /// Inspect personas: role-bearing profiles (`[profile.NAME]` with `agent`).
-    ///
-    /// A persona is a profile that pins a claude agent (the role) plus its run
-    /// envelope; `list` shows the role-bearing profiles, `show NAME` prints one
-    /// and locates its agent file. Read-only. See also `roba profile` and
-    /// `roba config explain`.
-    Persona {
-        #[command(subcommand)]
-        action: PersonaAction,
-    },
     /// List detached runs from their receipts (a ps-like view).
     ///
     /// Derived entirely from the run receipts under the state dir
@@ -271,7 +262,7 @@ pub enum SubCommand {
     /// with an OSC-9 terminal notification on stderr TTYs. Exits 0 when
     /// every watched run succeeded, 1 when any failed, 4 on timeout.
     Watch(WatchArgs),
-    /// Bootstrap a project roba.toml (claude-assisted).
+    /// Inspect or author legacy one-shot roba.toml configuration.
     ///
     /// The per-project half of the config-draft verbs: `init` looks at
     /// the current project and drafts a whole starter roba.toml fitted
@@ -402,17 +393,6 @@ pub struct RunArgs {
     /// Serve run control as MCP over stdin/stdout.
     #[arg(long, conflicts_with = "repl")]
     pub mcp: bool,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum PersonaAction {
-    /// List personas: profiles that pin an `agent` (the role).
-    List,
-    /// Show one persona's `[profile.NAME]` block and its resolved agent file.
-    Show {
-        /// Persona name (the `[profile.NAME]` whose `agent` is set).
-        name: String,
-    },
 }
 
 #[derive(ClapArgs, Debug)]
@@ -637,6 +617,8 @@ pub enum ProfileAction {
     Active,
     /// Draft a new profile from a plain-language description.
     ///
+    /// Draft a legacy one-shot profile.
+    ///
     /// Sends DESCRIPTION to claude with the bundled profile schema, parses
     /// the result with roba's real deserializer (a hallucinated key is
     /// rejected exactly as a hand-written config would be), and prints
@@ -669,7 +651,7 @@ pub struct ProfileDraftArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ConfigCmd {
-    /// Draft a starter project roba.toml from the current project.
+    /// Draft a starter legacy one-shot roba.toml from the current project.
     ///
     /// Makes ONE claude call with a read-only (Read/Glob/Grep) view of
     /// the cwd, so it can skim the README / manifest / layout and fit a
@@ -1620,8 +1602,11 @@ pub struct AskArgs {
     #[arg(long, value_name = "DIR", help_heading = "Hermetic")]
     pub bundle: Option<std::path::PathBuf>,
 
-    // ----- Profiles ---------------------------------------------------------
-    /// Apply a named profile (user, project, or env source).
+    // ----- Legacy profiles --------------------------------------------------
+    /// Apply a legacy one-shot profile (user, project, or env source).
+    ///
+    /// New bounded runs should use `roba run --config PATH --agent NAME` and
+    /// the hierarchical `[agents.NAME]` format instead.
     #[arg(long, value_name = "NAME", help_heading = "Profiles")]
     pub profile: Option<String>,
 

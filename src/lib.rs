@@ -25,7 +25,6 @@ pub mod history;
 pub mod jobs;
 pub mod lint;
 pub mod output;
-pub mod persona;
 pub mod profile;
 pub mod prompt;
 pub mod rates;
@@ -89,9 +88,6 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             crate::cli::AliasAction::Draft(args) => aliases::run_draft(args).await,
             other => aliases::run(other),
         },
-        // Persona inspection: role-bearing profiles. Synchronous, read-only,
-        // no claude call.
-        Some(SubCommand::Persona { action }) => persona::run(action),
         // Derived views over run receipts (#444): read-only, no claude call.
         Some(SubCommand::Jobs(args)) => jobs::run_jobs(&args),
         Some(SubCommand::Watch(args)) => jobs::run_watch(&args),

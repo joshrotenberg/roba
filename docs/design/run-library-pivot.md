@@ -99,10 +99,10 @@ Invocation-only concerns stay out of persistent profiles:
 - whether to expose a REPL or MCP endpoint
 - one-off prompt composition sugar
 
-Profiles, personas, and bundles should converge on one named `AgentSpec`
-concept. Aliases are CLI sugar and must not shape the public run model. Do not
-delete legacy configuration until the replacement can run the existing CLI
-through a compatibility adapter.
+Named `AgentSpec` values replace profiles and the redundant persona label in
+the public run model. Legacy profiles remain readable only for one-shot
+compatibility, and bundles remain Claude-only context packaging. Aliases are
+CLI sugar and do not shape the public run model.
 
 ## Provider boundary
 
@@ -248,8 +248,8 @@ provider silently ignores a requested safety or limit setting.
 - [x] Load the new hierarchy from a small, explicit public TOML format.
 - [x] Route the overlapping policy of the legacy one-shot compatibility path
       through the same hierarchy before applying Claude-only controls.
-- [ ] Remove or deprecate redundant legacy one-shot config fields and concepts
-      now that its compatibility adapter consumes the hierarchy.
+- [x] Deprecate legacy profiles, remove the redundant persona inspection
+      concept, and keep aliases/bundles confined to one-shot CLI sugar.
 
 Acceptance: a caller can build, resolve, inspect, serialize, and execute a run
 without clap or terminal code. Configuration precedence has one implementation.
@@ -311,10 +311,10 @@ Current assets to preserve:
 1. Read this document and `AGENTS.md`.
 2. Start from clean `main`, inspect `git status`, and create a focused branch.
 3. Continue the first unchecked item that advances the current vertical slice.
-   The recommended next slice is deprecating redundant legacy one-shot
-   configuration concepts now that their provider-neutral policy resolves
-   through the hierarchy. Keep Claude-only session, worktree, MCP, and
-   presentation controls in the compatibility layer.
+   The recommended next slice is promoting useful detached-run receipts into
+   bounded run outcomes/events without introducing persistence into the
+   library. Keep Claude-only session, worktree, MCP, and presentation controls
+   in the compatibility layer.
 4. Preserve current CLI behavior until a phase's acceptance criteria say a
    compatibility surface may change.
 5. Run the repository's four required gates before publishing a review point.
