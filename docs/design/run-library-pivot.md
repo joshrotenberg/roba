@@ -192,6 +192,10 @@ The transport remains process-local and is not an operating-system isolation
 claim. Its authority comes from the host-created capability and immutable run
 tree policy, not from a caller-supplied run id or parent field.
 
+Provider-native subagent facilities are disabled on the bounded-run path.
+Claude's Agent tool and Codex's multi-agent feature would otherwise create
+work outside Roba's worker count, depth, cancellation, and observation model.
+
 ## Implementation sequence
 
 ### Phase 1 -- provider-neutral contracts and Claude compatibility

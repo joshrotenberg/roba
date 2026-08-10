@@ -31,7 +31,12 @@ impl CodexProvider {
     }
 
     fn fresh_command(request: &TurnRequest, context: &ProviderContext) -> ExecCommand {
-        let mut command = ExecCommand::new(render_prompt(request)).prompt_via_stdin();
+        // Roba owns bounded child-run creation. Codex's native multi-agent
+        // feature is not represented in the run tree and would bypass worker
+        // count, depth, cancellation, and event observation.
+        let mut command = ExecCommand::new(render_prompt(request))
+            .prompt_via_stdin()
+            .disable("multi_agent");
         if let Some(model) = &request.spec.agent.model {
             command = command.model(model.clone());
         }
@@ -62,7 +67,8 @@ impl CodexProvider {
     ) -> ExecResumeCommand {
         let mut command = ExecResumeCommand::new()
             .session_id(session_id)
-            .prompt(render_prompt(request));
+            .prompt(render_prompt(request))
+            .disable("multi_agent");
         if let Some(model) = &request.spec.agent.model {
             command = command.model(model.clone());
         }
@@ -403,6 +409,15 @@ mod tests {
         );
         assert!(!open.iter().any(|arg| arg.contains("secret-worker-token")));
         assert!(!resume.iter().any(|arg| arg.contains("secret-worker-token")));
+        assert!(
+            open.windows(2)
+                .any(|args| args == ["--disable", "multi_agent"])
+        );
+        assert!(
+            resume
+                .windows(2)
+                .any(|args| args == ["--disable", "multi_agent"])
+        );
         assert!(!format!("{context:?}").contains("secret-worker-token"));
     }
 }
