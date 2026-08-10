@@ -39,6 +39,10 @@ pub mod worktree;
 
 // The clap-free run engine lives in roba-core (#416). Re-export so the rest of
 // the crate keeps addressing it as `crate::engine` / `crate::session`.
+use roba_core::{
+    ConfigLayer, PermissionPolicy, Prompt as RunPrompt, ProviderId, RobaConfig, RunOverrides,
+    RunSpec, SessionHandle, SessionSpec, ToolPolicy,
+};
 pub use roba_core::{engine, session};
 
 use crate::cli::{AskArgs, Cli, SubCommand};
@@ -202,24 +206,26 @@ fn swallow_note(args: &AskArgs) -> Option<String> {
     None
 }
 
-/// Collapse the CLI's resolved [`AskArgs`] (after env/profile/session
-/// resolution) plus the composed prompt into an [`engine::Config`]: the flat
-/// permission flags become a [`engine::Permissions`] posture and the session
-/// flags a [`engine::Session`] selector, everything else 1:1. This is the one
-/// `args -> Config` mapper; `engine::run` takes a `Config` directly, so both
-/// the CLI and a programmatic caller flow through the single `apply_session`
-/// (`Config -> QueryCommand`) mapper beneath it.
-/// Map roba's clap `--effort` value to claude-wrapper's `Effort` (the type
-/// `Config` and the core mapper use, so the core stays clap-free).
-fn effort_to_cw(e: cli::EffortLevel) -> claude_wrapper::Effort {
-    use claude_wrapper::Effort;
+/// Map roba's clap `--effort` value into the provider-neutral run vocabulary.
+fn effort_to_run(e: cli::EffortLevel) -> roba_core::Effort {
     use cli::EffortLevel;
     match e {
-        EffortLevel::Low => Effort::Low,
-        EffortLevel::Medium => Effort::Medium,
-        EffortLevel::High => Effort::High,
-        EffortLevel::Xhigh => Effort::Xhigh,
-        EffortLevel::Max => Effort::Max,
+        EffortLevel::Low => roba_core::Effort::Low,
+        EffortLevel::Medium => roba_core::Effort::Medium,
+        EffortLevel::High => roba_core::Effort::High,
+        EffortLevel::Xhigh => roba_core::Effort::XHigh,
+        EffortLevel::Max => roba_core::Effort::Max,
+    }
+}
+
+/// Map the resolved provider-neutral effort into Claude's compatibility type.
+fn run_effort_to_cw(e: roba_core::Effort) -> claude_wrapper::Effort {
+    match e {
+        roba_core::Effort::Low => claude_wrapper::Effort::Low,
+        roba_core::Effort::Medium => claude_wrapper::Effort::Medium,
+        roba_core::Effort::High => claude_wrapper::Effort::High,
+        roba_core::Effort::XHigh => claude_wrapper::Effort::Xhigh,
+        roba_core::Effort::Max => claude_wrapper::Effort::Max,
     }
 }
 
@@ -295,44 +301,105 @@ fn hermetic_axes(args: &AskArgs) -> (bool, bool) {
     }
 }
 
-fn build_config(args: &AskArgs, prompt: impl Into<String>) -> engine::Config {
-    use engine::{Permissions, Session};
+fn resolve_legacy_run_spec(args: &AskArgs, prompt: String) -> Result<RunSpec> {
     let permissions = if args.full_auto {
-        Permissions::FullAuto
+        PermissionPolicy::FullAuto
     } else if args.writable {
-        Permissions::Writable
+        PermissionPolicy::WorkspaceWrite
     } else {
-        Permissions::ReadOnly
+        PermissionPolicy::ReadOnly
+    };
+    let session = match &args.continue_session {
+        Some(Some(id)) => SessionSpec::Resume {
+            session: SessionHandle {
+                provider: ProviderId::claude(),
+                id: id.clone(),
+            },
+        },
+        _ => SessionSpec::Fresh,
+    };
+    RobaConfig {
+        defaults: ConfigLayer {
+            provider: Some(ProviderId::claude()),
+            ..ConfigLayer::default()
+        },
+        ..RobaConfig::default()
+    }
+    .resolve(
+        None,
+        RunOverrides {
+            policy: ConfigLayer {
+                model: args.model.clone(),
+                effort: args.effort.map(effort_to_run),
+                permissions: Some(permissions),
+                tools: Some(ToolPolicy {
+                    allow: args.allow_tool.clone(),
+                    deny: args.deny_tool.clone(),
+                }),
+                max_turns: args.max_turns,
+                max_cost_usd: args.max_budget_usd,
+                // Legacy `--timeout 0` means disabled; the hierarchy's
+                // canonical representation for disabled is absence.
+                timeout_secs: args.timeout.filter(|seconds| *seconds > 0),
+                ..ConfigLayer::default()
+            },
+            session,
+            initial_prompt: Some(RunPrompt::new(prompt)?),
+            ..RunOverrides::default()
+        },
+    )
+    .map_err(Into::into)
+}
+
+/// Adapt the resolved one-shot CLI into the same hierarchical [`RunSpec`] used
+/// by `roba run`, then layer only Claude-specific compatibility controls onto
+/// [`engine::Config`]. Profiles and env have already populated `AskArgs`; this
+/// bridge centralizes the overlapping validation and resolved vocabulary while
+/// the legacy-only session, worktree, MCP, and presentation flags remain.
+fn build_config(args: &AskArgs, prompt: impl Into<String>) -> Result<engine::Config> {
+    use engine::{Permissions, Session};
+    let spec = resolve_legacy_run_spec(args, prompt.into())?;
+    let execution = spec.execution;
+    let permissions = match execution.permissions {
+        PermissionPolicy::ReadOnly => Permissions::ReadOnly,
+        PermissionPolicy::WorkspaceWrite => Permissions::Writable,
+        PermissionPolicy::FullAuto => Permissions::FullAuto,
     };
     let session = if let Some(id) = &args.session_id {
         Session::WithId(id.clone())
+    } else if args.continue_session == Some(None) {
+        // The provider-neutral hierarchy intentionally has no ambient
+        // "most recent" selector; keep that legacy lookup as an overlay.
+        Session::Continue
     } else {
-        match &args.continue_session {
-            None => Session::Fresh,
-            Some(None) => Session::Continue,
-            Some(Some(id)) => Session::Resume(id.clone()),
+        match execution.session {
+            SessionSpec::Fresh => Session::Fresh,
+            SessionSpec::Resume { session } => Session::Resume(session.id),
         }
     };
     // Claude-hermetic axis: seal ambient claude config. `user` is the default
     // (seals project/local ambient, keeps your global ~/.claude); an explicit
     // --setting-sources wins (e.g. `''` for a full seal).
     let (_, claude_hermetic) = hermetic_axes(args);
-    engine::Config {
-        prompt: prompt.into(),
-        model: args.model.clone(),
+    Ok(engine::Config {
+        prompt: spec
+            .initial_prompt
+            .expect("legacy bridge always supplies a prompt")
+            .into_inner(),
+        model: spec.agent.model,
         fallback_model: args.fallback_model.clone(),
-        effort: args.effort.map(effort_to_cw),
+        effort: spec.agent.effort.map(run_effort_to_cw),
         agent: args.agent.clone(),
         permissions,
         permission_mode: args.permission_mode.map(permission_mode_to_cw),
-        allow_tools: args.allow_tool.clone(),
-        deny_tools: args.deny_tool.clone(),
+        allow_tools: execution.tools.allow,
+        deny_tools: execution.tools.deny,
         session,
         fork: args.fork,
         worktree: args.worktree.clone(),
-        max_turns: args.max_turns,
-        max_budget_usd: args.max_budget_usd,
-        timeout_secs: args.timeout,
+        max_turns: execution.limits.max_turns,
+        max_budget_usd: execution.limits.max_cost_usd,
+        timeout_secs: execution.limits.timeout_secs,
         json_schema: args.json_schema.clone(),
         system_prompt: args.system_prompt.clone(),
         append_system_prompt: args.append_system_prompt.clone(),
@@ -350,7 +417,7 @@ fn build_config(args: &AskArgs, prompt: impl Into<String>) -> engine::Config {
             .clone()
             .or_else(|| claude_hermetic.then(|| "user".to_string())),
         exclude_dynamic_system_prompt_sections: claude_hermetic,
-    }
+    })
 }
 
 pub async fn run_ask(mut args: AskArgs) -> Result<()> {
@@ -547,7 +614,7 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     // Collapse the resolved args + composed prompt into the engine Config. Both
     // exec paths below run through it, and the engine::run public entry uses the
     // same Config -> apply_session mapper, so nothing drifts.
-    let config = build_config(&args, prompt);
+    let config = build_config(&args, prompt)?;
 
     // The anonymous-worktree-defeats-continue advisory (#328): stderr only, so
     // stdout / --json stay byte-clean. Emitted here in the CLI layer -- the
@@ -956,7 +1023,7 @@ mod tests {
 
     #[test]
     fn hermetic_claude_axis_sets_the_seal() {
-        let c = build_config(&ask(&["roba", "--hermetic", "p"]), "p");
+        let c = build_config(&ask(&["roba", "--hermetic", "p"]), "p").unwrap();
         assert_eq!(c.setting_sources.as_deref(), Some("user"));
         assert!(c.strict_mcp_config);
         assert!(c.exclude_dynamic_system_prompt_sections);
@@ -967,13 +1034,14 @@ mod tests {
         let c = build_config(
             &ask(&["roba", "--hermetic", "--setting-sources", "", "p"]),
             "p",
-        );
+        )
+        .unwrap();
         assert_eq!(c.setting_sources.as_deref(), Some(""));
     }
 
     #[test]
     fn hermetic_roba_axis_only_leaves_claude_seal_off() {
-        let c = build_config(&ask(&["roba", "--hermetic=roba", "p"]), "p");
+        let c = build_config(&ask(&["roba", "--hermetic=roba", "p"]), "p").unwrap();
         assert_eq!(c.setting_sources, None);
         assert!(!c.strict_mcp_config);
         assert!(!c.exclude_dynamic_system_prompt_sections);
@@ -1015,15 +1083,19 @@ mod tests {
         // The flat --readonly/--writable/--full-auto flags collapse into the
         // curated posture: full_auto wins, then writable, else read-only.
         assert!(matches!(
-            build_config(&ask(&["roba", "p"]), "p").permissions,
+            build_config(&ask(&["roba", "p"]), "p").unwrap().permissions,
             Permissions::ReadOnly
         ));
         assert!(matches!(
-            build_config(&ask(&["roba", "--writable", "p"]), "p").permissions,
+            build_config(&ask(&["roba", "--writable", "p"]), "p")
+                .unwrap()
+                .permissions,
             Permissions::Writable
         ));
         assert!(matches!(
-            build_config(&ask(&["roba", "--full-auto", "p"]), "p").permissions,
+            build_config(&ask(&["roba", "--full-auto", "p"]), "p")
+                .unwrap()
+                .permissions,
             Permissions::FullAuto
         ));
     }
@@ -1032,16 +1104,26 @@ mod tests {
     fn build_config_collapses_session_selector() {
         use engine::Session;
         assert!(matches!(
-            build_config(&ask(&["roba", "p"]), "p").session,
+            build_config(&ask(&["roba", "p"]), "p").unwrap().session,
             Session::Fresh
         ));
         assert!(matches!(
-            build_config(&ask(&["roba", "-c", "-p", "x"]), "p").session,
+            build_config(&ask(&["roba", "-c", "-p", "x"]), "p")
+                .unwrap()
+                .session,
             Session::Continue
         ));
         let uuid = "12345678-1234-4234-8234-123456789abc";
         assert!(matches!(
-            build_config(&ask(&["roba", "--session-id", uuid, "p"]), "p").session,
+            build_config(&ask(&["roba", &format!("--continue={uuid}"), "p"]), "p")
+                .unwrap()
+                .session,
+            Session::Resume(id) if id == uuid
+        ));
+        assert!(matches!(
+            build_config(&ask(&["roba", "--session-id", uuid, "p"]), "p")
+                .unwrap()
+                .session,
             Session::WithId(id) if id == uuid
         ));
     }
@@ -1051,10 +1133,71 @@ mod tests {
         let c = build_config(
             &ask(&["roba", "--max-turns", "5", "--add-dir", "/repo", "p"]),
             "composed prompt",
-        );
+        )
+        .unwrap();
         assert_eq!(c.prompt, "composed prompt");
         assert_eq!(c.max_turns, Some(5));
         assert_eq!(c.add_dir, vec!["/repo".to_string()]);
+    }
+
+    #[test]
+    fn legacy_bridge_resolves_overlapping_policy_through_run_spec() {
+        let c = build_config(
+            &ask(&[
+                "roba",
+                "--model",
+                "claude-test",
+                "--effort",
+                "xhigh",
+                "--full-auto",
+                "--allow-tool",
+                "Read",
+                "--deny-tool",
+                "Bash",
+                "--max-turns",
+                "5",
+                "--max-budget-usd",
+                "1.25",
+                "--timeout",
+                "30",
+                "p",
+            ]),
+            "composed prompt",
+        )
+        .unwrap();
+
+        assert_eq!(c.prompt, "composed prompt");
+        assert_eq!(c.model.as_deref(), Some("claude-test"));
+        assert_eq!(c.effort, Some(claude_wrapper::Effort::Xhigh));
+        assert!(matches!(c.permissions, engine::Permissions::FullAuto));
+        assert_eq!(c.allow_tools, vec!["Read"]);
+        assert_eq!(c.deny_tools, vec!["Bash"]);
+        assert_eq!(c.max_turns, Some(5));
+        assert_eq!(c.max_budget_usd, Some(1.25));
+        assert_eq!(c.timeout_secs, Some(30));
+    }
+
+    #[test]
+    fn legacy_bridge_preserves_native_claude_agent_as_an_overlay() {
+        let c = build_config(&ask(&["roba", "--agent", "claude-native-agent", "p"]), "p").unwrap();
+        assert_eq!(c.agent.as_deref(), Some("claude-native-agent"));
+    }
+
+    #[test]
+    fn legacy_timeout_zero_normalizes_to_no_deadline() {
+        let c = build_config(&ask(&["roba", "--timeout", "0", "p"]), "p").unwrap();
+        assert_eq!(c.timeout_secs, None);
+    }
+
+    #[test]
+    fn legacy_bridge_rejects_invalid_shared_policy() {
+        let mut args = ask(&["roba", "p"]);
+        args.max_turns = Some(0);
+        let err = build_config(&args, "p").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("max_turns must be greater than zero")
+        );
     }
 
     #[test]

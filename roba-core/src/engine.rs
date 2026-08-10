@@ -3,9 +3,10 @@
 //! [`run`] is roba's resolve-free, side-effect-free core: a [`Config`] in, a
 //! [`claude_wrapper::types::QueryResult`] out. No clap, no stdout/stderr, no
 //! `process::exit`, no TTY, no interactive prompts. The CLI's `run_ask`
-//! resolves flags/profiles/prompt and renders the result around this; a
-//! programmatic caller (or, later, `serve` -- see #142) builds a `Config`
-//! directly.
+//! resolves flags/profiles/prompt through the provider-neutral hierarchy,
+//! adapts the resulting policy plus its Claude-only compatibility controls,
+//! and renders the result around this; a programmatic caller builds a
+//! `Config` directly.
 //!
 //! `Config` covers the full run-shaping surface that [`apply_session`]
 //! consumes -- model/fallback/effort/agent, the permission posture +
@@ -15,8 +16,9 @@
 //! mapper directly (`apply_session` reads `&Config`), so there is one
 //! flag->command mapper and no second copy to drift; a bare `Config` maps to
 //! roba's safe defaults (read-only, a fresh session, no caps, and the built-in
-//! agent notice injected). The CLI's `run_ask` builds a `Config` from its
-//! resolved `AskArgs` (`build_config`) and routes through this same seam.
+//! agent notice injected). The CLI's `run_ask` builds a hierarchical
+//! [`crate::RunSpec`] from its resolved `AskArgs`, adapts it to `Config`, and
+//! routes through this same seam.
 //!
 //! Out of scope for v1 (stays in the CLI layer): prompt composition
 //! (attach/git/prepend/vars -- `Config` takes the already-composed prompt),

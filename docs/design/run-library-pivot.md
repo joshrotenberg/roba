@@ -246,8 +246,10 @@ provider silently ignores a requested safety or limit setting.
 - [x] Snapshot the resolved specification before the first provider call.
 - [x] Adapt `roba run` to the hierarchy; keep its flags as final run overrides.
 - [x] Load the new hierarchy from a small, explicit public TOML format.
+- [x] Route the overlapping policy of the legacy one-shot compatibility path
+      through the same hierarchy before applying Claude-only controls.
 - [ ] Remove or deprecate redundant legacy one-shot config fields and concepts
-      only after its compatibility adapter consumes the hierarchy.
+      now that its compatibility adapter consumes the hierarchy.
 
 Acceptance: a caller can build, resolve, inspect, serialize, and execute a run
 without clap or terminal code. Configuration precedence has one implementation.
@@ -309,9 +311,10 @@ Current assets to preserve:
 1. Read this document and `AGENTS.md`.
 2. Start from clean `main`, inspect `git status`, and create a focused branch.
 3. Continue the first unchecked item that advances the current vertical slice.
-   The recommended next slice is adapting the legacy one-shot compatibility
-   path onto the hierarchy without importing its aliases, profiles, or
-   presentation options into `roba-core`.
+   The recommended next slice is deprecating redundant legacy one-shot
+   configuration concepts now that their provider-neutral policy resolves
+   through the hierarchy. Keep Claude-only session, worktree, MCP, and
+   presentation controls in the compatibility layer.
 4. Preserve current CLI behavior until a phase's acceptance criteria say a
    compatibility surface may change.
 5. Run the repository's four required gates before publishing a review point.
