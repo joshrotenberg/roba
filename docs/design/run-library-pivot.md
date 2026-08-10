@@ -40,11 +40,16 @@ artifacts for monitors, but those remain visibly claim-backed and cannot
 overwrite host-derived facts. Rust, CLI JSON, REPL, and MCP consume the same
 `MissionSnapshot`; they do not maintain parallel dashboards.
 
-Repository issue work is an optional process capability. A future capability
-may encode issue selection, branches, verification, PRs, review, and merging,
-but it must not silently widen filesystem, tool, worker, spend, or merge
-authority. A host such as Ciacola may later consume Roba as its mechanical
-mission harness without making persistence a Roba requirement.
+Repository issue work is an optional process capability. The library now owns
+stable capability, action, and grant identifiers; an immutable root
+`MissionPolicy`; and a host-owned registry that freezes descriptors and
+refuses unknown capabilities or missing grants before provider work. A private
+run-bound MCP dispatcher exposes only declared actions. The first real
+repository capability may encode issue selection, branches, verification,
+PRs, review, and merging, but it must not silently widen filesystem, tool,
+worker, spend, or merge authority. A host such as Ciacola may later consume
+Roba as its mechanical mission harness without making persistence a Roba
+requirement.
 
 The public library converges on these concepts:
 
@@ -53,6 +58,7 @@ RunSpec
   agent: AgentSpec
   context: ContextSpec
   execution: ExecutionSpec
+  mission: MissionPolicy
   initial_prompt: Option<Prompt>
 
 Run
@@ -297,6 +303,8 @@ cancelled, and awaited entirely through the library.
 - [x] Preserve pipe-clean one-off usage as a convenience over the same API.
 - [x] Add worker spawn and observation to MCP and the REPL.
 - [x] Add bounded cursor replay and long-poll event observation to MCP.
+- [x] Add immutable process-capability declarations, explicit grants, and a
+      private run-bound action dispatcher.
 
 Acceptance: CLI, REPL, MCP, and direct Rust callers produce identical lifecycle
 and outcome semantics.

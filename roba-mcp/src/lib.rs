@@ -20,9 +20,10 @@ use tower_mcp::{CallToolResult, HttpTransport, McpRouter, ToolBuilder};
 use uuid::Uuid;
 
 use roba_core::{
-    FailureKind, MissionReport, MissionWorkState, Prompt, Provider, ProviderCapabilities,
-    ProviderContext, ProviderError, ProviderFuture, ProviderId, ProviderMcpEndpoint,
-    RUN_EVENT_CAPACITY, RunHandle, TurnRequest, WorkerControl,
+    FailureKind, MissionReport, MissionWorkState, ProcessActionId, ProcessCapabilityId,
+    ProcessControl, Prompt, Provider, ProviderCapabilities, ProviderContext, ProviderError,
+    ProviderFuture, ProviderId, ProviderMcpEndpoint, RUN_EVENT_CAPACITY, RunHandle, TurnRequest,
+    WorkerControl,
 };
 
 const INTERNAL_SERVER_NAME: &str = "roba_workers";
@@ -91,6 +92,15 @@ struct ReportArtifactArgs {
     id: String,
     artifact_kind: String,
     reference: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ProcessActionArgs {
+    capability: String,
+    action: String,
+    #[serde(default)]
+    input: serde_json::Value,
 }
 
 const MAX_EVENT_WAIT_MS: u64 = 30_000;
@@ -337,6 +347,10 @@ where
         self.inner.capabilities()
     }
 
+    fn supports_process_control(&self) -> bool {
+        true
+    }
+
     fn validate(&self, request: &TurnRequest) -> Result<(), ProviderError> {
         self.inner.validate(request)
     }
@@ -348,10 +362,12 @@ where
         events: &'a dyn roba_core::EventSink,
     ) -> ProviderFuture<'a> {
         Box::pin(async move {
-            let Some(control) = context.worker_control().cloned() else {
+            let worker_control = context.worker_control().cloned();
+            let process_control = context.process_control().cloned();
+            if worker_control.is_none() && process_control.is_none() {
                 return self.inner.execute(request, context, events).await;
-            };
-            let server = InternalWorkerServer::start(control)
+            }
+            let server = InternalWorkerServer::start(worker_control, process_control)
                 .await
                 .map_err(|error| {
                     ProviderError::new(
@@ -374,12 +390,15 @@ struct InternalWorkerServer {
 }
 
 impl InternalWorkerServer {
-    async fn start(control: WorkerControl) -> std::io::Result<Self> {
+    async fn start(
+        worker_control: Option<WorkerControl>,
+        process_control: Option<ProcessControl>,
+    ) -> std::io::Result<Self> {
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
         let address = listener.local_addr()?;
         let token = Uuid::new_v4().simple().to_string();
         let authorization: Arc<str> = format!("Bearer {token}").into();
-        let app = HttpTransport::new(worker_router(control))
+        let app = HttpTransport::new(internal_router(worker_control, process_control))
             .into_router_at("/mcp")
             .layer(middleware::from_fn(move |request: Request, next: Next| {
                 require_bearer(authorization.clone(), request, next)
@@ -434,10 +453,20 @@ async fn require_bearer(expected: Arc<str>, request: Request, next: Next) -> Res
     next.run(request).await
 }
 
-fn worker_router(control: WorkerControl) -> McpRouter {
-    let spawn_worker = {
-        let control = control.clone();
-        ToolBuilder::new("spawn_worker")
+fn internal_router(
+    worker_control: Option<WorkerControl>,
+    process_control: Option<ProcessControl>,
+) -> McpRouter {
+    let mut router = McpRouter::new()
+        .server_info("roba-worker-control", env!("CARGO_PKG_VERSION"))
+        .instructions(
+            "This private server exposes only capabilities captured for this exact run. It cannot widen run authority or overwrite host-derived runtime facts.",
+        );
+
+    if let Some(control) = worker_control {
+        let spawn_worker = {
+            let control = control.clone();
+            ToolBuilder::new("spawn_worker")
             .description(
                 "Start an inherited child run within this run's immutable worker bounds. This may incur provider usage.",
             )
@@ -456,102 +485,141 @@ fn worker_router(control: WorkerControl) -> McpRouter {
                 }
             })
             .build()
-    };
-    let workers = {
-        let control = control.clone();
-        ToolBuilder::new("workers")
-            .description("List descendants owned by this exact provider run.")
-            .read_only()
-            .no_params_handler(move || {
-                let control = control.clone();
-                async move {
-                    match control.workers() {
-                        Ok(workers) => json_result(serde_json::json!({ "workers": workers })),
-                        Err(error) => Ok(CallToolResult::error(error.to_string())),
-                    }
-                }
-            })
-            .build()
-    };
-
-    let report_work_item = {
-        let control = control.clone();
-        ToolBuilder::new("report_work_item")
-            .description("Upsert this run's claimed mission work-item state for monitors.")
-            .non_destructive()
-            .handler(move |args: ReportWorkItemArgs| {
-                let control = control.clone();
-                async move {
-                    match control
-                        .report(MissionReport::WorkItem {
-                            id: args.id,
-                            title: args.title,
-                            state: args.state.into(),
-                        })
-                        .await
-                    {
-                        Ok(()) => Ok(CallToolResult::text("mission work item recorded")),
-                        Err(error) => Ok(CallToolResult::error(error.to_string())),
-                    }
-                }
-            })
-            .build()
-    };
-    let report_blocker = {
-        let control = control.clone();
-        ToolBuilder::new("report_blocker")
-            .description("Upsert this run's claimed mission blocker for monitors.")
-            .non_destructive()
-            .handler(move |args: ReportBlockerArgs| {
-                let control = control.clone();
-                async move {
-                    match control
-                        .report(MissionReport::Blocker {
-                            id: args.id,
-                            message: args.message,
-                        })
-                        .await
-                    {
-                        Ok(()) => Ok(CallToolResult::text("mission blocker recorded")),
-                        Err(error) => Ok(CallToolResult::error(error.to_string())),
-                    }
-                }
-            })
-            .build()
-    };
-    let report_artifact = ToolBuilder::new("report_artifact")
-        .description(
-            "Upsert this run's claimed mission artifact or external reference for monitors.",
-        )
-        .non_destructive()
-        .handler(move |args: ReportArtifactArgs| {
+        };
+        let workers = {
             let control = control.clone();
-            async move {
-                match control
-                    .report(MissionReport::Artifact {
-                        id: args.id,
-                        artifact_kind: args.artifact_kind,
-                        reference: args.reference,
-                    })
-                    .await
-                {
-                    Ok(()) => Ok(CallToolResult::text("mission artifact recorded")),
-                    Err(error) => Ok(CallToolResult::error(error.to_string())),
-                }
-            }
-        })
-        .build();
+            ToolBuilder::new("workers")
+                .description("List descendants owned by this exact provider run.")
+                .read_only()
+                .no_params_handler(move || {
+                    let control = control.clone();
+                    async move {
+                        match control.workers() {
+                            Ok(workers) => json_result(serde_json::json!({ "workers": workers })),
+                            Err(error) => Ok(CallToolResult::error(error.to_string())),
+                        }
+                    }
+                })
+                .build()
+        };
 
-    McpRouter::new()
-        .server_info("roba-worker-control", env!("CARGO_PKG_VERSION"))
-        .instructions(
-            "This private server can spawn inherited workers, inspect their state, and publish explicitly claim-backed mission progress. It cannot widen run authority or overwrite host-derived runtime facts.",
-        )
-        .tool(spawn_worker)
-        .tool(workers)
-        .tool(report_work_item)
-        .tool(report_blocker)
-        .tool(report_artifact)
+        let report_work_item = {
+            let control = control.clone();
+            ToolBuilder::new("report_work_item")
+                .description("Upsert this run's claimed mission work-item state for monitors.")
+                .non_destructive()
+                .handler(move |args: ReportWorkItemArgs| {
+                    let control = control.clone();
+                    async move {
+                        match control
+                            .report(MissionReport::WorkItem {
+                                id: args.id,
+                                title: args.title,
+                                state: args.state.into(),
+                            })
+                            .await
+                        {
+                            Ok(()) => Ok(CallToolResult::text("mission work item recorded")),
+                            Err(error) => Ok(CallToolResult::error(error.to_string())),
+                        }
+                    }
+                })
+                .build()
+        };
+        let report_blocker = {
+            let control = control.clone();
+            ToolBuilder::new("report_blocker")
+                .description("Upsert this run's claimed mission blocker for monitors.")
+                .non_destructive()
+                .handler(move |args: ReportBlockerArgs| {
+                    let control = control.clone();
+                    async move {
+                        match control
+                            .report(MissionReport::Blocker {
+                                id: args.id,
+                                message: args.message,
+                            })
+                            .await
+                        {
+                            Ok(()) => Ok(CallToolResult::text("mission blocker recorded")),
+                            Err(error) => Ok(CallToolResult::error(error.to_string())),
+                        }
+                    }
+                })
+                .build()
+        };
+        let report_artifact = ToolBuilder::new("report_artifact")
+            .description(
+                "Upsert this run's claimed mission artifact or external reference for monitors.",
+            )
+            .non_destructive()
+            .handler(move |args: ReportArtifactArgs| {
+                let control = control.clone();
+                async move {
+                    match control
+                        .report(MissionReport::Artifact {
+                            id: args.id,
+                            artifact_kind: args.artifact_kind,
+                            reference: args.reference,
+                        })
+                        .await
+                    {
+                        Ok(()) => Ok(CallToolResult::text("mission artifact recorded")),
+                        Err(error) => Ok(CallToolResult::error(error.to_string())),
+                    }
+                }
+            })
+            .build();
+
+        router = router
+            .tool(spawn_worker)
+            .tool(workers)
+            .tool(report_work_item)
+            .tool(report_blocker)
+            .tool(report_artifact);
+    }
+
+    if let Some(control) = process_control {
+        let list_control = control.clone();
+        let process_capabilities =
+            ToolBuilder::new("process_capabilities")
+                .description("List process capabilities and actions declared for this exact run.")
+                .read_only()
+                .no_params_handler(move || {
+                    let control = list_control.clone();
+                    async move {
+                        json_result(serde_json::json!({ "capabilities": control.descriptors() }))
+                    }
+                })
+                .build();
+        let invoke_process_action = ToolBuilder::new("invoke_process_action")
+            .description(
+                "Invoke one declared process action. The host enforces the run's immutable grants.",
+            )
+            .handler(move |args: ProcessActionArgs| {
+                let control = control.clone();
+                async move {
+                    let capability = match ProcessCapabilityId::new(args.capability) {
+                        Ok(value) => value,
+                        Err(error) => return Ok(CallToolResult::error(error.to_string())),
+                    };
+                    let action = match ProcessActionId::new(args.action) {
+                        Ok(value) => value,
+                        Err(error) => return Ok(CallToolResult::error(error.to_string())),
+                    };
+                    match control.invoke(&capability, action, args.input).await {
+                        Ok(value) => json_result(value),
+                        Err(error) => Ok(CallToolResult::error(error.to_string())),
+                    }
+                }
+            })
+            .build();
+        router = router
+            .tool(process_capabilities)
+            .tool(invoke_process_action);
+    }
+
+    router
 }
 
 async fn snapshot_result(handle: &RunHandle) -> tower_mcp::Result<CallToolResult> {
@@ -567,7 +635,9 @@ fn json_result<T: serde::Serialize>(value: T) -> tower_mcp::Result<CallToolResul
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -576,8 +646,10 @@ mod tests {
 
     use super::*;
     use roba_core::{
-        AgentSpec, EventSink, Provider, ProviderCapabilities, ProviderContext, ProviderError,
-        ProviderFuture, ProviderId, Run, RunOutcome, RunSpec, SessionHandle, TurnRequest,
+        AgentSpec, AuthorityGrantId, CompletionPolicy, EventSink, MissionPolicy, ProcessActionId,
+        ProcessActionRequest, ProcessActionSpec, ProcessCapability, ProcessCapabilityDescriptor,
+        ProcessFuture, Provider, ProviderCapabilities, ProviderContext, ProviderError,
+        ProviderFuture, ProviderId, Roba, Run, RunOutcome, RunSpec, SessionHandle, TurnRequest,
         WorkerPolicy,
     };
 
@@ -620,6 +692,189 @@ mod tests {
                 })
             })
         }
+    }
+
+    struct RecordingProcess {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ProcessCapability for RecordingProcess {
+        fn descriptor(&self) -> ProcessCapabilityDescriptor {
+            ProcessCapabilityDescriptor {
+                id: ProcessCapabilityId::new("test/recorder").unwrap(),
+                description: "record deterministic values".to_string(),
+                required_grants: BTreeSet::from([AuthorityGrantId::new("test/record").unwrap()]),
+                actions: vec![ProcessActionSpec {
+                    id: ProcessActionId::new("record").unwrap(),
+                    description: "record one value".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "required": ["turn"],
+                        "properties": {"turn": {"type": "integer"}}
+                    }),
+                    destructive: false,
+                }],
+                instructions: vec!["Record each process phase through Roba.".to_string()],
+            }
+        }
+
+        fn invoke<'a>(&'a self, request: ProcessActionRequest) -> ProcessFuture<'a> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                Ok(json!({
+                    "run_id": request.run_id,
+                    "action": request.action,
+                    "input": request.input,
+                }))
+            })
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct ProviderThatCallsProcessMcp {
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+        turns: Arc<AtomicUsize>,
+    }
+
+    impl Provider for ProviderThatCallsProcessMcp {
+        fn id(&self) -> ProviderId {
+            ProviderId::new("process-fake").unwrap()
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                resume: true,
+                ..ProviderCapabilities::default()
+            }
+        }
+
+        fn validate(&self, _request: &TurnRequest) -> Result<(), ProviderError> {
+            Ok(())
+        }
+
+        fn execute<'a>(
+            &'a self,
+            request: TurnRequest,
+            context: ProviderContext,
+            _events: &'a dyn EventSink,
+        ) -> ProviderFuture<'a> {
+            Box::pin(async move {
+                let turn = self.turns.fetch_add(1, Ordering::SeqCst) + 1;
+                let control = context
+                    .process_control()
+                    .cloned()
+                    .expect("declared process control");
+                assert_eq!(control.descriptors()[0].id.as_str(), "test/recorder");
+                let mut client = TestClient::from_router(internal_router(None, Some(control)));
+                client.initialize().await;
+                let capabilities = client
+                    .call_tool_json("process_capabilities", json!({}))
+                    .await;
+                assert_eq!(capabilities["capabilities"][0]["id"], "test/recorder");
+                let result = client
+                    .call_tool_json(
+                        "invoke_process_action",
+                        json!({
+                            "capability": "test/recorder",
+                            "action": "record",
+                            "input": {"turn": turn}
+                        }),
+                    )
+                    .await;
+                assert_eq!(result["input"]["turn"], turn);
+                if turn == 1 {
+                    self.started.notify_one();
+                    self.release.notified().await;
+                }
+                Ok(RunOutcome {
+                    output: request.prompt.into_inner(),
+                    session: Some(SessionHandle {
+                        provider: ProviderId::new("process-fake").unwrap(),
+                        id: "process-session".to_string(),
+                    }),
+                    usage: None,
+                    cost: None,
+                    duration_ms: None,
+                    provider_turns: None,
+                    structured_output: None,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn declared_process_capability_is_private_and_identical_on_open_and_resume() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = ProviderThatCallsProcessMcp {
+            started: Arc::new(Notify::new()),
+            release: Arc::new(Notify::new()),
+            turns: Arc::new(AtomicUsize::new(0)),
+        };
+        let mut roba = Roba::new();
+        roba.register(WorkerMcpProvider::new(provider.clone()))
+            .unwrap();
+        roba.register_capability(RecordingProcess {
+            calls: calls.clone(),
+        })
+        .unwrap();
+        let mut spec = RunSpec::suspended(AgentSpec::new(ProviderId::new("process-fake").unwrap()))
+            .with_prompt(Prompt::new("open").unwrap());
+        spec.execution.workers = WorkerPolicy {
+            max_workers: 1,
+            max_depth: 1,
+        };
+        spec.mission = MissionPolicy::new(
+            [ProcessCapabilityId::new("test/recorder").unwrap()],
+            [AuthorityGrantId::new("test/record").unwrap()],
+            CompletionPolicy::RootTerminal,
+        )
+        .unwrap();
+        let run = roba.create_run(spec).unwrap();
+
+        run.begin().await.unwrap();
+        provider.started.notified().await;
+        let worker = run
+            .handle()
+            .spawn_inherited(Prompt::new("child").unwrap())
+            .await
+            .unwrap();
+        assert_eq!(worker.spec().mission, run.spec().mission);
+        assert_eq!(worker.wait().await.state, roba_core::RunState::Completed);
+        run.handle()
+            .steer(Prompt::new("resume").unwrap())
+            .await
+            .unwrap();
+        provider.release.notify_one();
+        let terminal = run.handle().wait().await;
+        assert_eq!(terminal.state, roba_core::RunState::Completed);
+        assert_eq!(provider.turns.load(Ordering::SeqCst), 3);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+        let mission = run.handle().mission().await;
+        assert_eq!(
+            mission
+                .authority
+                .process
+                .capabilities()
+                .iter()
+                .next()
+                .unwrap()
+                .as_str(),
+            "test/recorder"
+        );
+        assert_eq!(
+            mission.authority.process_capabilities[0].actions[0].input_schema["properties"]["turn"]
+                ["type"],
+            "integer"
+        );
+
+        let mut public = TestClient::from_router(router(run.handle()));
+        public.initialize().await;
+        let error = public
+            .call_tool_expect_error("invoke_process_action", json!({}))
+            .await;
+        assert!(!error.to_string().is_empty());
     }
 
     #[tokio::test]
@@ -894,7 +1149,7 @@ mod tests {
                     assert!(health_status(endpoint, true).await.contains("200"));
 
                     let control = context.worker_control().unwrap().clone();
-                    let mut client = TestClient::from_router(worker_router(control));
+                    let mut client = TestClient::from_router(internal_router(Some(control), None));
                     client.initialize().await;
                     client
                         .call_tool(

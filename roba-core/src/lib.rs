@@ -26,6 +26,7 @@
 pub mod engine;
 pub mod lifecycle;
 pub mod mission;
+pub mod process;
 pub mod provider;
 pub mod providers;
 pub mod resolve;
@@ -40,6 +41,12 @@ pub use lifecycle::{
 pub use mission::{
     MissionArtifact, MissionAuthority, MissionBlocker, MissionClaims, MissionReport,
     MissionReportError, MissionSnapshot, MissionWorkItem, MissionWorkState,
+};
+pub use process::{
+    AuthorityGrantId, AuthorityGrantIdError, CompletionPolicy, MissionPolicy, MissionPolicyError,
+    ProcessActionId, ProcessActionIdError, ProcessActionRequest, ProcessActionSpec,
+    ProcessCapability, ProcessCapabilityDescriptor, ProcessCapabilityError, ProcessCapabilityId,
+    ProcessCapabilityIdError, ProcessControl, ProcessControlError, ProcessFuture,
 };
 pub use provider::{
     EventSink, NoopEventSink, Provider, ProviderCapabilities, ProviderContext, ProviderError,

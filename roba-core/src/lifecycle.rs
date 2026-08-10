@@ -13,6 +13,7 @@ use crate::mission::{
     MissionArtifact, MissionAuthority, MissionBlocker, MissionClaims, MissionReport,
     MissionReportError, MissionSnapshot, MissionWorkItem,
 };
+use crate::process::{ProcessCapabilityId, ProcessControl, RegisteredProcessCapability};
 use crate::provider::{EventSink, Provider, ProviderContext, ProviderError, execute_turn};
 use crate::run::{
     FailureKind, Prompt, ProviderId, RunEvent, RunFailure, RunId, RunOutcome, RunSpec, RunState,
@@ -138,12 +139,21 @@ impl Run {
         }
         let mut providers = BTreeMap::new();
         providers.insert(provider_id, provider);
-        Self::with_providers(spec, providers)
+        Self::with_components(spec, providers, BTreeMap::new())
     }
 
+    #[cfg(test)]
     pub(crate) fn with_providers(
         spec: RunSpec,
         providers: BTreeMap<ProviderId, Arc<dyn Provider>>,
+    ) -> Result<Self, RunControlError> {
+        Self::with_components(spec, providers, BTreeMap::new())
+    }
+
+    pub(crate) fn with_components(
+        spec: RunSpec,
+        providers: BTreeMap<ProviderId, Arc<dyn Provider>>,
+        capabilities: BTreeMap<ProcessCapabilityId, RegisteredProcessCapability>,
     ) -> Result<Self, RunControlError> {
         spec.execution
             .workers
@@ -153,7 +163,20 @@ impl Run {
             .get(&spec.agent.provider)
             .cloned()
             .ok_or_else(|| RunControlError::ProviderUnavailable(spec.agent.provider.clone()))?;
-        let tree = Arc::new(RunTree::new(spec.execution.workers, providers));
+        if spec.mission.capabilities().len() != capabilities.len()
+            || spec
+                .mission
+                .capabilities()
+                .iter()
+                .any(|id| !capabilities.contains_key(id))
+        {
+            return Err(RunControlError::ProcessCapabilitiesUnavailable);
+        }
+        let tree = Arc::new(RunTree::new(
+            spec.execution.workers,
+            providers,
+            capabilities,
+        ));
         let inner = new_inner(spec, provider, tree.clone(), RunId::ROOT, None, 0);
         tree.register(&inner);
         Ok(Self {
@@ -318,6 +341,11 @@ impl RunHandle {
 
         let depth = self.inner.depth.saturating_add(1);
         let provider = self.inner.tree.provider(&worker.agent.provider)?;
+        if !self.inner.spec.mission.is_empty() && !provider.supports_process_control() {
+            return Err(RunControlError::ProviderProcessControlUnavailable(
+                worker.agent.provider,
+            ));
+        }
 
         let mut execution = self.inner.spec.execution.clone();
         execution.session = SessionSpec::Fresh;
@@ -325,6 +353,7 @@ impl RunHandle {
             agent: worker.agent,
             context: worker.context,
             execution,
+            mission: self.inner.spec.mission.clone(),
             initial_prompt: Some(worker.prompt),
         };
         let request = spec
@@ -386,6 +415,14 @@ impl RunHandle {
                 tools: self.inner.spec.execution.tools.clone(),
                 limits: self.inner.spec.execution.limits.clone(),
                 workers: self.inner.tree.policy,
+                process: self.inner.spec.mission.clone(),
+                process_capabilities: self
+                    .inner
+                    .tree
+                    .capabilities
+                    .values()
+                    .map(|capability| capability.descriptor.clone())
+                    .collect(),
             },
             claims: self.inner.tree.claims(self.inner.id),
         }
@@ -589,6 +626,7 @@ struct RunTree {
     policy: WorkerPolicy,
     next_id: AtomicU64,
     providers: BTreeMap<ProviderId, Arc<dyn Provider>>,
+    capabilities: BTreeMap<ProcessCapabilityId, RegisteredProcessCapability>,
     records: StdMutex<BTreeMap<RunId, WorkerRecord>>,
     claims: StdMutex<MissionClaimState>,
     events: EventJournal,
@@ -635,11 +673,16 @@ struct Control {
 }
 
 impl RunTree {
-    fn new(policy: WorkerPolicy, providers: BTreeMap<ProviderId, Arc<dyn Provider>>) -> Self {
+    fn new(
+        policy: WorkerPolicy,
+        providers: BTreeMap<ProviderId, Arc<dyn Provider>>,
+        capabilities: BTreeMap<ProcessCapabilityId, RegisteredProcessCapability>,
+    ) -> Self {
         Self {
             policy,
             next_id: AtomicU64::new(RunId::ROOT.get() + 1),
             providers,
+            capabilities,
             records: StdMutex::new(BTreeMap::new()),
             claims: StdMutex::new(MissionClaimState::default()),
             events: EventJournal::new(),
@@ -969,10 +1012,18 @@ async fn drive(inner: Arc<Inner>, mut prompt: Prompt) {
         };
 
         let mut cancelled = inner.cancel_tx.subscribe();
-        let context = if inner.spec.execution.workers.enabled() {
-            ProviderContext::for_worker(WorkerControl {
+        let worker_control = inner
+            .spec
+            .execution
+            .workers
+            .enabled()
+            .then(|| WorkerControl {
                 inner: Arc::downgrade(&inner),
-            })
+            });
+        let process_control = (!inner.tree.capabilities.is_empty())
+            .then(|| ProcessControl::new(inner.id, inner.tree.capabilities.clone()));
+        let context = if worker_control.is_some() || process_control.is_some() {
+            ProviderContext::for_run(worker_control, process_control)
         } else {
             ProviderContext::default()
         };
@@ -1125,7 +1176,9 @@ pub enum RunControlError {
     SteeringUnsupported,
     Terminal,
     InvalidWorkerPolicy,
+    ProcessCapabilitiesUnavailable,
     ProviderUnavailable(ProviderId),
+    ProviderProcessControlUnavailable(ProviderId),
     WorkersDisabled,
     WorkerDepthExceeded {
         requested: u32,
@@ -1162,9 +1215,16 @@ impl fmt::Display for RunControlError {
             Self::InvalidWorkerPolicy => f.write_str(
                 "max_workers and max_depth must either both be zero or both be greater than zero",
             ),
+            Self::ProcessCapabilitiesUnavailable => f.write_str(
+                "run declares process capabilities that were not validated by its host runtime",
+            ),
             Self::ProviderUnavailable(provider) => {
                 write!(f, "provider {provider} is not registered for this run tree")
             }
+            Self::ProviderProcessControlUnavailable(provider) => write!(
+                f,
+                "provider {provider} has no private process-control transport"
+            ),
             Self::WorkersDisabled => f.write_str("this run does not permit child workers"),
             Self::WorkerDepthExceeded { requested, maximum } => write!(
                 f,

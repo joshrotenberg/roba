@@ -9,6 +9,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::process::MissionPolicy;
+
 /// Stable provider identity used in resolved specifications and receipts.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -274,6 +276,10 @@ pub struct RunSpec {
     pub context: ContextSpec,
     #[serde(default)]
     pub execution: ExecutionSpec,
+    /// Immutable process capabilities, explicit grants, and completion rule
+    /// captured for the whole run tree.
+    #[serde(default)]
+    pub mission: MissionPolicy,
     /// Absence is intentional: the run remains suspended until `start` is
     /// called by a library, CLI, REPL, or MCP client.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -287,6 +293,7 @@ impl RunSpec {
             agent,
             context: ContextSpec::default(),
             execution: ExecutionSpec::default(),
+            mission: MissionPolicy::default(),
             initial_prompt: None,
         }
     }
