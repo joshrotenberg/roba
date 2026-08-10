@@ -3539,7 +3539,7 @@ fn hermetic_bundle_provisions_the_exact_claude_child_surface() {
         value_after("--mcp-config"),
         bundle.join("mcp.json").to_str().unwrap()
     );
-    assert_eq!(value_after("--setting-sources"), "user");
+    assert_eq!(value_after("--setting-sources"), "");
     assert!(argv.contains(&"--strict-mcp-config"));
 
     let plugin_roots: Vec<&str> = argv
@@ -3554,6 +3554,21 @@ fn hermetic_bundle_provisions_the_exact_claude_child_surface() {
             bundle.join("plugins/lint").to_str().unwrap()
         ]
     );
+
+    let override_capture = home.path().join("override-args.txt");
+    roba_with_fake_claude(bin.path(), home.path(), cfg.path())
+        .env("ROBA_CAPTURE_ARGS", &override_capture)
+        .args(["--hermetic=claude", "--setting-sources", "user", "hello"])
+        .assert()
+        .success()
+        .stdout("ok\n");
+    let override_argv = std::fs::read_to_string(override_capture).unwrap();
+    let override_argv: Vec<&str> = override_argv.lines().collect();
+    let index = override_argv
+        .iter()
+        .position(|arg| *arg == "--setting-sources")
+        .unwrap();
+    assert_eq!(override_argv[index + 1], "user");
 }
 
 #[cfg(unix)]

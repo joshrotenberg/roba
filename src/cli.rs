@@ -1600,10 +1600,10 @@ pub struct AskArgs {
     ///
     /// `--hermetic` seals BOTH axes; `--hermetic=roba` skips roba's own config
     /// pool (the up-tree roba.toml walk + `~/.config`); `--hermetic=claude`
-    /// seals claude's ambient config (`--setting-sources user` + strict MCP),
-    /// dropping the project's ambient CLAUDE.md/agents while your global
-    /// `~/.claude` stays. For a full seal add `--setting-sources ''`. Seals the
-    /// promptspace, not tool permissions.
+    /// seals all claude setting sources (`--setting-sources ''` + strict MCP),
+    /// dropping ambient user/project/local CLAUDE.md, agents, and settings. To
+    /// opt a source back in deliberately, pass (for example)
+    /// `--setting-sources user`. Seals the promptspace, not tool permissions.
     #[arg(
         long,
         value_name = "WHICH",
