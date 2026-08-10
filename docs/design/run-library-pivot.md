@@ -132,7 +132,7 @@ Initial external MCP surface:
 - `start` -- supply the first prompt to a suspended run
 - `status`
 - `wait`
-- `events` or equivalent subscribable resources
+- `events` -- bounded cursor replay and long polling across the run tree
 - `workers`
 - `usage`
 - `steer`
@@ -261,7 +261,7 @@ cancelled, and awaited entirely through the library.
 - [x] Make `roba run` the thin CLI constructor/attachment path.
 - [x] Preserve pipe-clean one-off usage as a convenience over the same API.
 - [x] Add worker spawn and observation to MCP and the REPL.
-- [ ] Add subscribable event observation to MCP.
+- [x] Add bounded cursor replay and long-poll event observation to MCP.
 
 Acceptance: CLI, REPL, MCP, and direct Rust callers produce identical lifecycle
 and outcome semantics.
@@ -296,9 +296,9 @@ Current assets to preserve:
 1. Read this document and `AGENTS.md`.
 2. Confirm the branch is `codex/run-library-pivot` and inspect `git status`.
 3. Continue the first unchecked item that advances the current vertical slice;
-   the recommended next step is making run events subscribable through the
-   MCP adapter and then exercising the bounded orchestrator with paid Claude
-   and Codex smoke runs.
+   run events now have bounded cursor replay through the MCP adapter, so the
+   recommended next step is exercising the observable bounded orchestrator
+   with paid Claude and Codex smoke runs.
 4. Preserve current CLI behavior until a phase's acceptance criteria say a
    compatibility surface may change.
 5. Run the repository's four required gates before publishing a review point.

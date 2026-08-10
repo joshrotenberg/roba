@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex as AsyncMutex, broadcast, watch};
+use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use crate::provider::{EventSink, Provider, ProviderContext, ProviderError, execute_turn};
 use crate::run::{
@@ -40,6 +40,43 @@ pub struct WorkerSnapshot {
     pub model: Option<String>,
     pub run: RunSnapshot,
 }
+
+/// One sequenced event retained by the process-local run tree.
+///
+/// The root run observes events from every descendant. A child handle observes
+/// only itself and its descendants.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunEventRecord {
+    pub sequence: u64,
+    pub run_id: RunId,
+    pub event: RunEvent,
+}
+
+/// Bounded event page returned for one run-tree cursor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunEventPage {
+    pub events: Vec<RunEventRecord>,
+    /// Highest tree-wide sequence inspected by this page. Supply this as the
+    /// next `after` cursor, even when no scoped event was returned.
+    pub next_sequence: u64,
+    /// Oldest sequence still retained by the bounded journal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_sequence: Option<u64>,
+    /// True when the requested cursor predates retained history.
+    pub truncated: bool,
+    /// True when this run and all of its descendants can emit no more events.
+    pub terminal: bool,
+}
+
+/// Replayable subscription over one run and its descendants.
+pub struct RunEventSubscription {
+    handle: RunHandle,
+    cursor: u64,
+}
+
+/// Maximum records retained for one process-local run tree and returned in one
+/// event page.
+pub const RUN_EVENT_CAPACITY: usize = 256;
 
 impl RunSnapshot {
     /// True after no more provider work can start.
@@ -220,7 +257,7 @@ impl RunHandle {
             return Err(RunControlError::NotRunning);
         }
         control.steering.push_back(prompt);
-        let _ = self.inner.events.send(RunEvent::SteeringQueued);
+        emit(&self.inner, RunEvent::SteeringQueued);
         Ok(())
     }
 
@@ -267,12 +304,15 @@ impl RunHandle {
         );
         self.inner.tree.register(&inner);
         let handle = RunHandle { inner };
-        let _ = self.inner.events.send(RunEvent::WorkerSpawned {
-            id,
-            parent_id: self.inner.id,
-            depth,
-            provider: handle.inner.spec.agent.provider.clone(),
-        });
+        emit(
+            &self.inner,
+            RunEvent::WorkerSpawned {
+                id,
+                parent_id: self.inner.id,
+                depth,
+                provider: handle.inner.spec.agent.provider.clone(),
+            },
+        );
         drop(parent);
         handle.begin().await?;
         Ok(handle)
@@ -294,9 +334,53 @@ impl RunHandle {
         self.inner.tree.descendants(self.inner.id)
     }
 
-    /// Subscribe to normalized lifecycle and provider events.
-    pub fn subscribe(&self) -> broadcast::Receiver<RunEvent> {
-        self.inner.events.subscribe()
+    /// Subscribe to retained and future normalized events for this run and its
+    /// descendants. The first call to [`RunEventSubscription::next`] replays
+    /// the oldest retained record.
+    pub fn subscribe(&self) -> RunEventSubscription {
+        self.subscribe_after(0)
+    }
+
+    /// Subscribe after an event sequence previously returned by
+    /// [`RunHandle::event_page`].
+    pub fn subscribe_after(&self, sequence: u64) -> RunEventSubscription {
+        RunEventSubscription {
+            handle: self.clone(),
+            cursor: sequence,
+        }
+    }
+
+    /// Read retained events after `sequence` without waiting.
+    pub async fn event_page(
+        &self,
+        sequence: u64,
+        limit: usize,
+    ) -> Result<RunEventPage, RunControlError> {
+        validate_event_limit(limit)?;
+        Ok(self.scoped_event_page(sequence, limit).await)
+    }
+
+    /// Wait until at least one scoped event is available or this run becomes
+    /// terminal. Unrelated sibling events are skipped while advancing the
+    /// tree-wide cursor.
+    pub async fn wait_for_events(
+        &self,
+        sequence: u64,
+        limit: usize,
+    ) -> Result<RunEventPage, RunControlError> {
+        validate_event_limit(limit)?;
+        let mut changed = self.inner.tree.events.subscribe();
+        let mut cursor = sequence;
+        loop {
+            let page = self.scoped_event_page(cursor, limit).await;
+            if !page.events.is_empty() || page.terminal {
+                return Ok(page);
+            }
+            cursor = page.next_sequence;
+            if changed.changed().await.is_err() {
+                return Ok(self.scoped_event_page(cursor, limit).await);
+            }
+        }
     }
 
     /// Cancel a suspended, ready, or running run. Running provider futures are
@@ -337,6 +421,58 @@ impl RunHandle {
             }
         }
     }
+
+    async fn scoped_event_page(&self, sequence: u64, limit: usize) -> RunEventPage {
+        let retained = self.inner.tree.events.page(sequence);
+        let journal_sequence = retained.next_sequence;
+        let mut next_sequence = journal_sequence;
+        let mut events = Vec::with_capacity(limit);
+        for record in retained.events {
+            if self.inner.tree.includes(self.inner.id, record.run_id) {
+                next_sequence = record.sequence;
+                events.push(record);
+                if events.len() == limit {
+                    break;
+                }
+            }
+        }
+        if events.len() < limit {
+            next_sequence = journal_sequence;
+        }
+        RunEventPage {
+            events,
+            next_sequence,
+            oldest_sequence: retained.oldest_sequence,
+            truncated: retained.truncated,
+            terminal: self.status().await.is_terminal(),
+        }
+    }
+}
+
+impl RunEventSubscription {
+    /// Last tree-wide sequence consumed by this subscription.
+    pub fn cursor(&self) -> u64 {
+        self.cursor
+    }
+
+    /// Wait for and return the next retained or future scoped event. Returns
+    /// `None` only after the run is terminal and no further event is pending.
+    pub async fn next(&mut self) -> Option<RunEventRecord> {
+        loop {
+            let page = self
+                .handle
+                .wait_for_events(self.cursor, 1)
+                .await
+                .expect("subscription uses a valid event page size");
+            self.cursor = page.next_sequence;
+            if let Some(record) = page.events.into_iter().next() {
+                return Some(record);
+            }
+            if page.terminal {
+                return None;
+            }
+        }
+    }
 }
 
 struct Inner {
@@ -349,7 +485,6 @@ struct Inner {
     control: AsyncMutex<Control>,
     snapshot_tx: watch::Sender<RunSnapshot>,
     cancel_tx: watch::Sender<bool>,
-    events: broadcast::Sender<RunEvent>,
 }
 
 struct RunTree {
@@ -357,6 +492,24 @@ struct RunTree {
     next_id: AtomicU64,
     providers: BTreeMap<ProviderId, Arc<dyn Provider>>,
     records: StdMutex<BTreeMap<RunId, WorkerRecord>>,
+    events: EventJournal,
+}
+
+struct EventJournal {
+    state: StdMutex<EventJournalState>,
+    revision: watch::Sender<u64>,
+}
+
+struct EventJournalState {
+    next_sequence: u64,
+    records: VecDeque<RunEventRecord>,
+}
+
+struct RetainedEventPage {
+    events: Vec<RunEventRecord>,
+    next_sequence: u64,
+    oldest_sequence: Option<u64>,
+    truncated: bool,
 }
 
 struct WorkerRecord {
@@ -381,6 +534,7 @@ impl RunTree {
             next_id: AtomicU64::new(RunId::ROOT.get() + 1),
             providers,
             records: StdMutex::new(BTreeMap::new()),
+            events: EventJournal::new(),
         }
     }
 
@@ -458,6 +612,69 @@ impl RunTree {
             .map(|(_, inner)| RunHandle { inner })
             .collect()
     }
+
+    fn includes(&self, ancestor: RunId, candidate: RunId) -> bool {
+        candidate == ancestor || is_descendant(&lock_records(&self.records), candidate, ancestor)
+    }
+}
+
+impl EventJournal {
+    fn new() -> Self {
+        let (revision, _) = watch::channel(0);
+        Self {
+            state: StdMutex::new(EventJournalState {
+                next_sequence: 1,
+                records: VecDeque::with_capacity(RUN_EVENT_CAPACITY),
+            }),
+            revision,
+        }
+    }
+
+    fn emit(&self, run_id: RunId, event: RunEvent) {
+        let sequence = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let sequence = state.next_sequence;
+            state.next_sequence = state.next_sequence.saturating_add(1);
+            if state.records.len() == RUN_EVENT_CAPACITY {
+                state.records.pop_front();
+            }
+            state.records.push_back(RunEventRecord {
+                sequence,
+                run_id,
+                event,
+            });
+            sequence
+        };
+        self.revision.send_replace(sequence);
+    }
+
+    fn subscribe(&self) -> watch::Receiver<u64> {
+        self.revision.subscribe()
+    }
+
+    fn page(&self, after: u64) -> RetainedEventPage {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let next_sequence = after.max(state.next_sequence.saturating_sub(1));
+        let oldest_sequence = state.records.front().map(|record| record.sequence);
+        let truncated = oldest_sequence.is_some_and(|oldest| after.saturating_add(1) < oldest);
+        RetainedEventPage {
+            events: state
+                .records
+                .iter()
+                .filter(|record| record.sequence > after)
+                .cloned()
+                .collect(),
+            next_sequence,
+            oldest_sequence,
+            truncated,
+        }
+    }
 }
 
 fn lock_records(
@@ -501,7 +718,6 @@ fn new_inner(
     };
     let (snapshot_tx, _) = watch::channel(snapshot.clone());
     let (cancel_tx, _) = watch::channel(false);
-    let (events, _) = broadcast::channel(256);
     Arc::new(Inner {
         id,
         parent_id,
@@ -516,17 +732,17 @@ fn new_inner(
         }),
         snapshot_tx,
         cancel_tx,
-        events,
     })
 }
 
-struct BroadcastSink {
-    events: broadcast::Sender<RunEvent>,
+struct JournalSink {
+    run_id: RunId,
+    events: Arc<RunTree>,
 }
 
-impl EventSink for BroadcastSink {
+impl EventSink for JournalSink {
     fn emit(&self, event: RunEvent) {
-        let _ = self.events.send(event);
+        self.events.events.emit(self.run_id, event);
     }
 }
 
@@ -538,8 +754,9 @@ fn spawn_driver(inner: Arc<Inner>, prompt: Prompt) {
 
 async fn drive(inner: Arc<Inner>, mut prompt: Prompt) {
     let mut session = inner.spec.execution.session.clone();
-    let sink = BroadcastSink {
-        events: inner.events.clone(),
+    let sink = JournalSink {
+        run_id: inner.id,
+        events: inner.tree.clone(),
     };
 
     loop {
@@ -643,7 +860,7 @@ async fn fail(inner: &Inner, failure: RunFailure) {
     cancel_children(inner).await;
     let mut control = inner.control.lock().await;
     set_state(inner, &mut control, RunState::Failed);
-    let _ = inner.events.send(RunEvent::Failed { failure });
+    emit(inner, RunEvent::Failed { failure });
 }
 
 async fn cancel_children(inner: &Inner) {
@@ -659,7 +876,21 @@ async fn cancel_children(inner: &Inner) {
 fn set_state(inner: &Inner, control: &mut Control, state: RunState) {
     control.snapshot.state = state;
     inner.snapshot_tx.send_replace(control.snapshot.clone());
-    let _ = inner.events.send(RunEvent::StateChanged { state });
+    emit(inner, RunEvent::StateChanged { state });
+}
+
+fn emit(inner: &Inner, event: RunEvent) {
+    inner.tree.events.emit(inner.id, event);
+}
+
+fn validate_event_limit(limit: usize) -> Result<(), RunControlError> {
+    if (1..=RUN_EVENT_CAPACITY).contains(&limit) {
+        Ok(())
+    } else {
+        Err(RunControlError::InvalidEventLimit {
+            maximum: RUN_EVENT_CAPACITY,
+        })
+    }
 }
 
 impl From<ProviderError> for RunFailure {
@@ -695,6 +926,9 @@ pub enum RunControlError {
     },
     WorkerPromptMissing,
     WorkerPreflight(ProviderError),
+    InvalidEventLimit {
+        maximum: usize,
+    },
 }
 
 impl fmt::Display for RunControlError {
@@ -727,6 +961,9 @@ impl fmt::Display for RunControlError {
             }
             Self::WorkerPromptMissing => f.write_str("worker prompt is missing"),
             Self::WorkerPreflight(error) => write!(f, "worker preflight refused: {error}"),
+            Self::InvalidEventLimit { maximum } => {
+                write!(f, "event page limit must be between 1 and {maximum}")
+            }
         }
     }
 }
@@ -890,6 +1127,100 @@ mod tests {
         assert_eq!(handle.wait().await.state, RunState::Cancelled);
     }
 
+    #[tokio::test]
+    async fn late_subscribers_replay_retained_events_without_cursor_loss() {
+        let provider = provider(false);
+        let spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+            .with_prompt(Prompt::new("hello").unwrap());
+        let run = Run::new(spec, provider).unwrap();
+        run.begin().await.unwrap();
+        assert_eq!(run.handle().wait().await.state, RunState::Completed);
+
+        let handle = run.handle();
+        let first = handle.event_page(0, 1).await.unwrap();
+        assert_eq!(first.events.len(), 1);
+        assert_eq!(first.events[0].sequence, first.next_sequence);
+        assert!(!first.truncated);
+
+        let rest = handle
+            .event_page(first.next_sequence, RUN_EVENT_CAPACITY)
+            .await
+            .unwrap();
+        assert!(!rest.events.is_empty());
+        assert!(
+            rest.events
+                .iter()
+                .all(|record| record.sequence > first.next_sequence)
+        );
+        assert_eq!(
+            rest.events.last().unwrap().event,
+            RunEvent::StateChanged {
+                state: RunState::Completed
+            }
+        );
+        assert!(rest.terminal);
+
+        let mut subscription = handle.subscribe();
+        let mut replayed = Vec::new();
+        while let Some(record) = subscription.next().await {
+            replayed.push(record);
+        }
+        assert_eq!(replayed.len(), first.events.len() + rest.events.len());
+        assert_eq!(subscription.cursor(), rest.next_sequence);
+    }
+
+    #[tokio::test]
+    async fn waiting_event_cursor_wakes_when_a_suspended_run_starts() {
+        let provider = provider(true);
+        let run = Run::new(
+            RunSpec::suspended(AgentSpec::new(ProviderId::claude())),
+            provider.clone(),
+        )
+        .unwrap();
+        let handle = run.handle();
+        let waiter = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.wait_for_events(0, 1).await.unwrap() }
+        });
+
+        handle.start(Prompt::new("hello").unwrap()).await.unwrap();
+        let page = waiter.await.unwrap();
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(
+            page.events[0].event,
+            RunEvent::StateChanged {
+                state: RunState::Running
+            }
+        );
+        provider.first_started.notified().await;
+        handle.cancel().await.unwrap();
+        assert_eq!(handle.wait().await.state, RunState::Cancelled);
+    }
+
+    #[test]
+    fn bounded_event_journal_reports_truncated_history() {
+        let journal = EventJournal::new();
+        for index in 0..=RUN_EVENT_CAPACITY {
+            journal.emit(
+                RunId::ROOT,
+                RunEvent::Warning {
+                    message: index.to_string(),
+                },
+            );
+        }
+
+        let page = journal.page(0);
+        assert_eq!(page.events.len(), RUN_EVENT_CAPACITY);
+        assert_eq!(page.oldest_sequence, Some(2));
+        assert_eq!(page.next_sequence, RUN_EVENT_CAPACITY as u64 + 1);
+        assert!(page.truncated);
+
+        let future = journal.page(999);
+        assert!(future.events.is_empty());
+        assert_eq!(future.next_sequence, 999);
+        assert!(!future.truncated);
+    }
+
     struct WorkerProvider {
         calls: AtomicUsize,
         self_spawned: AtomicUsize,
@@ -1000,6 +1331,26 @@ mod tests {
         assert_eq!(
             workers[0].run.last_outcome.as_ref().unwrap().output,
             "worker"
+        );
+
+        let root_events = run
+            .handle()
+            .event_page(0, RUN_EVENT_CAPACITY)
+            .await
+            .unwrap();
+        assert!(
+            root_events
+                .events
+                .iter()
+                .any(|record| record.run_id == worker.id())
+        );
+        let worker_events = worker.event_page(0, RUN_EVENT_CAPACITY).await.unwrap();
+        assert!(!worker_events.events.is_empty());
+        assert!(
+            worker_events
+                .events
+                .iter()
+                .all(|record| record.run_id == worker.id())
         );
 
         provider.release_root.notify_one();

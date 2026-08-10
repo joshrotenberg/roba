@@ -5,6 +5,7 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::Request;
 use axum::http::{StatusCode, header};
@@ -20,7 +21,8 @@ use uuid::Uuid;
 
 use roba_core::{
     FailureKind, Prompt, Provider, ProviderCapabilities, ProviderContext, ProviderError,
-    ProviderFuture, ProviderId, ProviderMcpEndpoint, RunHandle, TurnRequest, WorkerControl,
+    ProviderFuture, ProviderId, ProviderMcpEndpoint, RUN_EVENT_CAPACITY, RunHandle, TurnRequest,
+    WorkerControl,
 };
 
 const INTERNAL_SERVER_NAME: &str = "roba_workers";
@@ -30,6 +32,28 @@ const INTERNAL_SERVER_NAME: &str = "roba_workers";
 struct PromptArgs {
     /// Message for the root Roba agent.
     text: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EventsArgs {
+    /// Last sequence observed by the client. Omit or use zero to replay the
+    /// oldest retained event.
+    #[serde(default)]
+    after: u64,
+    /// Maximum records to return, from 1 through 256.
+    #[serde(default = "default_event_limit")]
+    limit: usize,
+    /// Wait this many milliseconds for a new event when the cursor is caught
+    /// up. The maximum is 30 seconds.
+    #[serde(default)]
+    wait_ms: u64,
+}
+
+const MAX_EVENT_WAIT_MS: u64 = 30_000;
+
+fn default_event_limit() -> usize {
+    100
 }
 
 /// Build the minimal control and observation surface for one run.
@@ -135,6 +159,53 @@ pub fn router(handle: RunHandle) -> McpRouter {
             .build()
     };
 
+    let events = {
+        let handle = handle.clone();
+        ToolBuilder::new("events")
+            .description(
+                "Read sequenced lifecycle and provider events for this run tree. Use next_sequence as the next after cursor; wait_ms enables bounded long polling.",
+            )
+            .read_only()
+            .handler(move |args: EventsArgs| {
+                let handle = handle.clone();
+                async move {
+                    if !(1..=RUN_EVENT_CAPACITY).contains(&args.limit) {
+                        return Ok(CallToolResult::error(format!(
+                            "limit must be between 1 and {RUN_EVENT_CAPACITY}"
+                        )));
+                    }
+                    if args.wait_ms > MAX_EVENT_WAIT_MS {
+                        return Ok(CallToolResult::error(format!(
+                            "wait_ms must be between 0 and {MAX_EVENT_WAIT_MS}"
+                        )));
+                    }
+                    let page = match handle.event_page(args.after, args.limit).await {
+                        Ok(page)
+                            if page.events.is_empty()
+                                && !page.terminal
+                                && args.wait_ms > 0 =>
+                        {
+                            match tokio::time::timeout(
+                                Duration::from_millis(args.wait_ms),
+                                handle.wait_for_events(args.after, args.limit),
+                            )
+                            .await
+                            {
+                                Ok(result) => result,
+                                Err(_) => handle.event_page(args.after, args.limit).await,
+                            }
+                        }
+                        result => result,
+                    };
+                    match page {
+                        Ok(page) => json_result(page),
+                        Err(error) => Ok(CallToolResult::error(error.to_string())),
+                    }
+                }
+            })
+            .build()
+    };
+
     let cancel = ToolBuilder::new("cancel")
         .description("Cancel the active Roba provider turn and end this run.")
         .destructive()
@@ -152,7 +223,7 @@ pub fn router(handle: RunHandle) -> McpRouter {
     McpRouter::new()
         .server_info("roba-run", env!("CARGO_PKG_VERSION"))
         .instructions(
-            "This MCP server controls one bounded Roba run. Start supplies the first prompt; status, wait, and workers observe it; steer queues root guidance; spawn_worker starts an inherited child within explicit bounds; cancel ends the tree.",
+            "This MCP server controls one bounded Roba run. Start supplies the first prompt; status, wait, events, and workers observe it; steer queues root guidance; spawn_worker starts an inherited child within explicit bounds; cancel ends the tree.",
         )
         .tool(start)
         .tool(status)
@@ -160,6 +231,7 @@ pub fn router(handle: RunHandle) -> McpRouter {
         .tool(steer)
         .tool(spawn_worker)
         .tool(workers)
+        .tool(events)
         .tool(cancel)
 }
 
@@ -443,6 +515,61 @@ mod tests {
         let terminal = client.call_tool_json("wait", json!({})).await;
         assert_eq!(terminal["state"], "completed");
         assert_eq!(terminal["last_outcome"]["output"], "hello");
+
+        let first = client
+            .call_tool_json("events", json!({"after": 0, "limit": 1}))
+            .await;
+        assert_eq!(first["events"].as_array().unwrap().len(), 1);
+        assert_eq!(first["events"][0]["run_id"], 1);
+        assert!(!first["truncated"].as_bool().unwrap());
+        let cursor = first["next_sequence"].as_u64().unwrap();
+
+        let rest = client
+            .call_tool_json("events", json!({"after": cursor, "limit": 256}))
+            .await;
+        assert!(!rest["events"].as_array().unwrap().is_empty());
+        assert_eq!(
+            rest["events"].as_array().unwrap().last().unwrap()["event"]["kind"],
+            "state_changed"
+        );
+        assert_eq!(
+            rest["events"].as_array().unwrap().last().unwrap()["event"]["state"],
+            "completed"
+        );
+        assert!(rest["terminal"].as_bool().unwrap());
+
+        let caught_up = client
+            .call_tool_json(
+                "events",
+                json!({"after": rest["next_sequence"], "wait_ms": 1}),
+            )
+            .await;
+        assert!(caught_up["events"].as_array().unwrap().is_empty());
+        assert!(caught_up["terminal"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn mcp_event_long_poll_is_bounded_and_validated() {
+        let run = Run::new(
+            RunSpec::suspended(AgentSpec::new(ProviderId::new("fake").unwrap())),
+            Arc::new(FakeProvider),
+        )
+        .unwrap();
+        let mut client = TestClient::from_router(router(run.handle()));
+        client.initialize().await;
+
+        let empty = client.call_tool_json("events", json!({"wait_ms": 1})).await;
+        assert!(empty["events"].as_array().unwrap().is_empty());
+        assert!(!empty["terminal"].as_bool().unwrap());
+
+        let bad_limit = client
+            .call_tool_expect_error("events", json!({"limit": 0}))
+            .await;
+        assert!(bad_limit.to_string().contains("between 1 and 256"));
+        let bad_wait = client
+            .call_tool_expect_error("events", json!({"wait_ms": 30_001}))
+            .await;
+        assert!(bad_wait.to_string().contains("between 0 and 30000"));
     }
 
     #[tokio::test]
@@ -536,6 +663,15 @@ mod tests {
         let workers = client.call_tool_json("workers", json!({})).await;
         assert_eq!(workers["workers"].as_array().unwrap().len(), 1);
         assert_eq!(workers["workers"][0]["provider"], "fake");
+
+        let events = client.call_tool_json("events", json!({"limit": 256})).await;
+        assert!(
+            events["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|record| record["run_id"] == 2)
+        );
 
         let refusal = client
             .call_tool_expect_error("spawn_worker", json!({"text": "second"}))

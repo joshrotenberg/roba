@@ -12,8 +12,9 @@ can create and control a run without depending on clap or terminal behavior.
 - **`run` / `provider`** -- provider-neutral specifications, events, outcomes,
   failures, sessions, and the one-turn provider contract.
 - **`lifecycle` / `runtime`** -- suspended creation, exact-once start,
-  boundary-safe steering, observation, cancellation, waiting, and an explicit
-  provider registry. No daemon, database, queue, or global session pool.
+  boundary-safe steering, bounded replayable run-tree events, cancellation,
+  waiting, and an explicit provider registry. No daemon, database, queue, or
+  global session pool.
 - **`resolve`** -- one serializable hierarchy: Roba defaults, selected provider
   defaults, named agent, then run overrides.
 - **`providers`** -- Claude and Codex adapters that normalize provider-native
@@ -26,6 +27,13 @@ can create and control a run without depending on clap or terminal behavior.
 The new API has no stdout/stderr, `process::exit`, TTY, clap, or persistent
 server dependency. Provider adapters do spawn the selected provider CLI once a
 run starts; a prompt-less suspended run spawns nothing.
+
+`RunHandle::subscribe()` replays the oldest event still held by the run tree
+and then waits for new events. Each record carries a tree-wide sequence and the
+emitting run id. The root sees its entire worker tree; a child sees only itself
+and its descendants. Hosts that keep their own cursor can use `event_page` and
+`wait_for_events`. The in-memory journal retains 256 records and reports
+truncation instead of pretending older events still exist.
 
 ## Stability
 
