@@ -7,7 +7,9 @@
 //! See the README for positioning and the agent ABI.
 
 use anyhow::{Context, Result, bail};
-use claude_wrapper::Claude;
+use claude_wrapper::{Claude, artifacts::AgentsRoot};
+use serde_json::{Map as JsonMap, Value as JsonValue};
+use std::collections::BTreeMap;
 use std::io::IsTerminal;
 
 pub mod agent_check;
@@ -283,6 +285,162 @@ fn apply_bundle_context(args: &mut AskArgs, bundle: Option<&std::path::Path>) ->
     Ok(())
 }
 
+/// Provision the Claude-only parts of a legacy `.roba/` bundle after the
+/// provider-neutral run policy has resolved. The public bounded-run model does
+/// not learn these provider-specific controls.
+fn apply_bundle_provisioning(
+    config: &mut engine::Config,
+    bundle: Option<&std::path::Path>,
+) -> Result<()> {
+    let Some(dir) = bundle else {
+        return Ok(());
+    };
+
+    let settings = dir.join("settings.json");
+    if settings.is_file() {
+        validate_json_object(&settings, "bundle settings")?;
+        config.settings = Some(settings.to_string_lossy().into_owned());
+    }
+
+    config.agents_json = bundle_agents_json(&dir.join("agents"))?;
+    config.plugin_dir.extend(bundle_plugin_roots(dir)?);
+    Ok(())
+}
+
+fn bundle_agents_json(agents_dir: &std::path::Path) -> Result<Option<String>> {
+    if !agents_dir.is_dir() {
+        return Ok(None);
+    }
+
+    let root = AgentsRoot::at(agents_dir);
+    let mut stems = Vec::new();
+    for entry in std::fs::read_dir(agents_dir)
+        .with_context(|| format!("reading bundle agents {}", agents_dir.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("reading bundle agents {}", agents_dir.display()))?;
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|value| value.to_str()) != Some("md") {
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "bundle agent filename is not valid UTF-8: {}",
+                    path.display()
+                )
+            })?;
+        stems.push(stem.to_string());
+    }
+    stems.sort();
+
+    let mut definitions = BTreeMap::new();
+    for stem in stems {
+        let agent = root
+            .get(&stem)
+            .with_context(|| format!("reading bundle agent {stem}"))?;
+        let description = agent
+            .description
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "bundle agent {} needs a non-empty `description` in its frontmatter",
+                    agent.file_path.display()
+                )
+            })?;
+        if agent.body.trim().is_empty() {
+            bail!(
+                "bundle agent {} needs a non-empty prompt body",
+                agent.file_path.display()
+            );
+        }
+
+        let mut definition = JsonMap::new();
+        definition.insert("description".to_string(), JsonValue::String(description));
+        definition.insert("prompt".to_string(), JsonValue::String(agent.body));
+        if !agent.tools.is_empty() {
+            definition.insert("tools".to_string(), serde_json::to_value(agent.tools)?);
+        }
+        if let Some(model) = agent.model {
+            definition.insert("model".to_string(), JsonValue::String(model));
+        }
+        if !agent.skills.is_empty() {
+            definition.insert("skills".to_string(), serde_json::to_value(agent.skills)?);
+        }
+        definitions.insert(stem, JsonValue::Object(definition));
+    }
+
+    if definitions.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(serde_json::to_string(&definitions)?))
+    }
+}
+
+fn bundle_plugin_roots(bundle: &std::path::Path) -> Result<Vec<String>> {
+    let mut roots = Vec::new();
+    if bundle.join("skills").is_dir() {
+        require_plugin_manifest(bundle)?;
+        roots.push(bundle.to_string_lossy().into_owned());
+    }
+
+    let plugins = bundle.join("plugins");
+    if !plugins.is_dir() {
+        return Ok(roots);
+    }
+    if has_plugin_manifest(&plugins) {
+        roots.push(plugins.to_string_lossy().into_owned());
+        return Ok(roots);
+    }
+
+    let mut children = Vec::new();
+    for entry in std::fs::read_dir(&plugins)
+        .with_context(|| format!("reading bundle plugins {}", plugins.display()))?
+    {
+        let path = entry
+            .with_context(|| format!("reading bundle plugins {}", plugins.display()))?
+            .path();
+        if path.is_dir() {
+            children.push(path);
+        }
+    }
+    children.sort();
+    for child in children {
+        require_plugin_manifest(&child)?;
+        roots.push(child.to_string_lossy().into_owned());
+    }
+    Ok(roots)
+}
+
+fn has_plugin_manifest(root: &std::path::Path) -> bool {
+    root.join(".claude-plugin/plugin.json").is_file()
+}
+
+fn require_plugin_manifest(root: &std::path::Path) -> Result<()> {
+    let manifest = root.join(".claude-plugin/plugin.json");
+    if !manifest.is_file() {
+        bail!(
+            "bundle plugin {} needs .claude-plugin/plugin.json before it can be passed to Claude",
+            root.display()
+        );
+    }
+    validate_json_object(&manifest, "bundle plugin manifest")?;
+    Ok(())
+}
+
+fn validate_json_object(path: &std::path::Path, label: &str) -> Result<()> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {label} {}", path.display()))?;
+    let value: JsonValue = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing {label} {}", path.display()))?;
+    if !value.is_object() {
+        bail!("{label} {} must contain a JSON object", path.display());
+    }
+    Ok(())
+}
+
 /// The `(roba, claude)` axes sealed by hermetic mode, honoring `--no-hermetic`.
 fn hermetic_axes(args: &AskArgs) -> (bool, bool) {
     use crate::cli::HermeticWhich;
@@ -386,6 +544,7 @@ fn build_config(args: &AskArgs, prompt: impl Into<String>) -> Result<engine::Con
         fallback_model: args.fallback_model.clone(),
         effort: spec.agent.effort.map(run_effort_to_cw),
         agent: args.agent.clone(),
+        agents_json: None,
         permissions,
         permission_mode: args.permission_mode.map(permission_mode_to_cw),
         allow_tools: execution.tools.allow,
@@ -406,6 +565,8 @@ fn build_config(args: &AskArgs, prompt: impl Into<String>) -> Result<engine::Con
         bare: args.bare,
         safe_mode: args.safe_mode,
         add_dir: args.add_dir.clone(),
+        settings: None,
+        plugin_dir: Vec::new(),
         mcp_config: args.mcp_config.clone(),
         strict_mcp_config: args.strict_mcp_config || claude_hermetic,
         setting_sources: args
@@ -610,7 +771,8 @@ pub async fn run_ask(mut args: AskArgs) -> Result<()> {
     // Collapse the resolved args + composed prompt into the engine Config. Both
     // exec paths below run through it, and the engine::run public entry uses the
     // same Config -> apply_session mapper, so nothing drifts.
-    let config = build_config(&args, prompt)?;
+    let mut config = build_config(&args, prompt)?;
+    apply_bundle_provisioning(&mut config, bundle.as_deref())?;
 
     // The anonymous-worktree-defeats-continue advisory (#328): stderr only, so
     // stdout / --json stay byte-clean. Emitted here in the CLI layer -- the
@@ -1071,6 +1233,109 @@ mod tests {
         apply_bundle_context(&mut a, Some(empty.path())).unwrap();
         assert!(a.append_system_prompt.is_none());
         assert!(a.mcp_config.is_empty());
+    }
+
+    #[test]
+    fn bundle_provisioning_builds_agents_settings_and_manifested_plugins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle = tmp.path();
+        std::fs::write(bundle.join("settings.json"), r#"{"hooks":{}}"#).unwrap();
+
+        let agents = bundle.join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("reviewer.md"),
+            "---\ndescription: Reviews code\ntools: Read, Grep\nmodel: sonnet\nskills: rust, api\n---\nReview the change.",
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(bundle.join("skills/review")).unwrap();
+        std::fs::create_dir_all(bundle.join(".claude-plugin")).unwrap();
+        std::fs::write(
+            bundle.join(".claude-plugin/plugin.json"),
+            r#"{"name":"bundle"}"#,
+        )
+        .unwrap();
+
+        let child = bundle.join("plugins/lint");
+        std::fs::create_dir_all(child.join(".claude-plugin")).unwrap();
+        std::fs::write(
+            child.join(".claude-plugin/plugin.json"),
+            r#"{"name":"lint"}"#,
+        )
+        .unwrap();
+
+        let mut config = engine::Config::new("p");
+        apply_bundle_provisioning(&mut config, Some(bundle)).unwrap();
+
+        assert!(
+            config
+                .settings
+                .as_deref()
+                .unwrap()
+                .ends_with("settings.json")
+        );
+        let definitions: JsonValue =
+            serde_json::from_str(config.agents_json.as_deref().unwrap()).unwrap();
+        assert_eq!(definitions["reviewer"]["description"], "Reviews code");
+        assert_eq!(definitions["reviewer"]["prompt"], "Review the change.");
+        assert_eq!(
+            definitions["reviewer"]["tools"],
+            serde_json::json!(["Read", "Grep"])
+        );
+        assert_eq!(definitions["reviewer"]["model"], "sonnet");
+        assert_eq!(
+            definitions["reviewer"]["skills"],
+            serde_json::json!(["rust", "api"])
+        );
+        assert_eq!(
+            config.plugin_dir,
+            vec![
+                bundle.to_string_lossy().into_owned(),
+                child.to_string_lossy().into_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn bundle_provisioning_refuses_incomplete_agents_and_plugins() {
+        let missing_description = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(missing_description.path().join("agents")).unwrap();
+        std::fs::write(
+            missing_description.path().join("agents/reviewer.md"),
+            "Review it.",
+        )
+        .unwrap();
+        let error = apply_bundle_provisioning(
+            &mut engine::Config::new("p"),
+            Some(missing_description.path()),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("needs a non-empty `description`")
+        );
+
+        let missing_manifest = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(missing_manifest.path().join("skills/review")).unwrap();
+        let error =
+            apply_bundle_provisioning(&mut engine::Config::new("p"), Some(missing_manifest.path()))
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("needs .claude-plugin/plugin.json")
+        );
+    }
+
+    #[test]
+    fn bundle_provisioning_refuses_malformed_json_before_provider_launch() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("settings.json"), "not json").unwrap();
+        let error =
+            apply_bundle_provisioning(&mut engine::Config::new("p"), Some(tmp.path())).unwrap_err();
+        assert!(error.to_string().contains("parsing bundle settings"));
     }
 
     #[test]

@@ -77,6 +77,10 @@ pub struct Config {
     pub effort: Option<Effort>,
     /// Run under a named subagent definition (`--agent`).
     pub agent: Option<String>,
+    /// Inline Claude subagent definitions (`--agents <json>`). This remains a
+    /// Claude-only compatibility control; provider-neutral bounded runs use
+    /// [`crate::AgentSpec`] and worker policy instead.
+    pub agents_json: Option<String>,
     /// Permission posture (default read-only).
     pub permissions: Permissions,
     /// A specific claude permission mode composed on top of the posture. `None`
@@ -129,6 +133,10 @@ pub struct Config {
     pub safe_mode: bool,
     /// Extra tool-access directories (`--add-dir`), forwarded verbatim.
     pub add_dir: Vec<String>,
+    /// Claude settings file or inline JSON (`--settings`).
+    pub settings: Option<String>,
+    /// Claude plugin roots (`--plugin-dir`), forwarded in order.
+    pub plugin_dir: Vec<String>,
     /// MCP server config files (`--mcp-config`), forwarded verbatim.
     pub mcp_config: Vec<String>,
     /// Use only the servers in `mcp_config`, ignoring other MCP sources

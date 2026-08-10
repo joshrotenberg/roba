@@ -51,6 +51,9 @@ pub fn apply_session(mut cmd: QueryCommand, config: &Config) -> QueryCommand {
     if let Some(name) = &config.agent {
         cmd = cmd.agent(name.clone());
     }
+    if let Some(json) = &config.agents_json {
+        cmd = cmd.agents_json(json.clone());
+    }
     if let Some(name) = &config.worktree {
         // The anonymous-worktree-defeats-continue advisory
         // ([`continue_defeated_by_anon_worktree`]) is emitted by the CLI
@@ -108,6 +111,12 @@ pub fn apply_session(mut cmd: QueryCommand, config: &Config) -> QueryCommand {
     // verbatim (claude resolves and reads them). Pure pass-through.
     for d in &config.add_dir {
         cmd = cmd.add_dir(d.clone());
+    }
+    if let Some(settings) = &config.settings {
+        cmd = cmd.settings(settings.clone());
+    }
+    for dir in &config.plugin_dir {
+        cmd = cmd.plugin_dir(dir.clone());
     }
     // MCP servers for this run: forward each --mcp-config path verbatim
     // (claude reads the file), then the strict flag. Pure pass-through.
@@ -464,6 +473,24 @@ mod tests {
             dbg.contains("include_partial_messages: false"),
             "apply_session must not forward include_partial_messages: {dbg}"
         );
+    }
+
+    #[test]
+    fn apply_session_forwards_explicit_claude_bundle_provisioning() {
+        let config = Config {
+            agent: Some("reviewer".to_string()),
+            agents_json: Some(
+                r#"{"reviewer":{"description":"Reviews","prompt":"Review it"}}"#.to_string(),
+            ),
+            settings: Some("/bundle/settings.json".to_string()),
+            plugin_dir: vec!["/bundle".to_string(), "/bundle/plugins/a".to_string()],
+            ..Config::new("p")
+        };
+        let dbg = format!("{:?}", apply_session(QueryCommand::new("hi"), &config));
+
+        assert!(dbg.contains("agents_json: Some"), "got: {dbg}");
+        assert!(dbg.contains("/bundle/settings.json"), "got: {dbg}");
+        assert!(dbg.contains("/bundle/plugins/a"), "got: {dbg}");
     }
 
     // -- agent notice (#302) -----------------------------------------------
