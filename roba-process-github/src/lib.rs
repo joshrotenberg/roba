@@ -848,6 +848,30 @@ mod tests {
                 let mut permissions = fs::metadata(&binary).unwrap().permissions();
                 permissions.set_mode(0o700);
                 fs::set_permissions(&binary, permissions).unwrap();
+
+                // Absorb the write-then-exec race before the test makes its own
+                // calls. A fork in another test thread can inherit the write
+                // descriptor for this file, and the exec then fails with
+                // ETXTBSY. That surfaces as a launch error, so a test asserting
+                // on some other failure sees the wrong message and fails for a
+                // reason that has nothing to do with what it covers. Retry a
+                // throwaway invocation until exec succeeds, then clear the log
+                // so assertions still see only the test's own calls.
+                let mut launched = false;
+                for _ in 0..100 {
+                    if std::process::Command::new(&binary)
+                        .args(["__warmup", "__warmup"])
+                        .output()
+                        .is_ok()
+                    {
+                        launched = true;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                assert!(launched, "fake gh never became executable");
+                fs::write(&log, "").unwrap();
+
                 let process = process().with_binary(&binary);
                 Self {
                     _temp: temp,
@@ -1131,7 +1155,14 @@ esac
                 .invoke_action("issues/list", json!({}))
                 .await
                 .unwrap_err();
-            assert!(error.to_string().contains("malformed JSON"));
+            // Carry the observed message into the panic: this assertion once
+            // failed in CI on a launch error, and a bare assert said only that
+            // some string did not match.
+            let message = error.to_string();
+            assert!(
+                message.contains("malformed JSON"),
+                "expected a malformed-JSON refusal, observed: {message}"
+            );
         }
     }
 }
