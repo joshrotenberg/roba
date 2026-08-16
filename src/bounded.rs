@@ -352,6 +352,14 @@ model = "configured"
                 .iter()
                 .any(|action| action.id.as_str() == "pulls/create")
         );
+        // A pull-request-write mission must also be able to promote the draft
+        // it just created, or it cannot finish its own work without the merge
+        // grant it was deliberately not given.
+        assert!(
+            actions
+                .iter()
+                .any(|action| action.id.as_str() == "pulls/ready")
+        );
         assert!(
             !actions
                 .iter()

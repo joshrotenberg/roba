@@ -37,7 +37,7 @@ impl GitHubRepository {
         let Some((owner, repository)) = value.split_once('/') else {
             return Err(GitHubRepositoryError);
         };
-        if repository.contains('/') || !valid_slug_part(owner) || !valid_slug_part(repository) {
+        if repository.contains('/') || !valid_owner(owner) || !valid_repository(repository) {
             return Err(GitHubRepositoryError);
         }
         Ok(Self(format!(
@@ -68,16 +68,31 @@ impl fmt::Display for GitHubRepository {
     }
 }
 
-fn valid_slug_part(value: &str) -> bool {
+fn valid_slug_body(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 100
+        && !value.contains("..")
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+}
+
+/// Owners never begin with a dot, so the stricter leading-byte rule holds.
+fn valid_owner(value: &str) -> bool {
+    valid_slug_body(value)
         && value
             .as_bytes()
             .first()
             .is_some_and(u8::is_ascii_alphanumeric)
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+}
+
+/// Repository names may begin with a dot: `owner/.github` is the conventional
+/// home for org-wide workflows and issue templates, and rejecting it made the
+/// pack unusable against that repository. Path traversal stays closed by the
+/// `..` ban in [`valid_slug_body`] plus the explicit bare-dot rejections here,
+/// so `github.com/OWNER/REPO` can never walk up a segment.
+fn valid_repository(value: &str) -> bool {
+    valid_slug_body(value) && value != "." && value != ".."
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +161,7 @@ impl GitHubProcess {
             "issues/get" => self.get_issue(decode(input)?).await,
             "pulls/get" => self.get_pull_request(decode(input)?).await,
             "pulls/create" => self.create_pull_request(decode(input)?).await,
+            "pulls/ready" => self.ready_pull_request(decode(input)?).await,
             "pulls/merge" => self.merge_pull_request(decode(input)?).await,
             _ => Err(ProcessCapabilityError(format!(
                 "unknown GitHub process action {action}"
@@ -252,6 +268,52 @@ impl GitHubProcess {
         }
     }
 
+    /// Promote a draft to ready for review.
+    ///
+    /// `pulls/create` defaults to a draft, and `merge_pull_request` refuses a
+    /// draft, so without this action the documented flow of create then merge
+    /// could not complete: the mission had no way to un-draft its own pull
+    /// request and would stall reporting the boundary. Idempotent, so a
+    /// resumed run that already promoted the pull request re-reports success
+    /// rather than failing.
+    async fn ready_pull_request(&self, input: NumberInput) -> ProcessResult {
+        validate_number(input.number)?;
+        let before = self.pull_request(input.number).await?;
+        if before.get("state").and_then(Value::as_str) != Some("OPEN") {
+            return Err(process_error(
+                "only an open pull request can be marked ready for review",
+            ));
+        }
+        if before.get("isDraft").and_then(Value::as_bool) == Some(false) {
+            return Ok(json!({
+                "repository": self.repository,
+                "ready": true,
+                "already_ready": true,
+                "pull_request": before,
+            }));
+        }
+        self.run(&[
+            "pr".into(),
+            "ready".into(),
+            input.number.to_string(),
+            "--repo".into(),
+            self.gh_repository(),
+        ])
+        .await?;
+        let after = self.pull_request(input.number).await?;
+        if after.get("isDraft").and_then(Value::as_bool) != Some(false) {
+            return Err(process_error(
+                "ready command completed but GitHub still reports the pull request as a draft",
+            ));
+        }
+        Ok(json!({
+            "repository": self.repository,
+            "ready": true,
+            "already_ready": false,
+            "pull_request": after,
+        }))
+    }
+
     async fn merge_pull_request(&self, input: MergePullRequestInput) -> ProcessResult {
         validate_number(input.number)?;
         validate_oid(&input.expected_head_oid)?;
@@ -318,8 +380,15 @@ impl GitHubProcess {
                 self.gh_repository(),
                 "--head".into(),
                 head.to_string(),
+                // Open only. Matching `all` meant a PR closed unmerged was
+                // returned forever as the "existing" one for its head/base
+                // pair, so `pulls/create` never opened a replacement and
+                // `pulls/merge` then refused it as not open: a permanent dead
+                // end for that branch. `gh pr create` already refuses a second
+                // open PR for the same head, so deduplication does not need
+                // the closed ones.
                 "--state".into(),
-                "all".into(),
+                "open".into(),
                 "--limit".into(),
                 "100".into(),
                 "--json".into(),
@@ -422,6 +491,13 @@ impl ProcessCapability for GitHubProcess {
                     "pulls/create",
                     "Create or reconcile a pull request for an existing branch",
                     create_pr_schema(),
+                    [Self::pull_request_write_grant()],
+                    true,
+                ),
+                action(
+                    "pulls/ready",
+                    "Mark an open draft pull request ready for review",
+                    number_schema(),
                     [Self::pull_request_write_grant()],
                     true,
                 ),
@@ -666,14 +742,23 @@ mod tests {
             "/project",
             "owner/project/extra",
             ".owner/project",
-            "owner/.project",
             "owner/project name",
+            "owner/.",
+            "owner/..",
+            "owner/../escape",
+            "owner/a..b",
         ] {
             assert!(
                 GitHubRepository::new(invalid).is_err(),
                 "accepted {invalid}"
             );
         }
+        // `.github` is the conventional org-wide repository, so a leading dot
+        // in the name is legitimate even though it never is in an owner.
+        assert_eq!(
+            GitHubRepository::new("Owner/.github").unwrap().as_str(),
+            "owner/.github"
+        );
     }
 
     #[test]
@@ -698,6 +783,13 @@ mod tests {
         assert!(grants("pulls/get").is_empty());
         assert_eq!(
             grants("pulls/create"),
+            BTreeSet::from([GitHubProcess::pull_request_write_grant()])
+        );
+        // Promoting a draft is pull-request write, not merge authority: a
+        // mission granted only PR write must be able to finish its own PR
+        // without also being handed the merge grant.
+        assert_eq!(
+            grants("pulls/ready"),
             BTreeSet::from([GitHubProcess::pull_request_write_grant()])
         );
         assert_eq!(
@@ -846,6 +938,108 @@ esac
             assert_eq!(replay["created"], false);
             assert_eq!(replay["pull_request"]["number"], 11);
             assert_eq!(fake.log().matches("pr create").count(), 1);
+        }
+
+        /// A pull request closed unmerged must not claim its head/base pair
+        /// forever. The fake answers `--state all` with the closed one, so a
+        /// regression to that query fails here rather than in production.
+        #[tokio::test]
+        async fn pull_request_creation_ignores_a_closed_pull_request() {
+            let fake = FakeGh::new(
+                r#"
+case "$1 $2" in
+  "pr list")
+    case "$*" in
+      *"--state all"*)
+        printf '%s\n' '[{"number":9,"state":"CLOSED","isDraft":false,"headRefName":"agent/9","headRefOid":"abc","baseRefName":"main"}]' ;;
+      *)
+        if test -f "$state"; then
+          printf '%s\n' '[{"number":12,"state":"OPEN","isDraft":true,"headRefName":"agent/9","headRefOid":"def","baseRefName":"main"}]'
+        else
+          printf '%s\n' '[]'
+        fi ;;
+    esac
+    ;;
+  "pr create") touch "$state" ;;
+  *) exit 9 ;;
+esac
+"#,
+            );
+
+            let created = fake
+                .process
+                .invoke_action(
+                    "pulls/create",
+                    json!({
+                        "head": "agent/9",
+                        "base": "main",
+                        "title": "Second attempt",
+                        "body": "Closes #9"
+                    }),
+                )
+                .await
+                .unwrap();
+            assert_eq!(created["created"], true);
+            assert_eq!(created["pull_request"]["number"], 12);
+            assert_eq!(created["pull_request"]["state"], "OPEN");
+            let log = fake.log();
+            assert!(log.contains("--state open"), "did not scope to open: {log}");
+            assert!(!log.contains("--state all"), "still queries all: {log}");
+        }
+
+        /// Without `pulls/ready` a mission that creates the default draft can
+        /// never merge it, which stalls the whole documented flow.
+        #[tokio::test]
+        async fn ready_promotes_a_draft_and_is_idempotent() {
+            let fake = FakeGh::new(
+                r#"
+case "$1 $2" in
+  "pr view")
+    if test -f "$state"; then draft=false; else draft=true; fi
+    printf '{"number":11,"state":"OPEN","isDraft":%s,"headRefName":"agent/11","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main"}\n' "$draft"
+    ;;
+  "pr ready") touch "$state" ;;
+  *) exit 9 ;;
+esac
+"#,
+            );
+
+            let promoted = fake
+                .process
+                .invoke_action("pulls/ready", json!({"number": 11}))
+                .await
+                .unwrap();
+            assert_eq!(promoted["ready"], true);
+            assert_eq!(promoted["already_ready"], false);
+            assert_eq!(promoted["pull_request"]["isDraft"], false);
+
+            let replay = fake
+                .process
+                .invoke_action("pulls/ready", json!({"number": 11}))
+                .await
+                .unwrap();
+            assert_eq!(replay["already_ready"], true);
+            assert_eq!(fake.log().matches("pr ready").count(), 1);
+        }
+
+        #[tokio::test]
+        async fn ready_refuses_a_pull_request_that_is_not_open() {
+            let fake = FakeGh::new(
+                r#"
+case "$1 $2" in
+  "pr view") printf '%s\n' '{"number":11,"state":"CLOSED","isDraft":true,"headRefName":"agent/11","headRefOid":"abc","baseRefName":"main"}' ;;
+  *) exit 9 ;;
+esac
+"#,
+            );
+
+            let error = fake
+                .process
+                .invoke_action("pulls/ready", json!({"number": 11}))
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("only an open pull request"));
+            assert!(!fake.log().contains("pr ready"));
         }
 
         #[tokio::test]

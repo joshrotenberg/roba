@@ -115,9 +115,12 @@ decision.
 The optional `roba-process-github` pack is the first concrete process
 capability. `--github-repo OWNER/REPO` enables typed issue and pull-request
 reads against exactly `github.com/OWNER/REPO`. `--github-pr-write` adds
-idempotent pull-request creation/reconciliation; `--github-merge` separately
-adds merge authority fenced to a caller-supplied full head object id. Actions
-without their grant are not shown to the agent. The pack invokes a configurable
+idempotent pull-request creation/reconciliation and promotion of a draft to
+ready for review; `--github-merge` separately adds merge authority fenced to a
+caller-supplied full head object id. Actions without their grant are not shown
+to the agent. Creation defaults to a draft and merging refuses a draft, so
+promotion sits under pull-request write rather than merge: a mission can finish
+its own pull request without ever holding merge authority. The pack invokes a configurable
 `gh` binary and never includes its stderr in returned errors, so CLI auth
 material is not copied into prompts or monitor output.
 
