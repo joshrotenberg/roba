@@ -78,10 +78,9 @@ the provider-neutral API stabilizes.
   subcommands; `src/receipt.rs` the run-receipt writer (the schema lives in
   `crates/roba-types`)
 - Doc homes: README (current concepts + agent ABI),
-  `docs/design/run-library-pivot.md` (finite-core decision),
-  `docs/design/mcp-native-agent-harness.md` (adopted phased implementation
-  plan), `--help` (reference generated from `cli.rs`), and parse-tested legacy
-  config examples
+  `docs/architecture/` (implemented architectural decisions), `--help`
+  (reference generated from `cli.rs`), crate READMEs (public Rust surfaces),
+  and parse-tested legacy config examples
 
 ## Build and test (all must pass before a PR)
 
