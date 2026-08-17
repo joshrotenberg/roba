@@ -3,8 +3,8 @@
 //! [`run`] is roba's resolve-free, side-effect-free core: a [`Config`] in, a
 //! [`claude_wrapper::types::QueryResult`] out. No clap, no stdout/stderr, no
 //! `process::exit`, no TTY, no interactive prompts. The CLI's `run_ask`
-//! resolves flags/profiles/prompt through the provider-neutral hierarchy,
-//! adapts the resulting policy plus its Claude-only compatibility controls,
+//! resolves flags, profiles, and prompt into a provider-neutral [`crate::RunSpec`],
+//! adapts that policy plus its Claude-only compatibility controls,
 //! and renders the result around this; a programmatic caller builds a
 //! `Config` directly.
 //!
@@ -16,7 +16,7 @@
 //! mapper directly (`apply_session` reads `&Config`), so there is one
 //! flag->command mapper and no second copy to drift; a bare `Config` maps to
 //! roba's safe defaults (read-only, a fresh session, no caps, and the built-in
-//! agent notice injected). The CLI's `run_ask` builds a hierarchical
+//! agent notice injected). The CLI's `run_ask` builds a root-run
 //! [`crate::RunSpec`] from its resolved `AskArgs`, adapts it to `Config`, and
 //! routes through this same seam.
 //!
@@ -56,7 +56,7 @@ pub enum Permissions {
     ReadOnly,
     /// Read-only plus Edit + Write.
     Writable,
-    /// Bypass all permission checks (sandbox / unattended-worker use only).
+    /// Bypass all permission checks (sandboxed unattended runs only).
     FullAuto,
 }
 
@@ -79,7 +79,7 @@ pub struct Config {
     pub agent: Option<String>,
     /// Inline Claude subagent definitions (`--agents <json>`). This remains a
     /// Claude-only compatibility control; provider-neutral bounded runs use
-    /// [`crate::AgentSpec`] and worker policy instead.
+    /// [`crate::AgentSpec`] instead.
     pub agents_json: Option<String>,
     /// Permission posture (default read-only).
     pub permissions: Permissions,

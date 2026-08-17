@@ -5,11 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::lifecycle::{Run, RunControlError};
-use crate::process::{
-    AuthorityGrantId, ProcessCapability, ProcessCapabilityDescriptor, ProcessCapabilityId,
-    RegisteredProcessCapability,
-};
-use crate::provider::Provider;
+use crate::provider::{Provider, ProviderLaunchContext};
 use crate::run::{ProviderId, RunSpec};
 
 /// Process-local Roba runtime. It owns provider adapters but no daemon,
@@ -17,7 +13,6 @@ use crate::run::{ProviderId, RunSpec};
 #[derive(Default)]
 pub struct Roba {
     providers: BTreeMap<ProviderId, Arc<dyn Provider>>,
-    capabilities: BTreeMap<ProcessCapabilityId, RegisteredProcessCapability>,
 }
 
 impl Roba {
@@ -45,36 +40,6 @@ impl Roba {
         Ok(())
     }
 
-    /// Register one host-owned process capability. Registration describes
-    /// knowledge only; a run must still declare it and carry every required
-    /// authority grant.
-    pub fn register_capability<C>(&mut self, capability: C) -> Result<(), RuntimeError>
-    where
-        C: ProcessCapability + 'static,
-    {
-        self.register_capability_shared(Arc::new(capability))
-    }
-
-    /// Register an already shared process capability.
-    pub fn register_capability_shared(
-        &mut self,
-        capability: Arc<dyn ProcessCapability>,
-    ) -> Result<(), RuntimeError> {
-        let descriptor = capability.descriptor();
-        validate_descriptor(&descriptor)?;
-        if self.capabilities.contains_key(&descriptor.id) {
-            return Err(RuntimeError::DuplicateCapability(descriptor.id));
-        }
-        self.capabilities.insert(
-            descriptor.id.clone(),
-            RegisteredProcessCapability {
-                descriptor,
-                implementation: capability,
-            },
-        );
-        Ok(())
-    }
-
     /// True when this host can execute the provider id.
     pub fn contains(&self, id: &ProviderId) -> bool {
         self.providers.contains_key(id)
@@ -87,76 +52,23 @@ impl Roba {
 
     /// Construct one bounded run without starting provider work.
     pub fn create_run(&self, spec: RunSpec) -> Result<Run, RuntimeError> {
+        self.create_run_with_launch_context(spec, ProviderLaunchContext::default())
+    }
+
+    /// Construct one bounded run with transient provider launch material
+    /// without starting provider work.
+    pub fn create_run_with_launch_context(
+        &self,
+        spec: RunSpec,
+        launch_context: ProviderLaunchContext,
+    ) -> Result<Run, RuntimeError> {
         let provider = self
             .providers
             .get(&spec.agent.provider)
             .ok_or_else(|| RuntimeError::ProviderUnavailable(spec.agent.provider.clone()))?;
-        if !spec.mission.is_empty() && !provider.supports_process_control() {
-            return Err(RuntimeError::ProviderProcessControlUnavailable(
-                spec.agent.provider.clone(),
-            ));
-        }
-        let capabilities = self.resolve_capabilities(&spec)?;
-        Run::with_components(spec, self.providers.clone(), capabilities).map_err(RuntimeError::Run)
+        Run::new_with_launch_context(spec, Arc::clone(provider), launch_context)
+            .map_err(RuntimeError::Run)
     }
-
-    fn resolve_capabilities(
-        &self,
-        spec: &RunSpec,
-    ) -> Result<BTreeMap<ProcessCapabilityId, RegisteredProcessCapability>, RuntimeError> {
-        let mut resolved = BTreeMap::new();
-        let mut consumed_grants = std::collections::BTreeSet::new();
-        for id in spec.mission.capabilities() {
-            let capability = self
-                .capabilities
-                .get(id)
-                .ok_or_else(|| RuntimeError::CapabilityUnavailable(id.clone()))?;
-            for grant in &capability.descriptor.required_grants {
-                if !spec.mission.grants().contains(grant) {
-                    return Err(RuntimeError::MissingCapabilityGrant {
-                        capability: id.clone(),
-                        grant: grant.clone(),
-                    });
-                }
-                consumed_grants.insert(grant.clone());
-            }
-            resolved.insert(id.clone(), capability.clone());
-        }
-        if let Some(grant) = spec
-            .mission
-            .grants()
-            .iter()
-            .find(|grant| !consumed_grants.contains(*grant))
-        {
-            return Err(RuntimeError::UnusedMissionGrant(grant.clone()));
-        }
-        Ok(resolved)
-    }
-}
-
-fn validate_descriptor(descriptor: &ProcessCapabilityDescriptor) -> Result<(), RuntimeError> {
-    if descriptor.description.trim().is_empty() {
-        return Err(RuntimeError::InvalidCapability {
-            capability: descriptor.id.clone(),
-            reason: "description must not be empty".to_string(),
-        });
-    }
-    let mut actions = std::collections::BTreeSet::new();
-    for action in &descriptor.actions {
-        if action.description.trim().is_empty() {
-            return Err(RuntimeError::InvalidCapability {
-                capability: descriptor.id.clone(),
-                reason: format!("action {} has an empty description", action.id),
-            });
-        }
-        if !actions.insert(action.id.clone()) {
-            return Err(RuntimeError::InvalidCapability {
-                capability: descriptor.id.clone(),
-                reason: format!("action {} is declared more than once", action.id),
-            });
-        }
-    }
-    Ok(())
 }
 
 /// Runtime construction error.
@@ -164,18 +76,6 @@ fn validate_descriptor(descriptor: &ProcessCapabilityDescriptor) -> Result<(), R
 pub enum RuntimeError {
     DuplicateProvider(ProviderId),
     ProviderUnavailable(ProviderId),
-    ProviderProcessControlUnavailable(ProviderId),
-    DuplicateCapability(ProcessCapabilityId),
-    CapabilityUnavailable(ProcessCapabilityId),
-    MissingCapabilityGrant {
-        capability: ProcessCapabilityId,
-        grant: AuthorityGrantId,
-    },
-    UnusedMissionGrant(AuthorityGrantId),
-    InvalidCapability {
-        capability: ProcessCapabilityId,
-        reason: String,
-    },
     Run(RunControlError),
 }
 
@@ -184,28 +84,6 @@ impl fmt::Display for RuntimeError {
         match self {
             Self::DuplicateProvider(id) => write!(f, "provider {id} is already registered"),
             Self::ProviderUnavailable(id) => write!(f, "provider {id} is not registered"),
-            Self::ProviderProcessControlUnavailable(id) => {
-                write!(f, "provider {id} has no private process-control transport")
-            }
-            Self::DuplicateCapability(id) => {
-                write!(f, "process capability {id} is already registered")
-            }
-            Self::CapabilityUnavailable(id) => {
-                write!(f, "process capability {id} is not registered")
-            }
-            Self::MissingCapabilityGrant { capability, grant } => write!(
-                f,
-                "process capability {capability} requires undeclared grant {grant}"
-            ),
-            Self::UnusedMissionGrant(grant) => {
-                write!(
-                    f,
-                    "mission grant {grant} is not required by a declared capability"
-                )
-            }
-            Self::InvalidCapability { capability, reason } => {
-                write!(f, "process capability {capability} is invalid: {reason}")
-            }
             Self::Run(error) => error.fmt(f),
         }
     }
@@ -223,50 +101,10 @@ impl std::error::Error for RuntimeError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::process::{
-        CompletionPolicy, MissionPolicy, ProcessActionId, ProcessActionRequest, ProcessActionSpec,
-        ProcessCapabilityError, ProcessFuture,
-    };
-    use crate::provider::{
-        EventSink, ProviderCapabilities, ProviderContext, ProviderError, ProviderFuture,
-    };
+    use crate::provider::{EventSink, ProviderCapabilities, ProviderError, ProviderFuture};
     use crate::run::{AgentSpec, RunOutcome, TurnRequest};
 
     struct FakeProvider;
-    struct RawProvider;
-
-    struct FakeProcess;
-
-    impl ProcessCapability for FakeProcess {
-        fn descriptor(&self) -> ProcessCapabilityDescriptor {
-            ProcessCapabilityDescriptor {
-                id: ProcessCapabilityId::new("test/process").unwrap(),
-                description: "deterministic test process".to_string(),
-                required_grants: [AuthorityGrantId::new("test/write").unwrap()]
-                    .into_iter()
-                    .collect(),
-                actions: vec![ProcessActionSpec {
-                    id: ProcessActionId::new("record").unwrap(),
-                    description: "record a value".to_string(),
-                    input_schema: serde_json::json!({"type": "object"}),
-                    destructive: false,
-                }],
-                instructions: vec!["Follow the deterministic test process.".to_string()],
-            }
-        }
-
-        fn invoke<'a>(&'a self, request: ProcessActionRequest) -> ProcessFuture<'a> {
-            Box::pin(async move {
-                if request.action.as_str() != "record" {
-                    return Err(ProcessCapabilityError("unexpected action".to_string()));
-                }
-                Ok(serde_json::json!({
-                    "run_id": request.run_id,
-                    "recorded": request.input,
-                }))
-            })
-        }
-    }
 
     impl Provider for FakeProvider {
         fn id(&self) -> ProviderId {
@@ -277,10 +115,6 @@ mod tests {
             ProviderCapabilities::default()
         }
 
-        fn supports_process_control(&self) -> bool {
-            true
-        }
-
         fn validate(&self, _request: &TurnRequest) -> Result<(), ProviderError> {
             Ok(())
         }
@@ -288,7 +122,6 @@ mod tests {
         fn execute<'a>(
             &'a self,
             _request: TurnRequest,
-            _context: ProviderContext,
             _events: &'a dyn EventSink,
         ) -> ProviderFuture<'a> {
             Box::pin(async {
@@ -302,29 +135,6 @@ mod tests {
                     structured_output: None,
                 })
             })
-        }
-    }
-
-    impl Provider for RawProvider {
-        fn id(&self) -> ProviderId {
-            ProviderId::new("raw").unwrap()
-        }
-
-        fn capabilities(&self) -> ProviderCapabilities {
-            ProviderCapabilities::default()
-        }
-
-        fn validate(&self, _request: &TurnRequest) -> Result<(), ProviderError> {
-            Ok(())
-        }
-
-        fn execute<'a>(
-            &'a self,
-            _request: TurnRequest,
-            _context: ProviderContext,
-            _events: &'a dyn EventSink,
-        ) -> ProviderFuture<'a> {
-            panic!("process-control preflight must refuse before execution")
         }
     }
 
@@ -359,95 +169,6 @@ mod tests {
                 .err()
                 .unwrap(),
             RuntimeError::ProviderUnavailable(ProviderId::codex())
-        );
-    }
-
-    #[test]
-    fn process_capabilities_require_registration_and_every_grant() {
-        let mut roba = Roba::new();
-        roba.register(FakeProvider).unwrap();
-        let mut spec = RunSpec::suspended(AgentSpec::new(ProviderId::new("fake").unwrap()));
-        spec.mission = MissionPolicy::new(
-            [ProcessCapabilityId::new("test/process").unwrap()],
-            [],
-            CompletionPolicy::RootTerminal,
-        )
-        .unwrap();
-
-        assert_eq!(
-            roba.create_run(spec.clone()).err().unwrap(),
-            RuntimeError::CapabilityUnavailable(ProcessCapabilityId::new("test/process").unwrap())
-        );
-        roba.register_capability(FakeProcess).unwrap();
-        assert_eq!(
-            roba.create_run(spec.clone()).err().unwrap(),
-            RuntimeError::MissingCapabilityGrant {
-                capability: ProcessCapabilityId::new("test/process").unwrap(),
-                grant: AuthorityGrantId::new("test/write").unwrap(),
-            }
-        );
-
-        spec.mission = MissionPolicy::new(
-            [ProcessCapabilityId::new("test/process").unwrap()],
-            [
-                AuthorityGrantId::new("test/write").unwrap(),
-                AuthorityGrantId::new("test/unused").unwrap(),
-            ],
-            CompletionPolicy::RootTerminal,
-        )
-        .unwrap();
-        assert_eq!(
-            roba.create_run(spec.clone()).err().unwrap(),
-            RuntimeError::UnusedMissionGrant(AuthorityGrantId::new("test/unused").unwrap())
-        );
-
-        spec.mission = MissionPolicy::new(
-            [ProcessCapabilityId::new("test/process").unwrap()],
-            [AuthorityGrantId::new("test/write").unwrap()],
-            CompletionPolicy::RootTerminal,
-        )
-        .unwrap();
-        let run = roba.create_run(spec).unwrap();
-        assert_eq!(
-            run.spec()
-                .mission
-                .capabilities()
-                .iter()
-                .next()
-                .unwrap()
-                .as_str(),
-            "test/process"
-        );
-    }
-
-    #[test]
-    fn empty_process_policy_preserves_the_minimal_run_path() {
-        let mut roba = Roba::new();
-        roba.register(FakeProvider).unwrap();
-        roba.register_capability(FakeProcess).unwrap();
-        let run = roba
-            .create_run(RunSpec::suspended(AgentSpec::new(
-                ProviderId::new("fake").unwrap(),
-            )))
-            .unwrap();
-        assert!(run.spec().mission.is_empty());
-    }
-
-    #[test]
-    fn provider_without_private_process_transport_fails_before_run_creation() {
-        let mut roba = Roba::new();
-        roba.register(RawProvider).unwrap();
-        roba.register_capability(FakeProcess).unwrap();
-        let mut spec = RunSpec::suspended(AgentSpec::new(ProviderId::new("raw").unwrap()));
-        spec.mission = MissionPolicy::new(
-            [ProcessCapabilityId::new("test/process").unwrap()],
-            [AuthorityGrantId::new("test/write").unwrap()],
-            CompletionPolicy::RootTerminal,
-        )
-        .unwrap();
-        assert_eq!(
-            roba.create_run(spec).err().unwrap(),
-            RuntimeError::ProviderProcessControlUnavailable(ProviderId::new("raw").unwrap())
         );
     }
 }

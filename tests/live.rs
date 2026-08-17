@@ -1,5 +1,5 @@
-//! Live integration tests -- these actually invoke the real `claude`
-//! binary and cost money. Marked `#[ignore]` so they only run when
+//! Live integration tests -- these invoke real provider binaries and can cost
+//! money. Marked `#[ignore]` so they only run when
 //! you opt in:
 //!
 //!   cargo test --test live -- --ignored --nocapture
@@ -7,13 +7,13 @@
 //!   just live-smoke            # the cheap subset, a few tests
 //!   just live-category perms   # one category by prefix
 //!
-//! Each test runs in a fresh tempdir via `-C PATH` so sessions don't
-//! bleed between tests (claude scopes sessions by cwd / project, and
-//! each tempdir is its own project from claude's POV).
+//! Each test runs in a fresh tempdir via `-C PATH` or an isolated cwd so
+//! sessions don't bleed between tests. Each tempdir is its own provider
+//! project.
 //!
-//! All tests default to `--model haiku` for cost. A test that cares
-//! about a specific model can append `--model <id>` -- clap's
-//! last-wins semantics applies.
+//! Claude tests default to `--model haiku` for cost. A test that cares about a
+//! specific model can append `--model <id>` -- clap's last-wins semantics
+//! applies. Codex tests use the configured Codex default model.
 //!
 //! Budget: at haiku rates the full suite is well under $1.
 //! Keep prompts short and answers terse to minimize spend.
@@ -53,6 +53,23 @@ fn empty_user_home() -> tempfile::TempDir {
     fresh_dir()
 }
 
+/// Build a Codex run command without the legacy helper's top-level Claude
+/// model flag. Codex keeps its repository safety check, so these live
+/// fixtures are real git repositories rather than empty `.git` markers.
+fn codex_in(dir: &std::path::Path) -> Command {
+    if !dir.join(".git").exists() {
+        let status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(dir)
+            .status()
+            .expect("launch git init for Codex fixture");
+        assert!(status.success(), "git init failed for Codex fixture");
+    }
+    let mut command = Command::cargo_bin("roba").expect("cargo-built roba binary");
+    command.current_dir(dir);
+    command
+}
+
 // ---------------------------------------------------------------------------
 // smoke: basic round-trip
 // ---------------------------------------------------------------------------
@@ -66,6 +83,80 @@ fn live_smoke_prompt() {
         .assert()
         .success()
         .stdout(predicate::str::contains("pong"));
+}
+
+#[test]
+#[ignore = "calls real Codex, may cost money"]
+fn live_smoke_codex_bounded_json() {
+    let dir = fresh_dir();
+    let output = codex_in(dir.path())
+        .args([
+            "run",
+            "--provider",
+            "codex",
+            "--json",
+            "respond with the single word: pong",
+        ])
+        .output()
+        .expect("run bounded Codex");
+    assert!(
+        output.status.success(),
+        "Codex failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("Codex stdout is a JSON envelope");
+    assert_eq!(envelope["result"]["state"], "completed");
+    assert_eq!(
+        envelope["result"]["last_outcome"]["session"]["provider"],
+        "codex"
+    );
+    assert!(
+        envelope["result"]["last_outcome"]["session"]["id"].is_string(),
+        "fresh Codex run did not return a resumable thread id"
+    );
+}
+
+#[test]
+#[ignore = "calls real Codex twice, may cost money"]
+fn live_session_codex_thread_resumes() {
+    let dir = fresh_dir();
+    let first = codex_in(dir.path())
+        .args([
+            "run",
+            "--provider",
+            "codex",
+            "--json",
+            "respond with the single word: first",
+        ])
+        .output()
+        .expect("start Codex thread");
+    assert!(first.status.success());
+    let first: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    let thread = first["result"]["last_outcome"]["session"]["id"]
+        .as_str()
+        .expect("fresh Codex thread id");
+
+    let resumed = codex_in(dir.path())
+        .args([
+            "run",
+            "--provider",
+            "codex",
+            "--resume",
+            thread,
+            "--json",
+            "respond with the single word: second",
+        ])
+        .output()
+        .expect("resume Codex thread");
+    assert!(
+        resumed.status.success(),
+        "Codex resume failed: {}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    let resumed: serde_json::Value = serde_json::from_slice(&resumed.stdout).unwrap();
+    assert_eq!(resumed["result"]["state"], "completed");
+    assert_eq!(resumed["result"]["last_outcome"]["session"]["id"], thread);
 }
 
 #[test]

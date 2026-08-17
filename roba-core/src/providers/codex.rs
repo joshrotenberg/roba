@@ -9,11 +9,12 @@ use codex_wrapper::{
 };
 
 use crate::provider::{
-    EventSink, Provider, ProviderCapabilities, ProviderContext, ProviderError, ProviderFuture,
+    EventSink, Provider, ProviderCapabilities, ProviderError, ProviderEvent, ProviderFuture,
+    ProviderLaunchContext,
 };
 use crate::run::{
-    Effort, FailureKind, PermissionPolicy, ProviderId, RunEvent, RunOutcome, SessionHandle,
-    SessionSpec, TokenUsage, TurnRequest,
+    Effort, FailureKind, PermissionPolicy, ProviderId, RunFailureDetails, RunOutcome,
+    SessionHandle, SessionSpec, TokenUsage, TurnRequest,
 };
 
 /// Codex CLI implementation of Roba's provider-neutral turn boundary.
@@ -21,8 +22,6 @@ use crate::run::{
 pub struct CodexProvider {
     binary: Option<PathBuf>,
 }
-
-const WORKER_GUIDANCE: &str = "Roba owns all child work for this run. When the task calls for workers, use only the `roba_workers.spawn_worker` MCP tool, then use `roba_workers.workers` and wait for every spawned worker before answering. Keep monitors current with the report_work_item, report_blocker, and report_artifact tools; those are claims and do not replace your final answer. Never launch Roba or provider CLIs in the shell to simulate workers, and never substitute provider-native subagents. If Roba refuses a spawn, report that refusal instead of using another mechanism.";
 
 impl CodexProvider {
     /// Use an explicit Codex executable instead of resolving `codex` from
@@ -36,7 +35,7 @@ impl CodexProvider {
     fn client(
         &self,
         request: &TurnRequest,
-        context: &ProviderContext,
+        launch_context: &ProviderLaunchContext,
     ) -> Result<Codex, ProviderError> {
         let mut builder = Codex::builder();
         if let Some(binary) = &self.binary {
@@ -45,19 +44,14 @@ impl CodexProvider {
         if let Some(seconds) = request.spec.execution.limits.timeout_secs {
             builder = builder.timeout_secs(seconds);
         }
-        for (name, value) in mcp_configuration(context).environment {
+        for (name, value) in mcp_configuration(launch_context).environment {
             builder = builder.env(name, value);
         }
         builder.build().map_err(map_error)
     }
 
-    fn fresh_command(request: &TurnRequest, context: &ProviderContext) -> ExecCommand {
-        // Roba owns bounded child-run creation. Codex's native multi-agent
-        // feature is not represented in the run tree and would bypass worker
-        // count, depth, cancellation, and event observation.
-        let mut command = ExecCommand::new(render_prompt(request, context))
-            .prompt_via_stdin()
-            .disable("multi_agent");
+    fn fresh_command(request: &TurnRequest, launch_context: &ProviderLaunchContext) -> ExecCommand {
+        let mut command = ExecCommand::new(render_prompt(request)).prompt_via_stdin();
         if let Some(model) = &request.spec.agent.model {
             command = command.model(model.clone());
         }
@@ -68,14 +62,18 @@ impl CodexProvider {
             PermissionPolicy::ReadOnly => command
                 .sandbox(SandboxMode::ReadOnly)
                 .approval_policy(ApprovalPolicyConfig::Never),
+            // `codex exec` is non-interactive, so an approval request has no
+            // operator to answer. WorkspaceWrite and FullAuto therefore use
+            // the same Codex mechanics; their distinct Roba meanings remain
+            // useful to callers deciding where the run may be launched.
             PermissionPolicy::WorkspaceWrite => command
                 .sandbox(SandboxMode::WorkspaceWrite)
-                .approval_policy(ApprovalPolicyConfig::OnRequest),
+                .approval_policy(ApprovalPolicyConfig::Never),
             PermissionPolicy::FullAuto => command
                 .sandbox(SandboxMode::WorkspaceWrite)
                 .approval_policy(ApprovalPolicyConfig::Never),
         };
-        for value in mcp_configuration(context).overrides {
+        for value in mcp_configuration(launch_context).overrides {
             command = command.config(value);
         }
         command
@@ -84,12 +82,13 @@ impl CodexProvider {
     fn resume_command(
         request: &TurnRequest,
         session_id: &str,
-        context: &ProviderContext,
+        launch_context: &ProviderLaunchContext,
     ) -> ExecResumeCommand {
+        // codex-wrapper 0.3.1 exposes stdin prompts for ExecCommand only.
+        // ExecResumeCommand therefore still places the resumed prompt in argv.
         let mut command = ExecResumeCommand::new()
             .session_id(session_id)
-            .prompt(render_prompt(request, context))
-            .disable("multi_agent");
+            .prompt(render_prompt(request));
         if let Some(model) = &request.spec.agent.model {
             command = command.model(model.clone());
         }
@@ -100,14 +99,15 @@ impl CodexProvider {
             PermissionPolicy::ReadOnly => command
                 .config("sandbox_mode=\"read-only\"")
                 .approval_policy(ApprovalPolicyConfig::Never),
+            // Resume is non-interactive for the same reason as fresh exec.
             PermissionPolicy::WorkspaceWrite => command
                 .config("sandbox_mode=\"workspace-write\"")
-                .approval_policy(ApprovalPolicyConfig::OnRequest),
+                .approval_policy(ApprovalPolicyConfig::Never),
             PermissionPolicy::FullAuto => command
                 .config("sandbox_mode=\"workspace-write\"")
                 .approval_policy(ApprovalPolicyConfig::Never),
         };
-        for value in mcp_configuration(context).overrides {
+        for value in mcp_configuration(launch_context).overrides {
             command = command.config(value);
         }
         command
@@ -171,7 +171,7 @@ impl Provider for CodexProvider {
         }
         if request.spec.agent.effort == Some(Effort::Max) {
             return Err(ProviderError::unsupported(
-                "Codex does not support the provider-neutral max effort; use x_high",
+                "Codex does not support the provider-neutral max effort; use xhigh",
             ));
         }
         if request.spec.execution.limits.max_turns.is_some() {
@@ -215,54 +215,176 @@ impl Provider for CodexProvider {
     fn execute<'a>(
         &'a self,
         request: TurnRequest,
-        context: ProviderContext,
+        events: &'a dyn EventSink,
+    ) -> ProviderFuture<'a> {
+        self.execute_with_launch_context(request, ProviderLaunchContext::default(), events)
+    }
+
+    fn execute_with_launch_context<'a>(
+        &'a self,
+        request: TurnRequest,
+        launch_context: ProviderLaunchContext,
         events: &'a dyn EventSink,
     ) -> ProviderFuture<'a> {
         Box::pin(async move {
             self.validate(&request)?;
-            let codex = self.client(&request, &context)?;
-            events.emit(RunEvent::TurnStarted {
-                provider: ProviderId::codex(),
-            });
+            let codex = self.client(&request, &launch_context)?;
             let mut captured = Vec::new();
-            {
+            let stream_result = {
                 let mut capture = |event| {
                     emit_stream_event(&event, events);
                     captured.push(event);
                 };
                 match &request.spec.execution.session {
-                    SessionSpec::Fresh => codex_wrapper::streaming::stream_exec(
-                        &codex,
-                        &Self::fresh_command(&request, &context),
-                        &mut capture,
-                    )
-                    .await
-                    .map_err(map_error)?,
-                    SessionSpec::Resume { session } => {
-                        codex_wrapper::streaming::stream_exec_resume(
+                    SessionSpec::Fresh => {
+                        codex_wrapper::streaming::stream_exec(
                             &codex,
-                            &Self::resume_command(&request, &session.id, &context),
+                            &Self::fresh_command(&request, &launch_context),
                             &mut capture,
                         )
                         .await
-                        .map_err(map_error)?
+                    }
+                    SessionSpec::Resume { session } => {
+                        codex_wrapper::streaming::stream_exec_resume(
+                            &codex,
+                            &Self::resume_command(&request, &session.id, &launch_context),
+                            &mut capture,
+                        )
+                        .await
                     }
                 }
+            };
+            let resume_session = match &request.spec.execution.session {
+                SessionSpec::Fresh => None,
+                SessionSpec::Resume { session } => Some(session.clone()),
+            };
+            let wrapper_failure = stream_result
+                .err()
+                .map(map_error)
+                .map(|error| preserve_resume_session(error, resume_session.as_ref()));
+            if let Some(failure) = terminal_stream_failure(
+                &captured,
+                resume_session.as_ref(),
+                wrapper_failure.as_ref(),
+            ) {
+                return Err(failure);
+            }
+            if let Some(failure) = wrapper_failure {
+                return Err(failure);
             }
             if !captured.iter().any(JsonLineEvent::is_turn_completed) {
-                return Err(ProviderError::new(
-                    FailureKind::Provider,
-                    "Codex stream ended without a turn.completed event",
+                return Err(preserve_resume_session(
+                    ProviderError::new(
+                        FailureKind::Provider,
+                        "Codex stream ended without a turn.completed event",
+                    ),
+                    resume_session.as_ref(),
                 ));
             }
             let result = QueryResult::from_events(captured);
-            let outcome = Self::normalize(result);
-            events.emit(RunEvent::TurnCompleted {
-                outcome: outcome.clone(),
-            });
+            let mut outcome = Self::normalize(result);
+            if outcome.session.is_none() {
+                outcome.session = resume_session;
+            }
             Ok(outcome)
         })
     }
+}
+
+fn terminal_stream_failure(
+    events: &[JsonLineEvent],
+    resume_session: Option<&SessionHandle>,
+    wrapper_failure: Option<&ProviderError>,
+) -> Option<ProviderError> {
+    let terminal = events.iter().rev().find(|event| {
+        event.is_turn_completed() || event.is_turn_failed() || event.event_type == "error"
+    })?;
+    if terminal.is_turn_completed() {
+        return None;
+    }
+
+    let label = if terminal.is_turn_failed() {
+        "Codex turn failed"
+    } else {
+        "Codex reported an error"
+    };
+    let message = terminal_error_message(terminal)
+        .map(|message| format!("{label}: {message}"))
+        .or_else(|| wrapper_failure.map(|failure| failure.message.clone()))
+        .unwrap_or_else(|| format!("{label} without an error message"));
+    let kind = wrapper_failure
+        .map(|failure| failure.kind)
+        .unwrap_or(FailureKind::Provider);
+
+    Some(
+        ProviderError::new(kind, message).with_details(terminal_failure_details(
+            events,
+            resume_session,
+            wrapper_failure,
+        )),
+    )
+}
+
+fn terminal_error_message(event: &JsonLineEvent) -> Option<String> {
+    let nested_error = event.extra.get("error");
+    nested_error
+        .and_then(|error| error.get("message"))
+        .or_else(|| event.extra.get("message"))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| nested_error.and_then(serde_json::Value::as_str))
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            nested_error
+                .filter(|error| !error.is_null())
+                .map(serde_json::Value::to_string)
+        })
+}
+
+fn terminal_failure_details(
+    events: &[JsonLineEvent],
+    resume_session: Option<&SessionHandle>,
+    wrapper_failure: Option<&ProviderError>,
+) -> RunFailureDetails {
+    let session_id = events
+        .iter()
+        .find_map(JsonLineEvent::thread_id)
+        .or_else(|| events.iter().find_map(JsonLineEvent::session_id));
+    let usage = events
+        .iter()
+        .rev()
+        .find_map(JsonLineEvent::usage)
+        .map(normalize_token_usage);
+    let mut details = wrapper_failure
+        .and_then(|failure| failure.details.as_deref())
+        .cloned()
+        .unwrap_or_default();
+    details.session = session_id
+        .map(|id| SessionHandle {
+            provider: ProviderId::codex(),
+            id: id.to_string(),
+        })
+        .or_else(|| details.session.take())
+        .or_else(|| resume_session.cloned());
+    if usage.is_some() {
+        details.usage = usage;
+    }
+    details
+}
+
+fn preserve_resume_session(
+    error: ProviderError,
+    resume_session: Option<&SessionHandle>,
+) -> ProviderError {
+    let Some(resume_session) = resume_session else {
+        return error;
+    };
+    let mut details = error.details.as_deref().cloned().unwrap_or_default();
+    if details.session.is_none() {
+        details.session = Some(resume_session.clone());
+    }
+    error.with_details(details)
 }
 
 fn normalize_token_usage(usage: codex_wrapper::types::TokenUsage) -> TokenUsage {
@@ -278,10 +400,10 @@ fn normalize_token_usage(usage: codex_wrapper::types::TokenUsage) -> TokenUsage 
 
 fn emit_stream_event(event: &codex_wrapper::types::JsonLineEvent, sink: &dyn EventSink) {
     if let Some(text) = event.agent_message_text() {
-        sink.emit(RunEvent::OutputDelta { text });
+        sink.emit(ProviderEvent::OutputDelta { text });
     }
     if let Some(usage) = event.usage() {
-        sink.emit(RunEvent::Usage {
+        sink.emit(ProviderEvent::Usage {
             usage: normalize_token_usage(usage),
         });
     }
@@ -292,12 +414,12 @@ struct CodexMcpConfiguration {
     environment: Vec<(String, String)>,
 }
 
-fn mcp_configuration(context: &ProviderContext) -> CodexMcpConfiguration {
+fn mcp_configuration(launch_context: &ProviderLaunchContext) -> CodexMcpConfiguration {
     let mut configuration = CodexMcpConfiguration {
         overrides: Vec::new(),
         environment: Vec::new(),
     };
-    for (index, endpoint) in context.mcp_endpoints().iter().enumerate() {
+    for (index, endpoint) in launch_context.mcp_endpoints().iter().enumerate() {
         let variable = format!("ROBA_INTERNAL_MCP_TOKEN_{index}");
         configuration
             .environment
@@ -312,45 +434,27 @@ fn mcp_configuration(context: &ProviderContext) -> CodexMcpConfiguration {
                 )
                 .config_overrides(),
         );
-        if endpoint.name() == "roba_workers" {
-            for tool in [
-                "spawn_worker",
-                "report_work_item",
-                "report_blocker",
-                "report_artifact",
-                "invoke_process_action",
-            ] {
-                configuration.overrides.push(format!(
-                    "mcp_servers.roba_workers.tools.{tool}.approval_mode=\"approve\""
-                ));
-            }
+        for tool_name in endpoint.tool_names() {
+            configuration.overrides.push(format!(
+                "mcp_servers.{}.tools.{}.approval_mode=\"approve\"",
+                toml_key_segment(endpoint.name()),
+                toml_key_segment(tool_name),
+            ));
         }
     }
     configuration
 }
 
-fn render_prompt(request: &TurnRequest, context: &ProviderContext) -> String {
+fn toml_key_segment(value: &str) -> String {
+    serde_json::to_string(value).expect("a string must serialize as a TOML-compatible key")
+}
+
+fn render_prompt(request: &TurnRequest) -> String {
     let mut sections = Vec::new();
     sections.extend(request.spec.agent.instructions.iter().cloned());
     sections.extend(request.spec.context.project.iter().cloned());
     sections.extend(request.spec.context.run.iter().cloned());
     sections.push(request.prompt.as_str().to_string());
-    if context
-        .mcp_endpoints()
-        .iter()
-        .any(|endpoint| endpoint.name() == "roba_workers")
-    {
-        sections.push(WORKER_GUIDANCE.to_string());
-    }
-    if context
-        .mcp_endpoints()
-        .iter()
-        .any(|endpoint| endpoint.name() == "roba_workers")
-        && let Some(control) = context.process_control()
-    {
-        sections.push("Use only the declared Roba process capabilities and invoke_process_action for granted workflow actions. Process knowledge does not add authority; report any refusal instead of bypassing it.".to_string());
-        sections.extend(control.instructions().map(str::to_string));
-    }
     sections.join("\n\n")
 }
 
@@ -393,15 +497,21 @@ mod tests {
     use crate::run::RunState;
     use crate::run::{AgentSpec, Prompt, RunSpec};
 
+    const TEST_MCP_SERVER: &str = "roba";
+    const TEST_GIT_TOOL_APPROVAL: &str =
+        r#"mcp_servers."roba".tools."git.snapshot".approval_mode="approve""#;
+    const TEST_SELF_TOOL_APPROVAL: &str =
+        r#"mcp_servers."roba".tools."self".approval_mode="approve""#;
+
     #[cfg(unix)]
     #[derive(Default)]
     struct RecordingSink {
-        events: Mutex<Vec<RunEvent>>,
+        events: Mutex<Vec<ProviderEvent>>,
     }
 
     #[cfg(unix)]
     impl EventSink for RecordingSink {
-        fn emit(&self, event: RunEvent) {
+        fn emit(&self, event: ProviderEvent) {
             self.events.lock().unwrap().push(event);
         }
     }
@@ -411,9 +521,13 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let marker = temp.path().join("blocked.pid");
+        let args_marker = temp.path().join("codex.args");
+        let token_marker = temp.path().join("codex.token");
         let binary = temp.path().join("codex");
         let script = format!(
             r#"#!/bin/sh
+printf '%s\n' "$@" > '{}'
+printf '%s' "${{ROBA_INTERNAL_MCP_TOKEN_0-}}" > '{}'
 prompt=$(cat)
 if [ "$prompt" = "block" ]; then
   printf '%s' "$$" > '{}'
@@ -424,6 +538,37 @@ if [ "$prompt" = "unterminated" ]; then
   printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"partial"}}}}'
   exit 0
 fi
+if [ "$prompt" = "turn-failed" ]; then
+  printf '%s\n' '{{"type":"thread.started","thread_id":"failed-thread"}}'
+  printf '%s\n' '{{"type":"turn.failed","error":{{"message":"usage limit reached"}}}}'
+  exit 17
+fi
+if [ "$prompt" = "turn-failed-auth" ]; then
+  printf '%s\n' '{{"type":"thread.started","thread_id":"auth-thread"}}'
+  printf '%s\n' '{{"type":"turn.failed","error":{{"message":"credentials rejected"}}}}'
+  printf '%s\n' '401 Unauthorized' >&2
+  exit 1
+fi
+if [ "$prompt" = "error-event" ]; then
+  printf '%s\n' '{{"type":"thread.started","session_id":"error-session"}}'
+  printf '%s\n' '{{"type":"error","message":"transport stopped"}}'
+  exit 0
+fi
+resume_prompt=
+for arg in "$@"; do
+  case "$arg" in
+    resume-no-thread|resume-failed-no-thread) resume_prompt=$arg ;;
+  esac
+done
+if [ "$resume_prompt" = "resume-no-thread" ]; then
+  printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"resumed without start"}}}}'
+  printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":4,"output_tokens":3}}}}'
+  exit 0
+fi
+if [ "$resume_prompt" = "resume-failed-no-thread" ]; then
+  printf '%s\n' '{{"type":"turn.failed","error":{{"message":"resume failed"}}}}'
+  exit 19
+fi
 case " $* " in
   *" resume "*) text=resumed ;;
   *) text=opened ;;
@@ -432,6 +577,8 @@ printf '%s\n' '{{"type":"thread.started","thread_id":"thread-1"}}'
 printf '{{"type":"item.completed","item":{{"type":"agent_message","text":"%s"}}}}\n' "$text"
 printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_tokens":2}}}}'
 "#,
+            args_marker.display(),
+            token_marker.display(),
             marker.display()
         );
         std::fs::write(&binary, script).unwrap();
@@ -445,6 +592,21 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
         RunSpec::suspended(AgentSpec::new(ProviderId::codex()))
             .with_prompt(Prompt::new("hello").unwrap())
             .into_turn()
+            .unwrap()
+    }
+
+    fn launch_context() -> ProviderLaunchContext {
+        ProviderLaunchContext::default()
+            .try_with_mcp_endpoint(
+                crate::provider::ProviderMcpEndpoint::new(
+                    TEST_MCP_SERVER,
+                    "http://127.0.0.1:4123/mcp",
+                    "secret-provider-token",
+                )
+                .unwrap()
+                .try_with_tool_names(["self", "git.snapshot", "self"])
+                .unwrap(),
+            )
             .unwrap()
     }
 
@@ -491,10 +653,7 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
         turn.spec.agent.instructions = vec!["agent".to_string()];
         turn.spec.context.project = vec!["project".to_string()];
         turn.spec.context.run = vec!["run".to_string()];
-        assert_eq!(
-            render_prompt(&turn, &ProviderContext::default()),
-            "agent\n\nproject\n\nrun\n\nhello"
-        );
+        assert_eq!(render_prompt(&turn), "agent\n\nproject\n\nrun\n\nhello");
     }
 
     #[test]
@@ -510,76 +669,155 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
     }
 
     #[test]
-    fn worker_mcp_configuration_matches_open_and_resume_without_secret_argv() {
-        let process = crate::ProcessControl::test_control(crate::ProcessCapabilityDescriptor {
-            id: crate::ProcessCapabilityId::new("test/process").unwrap(),
-            description: "test process".to_string(),
-            required_grants: Default::default(),
-            actions: vec![crate::ProcessActionSpec {
-                id: crate::ProcessActionId::new("record").unwrap(),
-                description: "record".to_string(),
-                input_schema: serde_json::json!({"type": "object"}),
-                destructive: false,
-            }],
-            instructions: vec!["Follow the test process.".to_string()],
-        });
-        let context = ProviderContext::for_run(None, Some(process)).with_mcp_endpoint(
-            crate::ProviderMcpEndpoint::new(
-                "roba_workers",
-                "http://127.0.0.1:4123/mcp",
-                "secret-worker-token",
-            ),
-        );
-        let request = request();
-        let open = CodexProvider::fresh_command(&request, &context).args();
-        let resume = CodexProvider::resume_command(&request, "thread-1", &context).args();
-        let configuration = mcp_configuration(&context);
-        let prompt = render_prompt(&request, &context);
-
-        for value in &configuration.overrides {
-            assert!(
-                open.contains(value),
-                "open command lacks {value:?}: {open:?}"
-            );
-            assert!(
-                resume.contains(value),
-                "resume command lacks {value:?}: {resume:?}"
-            );
-        }
-        for tool in [
-            "spawn_worker",
-            "report_work_item",
-            "report_blocker",
-            "report_artifact",
-            "invoke_process_action",
+    fn non_interactive_commands_use_explicit_sandbox_and_never_approval() {
+        for (policy, sandbox) in [
+            (PermissionPolicy::ReadOnly, "read-only"),
+            (PermissionPolicy::WorkspaceWrite, "workspace-write"),
+            (PermissionPolicy::FullAuto, "workspace-write"),
         ] {
-            assert!(configuration.overrides.iter().any(|value| {
-                value == &format!("mcp_servers.roba_workers.tools.{tool}.approval_mode=\"approve\"")
-            }));
+            let mut turn = request();
+            turn.spec.execution.permissions = policy;
+
+            let fresh =
+                CodexProvider::fresh_command(&turn, &ProviderLaunchContext::default()).args();
+            assert!(
+                fresh
+                    .windows(2)
+                    .any(|args| { args == ["-c", "approval_policy=\"never\""] })
+            );
+            assert!(fresh.windows(2).any(|args| args == ["--sandbox", sandbox]));
+            assert!(!fresh.iter().any(|arg| arg == "--skip-git-repo-check"));
+            assert!(fresh.iter().any(|arg| arg == "-"));
+            assert!(!fresh.iter().any(|arg| arg == "hello"));
+
+            let resumed = CodexProvider::resume_command(
+                &turn,
+                "known-thread",
+                &ProviderLaunchContext::default(),
+            )
+            .args();
+            assert!(
+                resumed
+                    .windows(2)
+                    .any(|args| { args == ["-c", "approval_policy=\"never\""] })
+            );
+            let sandbox_config = format!("sandbox_mode=\"{sandbox}\"");
+            assert!(
+                resumed
+                    .windows(2)
+                    .any(|args| args == ["-c", sandbox_config.as_str()])
+            );
+            assert!(!resumed.iter().any(|arg| arg == "--skip-git-repo-check"));
+            // codex-wrapper 0.3.1 has no resume-stdin API.
+            assert!(resumed.iter().any(|arg| arg == "hello"));
         }
+    }
+
+    #[test]
+    fn launch_context_builds_exact_mcp_overrides_and_secret_environment() {
+        let context = launch_context();
+        let configuration = mcp_configuration(&context);
+        assert_eq!(
+            configuration.overrides,
+            [
+                "mcp_servers.roba.url=\"http://127.0.0.1:4123/mcp\"",
+                "mcp_servers.roba.bearer_token_env_var=\"ROBA_INTERNAL_MCP_TOKEN_0\"",
+                "mcp_servers.roba.required=true",
+                TEST_GIT_TOOL_APPROVAL,
+                TEST_SELF_TOOL_APPROVAL,
+            ]
+        );
         assert_eq!(
             configuration.environment,
-            vec![(
+            [(
                 "ROBA_INTERNAL_MCP_TOKEN_0".to_string(),
-                "secret-worker-token".to_string()
+                "secret-provider-token".to_string()
             )]
         );
-        assert!(!open.iter().any(|arg| arg.contains("secret-worker-token")));
-        assert!(!resume.iter().any(|arg| arg.contains("secret-worker-token")));
+
+        for args in [
+            CodexProvider::fresh_command(&request(), &context).args(),
+            CodexProvider::resume_command(&request(), "thread-1", &context).args(),
+        ] {
+            for expected in &configuration.overrides {
+                assert!(
+                    args.windows(2)
+                        .any(|pair| { pair[0] == "-c" && pair[1] == *expected })
+                );
+            }
+            assert!(!args.iter().any(|arg| arg.contains("secret-provider-token")));
+        }
+        assert!(!format!("{context:?}").contains("secret-provider-token"));
+    }
+
+    #[test]
+    fn attached_endpoint_without_advertised_tools_adds_no_approval_overrides() {
+        let context = ProviderLaunchContext::default()
+            .try_with_mcp_endpoint(
+                crate::provider::ProviderMcpEndpoint::new(
+                    TEST_MCP_SERVER,
+                    "http://127.0.0.1:4123/mcp",
+                    "secret-provider-token",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let configuration = mcp_configuration(&context);
+
+        assert_eq!(configuration.overrides.len(), 3);
         assert!(
-            open.windows(2)
-                .any(|args| args == ["--disable", "multi_agent"])
+            configuration
+                .overrides
+                .iter()
+                .all(|override_| !override_.contains(".tools."))
         );
+        assert_eq!(configuration.environment.len(), 1);
         assert!(
-            resume
-                .windows(2)
-                .any(|args| args == ["--disable", "multi_agent"])
+            mcp_configuration(&ProviderLaunchContext::default())
+                .overrides
+                .is_empty()
         );
-        assert!(prompt.contains(WORKER_GUIDANCE));
-        assert!(prompt.contains("roba_workers.spawn_worker"));
-        assert!(prompt.contains("Never launch Roba or provider CLIs in the shell"));
-        assert!(prompt.contains("Follow the test process."));
-        assert!(!format!("{context:?}").contains("secret-worker-token"));
+    }
+
+    #[test]
+    fn codex_approval_key_segments_are_always_toml_quoted_and_escaped() {
+        assert_eq!(toml_key_segment("roba"), r#""roba""#);
+        assert_eq!(toml_key_segment("git.snapshot"), r#""git.snapshot""#);
+        assert_eq!(toml_key_segment("quote\"tool"), r#""quote\"tool""#);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_binary_receives_mcp_overrides_and_secret_only_in_environment() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, _) = fake_codex(&temp);
+        let events = RecordingSink::default();
+
+        let outcome = provider
+            .execute_with_launch_context(request(), launch_context(), &events)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.output, "opened");
+        let args = std::fs::read_to_string(temp.path().join("codex.args")).unwrap();
+        for expected in [
+            "mcp_servers.roba.url=\"http://127.0.0.1:4123/mcp\"",
+            "mcp_servers.roba.bearer_token_env_var=\"ROBA_INTERNAL_MCP_TOKEN_0\"",
+            "mcp_servers.roba.required=true",
+            TEST_GIT_TOOL_APPROVAL,
+            TEST_SELF_TOOL_APPROVAL,
+        ] {
+            assert!(
+                args.lines().any(|arg| arg == expected),
+                "missing {expected}"
+            );
+        }
+        assert!(!args.contains("secret-provider-token"));
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("codex.token")).unwrap(),
+            "secret-provider-token"
+        );
     }
 
     #[cfg(unix)]
@@ -589,27 +827,20 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
         let (provider, _) = fake_codex(&temp);
 
         let fresh_events = RecordingSink::default();
-        let fresh = provider
-            .execute(request(), ProviderContext::default(), &fresh_events)
-            .await
-            .unwrap();
+        let fresh = provider.execute(request(), &fresh_events).await.unwrap();
         assert_eq!(fresh.output, "opened");
         assert_eq!(fresh.session.as_ref().unwrap().id, "thread-1");
         assert_eq!(fresh.usage.as_ref().unwrap().input, Some(3));
         assert_eq!(fresh.usage.as_ref().unwrap().output, Some(2));
         let fresh_events = fresh_events.events.into_inner().unwrap();
-        assert!(fresh_events.contains(&RunEvent::OutputDelta {
+        assert!(fresh_events.contains(&ProviderEvent::OutputDelta {
             text: "opened".to_string(),
         }));
         assert!(fresh_events.iter().any(|event| matches!(
             event,
-            RunEvent::Usage { usage }
+            ProviderEvent::Usage { usage }
                 if usage.input == Some(3) && usage.output == Some(2)
         )));
-        assert!(matches!(
-            fresh_events.last(),
-            Some(RunEvent::TurnCompleted { .. })
-        ));
 
         let mut resumed = request();
         resumed.spec.execution.session = SessionSpec::Resume {
@@ -619,17 +850,14 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
             },
         };
         let resume_events = RecordingSink::default();
-        let resumed = provider
-            .execute(resumed, ProviderContext::default(), &resume_events)
-            .await
-            .unwrap();
+        let resumed = provider.execute(resumed, &resume_events).await.unwrap();
         assert_eq!(resumed.output, "resumed");
         assert!(
             resume_events
                 .events
                 .into_inner()
                 .unwrap()
-                .contains(&RunEvent::OutputDelta {
+                .contains(&ProviderEvent::OutputDelta {
                     text: "resumed".to_string(),
                 })
         );
@@ -648,7 +876,10 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
         .unwrap();
         run.begin().await.unwrap();
 
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        // Full-workspace test runs can briefly starve child startup on loaded
+        // CI hosts; this deadline is only a harness guard and returns as soon
+        // as the marker appears.
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while !marker.exists() {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
@@ -659,7 +890,7 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
 
         run.handle().cancel().await.unwrap();
         assert_eq!(run.handle().wait().await.state, RunState::Cancelled);
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let alive = std::process::Command::new("kill")
                     .args(["-0", pid.as_str()])
@@ -688,21 +919,152 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
             .unwrap();
         let events = RecordingSink::default();
 
-        let error = provider
-            .execute(request, ProviderContext::default(), &events)
-            .await
-            .unwrap_err();
+        let error = provider.execute(request, &events).await.unwrap_err();
 
         assert_eq!(error.kind, FailureKind::Provider);
         assert!(error.message.contains("without a turn.completed event"));
         let events = events.events.into_inner().unwrap();
-        assert!(events.contains(&RunEvent::OutputDelta {
+        assert!(events.contains(&ProviderEvent::OutputDelta {
             text: "partial".to_string(),
         }));
-        assert!(
-            !events
-                .iter()
-                .any(|event| matches!(event, RunEvent::TurnCompleted { .. }))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn turn_failed_event_preserves_reason_and_thread_without_inventing_a_kind() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, _) = fake_codex(&temp);
+        let request = RunSpec::suspended(AgentSpec::new(ProviderId::codex()))
+            .with_prompt(Prompt::new("turn-failed").unwrap())
+            .into_turn()
+            .unwrap();
+
+        let error = provider
+            .execute(request, &RecordingSink::default())
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind, FailureKind::Provider);
+        assert_eq!(error.message, "Codex turn failed: usage limit reached");
+        assert_eq!(
+            error
+                .details
+                .as_deref()
+                .and_then(|details| details.session.as_ref())
+                .map(|session| session.id.as_str()),
+            Some("failed-thread")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminal_event_keeps_the_wrappers_typed_failure_kind() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, _) = fake_codex(&temp);
+        let request = RunSpec::suspended(AgentSpec::new(ProviderId::codex()))
+            .with_prompt(Prompt::new("turn-failed-auth").unwrap())
+            .into_turn()
+            .unwrap();
+
+        let error = provider
+            .execute(request, &RecordingSink::default())
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind, FailureKind::Authentication);
+        assert_eq!(error.message, "Codex turn failed: credentials rejected");
+        assert_eq!(
+            error
+                .details
+                .as_deref()
+                .and_then(|details| details.session.as_ref())
+                .map(|session| session.id.as_str()),
+            Some("auth-thread")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resumed_success_falls_back_to_the_requested_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, _) = fake_codex(&temp);
+        let mut request = RunSpec::suspended(AgentSpec::new(ProviderId::codex()))
+            .with_prompt(Prompt::new("resume-no-thread").unwrap())
+            .into_turn()
+            .unwrap();
+        request.spec.execution.session = SessionSpec::Resume {
+            session: SessionHandle {
+                provider: ProviderId::codex(),
+                id: "known-thread".to_string(),
+            },
+        };
+
+        let outcome = provider
+            .execute(request, &RecordingSink::default())
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.output, "resumed without start");
+        assert_eq!(outcome.session.unwrap().id, "known-thread");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resumed_failure_falls_back_to_the_requested_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, _) = fake_codex(&temp);
+        let mut request = RunSpec::suspended(AgentSpec::new(ProviderId::codex()))
+            .with_prompt(Prompt::new("resume-failed-no-thread").unwrap())
+            .into_turn()
+            .unwrap();
+        request.spec.execution.session = SessionSpec::Resume {
+            session: SessionHandle {
+                provider: ProviderId::codex(),
+                id: "known-thread".to_string(),
+            },
+        };
+
+        let error = provider
+            .execute(request, &RecordingSink::default())
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind, FailureKind::Provider);
+        assert_eq!(error.message, "Codex turn failed: resume failed");
+        assert_eq!(
+            error
+                .details
+                .as_deref()
+                .and_then(|details| details.session.as_ref())
+                .map(|session| session.id.as_str()),
+            Some("known-thread")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bare_error_event_preserves_reason_and_session_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, _) = fake_codex(&temp);
+        let request = RunSpec::suspended(AgentSpec::new(ProviderId::codex()))
+            .with_prompt(Prompt::new("error-event").unwrap())
+            .into_turn()
+            .unwrap();
+
+        let error = provider
+            .execute(request, &RecordingSink::default())
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind, FailureKind::Provider);
+        assert_eq!(error.message, "Codex reported an error: transport stopped");
+        assert_eq!(
+            error
+                .details
+                .as_deref()
+                .and_then(|details| details.session.as_ref())
+                .map(|session| session.id.as_str()),
+            Some("error-session")
         );
     }
 }

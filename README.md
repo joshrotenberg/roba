@@ -6,132 +6,211 @@
 [![Downloads](https://img.shields.io/crates/d/roba.svg)](https://crates.io/crates/roba)
 [![License](https://img.shields.io/crates/l/roba.svg)](#license)
 
-A library-first, bounded agent run. One Roba process owns one intention,
-may steer its provider through multiple turns, and exits when the work is
-complete. Claude Code and Codex are provider adapters; the CLI, REPL, and
-run-scoped MCP server are thin clients of the same process-local run API.
+A library-first, MCP-native agent harness built on a provider-neutral finite
+run core. Each `roba-core` run owns one intention, may steer its provider
+through multiple turns, and settles complete, failed, or cancelled. Claude
+Code and Codex are built-in provider adapters.
 
-Roba is not a daemon or a persistent session pool. A suspended run does no
-provider work until its first prompt arrives. While it is alive, a caller can
-observe, steer, cancel, and await it through Rust, a REPL, or MCP.
+Roba is not a hidden daemon, workflow engine, or persistent session pool. A
+Rust host can create a suspended run without starting provider work, retain
+its `RunHandle`, and observe or control that run while the process is alive.
+The `roba run` command is the thin blocking CLI over the same core; the
+foreground `roba serve` host may remain idle between several finite turns.
 
-The product boundary is a finite **mission**. A mission can be a trivial
-single-answer prompt or a directive that uses explicitly bounded workers and
-optional process capabilities to complete several related work items. Roba
-maintains one canonical mission projection for monitors: runtime facts remain
-host-derived, while agent-reported work items, blockers, and artifacts remain
-identified as claims.
+The workspace also includes the `roba-mcp` layer. Its
+`AgentInstance` remains hot and idle between prompts, creates one finite core
+run per accepted `agent.turn`, retains provider session continuity, and offers
+operation-scoped controls plus agent-wide replay. The provider-neutral
+`roba run` command uses this contract through an in-process MCP client, while
+`roba serve` exposes the same single-agent contract over foreground stdio for
+MCP clients such as `mcp-repl`. For each admitted finite operation, `roba-mcp`
+also binds a private authenticated loopback projection and attaches it to the
+built-in provider. Its base least-authority projection contains the read-only
+`self` tool and structurally excludes turn admission and operator controls.
+Explicit host extensions may add separate provider capabilities without
+copying the control router. Task-aware clients can background, poll, and
+cancel `agent.turn` through MCP Tasks while ordinary clients keep the same
+blocking tool contract.
 
-The established single-prompt Claude CLI remains available as a compatibility
-surface while it migrates onto the new library model.
+The established single-prompt Claude CLI remains a supported compatibility
+surface while the provider-neutral library API stabilizes.
 
-## Bounded runs
+## Provider-neutral runs
 
-The new `roba run` path is the first end-to-end slice of the library design:
+`roba run` calls the process-local `agent.turn` contract and waits for its one
+finite root run to reach a terminal outcome:
 
 ```bash
-# One blocking run. Stdout is the final answer.
+# One blocking Codex run. Stdout is the final answer.
 roba run --provider codex "inspect this repository and propose the next task"
 
-# Create a suspended run and provide its first prompt from the REPL.
-roba run --provider claude --repl
+# One editable Claude run with an explicit provider limit.
+roba run --provider claude --writable --max-turns 20 \
+  "implement the smallest coherent fix and verify it"
 
-# Expose one suspended run as a run-scoped MCP server over stdio.
-mcp-repl -- roba run --provider codex --mcp
+# Resume a provider-owned conversation by its opaque id.
+roba run --provider codex --resume THREAD_ID "continue from the prior result"
 
-# Permit an attached MCP client to create up to four process-local workers.
-mcp-repl -- roba run --provider codex --mcp \
-  --max-workers 4 --max-worker-depth 2
+# Emit the terminal RunSnapshot in the versioned JSON envelope.
+roba run --provider claude --json "summarize this project"
 
-# Let the root orchestrator create bounded workers itself.
-roba run --provider codex --max-workers 4 --max-worker-depth 2 \
-  "Investigate the failure, delegate independent checks, and return one answer."
-
-# Resolve defaults, provider policy, and a named agent from one small file.
-roba run --config examples/run-config/roba.toml --agent builder \
-  "Implement the next coherent change and verify it."
+# Add the typed, repository-scoped Git observation service.
+roba run --provider codex --git "inspect the current Git workspace"
 ```
 
-Worker creation is disabled unless both bounds are explicit. Workers inherit
-the parent's permissions, tools, provider limits, and worker policy, and begin
-with a fresh provider session. Terminal worker snapshots remain observable for
-the run lifetime. When a parent ends, Roba cancels its live descendants before
-the parent becomes terminal, so a bounded run cannot leave provider work
-behind. Provider limits apply to each child independently; `max_workers` and
-`max_worker_depth` bound the tree, but they are not an aggregate spend limit.
-When workers or process capabilities are enabled, each Claude or Codex
-provider turn receives a private `roba_workers` MCP server. Worker tools expose
-bounded spawn, observation, and claim-backed progress; process tools expose
-only the capabilities declared for the root mission. The server is
-bound to that exact run, authenticated on an ephemeral loopback listener, and
-removed when the turn ends. Its bearer is transient and is never stored in the
-run specification or snapshots.
-Roba disables Claude's native Agent tool and Codex's native multi-agent feature
-on this provider-neutral run path. Otherwise provider-owned subagents could do
-work outside the worker tree's count, depth, cancellation, and event contract.
-The adapters also direct the model to use only Roba's private worker tools and
-to report a refused spawn instead of launching shell or native substitutes.
+The CLI accepts explicit run flags for provider, model, effort, instructions,
+context, permissions, limits, timeout, resume identity, and opt-in host
+services such as `--git`. It does not load a second run-specific config
+system. The legacy `roba.toml` profile and alias pool belong to the one-shot
+Claude compatibility command.
 
-The run-scoped MCP server also exposes a read-only `events` tool. Events are
-timestamped, sequenced across the root and its worker tree, and retained in a
-bounded in-memory journal. Pass the returned `next_sequence` as the next
-`after` cursor; an optional `wait_ms` performs bounded long polling. A client
-that falls behind receives `truncated: true` rather than an incomplete history
-presented as complete, and long polling returns that gap immediately. Cursors
-ahead of the current journal are refused. Claude and Codex output and usage are
-emitted into this journal as each provider's JSONL stream arrives. Status,
-wait, worker snapshots, and the REPL's `/status` JSON expose created, started,
-finished, and monotonic elapsed timing without requiring durable storage.
-Provider limit terminals remain failures, but retain every reported recovery
-and accounting field -- session id, usage, cost, duration, and provider turns
--- so a caller can distinguish a resumable boundary from an opaque provider
-crash without parsing provider-specific output. Missing fields stay absent
-rather than being rendered as zero.
-The read-only `mission` tool and REPL `/mission` command return the same
-library `MissionSnapshot`, combining root/worker lifecycle and immutable
-authority with typed claim-backed progress. When bounded workers are enabled,
-the private provider MCP surface also permits the root and owned workers to
-report work items, blockers, and artifacts. Reports enter the event journal
-and cannot alter runtime state or authority.
+## Hot MCP agents
 
-Rust hosts can register optional `ProcessCapability` implementations on their
-process-local `Roba` runtime. A root `MissionPolicy` names capabilities,
-explicit authority grants, and its completion rule. Roba freezes capability
-descriptors at registration, rejects unknown capabilities or missing grants
-before constructing a run, and copies the root policy unchanged to every
-worker. Capability actions are available only on the private provider MCP
-surface; they are intentionally absent from the public monitoring router.
-Declaring process knowledge never grants filesystem, repository, network, or
-merge authority by itself. The current executable completion rule remains
-`root_terminal`; reported work-item completion is observation, not a terminal
-decision.
+`roba serve` starts one promptless `AgentInstance` and reserves stdin and
+stdout for MCP wire data from the first byte. It accepts the same fixed agent
+template flags as `roba run`, without a prompt or `--json`:
 
-Configuration resolves in one hierarchy:
+```bash
+# Interactive client over the final MCP lifecycle and Tasks extension.
+mcp-repl --protocol final -- ./target/debug/roba serve --provider codex
 
-```text
-Roba defaults -> selected provider defaults -> named agent -> run overrides
+# Or install Roba and let mcp-repl spawn it from PATH.
+mcp-repl --protocol final -- roba serve --provider claude --writable
+
+# Keep a repository-scoped Git service available across several turns.
+mcp-repl --protocol final -- roba -C /path/to/repo serve --provider codex --git
 ```
 
-`roba run --config PATH` loads the public TOML shape directly. It has only
-`[defaults]`, `[providers.NAME]`, and `[agents.NAME]`; CLI flags are the final
-run overrides. Unknown fields fail before provider work. This explicit run
-config is separate from the legacy one-shot CLI's discovered `roba.toml`
-profiles while that compatibility surface remains available. See
-[`examples/run-config/roba.toml`](examples/run-config/roba.toml).
-The legacy path resolves its overlapping model, effort, permissions, tools,
-limits, prompt, and resumable-session policy through the same hierarchy before
-applying its remaining Claude-only compatibility controls.
+Inside `mcp-repl`, `agent.turn text="..."` performs one blocking finite turn.
+Append `&` to create a Task, then use `jobs`, `read roba://agent`,
+`read roba://events`, `wait`, or `cancel`. `agent.interrupt` drains one named
+active operation and leaves the server idle and reusable. `agent.shutdown`,
+stdio EOF, or SIGTERM permanently closes admission, drains provider work and
+the private callback endpoint, flushes in-flight MCP responses, and exits.
+
+The logical agent and validated provider session remain hot; the provider
+process does not. Every accepted turn launches and settles one finite provider
+run. Limits and timeout flags are therefore per turn, not aggregate server
+budgets or idle deadlines. Provider failures are typed MCP tool results and do
+not terminate the server.
+
+For a piped stdio server, Roba consumes SIGINT without shutting down so
+`mcp-repl` can use Ctrl-C to stop waiting on a local command. Use
+`agent.shutdown`, EOF, or SIGTERM to end that server. When Roba owns a terminal
+directly, Ctrl-C requests graceful shutdown.
+
+Codex runs preserve [`codex exec`'s Git-repository safety
+check](https://learn.chatgpt.com/docs/non-interactive-mode). Run them inside a
+Git repository; Roba does not silently add `--skip-git-repo-check`.
+Read-only runs use Codex's read-only sandbox. Both `--writable` and
+`--full-auto` use its non-interactive workspace-write sandbox with approvals
+disabled, so requests beyond that sandbox fail instead of waiting for an
+approval channel Roba does not expose. Roba never maps `--full-auto` to
+Codex's `danger-full-access` mode.
+
+The retained library shape is intentionally small:
+
+- `RunSpec` describes the root agent, context, execution policy, provider
+  session, and optional initial prompt.
+- `Roba` is a process-local registry of explicitly allowed providers.
+- `Run` owns one root lifecycle. A promptless specification remains suspended
+  until a library caller starts it.
+- `RunHandle` exposes `status`, replayable events, `steer`, `cancel`, and
+  `wait`, plus `start` for a suspended run.
+- `Provider` validates the complete request before launch and returns
+  provider-neutral outcomes, events, usage, session identity, and failures.
+
+Events are sequenced and retained in a bounded in-memory journal. Callers can
+subscribe, page from a cursor, or wait for another page. If a cursor falls
+behind retained history, the API reports truncation instead of presenting an
+incomplete stream as complete. Provider terminal failures retain any reported
+session, usage, cost, duration, and turn count; unreported fields remain absent
+rather than becoming zero.
+
+### Scope after the cleanup
+
+The current model is one root run. The experimental Roba-owned worker tree,
+mission projection, process-capability layer, and GitHub workflow/process pack
+are parked and are not part of the current API. The old run-scoped `roba-mcp`
+and custom `roba-repl` crates and their `roba run --mcp` / `--repl` entry
+points were removed.
+
+The adopted v0.12 direction is an MCP-native, single-agent harness above this
+finite core. The process-local base contract now supplies one hot logical
+agent, single-flight `agent.turn`, typed structured results, `roba://agent`,
+operation-scoped steering/interruption, logical shutdown, agent-wide event
+replay, optional live Tasks for `agent.turn`, an initialized Tower MCP
+`ChannelTransport` client, and a foreground stdio binding. `roba run` crosses
+the in-process path while preserving its existing stdout, JSON, and exit-code
+ABI for admitted runs; `roba serve` is the hot external interface. Each active
+operation also gives Claude or Codex an ephemeral, authenticated `roba` MCP
+server whose base contains only `self`; its URL and credential are transient
+launch material and its credential rotates between finite runs. A fail-closed
+extension layer can add explicit control and provider fragments; the first
+service is the opt-in `roba-git` workspace projection described below. Unix
+and operator HTTP bindings remain later gated phases. `mcp-repl` is the
+interactive client, so Roba does not need a custom REPL. The legacy
+`--mcp-config` flag is unrelated: it passes a user-supplied MCP server
+configuration through to a one-shot Claude invocation.
+
+An admitted `AgentInstance` turn now requires permission to bind an ephemeral
+IPv4 loopback listener. If the host environment forbids that bind, admission
+returns a typed runtime refusal before provider work begins; Roba does not
+silently launch the provider without the promised self-client contract.
+
+The Steward prototype in `ok-v` is separate workflow-layer prior art. Its
+visible queue, bounded tick, lock, and receipt ideas may inform external tools,
+but Steward is not a Roba subsystem and does not widen Roba's core boundary.
+
+Useful next seams are still explicit follow-up work, not current guarantees:
+per-run working directories, provider-neutral JSON Schema and structured
+output, stronger context isolation, and stdin delivery for resumed Codex
+prompts. Fresh Codex prompts are stdin-safe today; `codex-wrapper` 0.3.1 still
+places a resumed prompt in the child process arguments.
 
 The public implementation is split by responsibility:
 
-- `roba-core`: provider-neutral specifications, resolution, provider registry,
-  lifecycle, outcomes, and events
-- `roba-mcp`: run-scoped observation and control over MCP
-- `roba-repl`: line-oriented control over the same `RunHandle`
-- `roba`: the CLI and the compatibility surface for the original Claude runner
+- `roba-core`: provider-neutral specifications, provider registry, root
+  lifecycle, outcomes, failures, events, and transient provider launch context
+- `roba-mcp`: one process-local logical agent, typed MCP contract, bounded
+  replay, role-scoped routers, in-process and foreground stdio control
+  bindings, fail-closed extension composition, and a private
+  operation-scoped provider binding
+- `roba-git`: one fixed Git workspace exposed as typed, role-scoped MCP
+  fragments
+- `roba-types`: the dependency-light machine envelope, exit-code map, and run
+  receipt types
+- `roba`: the explicit `run` and `serve` adapters plus the original Claude CLI
+  compatibility surface
 
-See [the run-library design](docs/design/run-library-pivot.md) for the current
-contract, completed work, and remaining migration plan.
+## Optional Git workspace service
+
+`--git` installs `roba-git` into both `roba run` and `roba serve`. The service
+discovers the repository containing the effective cwd once, canonicalizes it,
+and never accepts a caller-selected path. `git.snapshot` and
+`roba://git/workspace` expose the same deterministic typed state to the
+operator and active provider. Reads disable Git optional locks and configured
+filesystem monitors and are bounded by a timeout.
+
+With `--writable` or `--full-auto`, the control projection also exposes
+`git.stage_all`. It stages tracked, deleted, and untracked changes and returns
+a typed before/after receipt plus the exact resulting index-tree object id.
+It refuses unresolved conflicts and no-op requests. The provider projection
+remains read-only even for writable agents: staging may execute
+repository-configured filters as host processes, which is broader authority
+than provider workspace-write alone honestly grants. Raw Git remains the
+escape hatch for workflows this narrow service does not cover.
+
+Extensions are immutable for one `AgentInstance`. Control and provider
+fragments are explicit and independently scoped; startup fails on exact MCP
+tool, resource, template, or prompt collisions instead of replacing an
+existing capability. Git is read on demand through MCP and is not injected
+into prompts, so resumed turns do not accumulate duplicate context.
+
+See [the run-library design](docs/design/run-library-pivot.md) for the finite
+core decision and [the MCP-native harness
+plan](docs/design/mcp-native-agent-harness.md) for the adopted architecture,
+phase gates, and exact distinction between current and planned behavior.
 
 ## Legacy one-shot CLI
 
@@ -145,7 +224,9 @@ scripting ABI.
   stdout is the answer, stderr is metadata, a versioned `--json`
   envelope, typed exit codes, `--trace` to watch a run.
 
-Built on [`claude-wrapper`](https://crates.io/crates/claude-wrapper) and
+The compatibility path is built on
+[`claude-wrapper`](https://crates.io/crates/claude-wrapper). The
+provider-neutral path also uses
 [`codex-wrapper`](https://crates.io/crates/codex-wrapper).
 
 ```console
@@ -188,7 +269,7 @@ exit. roba keeps that model and adds:
 | **Read-only inspection** | `roba show <ID>` prints a stored run's result (`--metrics`, `--wait`); `roba worktree list`; `roba history --worktree NAME` finds a runner's session |
 | **A stable scripting ABI** | typed exit codes, versioned `--json` envelope, clean stream split -- see [For agents & scripts](#for-agents--scripts) |
 
-These details describe the compatibility command. The bounded `roba run`
+These details describe the compatibility command. The finite `roba run`
 surface is provider-neutral and supports Claude and Codex.
 
 ## Quick examples
@@ -266,11 +347,11 @@ wires per-run MCP servers into the `claude -p` call.
 
 ## Legacy one-shot configuration: profiles & aliases
 
-The original `roba.toml` format remains readable for one-shot compatibility,
-but profiles are deprecated in favor of the explicit hierarchical run config
-shown above. Legacy files are discovered by walking up from the cwd (plus
-`~/.config/roba.toml`); closer-to-cwd wins per key. New bounded runs should use
-`[agents.NAME]` and `roba run --config PATH --agent NAME`.
+The original `roba.toml` format remains supported for one-shot compatibility.
+Files are discovered by walking up from the cwd (plus
+`~/.config/roba.toml`); closer-to-cwd wins per key. This configuration is not
+loaded by `roba run`, whose provider-neutral policy is explicit in its CLI
+flags or a library-built `RunSpec`.
 
 - **Profiles** are named bundles of flag defaults: `--profile review`
   applies `[profile.review]`. A `default` profile auto-applies.
@@ -288,10 +369,9 @@ documents every key with worked examples; `roba profile init` drops it
 in your project. Inspect with `roba profile {list,show,active}` and
 `roba alias {list,show}`.
 
-The old “persona” label was only a profile with Claude's native `agent` field,
-so its duplicate inspection command has been removed. Existing profiles that
-set `agent` still execute unchanged and remain inspectable with `roba profile`.
-For provider-neutral roles, use a named hierarchical agent instead.
+A **persona** is the compatibility view of a profile that sets Claude's native
+`agent` field. Existing personas execute unchanged and are inspectable with
+`roba persona {list,show}` as well as the underlying profile commands.
 
 For ready-to-copy setups, [`examples/`](examples/) carries vetted bundles
 (each parse-tested in CI): [`roba-rust-dispatch.toml`](examples/roba-rust-dispatch.toml)
@@ -332,8 +412,8 @@ directory is loaded as a session plugin when the bundle also contains
 `.claude-plugin/plugin.json`. `plugins/` may itself be one manifested plugin,
 or contain multiple manifested plugin directories. Roba validates the JSON and
 required manifests before starting Claude. These bundle controls remain
-Claude-only one-shot packaging; provider-neutral bounded runs use `RunSpec`
-context and worker policy instead.
+Claude-only one-shot packaging; provider-neutral finite runs use explicit
+`RunSpec` context and execution policy instead.
 
 Validate and inspect that provisioning plan without starting Claude:
 
@@ -356,7 +436,11 @@ boundary; Claude and other same-UID processes may still inspect or modify the
 run-local copy, and inspection is not proof of Claude's final merged permission
 surface.
 
-## Worker lifecycle
+## External worker workflow recipe
+
+Here, "worker" means a one-shot Roba invocation driven by a person or an
+external loop. It is not a Roba-owned child run: the provider-neutral core has
+no worker tree or built-in GitHub process pack.
 
 A single issue moves through four verbs: `issue` (plan, read-only) ->
 `ship` (implement to a draft PR) -> `revise` (address feedback) ->
@@ -409,7 +493,7 @@ Reading the envelope:
 out=$(roba --json "..."); echo "$out" | jq -r '.result.result'
 ```
 
-Worker flags:
+Unattended one-shot flags:
 
 | Flag | Does |
 |---|---|
@@ -420,7 +504,7 @@ Worker flags:
 | `--trace PATH` | the spawned session's events as JSONL -- watch a run in flight |
 | `--fallback-model MODEL` | retry on a second model when the primary is overloaded |
 | `--no-session-persistence` | run without writing a resumable session record |
-| `--full-auto` | unsupervised editing worker; add `--worktree` for parallel same-repo workers (for orchestrator-owned branches use `git worktree add` + `-C <dir>` instead -- roba's `--worktree` is claude-managed, on a branch you won't PR from) |
+| `--full-auto` | unsupervised editing run; add `--worktree` for parallel same-repo runs (for orchestrator-owned branches use `git worktree add` + `-C <dir>` instead -- roba's `--worktree` is claude-managed, on a branch you won't PR from) |
 | `roba doctor --json` | boundary checks as `{ checks: [{ name, status, message }], overall }`; exits `0` when no check fails, `1` otherwise |
 
 Near the end of a turn the trace carries claude's `post_turn_summary`
@@ -498,7 +582,8 @@ as for any other re-entry.
 
 ### Several tasks in one run
 
-roba runs exactly one `claude -p` turn, and a turn can hold many tasks.
+The legacy compatibility command runs exactly one `claude -p` turn, and a turn
+can hold many tasks.
 Inside a single invocation the agent loops over tools until it is done,
 so a prompt that lists several tasks gets worked sequentially in that one
 turn -- there is no chaining flag and no special mode. Size the rails to
@@ -610,10 +695,10 @@ is one curated set if you want a starting point.
 
 ## Status
 
-Published on crates.io. The CLI surface (flag names, exit codes, config
+Published on crates.io. The legacy CLI surface (flag names, exit codes, config
 schema, `--json` envelope) is intended to be stable across `0.x`; the
-library API (`roba::*`, for integration testing) may shift between minor
-versions.
+provider-neutral `roba-core` API and `roba run` surface may shift between minor
+versions while they are hardened.
 
 ## License
 

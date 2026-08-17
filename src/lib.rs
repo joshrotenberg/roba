@@ -1,4 +1,4 @@
-//! `roba` -- single-prompt CLI runner built on `claude-wrapper`.
+//! `roba` -- a legacy Claude one-shot CLI plus a finite Claude/Codex runner.
 //!
 //! This lib hosts the module surface so integration tests can drive
 //! the same code paths the binary uses. `main.rs` is just an entry
@@ -26,11 +26,13 @@ pub mod history;
 pub mod jobs;
 pub mod lint;
 pub mod output;
+pub mod persona;
 pub mod profile;
 pub mod prompt;
 pub mod rates;
 pub mod receipt;
 pub mod render;
+pub mod serve;
 pub mod show;
 pub mod stdin_probe;
 pub mod stream;
@@ -40,8 +42,8 @@ pub mod worktree;
 // The clap-free run engine lives in roba-core (#416). Re-export so the rest of
 // the crate keeps addressing it as `crate::engine` / `crate::session`.
 use roba_core::{
-    ConfigLayer, PermissionPolicy, Prompt as RunPrompt, ProviderId, RobaConfig, RunOverrides,
-    RunSpec, SessionHandle, SessionSpec, ToolPolicy,
+    AgentSpec, ContextSpec, ExecutionSpec, LimitSpec, PermissionPolicy, Prompt as RunPrompt,
+    ProviderId, RunSpec, SessionHandle, SessionSpec, ToolPolicy,
 };
 pub use roba_core::{engine, session};
 
@@ -65,8 +67,19 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         std::env::set_current_dir(path)
             .with_context(|| format!("--cwd: cannot change directory to {}", path.display()))?;
     }
+    if matches!(&cli.command, Some(SubCommand::Run(_))) && cli.ask != AskArgs::default() {
+        bail!(
+            "legacy one-shot options cannot be placed before `run`; place provider-neutral run options after `run`"
+        );
+    }
+    if matches!(&cli.command, Some(SubCommand::Serve(_))) && cli.ask != AskArgs::default() {
+        bail!(
+            "legacy one-shot options cannot be placed before `serve`; place provider-neutral agent options after `serve`"
+        );
+    }
     match cli.command {
         Some(SubCommand::Run(args)) => bounded::run(args).await,
+        Some(SubCommand::Serve(args)) => serve::run(args).await,
         Some(SubCommand::Bundle { cmd }) => bundle::run(cmd),
         Some(SubCommand::History(args)) => run_history(args),
         Some(SubCommand::Last(args)) => run_last(args),
@@ -90,6 +103,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             crate::cli::AliasAction::Draft(args) => aliases::run_draft(args).await,
             other => aliases::run(other),
         },
+        // Personas are a read-only compatibility view over role-bearing
+        // legacy profiles; no provider call is made.
+        Some(SubCommand::Persona { action }) => persona::run(action),
         // Derived views over run receipts (#444): read-only, no claude call.
         Some(SubCommand::Jobs(args)) => jobs::run_jobs(&args),
         Some(SubCommand::Watch(args)) => jobs::run_watch(&args),
@@ -274,6 +290,15 @@ fn hermetic_axes(args: &AskArgs) -> (bool, bool) {
 }
 
 fn resolve_legacy_run_spec(args: &AskArgs, prompt: String) -> Result<RunSpec> {
+    if args.max_turns == Some(0) {
+        bail!("max_turns must be greater than zero");
+    }
+    if args
+        .max_budget_usd
+        .is_some_and(|cost| !cost.is_finite() || cost <= 0.0)
+    {
+        bail!("max_budget_usd must be finite and greater than zero");
+    }
     let permissions = if args.full_auto {
         PermissionPolicy::FullAuto
     } else if args.writable {
@@ -290,40 +315,33 @@ fn resolve_legacy_run_spec(args: &AskArgs, prompt: String) -> Result<RunSpec> {
         },
         _ => SessionSpec::Fresh,
     };
-    RobaConfig {
-        defaults: ConfigLayer {
-            provider: Some(ProviderId::claude()),
-            ..ConfigLayer::default()
-        },
-        ..RobaConfig::default()
-    }
-    .resolve(
-        None,
-        RunOverrides {
-            policy: ConfigLayer {
-                model: args.model.clone(),
-                effort: args.effort.map(effort_to_run),
-                permissions: Some(permissions),
-                tools: Some(ToolPolicy {
-                    allow: args.allow_tool.clone(),
-                    deny: args.deny_tool.clone(),
-                }),
+    let mut agent = AgentSpec::new(ProviderId::claude());
+    agent.model.clone_from(&args.model);
+    agent.effort = args.effort.map(effort_to_run);
+
+    Ok(RunSpec {
+        agent,
+        context: ContextSpec::default(),
+        execution: ExecutionSpec {
+            permissions,
+            tools: ToolPolicy {
+                allow: args.allow_tool.clone(),
+                deny: args.deny_tool.clone(),
+            },
+            limits: LimitSpec {
                 max_turns: args.max_turns,
                 max_cost_usd: args.max_budget_usd,
-                // Legacy `--timeout 0` means disabled; the hierarchy's
-                // canonical representation for disabled is absence.
+                // Legacy `--timeout 0` means disabled; the canonical
+                // provider-neutral representation for disabled is absence.
                 timeout_secs: args.timeout.filter(|seconds| *seconds > 0),
-                ..ConfigLayer::default()
             },
             session,
-            initial_prompt: Some(RunPrompt::new(prompt)?),
-            ..RunOverrides::default()
         },
-    )
-    .map_err(Into::into)
+        initial_prompt: Some(RunPrompt::new(prompt)?),
+    })
 }
 
-/// Adapt the resolved one-shot CLI into the same hierarchical [`RunSpec`] used
+/// Adapt the resolved one-shot CLI into the same root-run [`RunSpec`] used
 /// by `roba run`, then layer only Claude-specific compatibility controls onto
 /// [`engine::Config`]. Profiles and env have already populated `AskArgs`; this
 /// bridge centralizes the overlapping validation and resolved vocabulary while
@@ -949,6 +967,15 @@ pub(crate) fn unusable_result_error(code: i32, note: &'static str) -> anyhow::Er
 /// never zero. Surfaced so the error exit seam can note it for the terminal
 /// receipt (#449).
 pub fn error_cost_usd(err: &anyhow::Error) -> Option<f64> {
+    if let Some(run_error) = err.downcast_ref::<bounded::BoundedRunError>() {
+        return run_error
+            .failure()
+            .details
+            .cost
+            .as_ref()
+            .filter(|cost| cost.currency == "USD")
+            .map(|cost| cost.amount);
+    }
     match err.downcast_ref::<claude_wrapper::Error>()? {
         claude_wrapper::Error::MaxTurnsExceeded { cost_usd, .. }
         | claude_wrapper::Error::MaxBudgetExceeded { cost_usd, .. } => *cost_usd,
@@ -963,6 +990,7 @@ pub fn error_cost_usd(err: &anyhow::Error) -> Option<f64> {
 /// - 3: budget ceiling exceeded
 /// - 4: request timed out
 /// - 5: `--max-turns` cap hit (recoverable; finish the lifecycle)
+/// - 7: `--max-budget-usd` cap hit (recoverable; finish the lifecycle)
 ///
 /// Exit code 6 ([`EXIT_UNUSABLE_RESULT`]) is carried through the error chain
 /// only as [`UnusableResultError`], allowing run-owned resources to unwind
@@ -973,19 +1001,31 @@ pub fn classify_exit_code(err: &anyhow::Error) -> i32 {
     };
     if let Some(unusable) = err.downcast_ref::<UnusableResultError>() {
         unusable.code()
+    } else if let Some(run_error) = err.downcast_ref::<bounded::BoundedRunError>() {
+        match run_error.failure().kind {
+            roba_core::FailureKind::Authentication => EXIT_AUTH,
+            roba_core::FailureKind::Timeout => EXIT_TIMEOUT,
+            roba_core::FailureKind::Budget => EXIT_BUDGET,
+            roba_core::FailureKind::MaxTurns => EXIT_MAX_TURNS,
+            roba_core::FailureKind::MaxCost => EXIT_MAX_BUDGET,
+            roba_core::FailureKind::Limit
+            | roba_core::FailureKind::Cancelled
+            | roba_core::FailureKind::Unsupported
+            | roba_core::FailureKind::Provider => EXIT_FAILURE,
+        }
     } else if let Some(wrapper_err) = err.downcast_ref::<claude_wrapper::Error>() {
         match wrapper_err {
             claude_wrapper::Error::Auth { .. } => EXIT_AUTH,
             claude_wrapper::Error::BudgetExceeded { .. } => EXIT_BUDGET,
             claude_wrapper::Error::Timeout { .. } => EXIT_TIMEOUT,
             // A --max-turns cap-hit is recoverable, not a hard failure: the
-            // tree is usually complete and just needs the lifecycle finished
+            // work may be nearly complete and only need its lifecycle finished
             // (gates + commit). A distinct code lets an orchestrator tell that
             // apart from a generic failure without parsing the trace. (#309;
             // claude-wrapper 0.12.0 surfaces the typed variant.)
             claude_wrapper::Error::MaxTurnsExceeded { .. } => EXIT_MAX_TURNS,
             // A --max-budget-usd cap-hit is the same shape as max-turns: a
-            // guardrail tripped mid-run, not a defect. The tree is usually
+            // guardrail tripped mid-run, not a defect. The work is usually
             // intact (detection is post-hoc, so the run may have completed the
             // work before tripping). A distinct, recoverable code lets an
             // orchestrator resume the session and finish the lifecycle rather
@@ -1003,6 +1043,18 @@ pub fn classify_exit_code(err: &anyhow::Error) -> i32 {
 mod tests {
     use super::*;
     use claude_wrapper::auth::AuthErrorKind;
+
+    #[tokio::test]
+    async fn serve_rejects_legacy_options_placed_before_the_subcommand() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["roba", "--model", "legacy", "serve"]).unwrap();
+        let error = dispatch(cli).await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "legacy one-shot options cannot be placed before `serve`; place provider-neutral agent options after `serve`"
+        );
+    }
 
     fn ask(argv: &[&str]) -> AskArgs {
         use clap::Parser;
@@ -1477,6 +1529,28 @@ mod tests {
     fn classify_non_wrapper_error_returns_1() {
         let err = anyhow::anyhow!("something else broke");
         assert_eq!(classify_exit_code(&err), 1);
+    }
+
+    #[test]
+    fn classify_provider_neutral_failures_preserves_exit_contract() {
+        use roba_core::{FailureKind, RunFailure, RunFailureDetails};
+
+        for (kind, expected) in [
+            (FailureKind::Authentication, 2),
+            (FailureKind::Budget, 3),
+            (FailureKind::Timeout, 4),
+            (FailureKind::MaxTurns, 5),
+            (FailureKind::MaxCost, 7),
+            (FailureKind::Limit, 1),
+            (FailureKind::Provider, 1),
+        ] {
+            let err = anyhow::Error::new(bounded::BoundedRunError::new(RunFailure {
+                kind,
+                message: "provider failure".to_string(),
+                details: RunFailureDetails::default(),
+            }));
+            assert_eq!(classify_exit_code(&err), expected, "{kind:?}");
+        }
     }
 
     #[test]

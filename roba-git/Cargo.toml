@@ -1,27 +1,29 @@
 [package]
-name = "roba-mcp"
+name = "roba-git"
 version = "0.1.0"
 edition = "2024"
 authors = ["Josh Rotenberg <joshrotenberg@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/joshrotenberg/roba"
 homepage = "https://github.com/joshrotenberg/roba"
-description = "MCP-native host for one logical Roba agent."
-keywords = ["agent", "mcp", "claude", "codex", "llm"]
+description = "A typed Git workspace service for the MCP-native Roba harness."
+keywords = ["agent", "mcp", "git", "roba"]
 categories = ["development-tools"]
 
 [dependencies]
-axum = "0.8"
-roba-core = { version = "0.2.0", path = "../roba-core" }
+git-spawn = "0.3"
+roba-mcp = { version = "0.1.0", path = "../roba-mcp" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["io-std", "io-util", "macros", "net", "rt", "sync", "time"] }
-tower-mcp = { version = "0.22", default-features = false, features = ["http", "protocol-2026-07-28"] }
-uuid = { version = "1", default-features = false, features = ["v4"] }
+thiserror = "2"
+tokio = { version = "1", features = ["sync", "time"] }
+tower-mcp = { version = "0.22", default-features = false, features = ["protocol-2026-07-28"] }
 
 [dev-dependencies]
 bytes = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+roba-core = { path = "../roba-core" }
+tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

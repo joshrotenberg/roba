@@ -7,15 +7,17 @@ use claude_wrapper::streaming::{BlockDelta, PartialMessageEvent, StreamEvent, st
 use claude_wrapper::types::QueryResult;
 use claude_wrapper::{
     Claude, Effort as ClaudeEffort, McpConfigBuilder, OutputFormat, QueryCommand, TempMcpConfig,
+    ToolPattern,
 };
 
 use crate::engine::{self, Config, Permissions, Session};
 use crate::provider::{
-    EventSink, Provider, ProviderCapabilities, ProviderContext, ProviderError, ProviderFuture,
+    EventSink, Provider, ProviderCapabilities, ProviderError, ProviderEvent, ProviderFuture,
+    ProviderLaunchContext,
 };
 use crate::run::{
-    Cost, Effort, FailureKind, PermissionPolicy, ProviderId, RunEvent, RunFailureDetails,
-    RunOutcome, SessionHandle, SessionSpec, TokenUsage, TurnRequest,
+    Cost, Effort, FailureKind, PermissionPolicy, ProviderId, RunFailureDetails, RunOutcome,
+    SessionHandle, SessionSpec, TokenUsage, TurnRequest,
 };
 
 /// Claude Code implementation of Roba's provider-neutral turn boundary.
@@ -28,8 +30,6 @@ pub struct ClaudeProvider {
 /// former unit struct as `ClaudeProvider`.
 #[allow(non_upper_case_globals)]
 pub const ClaudeProvider: ClaudeProvider = ClaudeProvider { binary: None };
-
-const WORKER_GUIDANCE: &str = "Roba owns all child work for this run. When the task calls for workers, use only the `mcp__roba_workers__spawn_worker` tool, then use `mcp__roba_workers__workers` and wait for every spawned worker before answering. Keep monitors current with the report_work_item, report_blocker, and report_artifact tools; those are claims and do not replace your final answer. Never launch Roba or provider CLIs in the shell to simulate workers, and never substitute provider-native subagents. If Roba refuses a spawn, report that refusal instead of using another mechanism.";
 
 impl ClaudeProvider {
     /// Use an explicit Claude executable instead of resolving `claude` from
@@ -65,20 +65,20 @@ impl ClaudeProvider {
     }
 
     fn bounded_command(config: &Config) -> QueryCommand {
-        // Roba owns bounded child-run creation. Claude's native Agent tool is
-        // not represented in the run tree and would bypass worker count,
-        // depth, cancellation, and event observation.
         engine::query_command(config)
             // `stream_query` consumes NDJSON but does not override the command's
             // output format or forward a stdin prompt itself.
             .output_format(OutputFormat::StreamJson)
             .prompt_via_stdin(false)
-            .disallowed_tool("Agent")
             .include_partial_messages()
     }
 
     fn config(request: &TurnRequest) -> Result<Config, ProviderError> {
         let mut config = Config::new(request.prompt.as_str());
+        // The legacy notice describes a one-shot process that will never be
+        // resumed. A bounded RunHandle may steer through resumed turns, so
+        // injecting that notice here would contradict the lifecycle contract.
+        config.no_agent_notice = true;
         config.model.clone_from(&request.spec.agent.model);
         config.effort = request.spec.agent.effort.map(map_effort);
         config.permissions = match request.spec.execution.permissions {
@@ -117,12 +117,14 @@ impl ClaudeProvider {
         Ok(config)
     }
 
-    fn mcp_config(context: &ProviderContext) -> Result<Option<TempMcpConfig>, ProviderError> {
-        if context.mcp_endpoints().is_empty() {
+    fn mcp_config(
+        launch_context: &ProviderLaunchContext,
+    ) -> Result<Option<TempMcpConfig>, ProviderError> {
+        if launch_context.mcp_endpoints().is_empty() {
             return Ok(None);
         }
         let mut builder = McpConfigBuilder::new();
-        for endpoint in context.mcp_endpoints() {
+        for endpoint in launch_context.mcp_endpoints() {
             builder = builder.http_server_with_headers(
                 endpoint.name(),
                 endpoint.url(),
@@ -140,50 +142,16 @@ impl ClaudeProvider {
         })
     }
 
-    fn configure_internal_worker_control(config: &mut Config, context: &ProviderContext) {
-        if context
-            .mcp_endpoints()
-            .iter()
-            .any(|endpoint| endpoint.name() == "roba_workers")
-        {
-            config
-                .allow_tools
-                .push("mcp__roba_workers__spawn_worker".to_string());
-            config
-                .allow_tools
-                .push("mcp__roba_workers__workers".to_string());
-            config.allow_tools.extend([
-                "mcp__roba_workers__report_work_item".to_string(),
-                "mcp__roba_workers__report_blocker".to_string(),
-                "mcp__roba_workers__report_artifact".to_string(),
-            ]);
-            config.append_system_prompt = Some(match config.append_system_prompt.take() {
-                Some(existing) => format!("{existing}\n\n{WORKER_GUIDANCE}"),
-                None => WORKER_GUIDANCE.to_string(),
-            });
-        }
-        if context
-            .mcp_endpoints()
-            .iter()
-            .any(|endpoint| endpoint.name() == "roba_workers")
-            && let Some(control) = context.process_control()
-        {
-            config
-                .allow_tools
-                .push("mcp__roba_workers__process_capabilities".to_string());
-            config
-                .allow_tools
-                .push("mcp__roba_workers__invoke_process_action".to_string());
-            let process_guidance = std::iter::once(
-                "Use only the declared Roba process capabilities and their invoke_process_action tool for granted workflow actions. A declaration is process knowledge, not additional authority; refusals must be reported rather than bypassed.",
-            )
-            .chain(control.instructions())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-            config.append_system_prompt = Some(match config.append_system_prompt.take() {
-                Some(existing) => format!("{existing}\n\n{process_guidance}"),
-                None => process_guidance,
-            });
+    fn allow_mcp_tools(config: &mut Config, launch_context: &ProviderLaunchContext) {
+        for endpoint in launch_context.mcp_endpoints() {
+            for tool_name in endpoint.tool_names() {
+                let qualified = ToolPattern::mcp(endpoint.name(), tool_name)
+                    .as_str()
+                    .to_owned();
+                if !config.allow_tools.contains(&qualified) {
+                    config.allow_tools.push(qualified);
+                }
+            }
         }
     }
 
@@ -269,20 +237,25 @@ impl Provider for ClaudeProvider {
     fn execute<'a>(
         &'a self,
         request: TurnRequest,
-        context: ProviderContext,
+        events: &'a dyn EventSink,
+    ) -> ProviderFuture<'a> {
+        self.execute_with_launch_context(request, ProviderLaunchContext::default(), events)
+    }
+
+    fn execute_with_launch_context<'a>(
+        &'a self,
+        request: TurnRequest,
+        launch_context: ProviderLaunchContext,
         events: &'a dyn EventSink,
     ) -> ProviderFuture<'a> {
         Box::pin(async move {
             self.validate(&request)?;
-            events.emit(RunEvent::TurnStarted {
-                provider: ProviderId::claude(),
-            });
             let mut config = Self::config(&request)?;
-            let mcp_config = Self::mcp_config(&context)?;
+            let mcp_config = Self::mcp_config(&launch_context)?;
             if let Some(mcp_config) = &mcp_config {
                 config.mcp_config.push(mcp_config.path().to_string());
             }
-            Self::configure_internal_worker_control(&mut config, &context);
+            Self::allow_mcp_tools(&mut config, &launch_context);
             let claude = self.client(&config).map_err(|error| {
                 ProviderError::new(FailureKind::Provider, format!("Claude failed: {error:#}"))
             })?;
@@ -294,7 +267,7 @@ impl Provider for ClaudeProvider {
                     match serde_json::from_value::<QueryResult>(event.data) {
                         Ok(result) => {
                             if let Some(usage) = result.usage.as_ref() {
-                                events.emit(RunEvent::Usage {
+                                events.emit(ProviderEvent::Usage {
                                     usage: normalize_usage(usage),
                                 });
                             }
@@ -325,9 +298,6 @@ impl Provider for ClaudeProvider {
                 engine::surface_structured_output(&mut result);
             }
             let outcome = Self::normalize(result);
-            events.emit(RunEvent::TurnCompleted {
-                outcome: outcome.clone(),
-            });
             Ok(outcome)
         })
     }
@@ -339,7 +309,8 @@ fn terminal_failure(result: QueryResult) -> ProviderError {
         .get("subtype")
         .and_then(serde_json::Value::as_str);
     let kind = match subtype {
-        Some("error_max_turns" | "error_max_budget_usd") => FailureKind::Limit,
+        Some("error_max_turns") => FailureKind::MaxTurns,
+        Some("error_max_budget_usd") => FailureKind::MaxCost,
         _ => FailureKind::Provider,
     };
     let reported_reason = result
@@ -349,7 +320,7 @@ fn terminal_failure(result: QueryResult) -> ProviderError {
         .and_then(|errors| errors.iter().find_map(serde_json::Value::as_str))
         .or_else(|| (!result.result.is_empty()).then_some(result.result.as_str()));
     let details = terminal_details(&result);
-    let message = if kind == FailureKind::Limit {
+    let message = if matches!(kind, FailureKind::MaxTurns | FailureKind::MaxCost) {
         let turns = result
             .num_turns
             .map(|turns| format!(" after {turns} provider turns"))
@@ -398,7 +369,7 @@ fn emit_stream_event(event: &StreamEvent, sink: &dyn EventSink) {
         ..
     }) = event.partial_message()
     {
-        sink.emit(RunEvent::OutputDelta { text });
+        sink.emit(ProviderEvent::OutputDelta { text });
     }
 }
 
@@ -406,9 +377,9 @@ fn map_error(error: claude_wrapper::Error) -> ProviderError {
     let kind = match error {
         claude_wrapper::Error::Auth { .. } => FailureKind::Authentication,
         claude_wrapper::Error::Timeout { .. } => FailureKind::Timeout,
-        claude_wrapper::Error::MaxTurnsExceeded { .. }
-        | claude_wrapper::Error::MaxBudgetExceeded { .. }
-        | claude_wrapper::Error::BudgetExceeded { .. } => FailureKind::Limit,
+        claude_wrapper::Error::BudgetExceeded { .. } => FailureKind::Budget,
+        claude_wrapper::Error::MaxTurnsExceeded { .. } => FailureKind::MaxTurns,
+        claude_wrapper::Error::MaxBudgetExceeded { .. } => FailureKind::MaxCost,
         claude_wrapper::Error::VersionMismatch { .. }
         | claude_wrapper::Error::UntestedCliVersion { .. }
         | claude_wrapper::Error::DangerousNotAllowed { .. } => FailureKind::Unsupported,
@@ -440,15 +411,19 @@ mod tests {
     use crate::run::RunState;
     use crate::run::{AgentSpec, Prompt, RunSpec};
 
+    const TEST_MCP_SERVER: &str = "roba";
+    const TEST_GIT_TOOL: &str = "mcp__roba__git.snapshot";
+    const TEST_SELF_TOOL: &str = "mcp__roba__self";
+
     #[cfg(unix)]
     #[derive(Default)]
     struct RecordingSink {
-        events: Mutex<Vec<RunEvent>>,
+        events: Mutex<Vec<ProviderEvent>>,
     }
 
     #[cfg(unix)]
     impl EventSink for RecordingSink {
-        fn emit(&self, event: RunEvent) {
+        fn emit(&self, event: ProviderEvent) {
             self.events.lock().unwrap().push(event);
         }
     }
@@ -458,16 +433,27 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let marker = temp.path().join("blocked.pid");
+        let args_marker = temp.path().join("claude.args");
+        let mcp_config_marker = temp.path().join("claude.mcp.json");
+        let mcp_path_marker = temp.path().join("claude.mcp.path");
         let binary = temp.path().join("claude");
         let script = format!(
             r#"#!/bin/sh
 prompt=
 resuming=false
+previous=
+: > '{}'
 for arg do
+  printf '%s\n' "$arg" >> '{}'
+  if [ "$previous" = --mcp-config ]; then
+    cp "$arg" '{}'
+    printf '%s' "$arg" > '{}'
+  fi
   prompt=$arg
   if [ "$arg" = --resume ]; then
     resuming=true
   fi
+  previous=$arg
 done
 case "$prompt" in
   block)
@@ -508,6 +494,10 @@ if [ "$terminal" = true ]; then
   printf '{{"type":"result","subtype":"success","result":"%s","session_id":"session-1","total_cost_usd":0.02,"duration_ms":10,"num_turns":1,"is_error":false,"usage":{{"input_tokens":3,"output_tokens":2}}}}\n' "$text"
 fi
 "#,
+            args_marker.display(),
+            args_marker.display(),
+            mcp_config_marker.display(),
+            mcp_path_marker.display(),
             marker.display()
         );
         std::fs::write(&binary, script).unwrap();
@@ -521,6 +511,21 @@ fi
         RunSpec::suspended(AgentSpec::new(provider))
             .with_prompt(Prompt::new("hello").unwrap())
             .into_turn()
+            .unwrap()
+    }
+
+    fn launch_context() -> ProviderLaunchContext {
+        ProviderLaunchContext::default()
+            .try_with_mcp_endpoint(
+                crate::provider::ProviderMcpEndpoint::new(
+                    TEST_MCP_SERVER,
+                    "http://127.0.0.1:4123/mcp",
+                    "secret-provider-token",
+                )
+                .unwrap()
+                .try_with_tool_names(["self", "git.snapshot", "self"])
+                .unwrap(),
+            )
             .unwrap()
     }
 
@@ -582,76 +587,136 @@ fi
     }
 
     #[test]
-    fn worker_mcp_configuration_is_ephemeral_and_authenticated() {
-        let process = crate::ProcessControl::test_control(crate::ProcessCapabilityDescriptor {
-            id: crate::ProcessCapabilityId::new("test/process").unwrap(),
-            description: "test process".to_string(),
-            required_grants: Default::default(),
-            actions: vec![crate::ProcessActionSpec {
-                id: crate::ProcessActionId::new("record").unwrap(),
-                description: "record".to_string(),
-                input_schema: serde_json::json!({"type": "object"}),
-                destructive: false,
-            }],
-            instructions: vec!["Follow the test process.".to_string()],
-        });
-        let context = ProviderContext::for_run(None, Some(process)).with_mcp_endpoint(
-            crate::ProviderMcpEndpoint::new(
-                "roba_workers",
-                "http://127.0.0.1:4123/mcp",
-                "secret-worker-token",
-            ),
-        );
-        let config = ClaudeProvider::mcp_config(&context).unwrap().unwrap();
-        let json = std::fs::read_to_string(config.path()).unwrap();
-        let mut request_config = Config::new("test");
-        ClaudeProvider::configure_internal_worker_control(&mut request_config, &context);
+    fn bounded_turn_suppresses_the_legacy_single_turn_notice() {
+        let request = request(ProviderId::claude());
+        let config = ClaudeProvider::config(&request).unwrap();
 
-        assert!(json.contains("roba_workers"));
-        assert!(json.contains("http://127.0.0.1:4123/mcp"));
-        assert!(json.contains("Bearer secret-worker-token"));
+        assert!(config.no_agent_notice);
+        assert!(crate::session::compose_append_system_prompt(&config).is_none());
+    }
+
+    #[test]
+    fn launch_context_builds_exact_private_config_and_tool_allowlist() {
+        let context = launch_context();
+        let mcp_config = ClaudeProvider::mcp_config(&context).unwrap().unwrap();
+        let path = PathBuf::from(mcp_config.path());
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
-            request_config.allow_tools,
-            [
-                "mcp__roba_workers__spawn_worker",
-                "mcp__roba_workers__workers",
-                "mcp__roba_workers__report_work_item",
-                "mcp__roba_workers__report_blocker",
-                "mcp__roba_workers__report_artifact",
-                "mcp__roba_workers__process_capabilities",
-                "mcp__roba_workers__invoke_process_action"
-            ]
+            value,
+            json!({
+                "mcpServers": {
+                    "roba": {
+                        "type": "http",
+                        "url": "http://127.0.0.1:4123/mcp",
+                        "headers": {
+                            "Authorization": "Bearer secret-provider-token"
+                        }
+                    }
+                }
+            })
         );
-        assert!(
-            request_config
-                .append_system_prompt
-                .as_deref()
-                .unwrap()
-                .starts_with(WORKER_GUIDANCE)
+
+        let fresh = request(ProviderId::claude());
+        let mut resumed = request(ProviderId::claude());
+        resumed.spec.execution.session = SessionSpec::Resume {
+            session: SessionHandle {
+                provider: ProviderId::claude(),
+                id: "session-1".to_string(),
+            },
+        };
+        for turn in [fresh, resumed] {
+            let mut config = ClaudeProvider::config(&turn).unwrap();
+            config.mcp_config.push(mcp_config.path().to_string());
+            ClaudeProvider::allow_mcp_tools(&mut config, &context);
+            ClaudeProvider::allow_mcp_tools(&mut config, &context);
+            assert_eq!(config.allow_tools, [TEST_GIT_TOOL, TEST_SELF_TOOL]);
+
+            let args = ClaudeProvider::bounded_command(&config).args();
+            assert!(
+                args.windows(2)
+                    .any(|pair| { pair == ["--mcp-config", mcp_config.path()] })
+            );
+            let expected_tools = format!("Read,Glob,Grep,{TEST_GIT_TOOL},{TEST_SELF_TOOL}");
+            assert!(
+                args.windows(2)
+                    .any(|pair| { pair[0] == "--allowed-tools" && pair[1] == expected_tools })
+            );
+            assert!(!args.iter().any(|arg| arg.contains("secret-provider-token")));
+        }
+        assert!(!format!("{context:?}").contains("secret-provider-token"));
+
+        drop(mcp_config);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn attached_endpoint_without_advertised_tools_adds_no_allowlist_entries() {
+        let context = ProviderLaunchContext::default()
+            .try_with_mcp_endpoint(
+                crate::provider::ProviderMcpEndpoint::new(
+                    TEST_MCP_SERVER,
+                    "http://127.0.0.1:4123/mcp",
+                    "secret-provider-token",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut config = ClaudeProvider::config(&request(ProviderId::claude())).unwrap();
+
+        ClaudeProvider::allow_mcp_tools(&mut config, &context);
+
+        assert!(config.allow_tools.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn temporary_mcp_config_is_owner_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mcp_config = ClaudeProvider::mcp_config(&launch_context())
+            .unwrap()
+            .unwrap();
+        let mode = std::fs::metadata(mcp_config.path())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_binary_receives_exact_mcp_attachment_and_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, _) = fake_claude(&temp);
+        let events = RecordingSink::default();
+
+        let outcome = provider
+            .execute_with_launch_context(request(ProviderId::claude()), launch_context(), &events)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.output, "opened");
+        let args = std::fs::read_to_string(temp.path().join("claude.args")).unwrap();
+        assert!(args.lines().any(|arg| arg == "--mcp-config"));
+        assert!(args.lines().any(|arg| arg == "--allowed-tools"));
+        assert!(args.contains(TEST_GIT_TOOL));
+        assert!(args.contains(TEST_SELF_TOOL));
+        assert!(!args.contains("secret-provider-token"));
+        let value: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(temp.path().join("claude.mcp.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            value["mcpServers"]["roba"]["url"],
+            "http://127.0.0.1:4123/mcp"
         );
-        assert!(
-            request_config
-                .append_system_prompt
-                .as_deref()
-                .unwrap()
-                .contains("Never launch Roba or provider CLIs in the shell")
+        assert_eq!(
+            value["mcpServers"]["roba"]["headers"]["Authorization"],
+            "Bearer secret-provider-token"
         );
-        assert!(
-            request_config
-                .append_system_prompt
-                .as_deref()
-                .unwrap()
-                .contains("Follow the test process.")
-        );
-        let args = ClaudeProvider::bounded_command(&request_config).args();
-        assert!(args.iter().any(|arg| arg == "--disallowed-tools"));
-        assert!(args.iter().any(|arg| arg == "Agent"));
-        assert!(args.iter().any(|arg| arg == "--include-partial-messages"));
-        assert!(
-            args.windows(2)
-                .any(|args| args[0] == "--output-format" && args[1] == "stream-json")
-        );
-        assert!(!format!("{context:?}").contains("secret-worker-token"));
+        let original_path = std::fs::read_to_string(temp.path().join("claude.mcp.path")).unwrap();
+        assert!(!PathBuf::from(original_path).exists());
     }
 
     #[cfg(unix)]
@@ -662,11 +727,7 @@ fi
 
         let fresh_events = RecordingSink::default();
         let fresh = provider
-            .execute(
-                request(ProviderId::claude()),
-                ProviderContext::default(),
-                &fresh_events,
-            )
+            .execute(request(ProviderId::claude()), &fresh_events)
             .await
             .unwrap();
         assert_eq!(fresh.output, "opened");
@@ -675,18 +736,14 @@ fi
         assert_eq!(fresh.usage.as_ref().unwrap().output, Some(2));
         assert_eq!(fresh.cost, Some(Cost::usd(0.02)));
         let fresh_events = fresh_events.events.into_inner().unwrap();
-        assert!(fresh_events.contains(&RunEvent::OutputDelta {
+        assert!(fresh_events.contains(&ProviderEvent::OutputDelta {
             text: "opened".to_string(),
         }));
         assert!(fresh_events.iter().any(|event| matches!(
             event,
-            RunEvent::Usage { usage }
+            ProviderEvent::Usage { usage }
                 if usage.input == Some(3) && usage.output == Some(2)
         )));
-        assert!(matches!(
-            fresh_events.last(),
-            Some(RunEvent::TurnCompleted { .. })
-        ));
 
         let mut resumed = request(ProviderId::claude());
         resumed.spec.execution.session = SessionSpec::Resume {
@@ -696,17 +753,14 @@ fi
             },
         };
         let resume_events = RecordingSink::default();
-        let resumed = provider
-            .execute(resumed, ProviderContext::default(), &resume_events)
-            .await
-            .unwrap();
+        let resumed = provider.execute(resumed, &resume_events).await.unwrap();
         assert_eq!(resumed.output, "resumed");
         assert!(
             resume_events
                 .events
                 .into_inner()
                 .unwrap()
-                .contains(&RunEvent::OutputDelta {
+                .contains(&ProviderEvent::OutputDelta {
                     text: "resumed".to_string(),
                 })
         );
@@ -765,10 +819,7 @@ fi
             .unwrap();
         let events = RecordingSink::default();
 
-        let error = provider
-            .execute(request, ProviderContext::default(), &events)
-            .await
-            .unwrap_err();
+        let error = provider.execute(request, &events).await.unwrap_err();
 
         assert_eq!(error.kind, FailureKind::Provider);
         assert!(
@@ -777,14 +828,9 @@ fi
             error.message
         );
         let events = events.events.into_inner().unwrap();
-        assert!(events.contains(&RunEvent::OutputDelta {
+        assert!(events.contains(&ProviderEvent::OutputDelta {
             text: "partial".to_string(),
         }));
-        assert!(
-            !events
-                .iter()
-                .any(|event| matches!(event, RunEvent::TurnCompleted { .. }))
-        );
     }
 
     #[cfg(unix)]
@@ -793,9 +839,10 @@ fi
         let temp = tempfile::tempdir().unwrap();
         let (provider, _) = fake_claude(&temp);
 
-        for (prompt, session, turns, cost, reason) in [
+        for (prompt, expected_kind, session, turns, cost, reason) in [
             (
                 "limit-turns",
+                FailureKind::MaxTurns,
                 "limit-session",
                 30,
                 1.25,
@@ -803,6 +850,7 @@ fi
             ),
             (
                 "limit-budget",
+                FailureKind::MaxCost,
                 "budget-session",
                 12,
                 2.75,
@@ -814,12 +862,9 @@ fi
                 .into_turn()
                 .unwrap();
             let events = RecordingSink::default();
-            let error = provider
-                .execute(request, ProviderContext::default(), &events)
-                .await
-                .unwrap_err();
+            let error = provider.execute(request, &events).await.unwrap_err();
 
-            assert_eq!(error.kind, FailureKind::Limit);
+            assert_eq!(error.kind, expected_kind);
             assert!(error.message.contains(reason), "{}", error.message);
             assert!(!error.message.contains("--output-format"));
             let details = error.details.as_deref().unwrap();
@@ -829,7 +874,7 @@ fi
             assert!(details.duration_ms.is_some());
             assert!(details.usage.is_some());
             assert!(events.events.into_inner().unwrap().iter().any(|event| {
-                matches!(event, RunEvent::Usage { usage } if usage.input.is_some())
+                matches!(event, ProviderEvent::Usage { usage } if usage.input.is_some())
             }));
         }
     }
@@ -845,11 +890,7 @@ fi
             .unwrap();
 
         let error = provider
-            .execute(
-                request,
-                ProviderContext::default(),
-                &RecordingSink::default(),
-            )
+            .execute(request, &RecordingSink::default())
             .await
             .unwrap_err();
 

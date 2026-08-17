@@ -1,66 +1,85 @@
 # roba-core
 
-Provider-neutral contracts and a process-local lifecycle for one bounded Roba
-agent run.
+Provider-neutral contracts and a process-local lifecycle for one finite,
+single-root Roba run.
 
-[roba](https://github.com/joshrotenberg/roba) is library-first. This crate owns
-the run model beneath its CLI, REPL, and run-scoped MCP adapters, so a Rust host
-can create and control a run without depending on clap or terminal behavior.
+[roba](https://github.com/joshrotenberg/roba) is library-first. This crate lets
+a Rust host construct, execute, observe, steer, cancel, and await one run
+without depending on clap, terminal behavior, a daemon, or persistent storage.
 
 ## What's here
 
 - **`run` / `provider`** -- provider-neutral specifications, events, outcomes,
-  failures, sessions, and the one-turn provider contract.
+  typed failures, sessions, capabilities, and the one-turn provider contract.
 - **`lifecycle` / `runtime`** -- suspended creation, exact-once start,
-  boundary-safe steering, bounded replayable run-tree events, cancellation,
-  waiting, and an explicit provider registry. No daemon, database, queue, or
-  global session pool.
-- **`mission` / `process`** -- the canonical finite-mission projection plus
-  immutable process-capability declarations, explicit grants, a host-owned
-  capability registry, and run-bound action control. Unknown capabilities,
-  missing grants, and providers without a private control transport fail
-  before provider work.
-- **`resolve`** -- one serializable hierarchy: Roba defaults, selected provider
-  defaults, named agent, then run overrides.
+  boundary-safe steering, bounded replayable events, cancellation, waiting,
+  and an explicit provider registry.
 - **`providers`** -- Claude and Codex adapters that normalize provider-native
   results without inventing missing usage or cost.
 - **`engine`** -- the legacy Claude `Config -> QueryResult` seam retained while
-  the established CLI migrates onto the new run model.
-- **`session`** -- `apply_session`, the single `Config -> QueryCommand` mapper
-  the compatibility engine feeds.
+  the established CLI remains compatible.
+- **`session`** -- `apply_session`, the single legacy `Config -> QueryCommand`
+  mapper consumed by that engine.
 
-The new API has no stdout/stderr, `process::exit`, TTY, clap, or persistent
-server dependency. Provider adapters do spawn the selected provider CLI once a
-run starts; a prompt-less suspended run spawns nothing.
+The provider-neutral API has no stdout/stderr, `process::exit`, TTY, clap,
+database, queue, or global session pool. Provider adapters spawn the selected
+provider CLI only after a run starts. A promptless suspended run spawns
+nothing.
 
-`RunHandle::subscribe()` replays the oldest event still held by the run tree
-and then waits for new events. Each record carries a tree-wide sequence and the
-emitting run id. The root sees its entire worker tree; a child sees only itself
-and its descendants. Hosts that keep their own cursor can use `event_page` and
-`wait_for_events`. The in-memory journal retains 256 records and reports
-subtree-scoped truncation instead of pretending older events still exist.
-Subscriptions return `RunEventSubscriptionItem::HistoryTruncated` before
-replaying retained records after a gap, and cursors ahead of the journal are
-refused.
+## Run control
+
+`Roba` owns an explicit process-local provider registry. `create_run` captures
+an immutable `RunSpec` and returns a `Run`; cloning `Run::handle()` produces a
+`RunHandle` with the public control surface:
+
+- `start` supplies the first prompt to a suspended run; `begin` starts a spec
+  that already contains one.
+- `status` returns the latest in-memory `RunSnapshot`.
+- `subscribe` and `subscribe_after` replay retained events before waiting for
+  new events.
+- `event_page` and `wait_for_events` support explicit cursors and bounded
+  long-lived observation.
+- `steer` queues guidance for the next safe provider-turn boundary when the
+  provider supports resume.
+- `cancel` drops active provider work before publishing terminal cancellation.
+- `wait` resolves to the terminal snapshot.
+
+Each event record carries a monotonically increasing sequence. The in-memory
+journal retains 256 records and reports truncation when a caller's cursor has
+fallen behind. Cursors ahead of the journal are refused.
 
 `RunFailure` carries a portable failure category and optional
-`RunFailureDetails`. Providers use those details for honestly reported
-terminal recovery and accounting fields such as a resumable session, usage,
-cost, duration, and provider turn count. The same failure snapshot is retained
-by the handle and emitted as a `RunEvent::Failed`; missing telemetry remains
-absent.
+`RunFailureDetails`. Providers preserve honestly reported terminal recovery
+and accounting fields such as a resumable session, usage, cost, duration, and
+provider turn count. The same failure is retained by the handle and emitted as
+a `RunEvent::Failed`; missing telemetry remains absent.
 
-Process capabilities are optional. With an empty `MissionPolicy`, no process
-control is minted, no process instructions are added, and no private process
-tools are opened. A host that opts in registers `ProcessCapability`
-implementations on its `Roba` value and supplies the exact capability and grant
-ids in the root specification. Workers inherit that policy; neither a worker
-request nor an agent tool call can add capabilities or grants.
+## Deliberate boundary
+
+The current crate owns one root run only. The prior worker tree, mission
+projection, process-capability registry, and GitHub-specific workflow/process
+pack are parked and are not part of this API. The former run-scoped
+`roba-mcp` and custom `roba-repl` implementations remain removed.
+
+The new workspace `roba-mcp` crate implements the first above-core slice: one
+hot, single-agent host that creates a fresh finite `Run` for each prompt,
+retains provider session continuity, and exposes a typed process-local MCP
+contract. That layer owns MCP schemas and application lifetime. Later phases
+add controls, router composition, transport lifetime, and operator/provider
+projections. The root `roba run` command now calls that process-local contract
+and maps its typed terminal result back to the established CLI snapshot. None
+of this makes `roba-core` stateful, transport-aware, or multi-agent. An
+external client such as `mcp-repl` supplies the interactive interface, so core
+does not require a custom REPL.
+
+Steward in `ok-v` is separate workflow-layer prior art. It may consume or
+drive Roba in another project, but it is not part of `roba-core`.
 
 ## Stability
 
-The bounded-run API is under active development and may change before the next
-stable Roba release. The legacy engine remains available for compatibility.
+The provider-neutral API is under active development and may change before the
+next stable Roba release. The legacy engine remains available for
+compatibility.
 
 ## License
 
