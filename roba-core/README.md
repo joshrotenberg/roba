@@ -58,16 +58,17 @@ a `RunEvent::Failed`; missing telemetry remains absent.
 
 The current crate owns one root run only. The prior worker tree, mission
 projection, process-capability registry, and GitHub-specific workflow/process
-pack are parked and are not part of this API. The former `roba-mcp` and
-`roba-repl` crates are also not workspace members.
+pack are parked and are not part of this API. The former run-scoped
+`roba-mcp` and custom `roba-repl` implementations remain removed.
 
-The adopted above-core design adds one hot, single-agent MCP harness that
-creates a fresh finite `Run` for each prompt and retains provider session
-continuity between runs. That layer owns MCP schemas, router composition,
-transport lifetime, and operator/provider projections. It does not make this
-crate stateful, transport-aware, or multi-agent. An external client such as
-`mcp-repl` supplies the interactive interface, so core does not require a
-custom REPL.
+The new workspace `roba-mcp` crate implements the first above-core slice: one
+hot, single-agent host that creates a fresh finite `Run` for each prompt,
+retains provider session continuity, and exposes a typed process-local MCP
+contract. That layer owns MCP schemas and application lifetime. Later phases
+add controls, router composition, transport lifetime, and operator/provider
+projections. None of this makes `roba-core` stateful, transport-aware, or
+multi-agent. An external client such as `mcp-repl` supplies the interactive
+interface, so core does not require a custom REPL.
 
 Steward in `ok-v` is separate workflow-layer prior art. It may consume or
 drive Roba in another project, but it is not part of `roba-core`.

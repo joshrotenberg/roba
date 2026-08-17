@@ -17,11 +17,12 @@ keywords = ["agent", "claude", "codex", "cli", "llm"]
 categories = ["command-line-utilities"]
 
 # Root package + workspace: `roba` stays at the repo root; `roba-types` (the
-# published, dependency-light machine contract) and `roba-core` (the clap-free
-# run engine) are members. resolver "3" matches the edition-2024 package
-# default so making this a workspace does not change dependency resolution.
+# published, dependency-light machine contract), `roba-core` (the clap-free
+# run engine), and `roba-mcp` (the MCP-native single-agent host) are members.
+# resolver "3" matches the edition-2024 package default so making this a
+# workspace does not change dependency resolution.
 [workspace]
-members = ["roba-types", "roba-core"]
+members = ["roba-types", "roba-core", "roba-mcp"]
 resolver = "3"
 
 [[bin]]

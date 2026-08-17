@@ -12,11 +12,11 @@ A library-first, provider-neutral runtime for one finite, single-root agent run
 can retain a public `RunHandle` for status, replayable events, steering,
 cancellation, and waiting; `roba run` is the current thin blocking CLI.
 
-The adopted v0.12 direction adds an MCP-native layer above that finite core.
-One hot `AgentInstance` will create a new finite run per submitted turn and
-expose role-scoped control and provider-facing MCP projections. The plan is in
-`docs/design/mcp-native-agent-harness.md`; it is not shipped behavior until the
-relevant phase passes its acceptance gates.
+The v0.12 work adds an MCP-native layer above that finite core. The current
+`roba-mcp` crate supplies the Phase 1 process-local base: one hot
+`AgentInstance`, typed `agent.turn`, `roba://agent`, and an in-process MCP
+client. Role-scoped controls, provider-facing access, external transports, and
+extensions remain later phases in `docs/design/mcp-native-agent-harness.md`.
 
 The original single-prompt Claude CLI remains a compatibility surface while
 the provider-neutral API stabilizes.
@@ -48,6 +48,8 @@ the provider-neutral API stabilizes.
 - `roba-core/src/{run,lifecycle,provider,runtime}.rs` -- public run contracts,
   single-root lifecycle, provider boundary, and provider registry
 - `roba-core/src/providers/{claude,codex}.rs` -- built-in provider adapters
+- `roba-mcp/src/{agent,contract,router}.rs` -- hot single-agent state, typed MCP
+  values, base router, and in-process client binding
 - `src/main.rs` entry point; `src/lib.rs` dispatch plus bounded and legacy paths
 - `src/bounded.rs` -- explicit `roba run` flags to `RunSpec`
 - `src/cli.rs` clap surface -- doc comments here ARE the `--help` reference
@@ -77,13 +79,14 @@ cargo build --release --all-features
 git diff --check
 ```
 
-Once `roba-mcp` is a workspace member, also run
-`cargo test -p roba-mcp --all-features` so its integration tests are included.
+Also run `cargo test -p roba-mcp --all-features` so its integration tests are
+included.
 
 `--workspace` covers the member crates alongside the `roba` binary:
 `roba-types` (the published, dependency-light machine contract: `--json`
-envelopes, the exit-code map, run receipts) and `roba-core` (the clap-free
-provider-and-run engine). The `cli` integration tests are Roba-only.
+envelopes, the exit-code map, run receipts), `roba-core` (the clap-free
+provider-and-run engine), and `roba-mcp` (the process-local single-agent MCP
+host). The `cli` integration tests are Roba-only.
 
 `tests/live.rs` calls real Claude or Codex and can cost money: `#[ignore]` by
 default, run explicitly with `cargo test --test live -- --ignored`. Live tests

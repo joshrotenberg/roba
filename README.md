@@ -16,6 +16,11 @@ host can create a suspended run without starting provider work, retain its
 `RunHandle`, and observe or control that run while the process is alive. The
 `roba run` command is the thin blocking CLI over the same core.
 
+The workspace also includes the first process-local `roba-mcp` layer. Its
+`AgentInstance` remains hot and idle between prompts, creates one finite core
+run per accepted `agent.turn`, and retains provider session continuity. This
+library contract is not wired into the root CLI or an external transport yet.
+
 The established single-prompt Claude CLI remains a supported compatibility
 surface while the provider-neutral library API stabilizes.
 
@@ -75,18 +80,19 @@ rather than becoming zero.
 
 The current model is one root run. The experimental Roba-owned worker tree,
 mission projection, process-capability layer, and GitHub workflow/process pack
-are parked and are not part of the current API. The `roba-mcp` and `roba-repl`
-crates and their `roba run --mcp` / `--repl` entry points were also removed
-from the shipped workspace.
+are parked and are not part of the current API. The old run-scoped `roba-mcp`
+and custom `roba-repl` crates and their `roba run --mcp` / `--repl` entry
+points were removed.
 
 The adopted v0.12 direction is an MCP-native, single-agent harness above this
-finite core. One hot logical agent will create a new finite run per prompt,
-retain provider session continuity, and expose the same composed service to
-operator clients and a capability-filtered provider client. It is phase-gated
-work, not behavior shipped by v0.11.0. `mcp-repl` will provide the interactive
-client, so Roba does not need a custom REPL. The legacy `--mcp-config` flag is
-unrelated: it passes an MCP server configuration through to a one-shot Claude
-invocation.
+finite core. Phase 1 now ships the process-local base contract: one hot logical
+agent, single-flight `agent.turn`, typed structured results, `roba://agent`,
+and an initialized Tower MCP `ChannelTransport` client. The root CLI still
+uses its direct finite-run path. Controls, Tasks, external bindings,
+provider-facing access, and service fragments remain later gated phases.
+`mcp-repl` will provide the interactive client, so Roba does not need a custom
+REPL. The legacy `--mcp-config` flag is unrelated: it passes an MCP server
+configuration through to a one-shot Claude invocation.
 
 The Steward prototype in `ok-v` is separate workflow-layer prior art. Its
 visible queue, bounded tick, lock, and receipt ideas may inform external tools,
@@ -102,6 +108,8 @@ The public implementation is split by responsibility:
 
 - `roba-core`: provider-neutral specifications, provider registry, root
   lifecycle, outcomes, failures, and events
+- `roba-mcp`: one process-local logical agent, typed MCP contract, base router,
+  and in-process client binding
 - `roba-types`: the dependency-light machine envelope, exit-code map, and run
   receipt types
 - `roba`: the explicit `run` adapter plus the original Claude CLI

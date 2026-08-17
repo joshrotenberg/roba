@@ -662,12 +662,25 @@ It must define capability delegation, cycle prevention, cancellation and Task
 propagation, budgets, endpoint discovery, failure ownership, and audit
 identity. Federation does not reopen `roba-core` as a multi-agent runtime.
 
+## Phase 1 checkpoint decisions
+
+- `AgentInstance` owns terminal settlement independently of the Rust caller
+  awaiting a turn. Dropping that caller cannot strand the logical agent in
+  `Running`.
+- This does not define MCP request-cancellation behavior. Direct request and
+  Task cancellation remain Phase 3 work and must cancel the matching core run
+  explicitly.
+- `roba://agent` publishes only whether a provider session is available and
+  redacts session identifiers from its retained latest-turn projection. The
+  direct `agent.turn` result keeps validated session evidence for the caller
+  that initiated the operation.
+
 ## Current phase ledger
 
 | Phase | Status | Evidence |
 |---|---|---|
 | 0. Architecture record | Complete | Design review plus full common gate green, 2026-08-17 |
-| 1. Minimal in-process agent | Not started | -- |
+| 1. Minimal in-process agent | Complete | Two independent correctness reviews; 1 unit and 11 ChannelTransport integration tests; full common gate green, 2026-08-17 |
 | 2. CLI over MCP | Not started | -- |
 | 3A. Controls and events | Not started | -- |
 | 3B. MCP Tasks | Not started | -- |
