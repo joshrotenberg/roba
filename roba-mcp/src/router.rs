@@ -151,6 +151,11 @@ impl StdError for AgentClientError {
 
 /// Build the operator/control projection for one logical agent.
 pub fn control_router(agent: AgentInstance) -> McpRouter {
+    let extensions = agent.extensions().clone();
+    extensions.merge_control(base_control_router(agent))
+}
+
+pub(crate) fn base_control_router(agent: AgentInstance) -> McpRouter {
     let task_store = Arc::new(MemoryTaskStore::new());
     let turn_output_schema = serde_json::to_value(schema_for!(AgentTurnResult))
         .expect("static agent turn schema must serialize");
@@ -349,6 +354,11 @@ pub fn control_router(agent: AgentInstance) -> McpRouter {
 /// no turn admission, steering, interruption, shutdown, Tasks, event history,
 /// configuration, or retained provider-session state.
 pub fn agent_router(agent: AgentInstance, operation_id: OperationId) -> McpRouter {
+    let extensions = agent.extensions().clone();
+    extensions.merge_provider(base_agent_router(agent, operation_id))
+}
+
+pub(crate) fn base_agent_router(agent: AgentInstance, operation_id: OperationId) -> McpRouter {
     let weak_agent = agent.downgrade();
     let output_schema = serde_json::to_value(schema_for!(ProviderSelfSnapshot))
         .expect("static provider self schema must serialize");

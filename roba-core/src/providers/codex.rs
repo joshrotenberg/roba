@@ -23,9 +23,6 @@ pub struct CodexProvider {
     binary: Option<PathBuf>,
 }
 
-const ROBA_SELF_SERVER: &str = "roba";
-const ROBA_SELF_TOOL_APPROVAL: &str = "mcp_servers.roba.tools.self.approval_mode=\"approve\"";
-
 impl CodexProvider {
     /// Use an explicit Codex executable instead of resolving `codex` from
     /// `PATH`. This is useful for embedded hosts and deterministic tests.
@@ -437,13 +434,19 @@ fn mcp_configuration(launch_context: &ProviderLaunchContext) -> CodexMcpConfigur
                 )
                 .config_overrides(),
         );
-        if endpoint.name() == ROBA_SELF_SERVER {
-            configuration
-                .overrides
-                .push(ROBA_SELF_TOOL_APPROVAL.to_string());
+        for tool_name in endpoint.tool_names() {
+            configuration.overrides.push(format!(
+                "mcp_servers.{}.tools.{}.approval_mode=\"approve\"",
+                toml_key_segment(endpoint.name()),
+                toml_key_segment(tool_name),
+            ));
         }
     }
     configuration
+}
+
+fn toml_key_segment(value: &str) -> String {
+    serde_json::to_string(value).expect("a string must serialize as a TOML-compatible key")
 }
 
 fn render_prompt(request: &TurnRequest) -> String {
@@ -493,6 +496,12 @@ mod tests {
     #[cfg(unix)]
     use crate::run::RunState;
     use crate::run::{AgentSpec, Prompt, RunSpec};
+
+    const TEST_MCP_SERVER: &str = "roba";
+    const TEST_GIT_TOOL_APPROVAL: &str =
+        r#"mcp_servers."roba".tools."git.snapshot".approval_mode="approve""#;
+    const TEST_SELF_TOOL_APPROVAL: &str =
+        r#"mcp_servers."roba".tools."self".approval_mode="approve""#;
 
     #[cfg(unix)]
     #[derive(Default)]
@@ -587,13 +596,18 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
     }
 
     fn launch_context() -> ProviderLaunchContext {
-        ProviderLaunchContext::default().with_mcp_endpoint(
-            crate::provider::ProviderMcpEndpoint::new(
-                ROBA_SELF_SERVER,
-                "http://127.0.0.1:4123/mcp",
-                "secret-provider-token",
-            ),
-        )
+        ProviderLaunchContext::default()
+            .try_with_mcp_endpoint(
+                crate::provider::ProviderMcpEndpoint::new(
+                    TEST_MCP_SERVER,
+                    "http://127.0.0.1:4123/mcp",
+                    "secret-provider-token",
+                )
+                .unwrap()
+                .try_with_tool_names(["self", "git.snapshot", "self"])
+                .unwrap(),
+            )
+            .unwrap()
     }
 
     #[test]
@@ -709,7 +723,8 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
                 "mcp_servers.roba.url=\"http://127.0.0.1:4123/mcp\"",
                 "mcp_servers.roba.bearer_token_env_var=\"ROBA_INTERNAL_MCP_TOKEN_0\"",
                 "mcp_servers.roba.required=true",
-                ROBA_SELF_TOOL_APPROVAL,
+                TEST_GIT_TOOL_APPROVAL,
+                TEST_SELF_TOOL_APPROVAL,
             ]
         );
         assert_eq!(
@@ -735,6 +750,43 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
         assert!(!format!("{context:?}").contains("secret-provider-token"));
     }
 
+    #[test]
+    fn attached_endpoint_without_advertised_tools_adds_no_approval_overrides() {
+        let context = ProviderLaunchContext::default()
+            .try_with_mcp_endpoint(
+                crate::provider::ProviderMcpEndpoint::new(
+                    TEST_MCP_SERVER,
+                    "http://127.0.0.1:4123/mcp",
+                    "secret-provider-token",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let configuration = mcp_configuration(&context);
+
+        assert_eq!(configuration.overrides.len(), 3);
+        assert!(
+            configuration
+                .overrides
+                .iter()
+                .all(|override_| !override_.contains(".tools."))
+        );
+        assert_eq!(configuration.environment.len(), 1);
+        assert!(
+            mcp_configuration(&ProviderLaunchContext::default())
+                .overrides
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn codex_approval_key_segments_are_always_toml_quoted_and_escaped() {
+        assert_eq!(toml_key_segment("roba"), r#""roba""#);
+        assert_eq!(toml_key_segment("git.snapshot"), r#""git.snapshot""#);
+        assert_eq!(toml_key_segment("quote\"tool"), r#""quote\"tool""#);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn fake_binary_receives_mcp_overrides_and_secret_only_in_environment() {
@@ -753,7 +805,8 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
             "mcp_servers.roba.url=\"http://127.0.0.1:4123/mcp\"",
             "mcp_servers.roba.bearer_token_env_var=\"ROBA_INTERNAL_MCP_TOKEN_0\"",
             "mcp_servers.roba.required=true",
-            ROBA_SELF_TOOL_APPROVAL,
+            TEST_GIT_TOOL_APPROVAL,
+            TEST_SELF_TOOL_APPROVAL,
         ] {
             assert!(
                 args.lines().any(|arg| arg == expected),

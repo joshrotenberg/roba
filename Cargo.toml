@@ -18,11 +18,12 @@ categories = ["command-line-utilities"]
 
 # Root package + workspace: `roba` stays at the repo root; `roba-types` (the
 # published, dependency-light machine contract), `roba-core` (the clap-free
-# run engine), and `roba-mcp` (the MCP-native single-agent host) are members.
+# run engine), `roba-mcp` (the MCP-native single-agent host), and `roba-git`
+# (the optional Git workspace service) are members.
 # resolver "3" matches the edition-2024 package default so making this a
 # workspace does not change dependency resolution.
 [workspace]
-members = ["roba-types", "roba-core", "roba-mcp"]
+members = ["roba-types", "roba-core", "roba-mcp", "roba-git"]
 resolver = "3"
 
 [[bin]]
@@ -39,6 +40,8 @@ glob = "0.3"
 indicatif = "0.18"
 # The clap-free compatibility engine and provider-neutral finite-run core.
 roba-core = { version = "0.2.0", path = "roba-core" }
+# Optional Layer-3 Git workspace service selected explicitly by `--git`.
+roba-git = { version = "0.1.0", path = "roba-git" }
 # The typed single-agent MCP contract used by the provider-neutral CLI.
 roba-mcp = { version = "0.1.0", path = "roba-mcp" }
 # The machine contract (envelopes + exit codes), shared so the binary and the

@@ -372,6 +372,14 @@ pub struct AgentArgs {
     #[arg(long = "context")]
     pub context: Vec<String>,
 
+    /// Add the opt-in Git workspace MCP service.
+    ///
+    /// The service is bound to the repository containing the effective cwd.
+    /// Repository snapshots are available to both the operator and provider;
+    /// workspace-write agents also expose operator-side staging controls.
+    #[arg(long)]
+    pub git: bool,
+
     /// Permit edits in the current workspace.
     #[arg(long, conflicts_with = "full_auto")]
     pub writable: bool,
@@ -1701,6 +1709,7 @@ mod tests {
             "be exact",
             "--context",
             "the tests are authoritative",
+            "--git",
             "--writable",
             "--max-turns",
             "12",
@@ -1720,6 +1729,7 @@ mod tests {
         assert_eq!(args.agent.effort, Some(EffortLevel::Xhigh));
         assert_eq!(args.agent.instructions, ["be exact"]);
         assert_eq!(args.agent.context, ["the tests are authoritative"]);
+        assert!(args.agent.git);
         assert!(args.agent.writable);
         assert_eq!(args.agent.max_turns, Some(12));
         assert_eq!(args.agent.max_cost_usd, Some(1.5));
@@ -1734,6 +1744,7 @@ mod tests {
             "run",
             "--provider",
             "codex",
+            "--git",
             "--full-auto",
             "--json",
             "hello",
@@ -1743,6 +1754,7 @@ mod tests {
             panic!("expected run subcommand");
         };
         assert_eq!(args.agent.provider, Some(RunProvider::Codex));
+        assert!(args.agent.git);
         assert!(args.agent.full_auto);
         assert!(args.json);
         assert_eq!(args.prompt, "hello");

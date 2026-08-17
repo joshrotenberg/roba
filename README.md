@@ -25,11 +25,12 @@ operation-scoped controls plus agent-wide replay. The provider-neutral
 `roba serve` exposes the same single-agent contract over foreground stdio for
 MCP clients such as `mcp-repl`. For each admitted finite operation, `roba-mcp`
 also binds a private authenticated loopback projection and attaches it to the
-built-in provider. That least-authority projection currently contains only
-the read-only `self` tool and structurally excludes turn admission and
-operator controls. Task-aware clients can background, poll, and cancel
-`agent.turn` through MCP Tasks while ordinary clients keep the same blocking
-tool contract.
+built-in provider. Its base least-authority projection contains the read-only
+`self` tool and structurally excludes turn admission and operator controls.
+Explicit host extensions may add separate provider capabilities without
+copying the control router. Task-aware clients can background, poll, and
+cancel `agent.turn` through MCP Tasks while ordinary clients keep the same
+blocking tool contract.
 
 The established single-prompt Claude CLI remains a supported compatibility
 surface while the provider-neutral library API stabilizes.
@@ -52,12 +53,16 @@ roba run --provider codex --resume THREAD_ID "continue from the prior result"
 
 # Emit the terminal RunSnapshot in the versioned JSON envelope.
 roba run --provider claude --json "summarize this project"
+
+# Add the typed, repository-scoped Git observation service.
+roba run --provider codex --git "inspect the current Git workspace"
 ```
 
 The CLI accepts explicit run flags for provider, model, effort, instructions,
-context, permissions, limits, timeout, and resume identity. It does not load a
-second run-specific config system. The legacy `roba.toml` profile and alias
-pool belong to the one-shot Claude compatibility command.
+context, permissions, limits, timeout, resume identity, and opt-in host
+services such as `--git`. It does not load a second run-specific config
+system. The legacy `roba.toml` profile and alias pool belong to the one-shot
+Claude compatibility command.
 
 ## Hot MCP agents
 
@@ -71,6 +76,9 @@ mcp-repl --protocol final -- ./target/debug/roba serve --provider codex
 
 # Or install Roba and let mcp-repl spawn it from PATH.
 mcp-repl --protocol final -- roba serve --provider claude --writable
+
+# Keep a repository-scoped Git service available across several turns.
+mcp-repl --protocol final -- roba -C /path/to/repo serve --provider codex --git
 ```
 
 Inside `mcp-repl`, `agent.turn text="..."` performs one blocking finite turn.
@@ -136,10 +144,12 @@ replay, optional live Tasks for `agent.turn`, an initialized Tower MCP
 the in-process path while preserving its existing stdout, JSON, and exit-code
 ABI for admitted runs; `roba serve` is the hot external interface. Each active
 operation also gives Claude or Codex an ephemeral, authenticated `roba` MCP
-server containing only `self`; its URL and credential are transient launch
-material and its credential rotates between finite runs. Unix and operator
-HTTP bindings plus service fragments remain later gated phases. `mcp-repl` is
-the interactive client, so Roba does not need a custom REPL. The legacy
+server whose base contains only `self`; its URL and credential are transient
+launch material and its credential rotates between finite runs. A fail-closed
+extension layer can add explicit control and provider fragments; the first
+service is the opt-in `roba-git` workspace projection described below. Unix
+and operator HTTP bindings remain later gated phases. `mcp-repl` is the
+interactive client, so Roba does not need a custom REPL. The legacy
 `--mcp-config` flag is unrelated: it passes a user-supplied MCP server
 configuration through to a one-shot Claude invocation.
 
@@ -164,11 +174,38 @@ The public implementation is split by responsibility:
   lifecycle, outcomes, failures, events, and transient provider launch context
 - `roba-mcp`: one process-local logical agent, typed MCP contract, bounded
   replay, role-scoped routers, in-process and foreground stdio control
-  bindings, and a private operation-scoped provider binding
+  bindings, fail-closed extension composition, and a private
+  operation-scoped provider binding
+- `roba-git`: one fixed Git workspace exposed as typed, role-scoped MCP
+  fragments
 - `roba-types`: the dependency-light machine envelope, exit-code map, and run
   receipt types
 - `roba`: the explicit `run` and `serve` adapters plus the original Claude CLI
   compatibility surface
+
+## Optional Git workspace service
+
+`--git` installs `roba-git` into both `roba run` and `roba serve`. The service
+discovers the repository containing the effective cwd once, canonicalizes it,
+and never accepts a caller-selected path. `git.snapshot` and
+`roba://git/workspace` expose the same deterministic typed state to the
+operator and active provider. Reads disable Git optional locks and configured
+filesystem monitors and are bounded by a timeout.
+
+With `--writable` or `--full-auto`, the control projection also exposes
+`git.stage_all`. It stages tracked, deleted, and untracked changes and returns
+a typed before/after receipt plus the exact resulting index-tree object id.
+It refuses unresolved conflicts and no-op requests. The provider projection
+remains read-only even for writable agents: staging may execute
+repository-configured filters as host processes, which is broader authority
+than provider workspace-write alone honestly grants. Raw Git remains the
+escape hatch for workflows this narrow service does not cover.
+
+Extensions are immutable for one `AgentInstance`. Control and provider
+fragments are explicit and independently scoped; startup fails on exact MCP
+tool, resource, template, or prompt collisions instead of replacing an
+existing capability. Git is read on demand through MCP and is not injected
+into prompts, so resumed turns do not accumulate duplicate context.
 
 See [the run-library design](docs/design/run-library-pivot.md) for the finite
 core decision and [the MCP-native harness

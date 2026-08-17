@@ -16,6 +16,7 @@ use crate::contract::{
     OperationSettlement, ProviderSelfSnapshot,
 };
 use crate::events::{AgentEventError, AgentEventJournal, AgentEventPage};
+use crate::extensions::{AgentExtensionError, AgentExtensions};
 use crate::provider_endpoint::ProviderEndpoint;
 
 /// One hot logical agent with at most one active finite core run.
@@ -28,6 +29,7 @@ struct Inner {
     runtime: Roba,
     template: RunSpec,
     configuration: AgentConfiguration,
+    extensions: AgentExtensions,
     created_at_unix_ms: Option<u64>,
     events: AgentEventJournal,
     control: Mutex<Control>,
@@ -102,11 +104,28 @@ impl AgentInstance {
         }
     }
 
+    pub(crate) fn extensions(&self) -> &AgentExtensions {
+        &self.inner.extensions
+    }
+
     /// Construct an idle host from a suspended run template.
     ///
     /// Construction never starts provider work. A seeded resume handle is
     /// extracted into agent state and applied to the first submitted turn.
-    pub fn new(runtime: Roba, mut template: RunSpec) -> Result<Self, AgentBuildError> {
+    pub fn new(runtime: Roba, template: RunSpec) -> Result<Self, AgentBuildError> {
+        Self::new_with_extensions(runtime, template, AgentExtensions::default())
+    }
+
+    /// Construct an idle host with one immutable set of MCP extensions.
+    ///
+    /// Both role-specific projections are composed and checked against the
+    /// built-in contract before construction succeeds. No provider work or
+    /// private listener starts during this preflight.
+    pub fn new_with_extensions(
+        runtime: Roba,
+        mut template: RunSpec,
+        extensions: AgentExtensions,
+    ) -> Result<Self, AgentBuildError> {
         if template.initial_prompt.is_some() {
             return Err(AgentBuildError::TemplateNotSuspended);
         }
@@ -149,11 +168,12 @@ impl AgentInstance {
         };
 
         let (shutdown_tx, _) = watch::channel(None);
-        Ok(Self {
+        let agent = Self {
             inner: Arc::new(Inner {
                 runtime,
                 template,
                 configuration,
+                extensions,
                 created_at_unix_ms: unix_time_ms(),
                 events: AgentEventJournal::new(),
                 control: Mutex::new(Control {
@@ -165,7 +185,15 @@ impl AgentInstance {
                 }),
                 shutdown_tx,
             }),
-        })
+        };
+        agent
+            .extensions()
+            .preflight(
+                crate::router::base_control_router(agent.clone()),
+                crate::router::base_agent_router(agent.clone(), OperationId::new(1)),
+            )
+            .map_err(AgentBuildError::Extension)?;
+        Ok(agent)
     }
 
     /// Submit one prompt and await its terminal finite-run result.
@@ -798,6 +826,7 @@ pub enum AgentBuildError {
     },
     EmptySessionId,
     InvalidMaxCost,
+    Extension(AgentExtensionError),
 }
 
 impl fmt::Display for AgentBuildError {
@@ -817,11 +846,23 @@ impl fmt::Display for AgentBuildError {
             Self::InvalidMaxCost => {
                 f.write_str("maximum cost must be a finite non-negative number")
             }
+            Self::Extension(error) => write!(f, "invalid agent extension: {error}"),
         }
     }
 }
 
-impl std::error::Error for AgentBuildError {}
+impl std::error::Error for AgentBuildError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Extension(error) => Some(error),
+            Self::TemplateNotSuspended
+            | Self::ProviderUnavailable(_)
+            | Self::SessionProviderMismatch { .. }
+            | Self::EmptySessionId
+            | Self::InvalidMaxCost => None,
+        }
+    }
+}
 
 /// An idle-only stop was attempted during active work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

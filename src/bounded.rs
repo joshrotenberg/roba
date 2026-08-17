@@ -8,7 +8,10 @@ use roba_core::{
     LimitSpec, PermissionPolicy, Prompt, ProviderId, Roba, RunFailure, RunFailureDetails,
     RunOutcome, RunSnapshot, RunSpec, RunState, SessionHandle, SessionSpec, TokenUsage, ToolPolicy,
 };
-use roba_mcp::{AgentInstance, AgentTurnResult, TurnInput, call_turn, connect_in_process};
+use roba_git::{GitAuthority, GitWorkspace};
+use roba_mcp::{
+    AgentExtensions, AgentInstance, AgentTurnResult, TurnInput, call_turn, connect_in_process,
+};
 
 use crate::VersionedResult;
 use crate::cli::{AgentArgs, EffortLevel, RunArgs, RunProvider};
@@ -42,7 +45,7 @@ impl std::error::Error for BoundedRunError {}
 pub async fn run(args: RunArgs) -> Result<()> {
     let resolved = resolve_spec(&args)?;
 
-    let agent = build_agent_from_template(resolved.template)?;
+    let agent = build_agent_from_template(resolved.template, args.agent.git)?;
     let client = connect_in_process(agent).await?;
     let turn = call_turn(
         &client,
@@ -291,14 +294,31 @@ pub(crate) fn resolve_template(args: &AgentArgs) -> Result<RunSpec> {
 
 /// Construct one configured hot agent with both built-in providers available.
 pub(crate) fn build_agent(args: &AgentArgs) -> Result<AgentInstance> {
-    build_agent_from_template(resolve_template(args)?)
+    build_agent_from_template(resolve_template(args)?, args.git)
 }
 
-fn build_agent_from_template(template: RunSpec) -> Result<AgentInstance> {
+fn build_agent_from_template(template: RunSpec, git_enabled: bool) -> Result<AgentInstance> {
     let mut roba = Roba::new();
     roba.register(ClaudeProvider)?;
     roba.register(CodexProvider::default())?;
-    Ok(AgentInstance::new(roba, template)?)
+
+    let extensions = if git_enabled {
+        let cwd = std::env::current_dir()?;
+        let workspace = GitWorkspace::discover(cwd)?;
+        let authority = match template.execution.permissions {
+            PermissionPolicy::ReadOnly => GitAuthority::ReadOnly,
+            PermissionPolicy::WorkspaceWrite | PermissionPolicy::FullAuto => {
+                GitAuthority::WorkspaceWrite
+            }
+        };
+        AgentExtensions::default().try_with(workspace.extension(authority))?
+    } else {
+        AgentExtensions::default()
+    };
+
+    Ok(AgentInstance::new_with_extensions(
+        roba, template, extensions,
+    )?)
 }
 
 fn map_provider(provider: RunProvider) -> ProviderId {
@@ -364,6 +384,7 @@ mod tests {
             "be exact",
             "--context",
             "the tests are authoritative",
+            "--git",
             "--writable",
             "--timeout",
             "30",
@@ -376,6 +397,9 @@ mod tests {
         ];
         let run = parse_run_args(&[&shared[..], &["hello"]].concat());
         let serve = parse_serve_agent(&shared);
+
+        assert!(run.agent.git);
+        assert!(serve.git);
 
         assert_eq!(
             resolve_spec(&run).unwrap().template,
@@ -397,6 +421,7 @@ mod tests {
             "be exact",
             "--context",
             "the tests are authoritative",
+            "--git",
             "--writable",
             "--timeout",
             "30",
@@ -409,8 +434,13 @@ mod tests {
             "hello",
         ]);
         let resolved = resolve_spec(&args).unwrap();
+        assert!(args.agent.git);
         assert_eq!(resolved.prompt, "hello");
         let spec = resolved.template;
+        assert!(
+            serde_json::to_value(&spec).unwrap().get("git").is_none(),
+            "Git service selection is host configuration, not RunSpec intent"
+        );
         assert_eq!(spec.agent.provider, ProviderId::codex());
         assert_eq!(spec.agent.model.as_deref(), Some("configured"));
         assert_eq!(spec.agent.effort, Some(Effort::XHigh));

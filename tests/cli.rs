@@ -92,6 +92,7 @@ fn bounded_run_help_exposes_the_finite_provider_surface() {
         "--effort",
         "--instruction",
         "--context",
+        "--git",
         "--writable",
         "--full-auto",
         "--resume",
@@ -768,6 +769,71 @@ fn serve_is_idle_and_wire_only_for_stable_and_final_clients_until_logical_shutdo
             "logical shutdown emitted unexpected trailing stdout"
         );
     }
+}
+
+#[test]
+fn serve_git_extension_is_opt_in_and_scoped_to_the_effective_cwd() {
+    let repository = tempfile::tempdir().expect("Git fixture");
+    let init = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(repository.path())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .expect("initialize Git fixture");
+    assert!(
+        init.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    std::fs::write(repository.path().join("untracked.txt"), "fixture\n")
+        .expect("write Git fixture");
+
+    let mut command = serve_command();
+    command.arg("--git").current_dir(repository.path());
+    let mut server = ServeProcess::spawn(command);
+    handshake_serve(&mut server, CliWireProtocol::Stable);
+
+    server.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": {}
+    }));
+    let tools = server.receive();
+    let names = tools["result"]["tools"]
+        .as_array()
+        .expect("tools/list returned tools")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"git.snapshot"));
+    assert!(
+        !names.contains(&"git.stage_all"),
+        "read-only serve exposed the mutating Git workflow"
+    );
+
+    server.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "resources/read",
+        "params": {"uri": "roba://git/workspace"}
+    }));
+    let resource = server.receive();
+    let text = resource["result"]["contents"][0]["text"]
+        .as_str()
+        .expect("Git workspace resource returned JSON text");
+    let snapshot: serde_json::Value = serde_json::from_str(text).expect("typed Git snapshot");
+    assert_eq!(
+        std::path::Path::new(snapshot["repository_root"].as_str().unwrap()),
+        std::fs::canonicalize(repository.path()).unwrap()
+    );
+    assert_eq!(snapshot["untracked"], serde_json::json!(["untracked.txt"]));
+
+    send_shutdown(&mut server, CliWireProtocol::Stable, 4);
+    let response = server.receive();
+    assert_eq!(response["id"], 4);
+    assert_eq!(response["result"]["structuredContent"]["status"], "stopped");
+    assert!(server.wait_and_collect().is_empty());
 }
 
 #[cfg(unix)]

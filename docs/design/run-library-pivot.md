@@ -173,10 +173,11 @@ contract. It may stay idle until its owning foreground transport shuts down.
 
 The same composed service has role-scoped control and provider-facing
 projections. Each active provider is now an authenticated MCP client of its
-own harness through an operation-scoped loopback endpoint. The current
-provider projection contains only the read-only `self` proof tool; later
-explicitly installed services may add context or Git without adding a worker
-tree or multi-agent routing to core.
+own harness through an operation-scoped loopback endpoint. The base provider
+projection contains the read-only `self` proof tool. Immutable, fail-closed
+fragments may add explicit least-authority services without adding a worker
+tree or multi-agent routing to core; the first is the opt-in `roba-git`
+workspace observation service.
 
 See `docs/design/mcp-native-agent-harness.md` for the contract, phase gates,
 cancellation semantics, transport plan, and parked Roba-to-Roba consequence.
@@ -229,14 +230,12 @@ out of scope.
 
 ## Near-term work
 
-The cleanup and first MCP phases completed Codex hardening, authoritative
-lifecycle events, the hot single-agent contract, controls and replay, optional
-Tasks, the provider self-client proof, and the foreground stdio binding.
-Remaining work is:
-
-1. Prove one small router fragment before defining a broader extension API.
-2. Keep operator HTTP, Unix sockets, scheduling, and federation parked until a
-   concrete consumer justifies their authority and lifecycle costs.
+The cleanup and MCP phases completed Codex hardening, authoritative lifecycle
+events, the hot single-agent contract, controls and replay, optional Tasks,
+the provider self-client proof, the foreground stdio binding, fail-closed
+extension composition, and one typed Git workspace service. Keep operator
+HTTP, Unix sockets, scheduling, GitHub workflow policy, and federation parked
+until a concrete consumer justifies their authority and lifecycle costs.
 
 ## Resume checklist
 

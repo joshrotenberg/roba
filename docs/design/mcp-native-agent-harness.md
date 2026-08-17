@@ -272,12 +272,14 @@ workflow-layer features and are not implied.
 
 ## Router composition
 
-An extension may expose Tower MCP `Tool`, `Resource`, `Prompt`, or
-`McpRouter` values. Initial composition is static at harness construction.
-
-The host uses `McpRouter::try_merge` or namespaced composition and fails startup
-on collisions. Last-writer-wins merging is not acceptable for extension code
-because it can silently replace a security or control capability.
+An extension exposes explicit control and provider `McpRouter` fragments.
+Composition is static at harness construction. `AgentExtensions::try_with`
+and `AgentInstance::new_with_extensions` use `McpRouter::try_merge` and fail
+startup on exact capability collisions. Last-writer-wins merging is not
+acceptable because it can silently replace a security or control capability.
+Fragments are capability bags: router identity, session state, task stores,
+auth, and middleware are owned by the fresh Roba projection roots rather than
+imported from fragments.
 
 Examples:
 
@@ -289,22 +291,36 @@ Examples:
 - project-specific packages capture a narrow `AgentHandle` when they need
   current state.
 
-Router merging does not automatically intercept `agent.turn`. Mandatory
-context injection therefore uses an explicit, ordered pre-turn composition
-hook. That hook is part of the agent harness and must be deterministic,
-bounded, and covered for repeated resumed turns.
+Router merging does not automatically intercept `agent.turn`. Phase 6 did not
+add a pre-turn composition hook because the Git proof reads live state through
+MCP. If a later service needs mandatory context injection, that is a separate
+ordered, bounded contract with repeated-resume coverage rather than an
+implicit side effect of router installation.
 
 Dynamic installation by the model is out of scope. The host chooses modules
 and authority before the turn.
 
-### Extension parking lot
+### First adopted service: `roba-git`
+
+The opt-in `roba-git` package captures one canonical repository at host
+construction. It exposes the same deterministic `git.snapshot` tool and
+`roba://git/workspace` resource state through control and provider fragments.
+Reads are bounded, disable optional Git locks and configured filesystem
+monitoring, and never accept a caller-selected cwd.
+
+Writable control projections also expose `git.stage_all`, a typed workflow
+that refuses conflicts and no-op requests and returns before/after snapshots
+plus the exact resulting index tree. Provider projections remain read-only:
+staging may execute repository-configured filters as host processes, which is
+broader authority than provider workspace-write alone. Raw Git remains the
+escape hatch.
+
+### Remaining extension parking lot
 
 These are candidate packages, not adopted deliverables. Each must justify its
 workflow semantics beyond wrapping a command and must leave the lower-level
 tool available as an escape hatch:
 
-- `roba-git` may build auditable, reconstructable repository workflows on
-  `git-spawn`, with raw Git still available when an abstraction is incomplete;
 - `roba-gh` may use `octocrab` for typed GitHub operations and expose useful
   development-process steps, but a thin replacement for `gh` is not enough;
 - `roba-tick` may expose CRUD scheduling through MCP and submit turns,
@@ -330,8 +346,11 @@ Both are built from the same service modules and capture the same
 Runtime denial without discovery filtering is not sufficient because it gives
 the model a misleading tool catalog and increases accidental calls.
 
-The current agent projection is an explicit allowlist containing only the
-read-only `self` tool. It excludes:
+The base agent projection is an explicit allowlist containing only the
+read-only `self` tool. An installed fragment contributes only its explicit
+provider surface; the control surface is never mirrored. `roba-git` adds
+bounded `git.snapshot` observation while keeping staging operator-only. The
+provider projection always excludes:
 
 - `agent.turn`;
 - `agent.steer`, `agent.interrupt`, and `agent.shutdown`;
@@ -358,6 +377,7 @@ ProviderMcpEndpoint
   stable server name
   ephemeral URL
   redacted bearer credential
+  exact provider-callable tool names
 ```
 
 The endpoint and credential are host-local launch material. Roba does not
@@ -377,10 +397,11 @@ system may reuse a numeric port after the prior listener closes.
 The provider-facing credential is scoped to the active operation and revoked
 when that operation settles. Run cancellation drops the provider future,
 revokes the credential, stops accepting requests, and waits for the endpoint
-server before publishing agent settlement. The only current callback handler,
-`self`, is immediate and read-only. A future extension with long-running
-provider callbacks must add explicit request tracking and cancellation before
-claiming that arbitrary in-flight handlers are forcibly drained.
+server before publishing agent settlement. The base `self` callback is
+immediate and `roba-git` bounds its read calls. A future extension with
+arbitrary or long-running provider callbacks must add explicit request
+tracking and cancellation before claiming that in-flight handlers are
+forcibly drained.
 
 The historical provider context and endpoint code is prior art for this seam,
 but worker and process controls are not restored with it.
@@ -390,9 +411,11 @@ but worker and process controls are not restored with it.
 Providing Git or GitHub through MCP does not by itself make MCP the exclusive
 authority boundary. If the provider retains ambient shell, network, or `gh`
 access, the MCP tools are a consistent interface and audit path, not complete
-enforcement. Roba must describe isolation honestly and align provider-native
-tool restrictions with the selected permission policy before claiming that
-all mutations pass through the harness.
+enforcement. Provider-native approval contains the exact tool names actually
+present in its fragment, but approval is not authorization; forbidden tools
+must be absent from the provider router. Phase 6 keeps `git.stage_all`
+operator-only instead of treating workspace-write as permission to launch
+host-side Git filters.
 
 ## Bindings
 
@@ -896,6 +919,41 @@ identity. Federation does not reopen `roba-core` as a multi-agent runtime.
   custom REPL implementation. Task state, events, and provider sessions are
   process-local and disappear when the foreground binding exits.
 
+## Phase 6 checkpoint decisions
+
+- `AgentExtension` carries independent control and provider `McpRouter`
+  fragments. `AgentExtensions` is immutable for one `AgentInstance` and
+  preflights exact capability collisions against both real base projections
+  before provider work or a private listener can start. Fragment router
+  identity, session state, task stores, auth, and middleware are not part of
+  the composition contract.
+- Provider-callable extension tools are an explicit trusted manifest.
+  `ProviderMcpEndpoint` sorts and deduplicates the names, Claude receives exact
+  `mcp__SERVER__TOOL` allow entries, and Codex receives exact always-quoted
+  TOML tool approval keys. This makes dotted names such as `git.snapshot`
+  unambiguous. Server and tool names are validated against MCP's bounded ASCII
+  name grammar before configuration, preventing delimiter injection into a
+  provider allowlist. The manifest does not grant authority to tools absent
+  from the provider router.
+- `--git` is host configuration shared by `roba run` and `roba serve`, not a
+  serialized `RunSpec` field. Startup captures the nearest canonical Git
+  repository containing the effective cwd. Calls cannot redirect the service
+  to another path, and all projections share the same service state.
+- `git.snapshot` and `roba://git/workspace` expose deterministic typed state to
+  control and provider clients. Snapshot commands have finite timeouts and
+  disable optional locks and configured filesystem monitors. Git state is
+  read on demand; no prompt or durable context is injected, so resumed turns
+  preserve their original context exactly once.
+- `git.stage_all` is a writable-control workflow only. It stages current
+  tracked, deleted, and untracked changes, refuses conflicts and no-op
+  requests, and returns before/after snapshots plus the resulting index-tree
+  object id. It is absent from every provider projection because host-side Git
+  filters are broader authority than provider workspace-write alone.
+- Exact provider and operator calls observe equal repository snapshots. The
+  private provider credential still rotates per finite operation, expires
+  before settlement, and cannot reach `agent.turn` or operator controls. Raw
+  Git remains available when this narrow service is insufficient.
+
 ## Current phase ledger
 
 | Phase | Status | Evidence |
@@ -907,7 +965,7 @@ identity. Federation does not reopen `roba-core` as a multi-agent runtime.
 | 3B. MCP Tasks | Complete | Independent concurrency/API review; 13 MCP unit, 11 base-agent, 12 control/event, and 7 final-plus-legacy Task integration tests; 188 CLI compatibility tests; full common gate green, 2026-08-17 |
 | 4. Provider self-client | Complete | Three independent blocker reviews; 88 core tests; 15 MCP unit, 11 base-agent, 12 control/event, 7 Task, and 3 authenticated-loopback provider integration tests; 188 CLI compatibility tests; full common gate green, 2026-08-17 |
 | 5. Hot stdio | Complete | Independent lifecycle review; 15 MCP unit, 11 base-agent, 12 control/event, 7 Task, 3 provider-loopback, and 4 stable-plus-final stdio integration tests; 192 CLI tests including wire purity and real fake-provider child reaping; `mcp-repl` 0.3.0 final-protocol active fake-provider Task smoke; full common gate green, 2026-08-17 |
-| 6. First extension | Not started | -- |
+| 6. First extension | Complete | Independent security/correctness review; 93 core tests; 15 MCP unit, 11 base-agent, 12 control/event, 7 Task, 7 extension-composition, 3 provider-loopback, and 4 stdio integration tests; 11 `roba-git` fixture and authenticated-callback tests; 193 CLI tests including black-box `roba serve --git`; full common gate green, 2026-08-17 |
 | 7. Optional bindings | Parked pending demand | -- |
 | Federation | Parked pending separate decision | -- |
 

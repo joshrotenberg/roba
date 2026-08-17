@@ -982,13 +982,16 @@ mod tests {
     #[tokio::test]
     async fn launch_context_is_reused_across_resumed_turns_in_one_run() {
         let provider = provider(true);
-        let context = ProviderLaunchContext::default().with_mcp_endpoint(
-            crate::provider::ProviderMcpEndpoint::new(
-                "roba",
-                "http://127.0.0.1:4123/mcp",
-                "run-scoped-token",
-            ),
-        );
+        let context = ProviderLaunchContext::default()
+            .try_with_mcp_endpoint(
+                crate::provider::ProviderMcpEndpoint::new(
+                    "roba",
+                    "http://127.0.0.1:4123/mcp",
+                    "run-scoped-token",
+                )
+                .unwrap(),
+            )
+            .unwrap();
         let spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
             .with_prompt(Prompt::new("first").unwrap());
         let run = Run::new_with_launch_context(spec, provider.clone(), context.clone()).unwrap();

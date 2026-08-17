@@ -759,6 +759,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "git-spawn"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d10235aa03dfa5d62af73f4c0f481de74174dc9ce30aaf882d628a651885afe2"
+dependencies = [
+ "async-trait",
+ "libc",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "which",
+ "windows-sys",
+]
+
+[[package]]
 name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1285,6 +1300,7 @@ dependencies = [
  "libc",
  "predicates",
  "roba-core",
+ "roba-git",
  "roba-mcp",
  "roba-types",
  "serde",
@@ -1307,6 +1323,25 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "roba-git"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "git-spawn",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "roba-core",
+ "roba-mcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tower-mcp",
 ]
 
 [[package]]

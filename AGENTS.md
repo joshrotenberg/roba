@@ -20,9 +20,10 @@ and a foreground stdio binding. `roba run` crosses that contract and projects
 the typed result back onto its compatibility ABI; `roba serve` keeps one
 configured logical agent hot for MCP clients such as `mcp-repl`. Each finite
 operation also gets a private, authenticated provider projection containing
-only the read-only `self` tool; Claude and Codex receive that endpoint as
-transient launch context. Extensions remain a later phase in
-`docs/design/mcp-native-agent-harness.md`.
+the read-only base `self` tool plus explicitly installed least-authority
+extension capabilities; Claude and Codex receive that endpoint and its exact
+tool manifest as transient launch context. Static extension composition and
+the first optional `roba-git` workspace service are implemented above core.
 
 The original single-prompt Claude CLI remains a compatibility surface while
 the provider-neutral API stabilizes.
@@ -35,15 +36,17 @@ the provider-neutral API stabilizes.
 - IN: the phase-gated, single-agent `roba-mcp` harness above core: one hot
   logical agent, one active finite run, one canonical MCP contract, and
   role-scoped operator/provider views.
+- IN: immutable, fail-closed MCP fragments above the harness and the opt-in,
+  repository-scoped `roba-git` observation/staging service.
 - IN: the legacy Claude one-shot path, its config/profile/persona surface, and
   its read-only inspection commands.
 - OUT: Roba-owned worker trees, a mission projection, a multi-agent server, a
   hidden daemon, a persistent session pool, a built-in scheduler or queue,
   hidden background work, or mutation of provider-private state.
 - PARKED: Roba-to-Roba federation, operator-facing Unix/HTTP bindings without
-  demonstrated demand, and broad GitHub workflow policy. These require
-  separate evidence after the base harness. `mcp-repl` remains the interactive
-  client, so a custom Roba REPL is not required.
+  demonstrated demand, scheduling, and broad GitHub workflow policy. These
+  require separate evidence after the base harness. `mcp-repl` remains the
+  interactive client, so a custom Roba REPL is not required.
 - Keep reusable provider mechanics in the wrapper crates. Keep workflow policy
   outside the core run abstraction.
 - Steward in `ok-v` is a separate workflow layer and useful prior art, not a
@@ -55,10 +58,12 @@ the provider-neutral API stabilizes.
   single-root lifecycle, provider boundary plus transient launch context, and
   provider registry
 - `roba-core/src/providers/{claude,codex}.rs` -- built-in provider adapters
-- `roba-mcp/src/{agent,contract,events,router,stdio,provider_endpoint}.rs` --
-  hot single-agent state, typed MCP values, bounded agent-wide replay,
-  role-scoped routers, in-process and stdio control bindings, and the private
-  provider callback binding
+- `roba-mcp/src/{agent,contract,events,extensions,router,stdio,provider_endpoint}.rs`
+  -- hot single-agent state, typed MCP values, bounded agent-wide replay,
+  fail-closed role-scoped composition, in-process and stdio control bindings,
+  and the private provider callback binding
+- `roba-git` -- optional fixed-workspace Git MCP fragments; observation in
+  control/provider projections and staging only in writable control views
 - `src/main.rs` entry point; `src/lib.rs` dispatch plus bounded and legacy paths
 - `src/bounded.rs` -- explicit `roba run` flags to a suspended `RunSpec`, the
   in-process MCP call, and compatibility result projection
@@ -92,13 +97,15 @@ git diff --check
 ```
 
 Also run `cargo test -p roba-mcp --all-features` so its integration tests are
-included.
+included, plus `cargo test -p roba-git --all-features` for the Git service and
+cross-layer provider callback fixtures.
 
 `--workspace` covers the member crates alongside the `roba` binary:
 `roba-types` (the published, dependency-light machine contract: `--json`
 envelopes, the exit-code map, run receipts), `roba-core` (the clap-free
 provider-and-run engine), and `roba-mcp` (the process-local single-agent MCP
-host). The `cli` integration tests are Roba-only.
+host), and `roba-git` (the optional typed Git workspace service). The `cli`
+integration tests are Roba-only.
 
 `tests/live.rs` calls real Claude or Codex and can cost money: `#[ignore]` by
 default, run explicitly with `cargo test --test live -- --ignored`. Live tests
@@ -114,6 +121,11 @@ in `tests/cli.rs` when it touches exit codes or stream routing, and document it
 in the README if it is part of the agent ABI. Do not add it to legacy
 environment, profile, or config layering.
 
+Host-only service selection such as `--git` belongs beside the shared agent
+flags but not inside serialized `RunSpec`. Compose its role-specific routers
+before constructing `AgentInstance`, fail closed on collisions, and pass only
+exact provider tool names through transient launch context.
+
 For a legacy one-shot flag, follow the full compatibility checklist in order:
 clap field in `cli.rs` -> `session.rs` wiring -> `ROBA_<PARAM>` override in
 `env.rs` + tests -> a `config.rs` `ENV_MAP` entry (so `config show --sources`
@@ -127,8 +139,9 @@ agent ABI.
 
 - clap rules that fire before `Cli::parse()` returns (conflicts, requires):
   unit tests in `src/cli.rs` via `Cli::try_parse_from`.
-- Exit codes and stdout/stderr routing: `tests/cli.rs` (`assert_cmd`, never
-  calls a provider).
+- Exit codes, stdout/stderr routing, and black-box stdio service wiring:
+  `tests/cli.rs` (`assert_cmd`; use deterministic fake providers when a child
+  boundary is part of the assertion).
 
 ## Conventions
 

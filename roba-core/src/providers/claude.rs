@@ -7,6 +7,7 @@ use claude_wrapper::streaming::{BlockDelta, PartialMessageEvent, StreamEvent, st
 use claude_wrapper::types::QueryResult;
 use claude_wrapper::{
     Claude, Effort as ClaudeEffort, McpConfigBuilder, OutputFormat, QueryCommand, TempMcpConfig,
+    ToolPattern,
 };
 
 use crate::engine::{self, Config, Permissions, Session};
@@ -29,9 +30,6 @@ pub struct ClaudeProvider {
 /// former unit struct as `ClaudeProvider`.
 #[allow(non_upper_case_globals)]
 pub const ClaudeProvider: ClaudeProvider = ClaudeProvider { binary: None };
-
-const ROBA_SELF_SERVER: &str = "roba";
-const ROBA_SELF_TOOL: &str = "mcp__roba__self";
 
 impl ClaudeProvider {
     /// Use an explicit Claude executable instead of resolving `claude` from
@@ -144,14 +142,16 @@ impl ClaudeProvider {
         })
     }
 
-    fn allow_roba_self(config: &mut Config, launch_context: &ProviderLaunchContext) {
-        if launch_context
-            .mcp_endpoints()
-            .iter()
-            .any(|endpoint| endpoint.name() == ROBA_SELF_SERVER)
-            && !config.allow_tools.iter().any(|tool| tool == ROBA_SELF_TOOL)
-        {
-            config.allow_tools.push(ROBA_SELF_TOOL.to_string());
+    fn allow_mcp_tools(config: &mut Config, launch_context: &ProviderLaunchContext) {
+        for endpoint in launch_context.mcp_endpoints() {
+            for tool_name in endpoint.tool_names() {
+                let qualified = ToolPattern::mcp(endpoint.name(), tool_name)
+                    .as_str()
+                    .to_owned();
+                if !config.allow_tools.contains(&qualified) {
+                    config.allow_tools.push(qualified);
+                }
+            }
         }
     }
 
@@ -255,7 +255,7 @@ impl Provider for ClaudeProvider {
             if let Some(mcp_config) = &mcp_config {
                 config.mcp_config.push(mcp_config.path().to_string());
             }
-            Self::allow_roba_self(&mut config, &launch_context);
+            Self::allow_mcp_tools(&mut config, &launch_context);
             let claude = self.client(&config).map_err(|error| {
                 ProviderError::new(FailureKind::Provider, format!("Claude failed: {error:#}"))
             })?;
@@ -411,6 +411,10 @@ mod tests {
     use crate::run::RunState;
     use crate::run::{AgentSpec, Prompt, RunSpec};
 
+    const TEST_MCP_SERVER: &str = "roba";
+    const TEST_GIT_TOOL: &str = "mcp__roba__git.snapshot";
+    const TEST_SELF_TOOL: &str = "mcp__roba__self";
+
     #[cfg(unix)]
     #[derive(Default)]
     struct RecordingSink {
@@ -511,13 +515,18 @@ fi
     }
 
     fn launch_context() -> ProviderLaunchContext {
-        ProviderLaunchContext::default().with_mcp_endpoint(
-            crate::provider::ProviderMcpEndpoint::new(
-                ROBA_SELF_SERVER,
-                "http://127.0.0.1:4123/mcp",
-                "secret-provider-token",
-            ),
-        )
+        ProviderLaunchContext::default()
+            .try_with_mcp_endpoint(
+                crate::provider::ProviderMcpEndpoint::new(
+                    TEST_MCP_SERVER,
+                    "http://127.0.0.1:4123/mcp",
+                    "secret-provider-token",
+                )
+                .unwrap()
+                .try_with_tool_names(["self", "git.snapshot", "self"])
+                .unwrap(),
+            )
+            .unwrap()
     }
 
     #[test]
@@ -587,7 +596,7 @@ fi
     }
 
     #[test]
-    fn launch_context_builds_exact_private_config_and_self_allowlist() {
+    fn launch_context_builds_exact_private_config_and_tool_allowlist() {
         let context = launch_context();
         let mcp_config = ClaudeProvider::mcp_config(&context).unwrap().unwrap();
         let path = PathBuf::from(mcp_config.path());
@@ -608,32 +617,56 @@ fi
             })
         );
 
-        let mut config = ClaudeProvider::config(&request(ProviderId::claude())).unwrap();
-        config.mcp_config.push(mcp_config.path().to_string());
-        ClaudeProvider::allow_roba_self(&mut config, &context);
-        ClaudeProvider::allow_roba_self(&mut config, &context);
-        assert_eq!(
-            config
-                .allow_tools
-                .iter()
-                .filter(|tool| tool.as_str() == ROBA_SELF_TOOL)
-                .count(),
-            1
-        );
+        let fresh = request(ProviderId::claude());
+        let mut resumed = request(ProviderId::claude());
+        resumed.spec.execution.session = SessionSpec::Resume {
+            session: SessionHandle {
+                provider: ProviderId::claude(),
+                id: "session-1".to_string(),
+            },
+        };
+        for turn in [fresh, resumed] {
+            let mut config = ClaudeProvider::config(&turn).unwrap();
+            config.mcp_config.push(mcp_config.path().to_string());
+            ClaudeProvider::allow_mcp_tools(&mut config, &context);
+            ClaudeProvider::allow_mcp_tools(&mut config, &context);
+            assert_eq!(config.allow_tools, [TEST_GIT_TOOL, TEST_SELF_TOOL]);
 
-        let args = ClaudeProvider::bounded_command(&config).args();
-        assert!(
-            args.windows(2)
-                .any(|pair| { pair == ["--mcp-config", mcp_config.path()] })
-        );
-        assert!(args.windows(2).any(|pair| {
-            pair[0] == "--allowed-tools" && pair[1].split(',').any(|tool| tool == ROBA_SELF_TOOL)
-        }));
-        assert!(!args.iter().any(|arg| arg.contains("secret-provider-token")));
+            let args = ClaudeProvider::bounded_command(&config).args();
+            assert!(
+                args.windows(2)
+                    .any(|pair| { pair == ["--mcp-config", mcp_config.path()] })
+            );
+            let expected_tools = format!("Read,Glob,Grep,{TEST_GIT_TOOL},{TEST_SELF_TOOL}");
+            assert!(
+                args.windows(2)
+                    .any(|pair| { pair[0] == "--allowed-tools" && pair[1] == expected_tools })
+            );
+            assert!(!args.iter().any(|arg| arg.contains("secret-provider-token")));
+        }
         assert!(!format!("{context:?}").contains("secret-provider-token"));
 
         drop(mcp_config);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn attached_endpoint_without_advertised_tools_adds_no_allowlist_entries() {
+        let context = ProviderLaunchContext::default()
+            .try_with_mcp_endpoint(
+                crate::provider::ProviderMcpEndpoint::new(
+                    TEST_MCP_SERVER,
+                    "http://127.0.0.1:4123/mcp",
+                    "secret-provider-token",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut config = ClaudeProvider::config(&request(ProviderId::claude())).unwrap();
+
+        ClaudeProvider::allow_mcp_tools(&mut config, &context);
+
+        assert!(config.allow_tools.is_empty());
     }
 
     #[cfg(unix)]
@@ -667,7 +700,8 @@ fi
         let args = std::fs::read_to_string(temp.path().join("claude.args")).unwrap();
         assert!(args.lines().any(|arg| arg == "--mcp-config"));
         assert!(args.lines().any(|arg| arg == "--allowed-tools"));
-        assert!(args.contains(ROBA_SELF_TOOL));
+        assert!(args.contains(TEST_GIT_TOOL));
+        assert!(args.contains(TEST_SELF_TOOL));
         assert!(!args.contains("secret-provider-token"));
         let value: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(temp.path().join("claude.mcp.json")).unwrap(),

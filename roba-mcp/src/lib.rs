@@ -8,6 +8,7 @@
 mod agent;
 mod contract;
 mod events;
+mod extensions;
 mod provider_endpoint;
 mod router;
 mod stdio;
@@ -24,6 +25,10 @@ pub use contract::{
 pub use events::{
     AGENT_EVENT_CAPACITY, AgentEvent, AgentEventError, AgentEventPage, AgentEventRecord,
     AgentRunState, EventFailureDetails, EventTurnFailure, EventTurnOutcome,
+};
+pub use extensions::{
+    AgentExtension, AgentExtensionError, AgentExtensionManifestError, AgentExtensionProjection,
+    AgentExtensions,
 };
 pub use provider_endpoint::PROVIDER_MCP_SERVER_NAME;
 pub use router::{

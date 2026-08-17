@@ -19,6 +19,50 @@ pub struct ProviderMcpEndpoint {
     name: String,
     url: String,
     bearer_token: String,
+    tool_names: Vec<String>,
+}
+
+/// Invalid provider-native MCP server or tool name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderMcpEndpointError {
+    /// The server name cannot be represented safely in provider launch
+    /// configuration.
+    InvalidServerName(String),
+    /// A tool name cannot be represented safely in provider launch
+    /// configuration.
+    InvalidToolName(String),
+    /// Two endpoints would compete for the same provider-native server name.
+    DuplicateServerName(String),
+}
+
+impl fmt::Display for ProviderMcpEndpointError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidServerName(name) => {
+                write!(formatter, "invalid provider MCP server name: {name:?}")
+            }
+            Self::InvalidToolName(name) => {
+                write!(formatter, "invalid provider MCP tool name: {name:?}")
+            }
+            Self::DuplicateServerName(name) => {
+                write!(formatter, "duplicate provider MCP server name: {name:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProviderMcpEndpointError {}
+
+/// Whether a name is safe for MCP discovery and provider-native allowlists.
+///
+/// MCP capability names are one to 128 ASCII letters, digits, underscores,
+/// hyphens, or dots. Enforcing the same grammar for the server segment keeps
+/// wrapper-specific list and configuration encodings injection-safe.
+pub fn is_valid_provider_mcp_name(value: &str) -> bool {
+    (1..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
 }
 
 impl ProviderMcpEndpoint {
@@ -28,12 +72,42 @@ impl ProviderMcpEndpoint {
         name: impl Into<String>,
         url: impl Into<String>,
         bearer_token: impl Into<String>,
-    ) -> Self {
-        Self {
-            name: name.into(),
+    ) -> Result<Self, ProviderMcpEndpointError> {
+        let name = name.into();
+        if !is_valid_provider_mcp_name(&name) {
+            return Err(ProviderMcpEndpointError::InvalidServerName(name));
+        }
+        Ok(Self {
+            name,
             url: url.into(),
             bearer_token: bearer_token.into(),
+            tool_names: Vec::new(),
+        })
+    }
+
+    /// Advertise the exact tools the provider adapter may approve.
+    ///
+    /// Names are sorted and deduplicated so provider-native launch
+    /// configuration is deterministic. An endpoint with no advertised tools
+    /// remains attached but grants no tool approvals.
+    pub fn try_with_tool_names<I, S>(
+        mut self,
+        tool_names: I,
+    ) -> Result<Self, ProviderMcpEndpointError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        for tool_name in tool_names {
+            let tool_name = tool_name.into();
+            if !is_valid_provider_mcp_name(&tool_name) {
+                return Err(ProviderMcpEndpointError::InvalidToolName(tool_name));
+            }
+            self.tool_names.push(tool_name);
         }
+        self.tool_names.sort_unstable();
+        self.tool_names.dedup();
+        Ok(self)
     }
 
     /// Stable server name exposed to the provider.
@@ -51,6 +125,11 @@ impl ProviderMcpEndpoint {
     pub fn bearer_token(&self) -> &str {
         &self.bearer_token
     }
+
+    /// Exact endpoint-local tool names the provider adapter may approve.
+    pub fn tool_names(&self) -> &[String] {
+        &self.tool_names
+    }
 }
 
 impl fmt::Debug for ProviderMcpEndpoint {
@@ -60,6 +139,7 @@ impl fmt::Debug for ProviderMcpEndpoint {
             .field("name", &self.name)
             .field("url", &self.url)
             .field("bearer_token", &"[REDACTED]")
+            .field("tool_names", &self.tool_names)
             .finish()
     }
 }
@@ -81,9 +161,19 @@ impl ProviderLaunchContext {
 
     /// Add an already-running endpoint without changing serializable run
     /// intent or authority.
-    pub fn with_mcp_endpoint(mut self, endpoint: ProviderMcpEndpoint) -> Self {
+    pub fn try_with_mcp_endpoint(
+        mut self,
+        endpoint: ProviderMcpEndpoint,
+    ) -> Result<Self, ProviderMcpEndpointError> {
+        if self
+            .mcp_endpoints
+            .iter()
+            .any(|existing| existing.name == endpoint.name)
+        {
+            return Err(ProviderMcpEndpointError::DuplicateServerName(endpoint.name));
+        }
         self.mcp_endpoints.push(endpoint);
-        self
+        Ok(self)
     }
 }
 
@@ -354,11 +444,19 @@ mod tests {
             .with_prompt(Prompt::new("hello").unwrap())
             .into_turn()
             .unwrap();
-        let context = ProviderLaunchContext::default().with_mcp_endpoint(ProviderMcpEndpoint::new(
-            "roba",
-            "http://127.0.0.1:4123/mcp",
-            "secret-provider-token",
-        ));
+        let serialized_request = serde_json::to_string(&request).unwrap();
+        let context = ProviderLaunchContext::default()
+            .try_with_mcp_endpoint(
+                ProviderMcpEndpoint::new(
+                    "roba",
+                    "http://127.0.0.1:4123/mcp",
+                    "secret-provider-token",
+                )
+                .unwrap()
+                .try_with_tool_names(["self", "git.snapshot", "self"])
+                .unwrap(),
+            )
+            .unwrap();
 
         let outcome =
             execute_turn_with_launch_context(&provider, request, context.clone(), &NoopEventSink)
@@ -384,5 +482,60 @@ mod tests {
             context.mcp_endpoints()[0].bearer_token(),
             "secret-provider-token"
         );
+        assert_eq!(
+            context.mcp_endpoints()[0].tool_names(),
+            ["git.snapshot", "self"]
+        );
+        assert!(format!("{context:?}").contains("git.snapshot"));
+        for private_value in [
+            "http://127.0.0.1:4123/mcp",
+            "secret-provider-token",
+            "git.snapshot",
+        ] {
+            assert!(!serialized_request.contains(private_value));
+        }
+    }
+
+    #[test]
+    fn endpoint_without_advertised_tools_grants_no_tool_names() {
+        let endpoint =
+            ProviderMcpEndpoint::new("roba", "http://127.0.0.1:4123/mcp", "secret-provider-token")
+                .unwrap();
+
+        assert!(endpoint.tool_names().is_empty());
+        assert!(!format!("{endpoint:?}").contains("secret-provider-token"));
+    }
+
+    #[test]
+    fn endpoint_names_reject_provider_allowlist_injection() {
+        assert!(matches!(
+            ProviderMcpEndpoint::new(
+                "roba,Bash",
+                "http://127.0.0.1:4123/mcp",
+                "secret-provider-token"
+            ),
+            Err(ProviderMcpEndpointError::InvalidServerName(name)) if name == "roba,Bash"
+        ));
+        let endpoint =
+            ProviderMcpEndpoint::new("roba", "http://127.0.0.1:4123/mcp", "secret-provider-token")
+                .unwrap();
+        assert!(matches!(
+            endpoint.try_with_tool_names(["git.snapshot", "x,Bash"]),
+            Err(ProviderMcpEndpointError::InvalidToolName(name)) if name == "x,Bash"
+        ));
+        assert!(!is_valid_provider_mcp_name(""));
+        assert!(!is_valid_provider_mcp_name(&"x".repeat(129)));
+
+        let first =
+            ProviderMcpEndpoint::new("roba", "http://127.0.0.1:4123/mcp", "first-token").unwrap();
+        let second =
+            ProviderMcpEndpoint::new("roba", "http://127.0.0.1:4124/mcp", "second-token").unwrap();
+        let context = ProviderLaunchContext::default()
+            .try_with_mcp_endpoint(first)
+            .unwrap();
+        assert!(matches!(
+            context.try_with_mcp_endpoint(second),
+            Err(ProviderMcpEndpointError::DuplicateServerName(name)) if name == "roba"
+        ));
     }
 }

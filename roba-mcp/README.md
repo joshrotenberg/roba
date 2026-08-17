@@ -49,11 +49,37 @@ configuration plus the bearer through a child environment variable. The
 credential rotates for every finite run and is revoked when that run settles.
 
 The provider router is an explicit allowlist, not the control router with
-runtime denials. It publishes one immediate, read-only tool named `self`
-(qualified as `roba.self` by provider clients). It publishes no turns,
-steering, interruption, shutdown, Tasks, resources, configuration, event
-history, or retained session evidence. This proves provider re-entry without
-opening recursion or operator authority.
+runtime denials. Its base publishes one immediate, read-only tool named
+`self` (qualified as `roba.self` by provider clients). Installed extensions
+may contribute separate provider tools or resources, but nothing from their
+control fragment is mirrored automatically. The base publishes no turns,
+steering, interruption, shutdown, Tasks, configuration, event history, or
+retained session evidence. This proves provider re-entry without opening
+recursion or operator authority.
+
+## Extension composition
+
+`AgentExtension` contains named control and provider `McpRouter` fragments
+plus an explicit manifest of provider-callable tools. `AgentExtensions` is an
+immutable aggregate installed through `AgentInstance::new_with_extensions`.
+Construction preflights each projection against Roba's real base router and
+fails closed on exact tool, resource, resource-template, or prompt conflicts.
+Actual control and per-operation provider routers repeat that validated merge;
+last-writer-wins replacement is never used.
+
+Fragments are capability bags. Their router identity, session state, task
+store, auth, and middleware are not imported when Tower merges them into a
+fresh Roba projection. Extension authors must namespace capabilities and treat
+their declared provider-tool manifest as trusted launch configuration, because
+Tower MCP does not expose complete synchronous router introspection. Approval
+is not authorization: a capability forbidden to the provider must be absent
+from the provider fragment, not merely omitted from the manifest.
+
+The first consumer is `roba-git`. It shares one fixed repository service
+between projections, contributes bounded `git.snapshot` observation to both,
+and keeps `git.stage_all` in writable control projections only. It adds no
+pre-turn prompt context. The provider sees exact native approvals for only
+the tools present in its fragment.
 
 Launch URLs and credentials are absent from `RunSpec`, `TurnRequest`, run and
 MCP result schemas, and event projections. Launch-context diagnostics may show
@@ -123,9 +149,10 @@ The latter starts idle and does not launch a provider until `agent.turn` is
 admitted. Provider failures remain typed results and leave the binding hot;
 only logical shutdown, stdio EOF, or the host's shutdown policy ends it.
 
-Unix/HTTP operator bindings and extension fragments remain later phases in
+Unix/HTTP operator bindings remain later phases in
 `../docs/design/mcp-native-agent-harness.md`. The private HTTP listener is
-operation-scoped provider plumbing, not a general HTTP binding. The current
-`self` handler is deliberately immediate. Before extensions add long-running
-provider callbacks, the endpoint host must add explicit request tracking and
-cancellation rather than generalizing the current teardown claim.
+operation-scoped provider plumbing, not a general HTTP binding. The base
+`self` handler is immediate and `roba-git` bounds its read calls. Before an
+extension adds arbitrary or long-running provider callbacks, the endpoint
+host must add explicit request tracking and cancellation rather than
+generalizing the current teardown claim.

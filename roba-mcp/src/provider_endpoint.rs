@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use roba_core::{ProviderLaunchContext, ProviderMcpEndpoint, RunHandle};
+use roba_core::{ProviderLaunchContext, ProviderMcpEndpoint, ProviderMcpEndpointError, RunHandle};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tower_mcp::auth::{AuthError, AuthInfo, AuthLayer, AuthResult, Validate};
@@ -49,6 +49,10 @@ impl ProviderEndpoint {
             shutdown: Mutex::new(Some(shutdown)),
         });
 
+        let mut tool_names = agent.extensions().provider_tool_names().to_vec();
+        tool_names.push(crate::ROBA_SELF_TOOL.to_owned());
+        tool_names.sort_unstable();
+        tool_names.dedup();
         let app = HttpTransport::new(crate::router::agent_router(agent, operation_id))
             .max_body_size(MAX_PROVIDER_REQUEST_BYTES)
             .into_router_at(MCP_PATH)
@@ -61,9 +65,12 @@ impl ProviderEndpoint {
                 .await
         });
         let url = format!("http://{address}{MCP_PATH}");
-        let launch_context = ProviderLaunchContext::default().with_mcp_endpoint(
-            ProviderMcpEndpoint::new(PROVIDER_MCP_SERVER_NAME, url, token),
-        );
+        let endpoint = ProviderMcpEndpoint::new(PROVIDER_MCP_SERVER_NAME, url, token)
+            .and_then(|endpoint| endpoint.try_with_tool_names(tool_names))
+            .map_err(ProviderEndpointError::Configuration)?;
+        let launch_context = ProviderLaunchContext::default()
+            .try_with_mcp_endpoint(endpoint)
+            .map_err(ProviderEndpointError::Configuration)?;
 
         Ok((
             Self {
@@ -198,6 +205,7 @@ fn constant_time_equal(expected: &[u8], supplied: &[u8]) -> bool {
 pub(crate) enum ProviderEndpointError {
     Bind(std::io::Error),
     LocalAddress(std::io::Error),
+    Configuration(ProviderMcpEndpointError),
 }
 
 impl fmt::Display for ProviderEndpointError {
@@ -210,6 +218,9 @@ impl fmt::Display for ProviderEndpointError {
                     "failed to inspect provider MCP endpoint: {error}"
                 )
             }
+            Self::Configuration(error) => {
+                write!(formatter, "invalid provider MCP endpoint: {error}")
+            }
         }
     }
 }
@@ -218,6 +229,7 @@ impl std::error::Error for ProviderEndpointError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Bind(error) | Self::LocalAddress(error) => Some(error),
+            Self::Configuration(error) => Some(error),
         }
     }
 }
