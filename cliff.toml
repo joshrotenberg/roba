@@ -41,6 +41,13 @@ protect_breaking_commits = true
 sort_commits = "oldest"
 topo_order = false
 
+# PR #488 intentionally collapsed a large architecture rewrite into one
+# conventional commit. Expand that squash subject into an honest release note
+# while keeping the changelog generated from Git history.
+commit_preprocessors = [
+    { pattern = "^refactor!: make Roba an MCP-native single-agent harness \\(#488\\)", replace = "refactor!: make Roba an MCP-native single-agent harness with Claude and Codex turns, hot MCP hosts, Tasks, controls and events, provider self-tools, extensions, and typed Git workflows (#488)" },
+]
+
 # Tag pattern roba uses: v0.2.0, v0.2.1, ...
 tag_pattern = "v[0-9].*"
 # NB: do NOT set skip_tags / ignore_tags to "". An empty regex matches
@@ -56,6 +63,18 @@ tag_pattern = "v[0-9].*"
 # their own sections; they do NOT trigger a release per release_commits
 # in release-plz.toml.
 commit_parsers = [
+    # These commits describe the worker/mission/process experiment removed by
+    # the MCP-native single-agent refactor. Keeping them in generated release
+    # notes would advertise behavior that is not present in the release.
+    { message = "^feat: add bounded child runs", skip = true },
+    { message = "^feat: let providers spawn bounded workers", skip = true },
+    { message = "^fix: keep delegation inside Roba worker bounds", skip = true },
+    { message = "^fix: direct agents to bounded worker tools", skip = true },
+    { message = "^feat: expose bounded run events over MCP", skip = true },
+    { message = "^feat: load hierarchical run config", skip = true },
+    { message = "^refactor: retire legacy persona surface", skip = true },
+    { message = "^feat: project bounded runs as finite missions", skip = true },
+    { message = "^feat: add typed mission process capabilities", skip = true },
     { message = "^feat", group = "Added" },
     { message = "^fix", group = "Fixed" },
     { message = "^perf", group = "Performance" },

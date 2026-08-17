@@ -1043,6 +1043,134 @@ pub fn classify_exit_code(err: &anyhow::Error) -> i32 {
 mod tests {
     use super::*;
     use claude_wrapper::auth::AuthErrorKind;
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
+
+    fn parse_toml(path: &Path) -> toml::Value {
+        let contents = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+        toml::from_str(&contents)
+            .unwrap_or_else(|error| panic!("failed to parse {}: {error}", path.display()))
+    }
+
+    #[test]
+    fn release_config_covers_every_publishable_workspace_package() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace = parse_toml(&root.join("Cargo.toml"));
+        let workspace_version = workspace["workspace"]["package"]["version"]
+            .as_str()
+            .expect("workspace package version is a string");
+        let mut manifests = vec![root.join("Cargo.toml")];
+        manifests.extend(
+            workspace["workspace"]["members"]
+                .as_array()
+                .expect("workspace members are an array")
+                .iter()
+                .map(|member| {
+                    root.join(member.as_str().expect("workspace member is a string"))
+                        .join("Cargo.toml")
+                }),
+        );
+
+        let publishable = manifests
+            .iter()
+            .filter_map(|manifest_path| {
+                let manifest = parse_toml(manifest_path);
+                let package = manifest["package"].as_table().expect("package table");
+                assert_eq!(
+                    package["version"]["workspace"].as_bool(),
+                    Some(true),
+                    "{} must inherit the workspace version",
+                    manifest_path.display()
+                );
+                let publishing_disabled = package
+                    .get("publish")
+                    .and_then(toml::Value::as_bool)
+                    .is_some_and(|publish| !publish);
+                (!publishing_disabled).then(|| {
+                    package["name"]
+                        .as_str()
+                        .expect("package name is a string")
+                        .to_owned()
+                })
+            })
+            .collect::<BTreeSet<_>>();
+
+        let release = parse_toml(&root.join("release-plz.toml"));
+        let release_packages = release["package"]
+            .as_array()
+            .expect("release-plz package entries are an array");
+        let configured = release_packages
+            .iter()
+            .map(|package| {
+                package["name"]
+                    .as_str()
+                    .expect("release-plz package name is a string")
+                    .to_owned()
+            })
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(configured, publishable);
+        assert!(
+            release_packages
+                .iter()
+                .all(|package| package["version_group"].as_str() == Some("roba"))
+        );
+        for package in release_packages {
+            let name = package["name"].as_str().expect("release package name");
+            assert_eq!(
+                package["changelog_update"].as_bool(),
+                Some(name == "roba"),
+                "only the synchronized root release owns a changelog"
+            );
+        }
+
+        for dependency in ["roba-core", "roba-git", "roba-mcp", "roba-types"] {
+            assert_eq!(
+                workspace["workspace"]["dependencies"][dependency]["version"].as_str(),
+                Some(workspace_version),
+                "{dependency} must use the synchronized workspace version"
+            );
+        }
+    }
+
+    #[test]
+    fn retired_experiments_are_excluded_from_generated_release_notes() {
+        const RETIRED_PREFIXES: &[&str] = &[
+            "^feat: add bounded child runs",
+            "^feat: let providers spawn bounded workers",
+            "^fix: keep delegation inside Roba worker bounds",
+            "^fix: direct agents to bounded worker tools",
+            "^feat: expose bounded run events over MCP",
+            "^feat: load hierarchical run config",
+            "^refactor: retire legacy persona surface",
+            "^feat: project bounded runs as finite missions",
+            "^feat: add typed mission process capabilities",
+        ];
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let cliff = parse_toml(&root.join("cliff.toml"));
+        let parsers = cliff["git"]["commit_parsers"]
+            .as_array()
+            .expect("git-cliff commit parsers are an array");
+
+        for retired in RETIRED_PREFIXES {
+            assert!(
+                parsers.iter().any(|parser| {
+                    parser["message"].as_str() == Some(retired)
+                        && parser["skip"].as_bool() == Some(true)
+                }),
+                "missing skip rule for retired release note: {retired}"
+            );
+        }
+
+        for changelog in ["CHANGELOG.md", "crates/roba-core/CHANGELOG.md"] {
+            let contents = std::fs::read_to_string(root.join(changelog))
+                .unwrap_or_else(|error| panic!("failed to read {changelog}: {error}"));
+            assert!(!contents.contains("bounded process-local child runs"));
+            assert!(!contents.contains("process-local worker-tree ownership"));
+        }
+    }
 
     #[tokio::test]
     async fn serve_rejects_legacy_options_placed_before_the_subcommand() {

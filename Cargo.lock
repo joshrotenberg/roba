@@ -1287,7 +1287,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "roba"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1314,7 +1314,7 @@ dependencies = [
 
 [[package]]
 name = "roba-core"
-version = "0.2.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "claude-wrapper",
@@ -1327,7 +1327,7 @@ dependencies = [
 
 [[package]]
 name = "roba-git"
-version = "0.1.0"
+version = "0.12.0"
 dependencies = [
  "bytes",
  "git-spawn",
@@ -1346,7 +1346,7 @@ dependencies = [
 
 [[package]]
 name = "roba-mcp"
-version = "0.1.0"
+version = "0.12.0"
 dependencies = [
  "axum",
  "bytes",
@@ -1363,7 +1363,7 @@ dependencies = [
 
 [[package]]
 name = "roba-types"
-version = "0.1.1"
+version = "0.12.0"
 dependencies = [
  "claude-wrapper",
  "serde",

@@ -1,11 +1,6 @@
 
 ## [Unreleased]
 
-### Added
-
-- process-local worker-tree ownership, immutable bounds, inherited execution
-  policy, and retained terminal snapshots
-
 ## [0.2.0] - 2026-07-22
 
 ### Added
@@ -17,4 +12,3 @@
 ### Build
 
 - bump claude-wrapper to 0.13 ([#420](https://github.com/joshrotenberg/roba/pull/420))
-

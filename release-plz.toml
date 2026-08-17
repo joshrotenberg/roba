@@ -1,7 +1,7 @@
 # release-plz configuration
 # https://release-plz.dev/docs/config
 #
-# Single-crate release using git-cliff for changelog generation.
+# Workspace release using git-cliff for changelog generation.
 # Conventional commits drive both the version bump (release-plz) and
 # the changelog entries (git-cliff via cliff.toml).
 
@@ -14,6 +14,7 @@ release_commits = "^(feat|fix|perf|refactor)"
 
 [[package]]
 name = "roba"
+version_group = "roba"
 semver_check = true
 release = true
 publish = true
@@ -33,28 +34,54 @@ changelog_path = "CHANGELOG.md"
 # The dependency-light contract crate. Publishes to crates.io (so downstream
 # harnesses can depend on it) but does NOT get its own git tag or GitHub
 # release: the `v{{ version }}` tag + release + cross-platform binaries belong
-# to the `roba` binary. release-plz publishes members in dependency order
-# (roba-types before roba); its released version is tracked via crates.io.
+# to the `roba` binary. release-plz publishes the synchronized release set in
+# dependency order; its released version is tracked via crates.io.
 [[package]]
 name = "roba-types"
+version_group = "roba"
 semver_check = true
 release = true
 publish = true
 git_release_enable = false
 git_tag_enable = false
-changelog_update = true
-changelog_path = "crates/roba-types/CHANGELOG.md"
+changelog_update = false
 
 # The clap-free compatibility engine and provider-neutral finite-run core.
 # Publishes to crates.io so the `roba` binary's path dep resolves on publish;
 # no git tag or GitHub release of its own (those belong to the `roba` binary).
-# release-plz publishes in dependency order (roba-core before roba).
+# release-plz publishes it before roba-mcp, roba-git, and the root binary.
 [[package]]
 name = "roba-core"
+version_group = "roba"
 semver_check = true
 release = true
 publish = true
 git_release_enable = false
 git_tag_enable = false
-changelog_update = true
-changelog_path = "crates/roba-core/CHANGELOG.md"
+changelog_update = false
+
+# The MCP-native hot single-agent host. It depends on roba-core and must be
+# published before roba-git and the root binary. The root release owns the git
+# tag and GitHub release.
+[[package]]
+name = "roba-mcp"
+version_group = "roba"
+semver_check = true
+release = true
+publish = true
+git_release_enable = false
+git_tag_enable = false
+changelog_update = false
+
+# The optional typed Git extension. It depends on roba-mcp and must be
+# published before the root binary. The root release owns the git tag and
+# GitHub release.
+[[package]]
+name = "roba-git"
+version_group = "roba"
+semver_check = true
+release = true
+publish = true
+git_release_enable = false
+git_tag_enable = false
+changelog_update = false
