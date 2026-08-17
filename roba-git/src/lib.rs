@@ -29,8 +29,11 @@ pub const GIT_STAGE_ALL_TOOL: &str = "git.stage_all";
 pub const GIT_WORKSPACE_RESOURCE_URI: &str = "roba://git/workspace";
 
 const EXTENSION_NAME: &str = "roba-git";
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
-const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(4);
+// Git process startup can exceed a few seconds under Windows process
+// containment and concurrent host load. Keep calls bounded without mistaking
+// ordinary startup pressure for a hung command.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(12);
 const STAGE_MUTATION_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Authority granted to the operator/control projection.
