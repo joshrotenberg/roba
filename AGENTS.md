@@ -54,16 +54,17 @@ the provider-neutral API stabilizes.
 
 ## Structure
 
-- `roba-core/src/{run,lifecycle,provider,runtime}.rs` -- public run contracts,
-  single-root lifecycle, provider boundary plus transient launch context, and
-  provider registry
-- `roba-core/src/providers/{claude,codex}.rs` -- built-in provider adapters
-- `roba-mcp/src/{agent,contract,events,extensions,router,stdio,provider_endpoint}.rs`
+- `crates/roba-core/src/{run,lifecycle,provider,runtime}.rs` -- public run
+  contracts, single-root lifecycle, provider boundary plus transient launch
+  context, and provider registry
+- `crates/roba-core/src/providers/{claude,codex}.rs` -- built-in provider
+  adapters
+- `crates/roba-mcp/src/{agent,contract,events,extensions,router,stdio,provider_endpoint}.rs`
   -- hot single-agent state, typed MCP values, bounded agent-wide replay,
   fail-closed role-scoped composition, in-process and stdio control bindings,
   and the private provider callback binding
-- `roba-git` -- optional fixed-workspace Git MCP fragments; observation in
-  control/provider projections and staging only in writable control views
+- `crates/roba-git` -- optional fixed-workspace Git MCP fragments; observation
+  in control/provider projections and staging only in writable control views
 - `src/main.rs` entry point; `src/lib.rs` dispatch plus bounded and legacy paths
 - `src/bounded.rs` -- explicit `roba run` flags to a suspended `RunSpec`, the
   in-process MCP call, and compatibility result projection
@@ -75,7 +76,7 @@ the provider-neutral API stabilizes.
 - `src/profile/` legacy config layering; `src/show.rs`, `src/history.rs`,
   `src/cost.rs`, `src/worktree.rs`, `src/doctor.rs`, `src/jobs.rs` read-only
   subcommands; `src/receipt.rs` the run-receipt writer (the schema lives in
-  `roba-types`)
+  `crates/roba-types`)
 - Doc homes: README (current concepts + agent ABI),
   `docs/design/run-library-pivot.md` (finite-core decision),
   `docs/design/mcp-native-agent-harness.md` (adopted phased implementation
