@@ -559,6 +559,7 @@ impl ServeProcess {
         }
     }
 
+    #[cfg(unix)]
     fn id(&self) -> u32 {
         self.child.id()
     }
@@ -596,6 +597,7 @@ impl ServeProcess {
         );
     }
 
+    #[cfg(unix)]
     fn close_input(&mut self) {
         self.stdin.take();
     }
