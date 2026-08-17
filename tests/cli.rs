@@ -823,7 +823,7 @@ fn serve_git_extension_is_opt_in_and_scoped_to_the_effective_cwd() {
     let resource = server.receive();
     let text = resource["result"]["contents"][0]["text"]
         .as_str()
-        .expect("Git workspace resource returned JSON text");
+        .unwrap_or_else(|| panic!("Git workspace resource returned JSON text: {resource:#}"));
     let snapshot: serde_json::Value = serde_json::from_str(text).expect("typed Git snapshot");
     assert_eq!(
         std::path::Path::new(snapshot["repository_root"].as_str().unwrap()),
