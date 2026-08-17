@@ -5,14 +5,17 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use roba_core::{
-    Prompt, ProviderId, Roba, RunHandle, RunSnapshot, RunSpec, SessionHandle as CoreSessionHandle,
-    SessionSpec,
+    Prompt, ProviderId, Roba, RunControlError, RunEventSubscription, RunEventSubscriptionItem,
+    RunHandle, RunSnapshot, RunSpec, SessionHandle as CoreSessionHandle, SessionSpec,
 };
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, watch};
 
 use crate::contract::{
-    AgentConfiguration, AgentRefusalKind, AgentSnapshot, AgentState, AgentTurnResult, OperationId,
+    AgentConfiguration, AgentControlRefusalKind, AgentInterruptResult, AgentRefusalKind,
+    AgentShutdownResult, AgentSnapshot, AgentState, AgentSteerResult, AgentTurnResult, OperationId,
+    OperationSettlement,
 };
+use crate::events::{AgentEventError, AgentEventJournal, AgentEventPage};
 
 /// One hot logical agent with at most one active finite core run.
 #[derive(Clone)]
@@ -25,20 +28,35 @@ struct Inner {
     template: RunSpec,
     configuration: AgentConfiguration,
     created_at_unix_ms: Option<u64>,
+    events: AgentEventJournal,
     control: Mutex<Control>,
+    shutdown_tx: watch::Sender<Option<AgentShutdownResult>>,
 }
 
 struct Control {
-    stopped: bool,
+    lifetime: AgentLifetime,
     next_operation_id: u64,
     session: Option<CoreSessionHandle>,
-    active: Option<ActiveOperation>,
+    active: Option<Arc<ActiveOperation>>,
     latest_turn: Option<AgentTurnResult>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentLifetime {
+    Open,
+    Stopping,
+    Stopped,
 }
 
 struct ActiveOperation {
     id: OperationId,
     handle: RunHandle,
+    settlement: watch::Receiver<Option<AgentTurnResult>>,
+}
+
+enum TurnAdmission {
+    Admitted(Arc<ActiveOperation>),
+    Refused(AgentTurnResult),
 }
 
 impl AgentInstance {
@@ -88,19 +106,22 @@ impl AgentInstance {
             limits: template.execution.limits.clone().into(),
         };
 
+        let (shutdown_tx, _) = watch::channel(None);
         Ok(Self {
             inner: Arc::new(Inner {
                 runtime,
                 template,
                 configuration,
                 created_at_unix_ms: unix_time_ms(),
+                events: AgentEventJournal::new(),
                 control: Mutex::new(Control {
-                    stopped: false,
+                    lifetime: AgentLifetime::Open,
                     next_operation_id: 1,
                     session,
                     active: None,
                     latest_turn: None,
                 }),
+                shutdown_tx,
             }),
         })
     }
@@ -109,98 +130,131 @@ impl AgentInstance {
     ///
     /// Settlement belongs to a detached coordinator rather than the calling
     /// waiter. Dropping a caller waiting on this method therefore cannot wedge
-    /// the agent in `running` after its provider turn finishes. MCP request
-    /// cancellation semantics remain a separate control-layer decision.
+    /// the agent in `running` after its provider turn finishes.
     pub async fn turn(&self, text: String) -> AgentTurnResult {
-        let reservation = {
-            let mut control = self.inner.control.lock().await;
-            if control.stopped {
-                return AgentTurnResult::refused(
+        match self.admit_turn(text).await {
+            TurnAdmission::Admitted(active) => self.wait_for_settlement(active).await,
+            TurnAdmission::Refused(result) => result,
+        }
+    }
+
+    async fn admit_turn(&self, text: String) -> TurnAdmission {
+        let mut control = self.inner.control.lock().await;
+        match control.lifetime {
+            AgentLifetime::Stopping | AgentLifetime::Stopped => {
+                return TurnAdmission::Refused(AgentTurnResult::refused(
                     AgentRefusalKind::Stopped,
                     "agent is stopped",
                     None,
-                );
+                ));
             }
-            if let Some(active) = &control.active {
-                return AgentTurnResult::refused(
-                    AgentRefusalKind::Busy,
-                    format!("agent is already running operation {}", active.id.get()),
-                    Some(active.id),
-                );
-            }
-            let prompt = match Prompt::new(text) {
-                Ok(prompt) => prompt,
-                Err(error) => {
-                    return AgentTurnResult::refused(
-                        AgentRefusalKind::InvalidPrompt,
-                        error.to_string(),
-                        None,
-                    );
-                }
-            };
-            let Some(next_operation_id) = control.next_operation_id.checked_add(1) else {
-                return AgentTurnResult::refused(
-                    AgentRefusalKind::Runtime,
-                    "agent operation identity exhausted",
+            AgentLifetime::Open => {}
+        }
+        if let Some(active) = &control.active {
+            return TurnAdmission::Refused(AgentTurnResult::refused(
+                AgentRefusalKind::Busy,
+                format!("agent is already running operation {}", active.id.get()),
+                Some(active.id),
+            ));
+        }
+        let prompt = match Prompt::new(text) {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                return TurnAdmission::Refused(AgentTurnResult::refused(
+                    AgentRefusalKind::InvalidPrompt,
+                    error.to_string(),
                     None,
-                );
-            };
-            let operation_id = OperationId::new(control.next_operation_id);
-
-            let mut spec = self.inner.template.clone();
-            spec.execution.session = match &control.session {
-                Some(session) => SessionSpec::Resume {
-                    session: session.clone(),
-                },
-                None => SessionSpec::Fresh,
-            };
-            let run = match self.inner.runtime.create_run(spec) {
-                Ok(run) => run,
-                Err(error) => {
-                    return AgentTurnResult::refused(
-                        AgentRefusalKind::Runtime,
-                        error.to_string(),
-                        None,
-                    );
-                }
-            };
-            let handle = run.handle();
-            control.next_operation_id = next_operation_id;
-            control.active = Some(ActiveOperation {
-                id: operation_id,
-                handle: handle.clone(),
-            });
-            (operation_id, prompt, handle)
+                ));
+            }
         };
+        let Some(next_operation_id) = control.next_operation_id.checked_add(1) else {
+            return TurnAdmission::Refused(AgentTurnResult::refused(
+                AgentRefusalKind::Runtime,
+                "agent operation identity exhausted",
+                None,
+            ));
+        };
+        let operation_id = OperationId::new(control.next_operation_id);
 
-        let (operation_id, prompt, handle) = reservation;
-        let (completion_tx, completion_rx) = oneshot::channel();
+        let mut spec = self.inner.template.clone();
+        spec.execution.session = match &control.session {
+            Some(session) => SessionSpec::Resume {
+                session: session.clone(),
+            },
+            None => SessionSpec::Fresh,
+        };
+        let run = match self.inner.runtime.create_run(spec) {
+            Ok(run) => run,
+            Err(error) => {
+                return TurnAdmission::Refused(AgentTurnResult::refused(
+                    AgentRefusalKind::Runtime,
+                    error.to_string(),
+                    None,
+                ));
+            }
+        };
+        let handle = run.handle();
+        let subscription = handle.subscribe();
+        let (settlement_tx, settlement) = watch::channel(None);
+        let active = Arc::new(ActiveOperation {
+            id: operation_id,
+            handle,
+            settlement,
+        });
+        if let Err(error) = active.handle.start(prompt).await {
+            return TurnAdmission::Refused(AgentTurnResult::refused(
+                AgentRefusalKind::Runtime,
+                error.to_string(),
+                None,
+            ));
+        }
+        control.next_operation_id = next_operation_id;
+        control.active = Some(active.clone());
+        drop(control);
+
+        self.spawn_operation(active.clone(), subscription, settlement_tx);
+        TurnAdmission::Admitted(active)
+    }
+
+    fn spawn_operation(
+        &self,
+        active: Arc<ActiveOperation>,
+        subscription: RunEventSubscription,
+        settlement_tx: watch::Sender<Option<AgentTurnResult>>,
+    ) {
         let coordinator = self.clone();
         tokio::spawn(async move {
-            let worker = tokio::spawn(async move {
-                handle
-                    .start(prompt)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                Ok::<RunSnapshot, String>(handle.wait().await)
-            });
-            let result = match worker.await {
-                Ok(Ok(snapshot)) => coordinator.settle(operation_id, snapshot).await,
-                Ok(Err(message)) => coordinator.abort(operation_id, message).await,
-                Err(error) => {
-                    coordinator
-                        .abort(operation_id, format!("agent turn worker stopped: {error}"))
-                        .await
-                }
-            };
-            let _ = completion_tx.send(result);
-        });
+            let event_journal = coordinator.inner.events.clone();
+            let operation_id = active.id;
+            let event_pump = tokio::spawn(pump_events(subscription, event_journal, operation_id));
 
-        match completion_rx.await {
-            Ok(result) => result,
-            Err(_) => {
-                self.abort(operation_id, "agent turn coordinator stopped unexpectedly")
-                    .await
+            let handle = active.handle.clone();
+            let worker_handle = handle.clone();
+            let worker = tokio::spawn(async move { worker_handle.wait().await });
+            let snapshot = match worker.await {
+                Ok(snapshot) => snapshot,
+                Err(_) => recover_run(&handle).await,
+            };
+            if event_pump.await.is_err() {
+                let _ = coordinator
+                    .inner
+                    .events
+                    .append_history_gap(operation_id, None);
+            }
+            let result = coordinator.settle(operation_id, snapshot).await;
+            settlement_tx.send_replace(Some(result));
+        });
+    }
+
+    async fn wait_for_settlement(&self, active: Arc<ActiveOperation>) -> AgentTurnResult {
+        let mut settlement = active.settlement.clone();
+        loop {
+            if let Some(result) = settlement.borrow().clone() {
+                return result;
+            }
+            if settlement.changed().await.is_err() {
+                let snapshot = recover_run(&active.handle).await;
+                return self.settle(active.id, snapshot).await;
             }
         }
     }
@@ -210,12 +264,11 @@ impl AgentInstance {
         let control = self.inner.control.lock().await;
         AgentSnapshot {
             configuration: self.inner.configuration.clone(),
-            state: if control.stopped {
-                AgentState::Stopped
-            } else if control.active.is_some() {
-                AgentState::Running
-            } else {
-                AgentState::Idle
+            state: match control.lifetime {
+                AgentLifetime::Stopping => AgentState::Stopping,
+                AgentLifetime::Stopped => AgentState::Stopped,
+                AgentLifetime::Open if control.active.is_some() => AgentState::Running,
+                AgentLifetime::Open => AgentState::Idle,
             },
             session_available: control.session.is_some(),
             current_operation_id: control.active.as_ref().map(|active| active.id),
@@ -229,16 +282,268 @@ impl AgentInstance {
 
     /// Permanently stop an idle agent.
     ///
-    /// Active-run shutdown and cancellation become MCP controls in Phase 3;
-    /// this narrow method exists so the initial contract can prove stopped
-    /// refusal without implying those later semantics.
+    /// This compatibility helper refuses active work. Use [`Self::shutdown`]
+    /// when the caller must cancel and drain an active operation.
     pub async fn stop(&self) -> Result<(), AgentStopError> {
         let mut control = self.inner.control.lock().await;
-        if let Some(active) = &control.active {
+        match control.lifetime {
+            AgentLifetime::Stopping => {
+                drop(control);
+                let _ = self.shutdown().await;
+                return Ok(());
+            }
+            AgentLifetime::Stopped => return Ok(()),
+            AgentLifetime::Open => {}
+        }
+        if let Some(active) = control.active.as_ref() {
             return Err(AgentStopError::Busy(active.id));
         }
-        control.stopped = true;
+        control.lifetime = AgentLifetime::Stopped;
+        let result = AgentShutdownResult::Stopped { drained: None };
+        self.inner.shutdown_tx.send_replace(Some(result));
         Ok(())
+    }
+
+    /// Queue guidance for one exact active operation.
+    pub async fn steer(&self, operation_id: OperationId, text: String) -> AgentSteerResult {
+        let prompt = match Prompt::new(text) {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                return AgentSteerResult::refused(
+                    AgentControlRefusalKind::InvalidPrompt,
+                    error.to_string(),
+                    self.current_operation_id().await,
+                );
+            }
+        };
+        let handle = {
+            let control = self.inner.control.lock().await;
+            match control.lifetime {
+                AgentLifetime::Stopping => {
+                    return AgentSteerResult::refused(
+                        AgentControlRefusalKind::Stopping,
+                        "agent is stopping",
+                        control.active.as_ref().map(|active| active.id),
+                    );
+                }
+                AgentLifetime::Stopped => {
+                    return AgentSteerResult::refused(
+                        AgentControlRefusalKind::Stopped,
+                        "agent is stopped",
+                        None,
+                    );
+                }
+                AgentLifetime::Open => {}
+            }
+            match &control.active {
+                Some(active) if active.id == operation_id => active.handle.clone(),
+                Some(active) => {
+                    return AgentSteerResult::refused(
+                        AgentControlRefusalKind::OperationMismatch,
+                        format!(
+                            "operation {} is active, not {}",
+                            active.id.get(),
+                            operation_id.get()
+                        ),
+                        Some(active.id),
+                    );
+                }
+                None if control
+                    .latest_turn
+                    .as_ref()
+                    .and_then(AgentTurnResult::operation_id)
+                    == Some(operation_id) =>
+                {
+                    return AgentSteerResult::refused(
+                        AgentControlRefusalKind::OperationSettled,
+                        format!("operation {} has already settled", operation_id.get()),
+                        None,
+                    );
+                }
+                None => {
+                    return AgentSteerResult::refused(
+                        AgentControlRefusalKind::Idle,
+                        "agent has no active operation",
+                        None,
+                    );
+                }
+            }
+        };
+        match handle.steer(prompt).await {
+            Ok(()) => AgentSteerResult::Queued { operation_id },
+            Err(RunControlError::SteeringUnsupported) => AgentSteerResult::refused(
+                AgentControlRefusalKind::Unsupported,
+                "provider cannot resume and does not support steering",
+                Some(operation_id),
+            ),
+            Err(RunControlError::NotRunning | RunControlError::Terminal) => {
+                let current = self.current_operation_id().await;
+                if current == Some(operation_id) {
+                    AgentSteerResult::refused(
+                        AgentControlRefusalKind::OperationFinishing,
+                        format!("operation {} is finishing", operation_id.get()),
+                        Some(operation_id),
+                    )
+                } else {
+                    AgentSteerResult::refused(
+                        AgentControlRefusalKind::OperationSettled,
+                        format!("operation {} has settled", operation_id.get()),
+                        current,
+                    )
+                }
+            }
+            Err(error) => AgentSteerResult::refused(
+                AgentControlRefusalKind::Runtime,
+                error.to_string(),
+                self.current_operation_id().await,
+            ),
+        }
+    }
+
+    /// Cancel one exact active operation and wait for agent-level settlement.
+    pub async fn interrupt(&self, operation_id: OperationId) -> AgentInterruptResult {
+        let active = {
+            let control = self.inner.control.lock().await;
+            match control.lifetime {
+                AgentLifetime::Stopping => {
+                    return AgentInterruptResult::refused(
+                        AgentControlRefusalKind::Stopping,
+                        "agent is stopping",
+                        control.active.as_ref().map(|active| active.id),
+                    );
+                }
+                AgentLifetime::Stopped => {
+                    return AgentInterruptResult::refused(
+                        AgentControlRefusalKind::Stopped,
+                        "agent is stopped",
+                        None,
+                    );
+                }
+                AgentLifetime::Open => {}
+            }
+            match &control.active {
+                Some(active) if active.id == operation_id => active.clone(),
+                Some(active) => {
+                    return AgentInterruptResult::refused(
+                        AgentControlRefusalKind::OperationMismatch,
+                        format!(
+                            "operation {} is active, not {}",
+                            active.id.get(),
+                            operation_id.get()
+                        ),
+                        Some(active.id),
+                    );
+                }
+                None => {
+                    if let Some(settlement) = control
+                        .latest_turn
+                        .as_ref()
+                        .and_then(OperationSettlement::from_turn)
+                        .filter(|settlement| settlement.operation_id == operation_id)
+                    {
+                        return AgentInterruptResult::Settled {
+                            settlement,
+                            cancellation_requested: false,
+                        };
+                    }
+                    return AgentInterruptResult::refused(
+                        AgentControlRefusalKind::Idle,
+                        "agent has no matching active operation",
+                        None,
+                    );
+                }
+            }
+        };
+
+        let cancellation_requested = match active.handle.cancel().await {
+            Ok(()) => true,
+            Err(RunControlError::Terminal) => false,
+            Err(error) => {
+                return AgentInterruptResult::refused(
+                    AgentControlRefusalKind::Runtime,
+                    format!(
+                        "failed to interrupt operation {}: {error}",
+                        operation_id.get()
+                    ),
+                    self.current_operation_id().await,
+                );
+            }
+        };
+        let result = self.wait_for_settlement(active).await;
+        match OperationSettlement::from_turn(&result) {
+            Some(settlement) => AgentInterruptResult::Settled {
+                settlement,
+                cancellation_requested,
+            },
+            None => AgentInterruptResult::refused(
+                AgentControlRefusalKind::Runtime,
+                "operation settlement was not terminal",
+                self.current_operation_id().await,
+            ),
+        }
+    }
+
+    /// Permanently refuse new work, cancelling and draining any active run.
+    pub async fn shutdown(&self) -> AgentShutdownResult {
+        let mut receiver = self.inner.shutdown_tx.subscribe();
+        let active = {
+            let mut control = self.inner.control.lock().await;
+            match control.lifetime {
+                AgentLifetime::Open => {
+                    control.lifetime = AgentLifetime::Stopping;
+                    Some(control.active.clone())
+                }
+                AgentLifetime::Stopping | AgentLifetime::Stopped => None,
+            }
+        };
+        if let Some(active) = active {
+            let coordinator = self.clone();
+            tokio::spawn(async move {
+                let drained = match active {
+                    Some(active) => {
+                        let _ = active.handle.cancel().await;
+                        let result = coordinator.wait_for_settlement(active).await;
+                        OperationSettlement::from_turn(&result)
+                    }
+                    None => None,
+                };
+                let result = AgentShutdownResult::Stopped { drained };
+                let mut control = coordinator.inner.control.lock().await;
+                control.lifetime = AgentLifetime::Stopped;
+                drop(control);
+                coordinator.inner.shutdown_tx.send_replace(Some(result));
+            });
+        }
+        loop {
+            if let Some(result) = receiver.borrow().clone() {
+                return result;
+            }
+            if receiver.changed().await.is_err() {
+                return AgentShutdownResult::Stopped { drained: None };
+            }
+        }
+    }
+
+    /// Read a bounded page from the agent-wide event journal.
+    pub async fn event_page(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<AgentEventPage, AgentEventError> {
+        let control = self.inner.control.lock().await;
+        let mut page = self.inner.events.page(after, limit)?;
+        page.closed = control.lifetime == AgentLifetime::Stopped;
+        Ok(page)
+    }
+
+    async fn current_operation_id(&self) -> Option<OperationId> {
+        self.inner
+            .control
+            .lock()
+            .await
+            .active
+            .as_ref()
+            .map(|active| active.id)
     }
 
     async fn settle(&self, operation_id: OperationId, snapshot: RunSnapshot) -> AgentTurnResult {
@@ -270,48 +575,41 @@ impl AgentInstance {
         }
         control.latest_turn = Some(result.clone());
         control.active = None;
+        if let Some(settlement) = OperationSettlement::from_turn(&result) {
+            let _ = self.inner.events.append_settled(settlement);
+        }
         result
     }
+}
 
-    async fn abort(
-        &self,
-        operation_id: OperationId,
-        message: impl Into<String>,
-    ) -> AgentTurnResult {
-        let message = message.into();
-        let handle = {
-            let control = self.inner.control.lock().await;
-            match &control.active {
-                Some(active) if active.id == operation_id => active.handle.clone(),
-                _ => {
-                    return control
-                        .latest_turn
-                        .as_ref()
-                        .filter(|latest| latest.operation_id() == Some(operation_id))
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            AgentTurnResult::refused(AgentRefusalKind::Runtime, message, None)
-                        });
-                }
-            }
-        };
+async fn recover_run(handle: &RunHandle) -> RunSnapshot {
+    let snapshot = handle.status().await;
+    if snapshot.is_terminal() {
+        return snapshot;
+    }
+    let _ = handle.cancel().await;
+    handle.wait().await
+}
 
-        if let Err(error) = handle.cancel().await {
-            let snapshot = handle.status().await;
-            if snapshot.is_terminal() {
-                return self.settle(operation_id, snapshot).await;
+async fn pump_events(
+    mut subscription: RunEventSubscription,
+    events: AgentEventJournal,
+    operation_id: OperationId,
+) {
+    loop {
+        match subscription.next().await {
+            Ok(Some(RunEventSubscriptionItem::Event(record))) => {
+                let _ = events.append_core(operation_id, *record);
             }
-            let recovery = self.clone();
-            tokio::spawn(async move {
-                recovery.settle(operation_id, handle.wait().await).await;
-            });
-            return AgentTurnResult::refused(
-                AgentRefusalKind::Runtime,
-                format!("{message}: cancellation also failed: {error}"),
-                Some(operation_id),
-            );
+            Ok(Some(RunEventSubscriptionItem::HistoryTruncated { oldest_sequence })) => {
+                let _ = events.append_history_gap(operation_id, oldest_sequence);
+            }
+            Ok(None) => return,
+            Err(_) => {
+                let _ = events.append_history_gap(operation_id, None);
+                return;
+            }
         }
-        self.settle(operation_id, handle.wait().await).await
     }
 }
 

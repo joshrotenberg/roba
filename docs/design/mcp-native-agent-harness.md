@@ -133,8 +133,10 @@ An ordinary turn performs the following steps:
 2. Allocate a new operation id.
 3. Clone the suspended `RunSpec` template.
 4. Set `ExecutionSpec.session` from the retained provider session.
-5. Create a new finite `Run` and publish its handle as active.
-6. Start the run without holding the agent control lock.
+5. Create a new finite `Run` and subscribe to its event journal.
+6. Perform the bounded core start transition before releasing admission, then
+   publish the already-running handle as active. This transition only spawns
+   the supervised driver; it does not await provider work.
 7. Fan per-run events into the agent-wide journal with the operation id.
 8. Await the terminal snapshot or explicit cancellation.
 9. Retain session evidence from a successful outcome or terminal failure,
@@ -188,7 +190,7 @@ collision with the MCP Prompt primitive and the `prompt` command in
 `agent.interrupt`
 
 - Cancels the active finite run.
-- Waits until the run has settled cancelled.
+- Waits until the run has settled; completion or failure may win the race.
 - Leaves the logical agent reusable and idle.
 
 `agent.shutdown`
@@ -242,10 +244,13 @@ The Task path must explicitly select over the finite run and
 Task outcome. A task id or operation generation guards this path so delayed
 cancellation cannot affect a later run.
 
-The direct-call path also defines its disconnect behavior explicitly. Dropping
-an MCP handler future is not sufficient because the core run is supervised by
-its own task. Bindings either keep the operation running and observable or
-invoke `agent.interrupt`; they must not accidentally orphan provider work.
+The direct-call path deliberately separates request lifetime from admitted
+agent work. Dropping a synchronous MCP waiter leaves the exact operation
+running, supervised, and observable; the caller or another operator uses
+`agent.interrupt` or `agent.shutdown` to end it. This is pinned independently
+of transport cancellation because Tower MCP 0.22's `ChannelTransport` does
+not forward `notifications/cancelled`. Phase 3B Task cancellation remains an
+execution-cancellation contract and targets its captured operation id.
 
 The process-scoped harness uses an in-memory MCP task store. Durable Tasks,
 restart reconciliation, and a background job database are workflow-layer
@@ -699,9 +704,9 @@ identity. Federation does not reopen `roba-core` as a multi-agent runtime.
 - `AgentInstance` owns terminal settlement independently of the Rust caller
   awaiting a turn. Dropping that caller cannot strand the logical agent in
   `Running`.
-- This does not define MCP request-cancellation behavior. Direct request and
-  Task cancellation remain Phase 3 work and must cancel the matching core run
-  explicitly.
+- This checkpoint did not define MCP request-cancellation behavior. Phase 3A
+  later chose observable direct-call detachment plus explicit operation-scoped
+  interruption; Task cancellation remains separate Phase 3B work.
 - `roba://agent` publishes only whether a provider session is available and
   redacts session identifiers from its retained latest-turn projection. The
   direct `agent.turn` result keeps validated session evidence for the caller
@@ -721,6 +726,26 @@ identity. Federation does not reopen `roba-core` as a multi-agent runtime.
   host-preflight errors. This accepted invalid-input tightening is covered by
   a CLI test and intentionally emits no synthetic terminal snapshot.
 
+## Phase 3A checkpoint decisions
+
+- Steering and interruption require the active operation id. The id is a
+  generation fence: stale controls fail closed and cannot affect a later turn.
+- Dropping a direct MCP `agent.turn` waiter detaches that waiter only. The
+  admitted operation remains supervised and visible until it settles or an
+  explicit interrupt or shutdown drains it. MCP Task cancellation will cancel
+  its captured operation in Phase 3B.
+- Agent-wide event replay has its own bounded global sequence while preserving
+  the source finite-run sequence. Source and agent history loss are both
+  explicit, and terminal provider events are copied before agent settlement is
+  published.
+- Shutdown first closes admission with `Stopping`, drains any active finite
+  run, and only then publishes `Stopped`. Concurrent callers share the same
+  settlement. Phase 3A shuts down the logical agent only; binding EOF, signal,
+  and graceful transport exit remain Phase 5 work.
+- Interruption retains a provider session already known before the cancelled
+  turn. A fresh turn interrupted before terminal session evidence is exposed
+  cannot claim the provider-private session; its next turn starts fresh.
+
 ## Current phase ledger
 
 | Phase | Status | Evidence |
@@ -728,7 +753,7 @@ identity. Federation does not reopen `roba-core` as a multi-agent runtime.
 | 0. Architecture record | Complete | Design review plus full common gate green, 2026-08-17 |
 | 1. Minimal in-process agent | Complete | Two independent correctness reviews; 1 unit and 11 ChannelTransport integration tests; full common gate green, 2026-08-17 |
 | 2. CLI over MCP | Complete | Two independent audits; 6 MCP unit plus 11 agent integration tests; 10 compatibility-projection unit and 188 CLI tests; full common gate green, 2026-08-17 |
-| 3A. Controls and events | Not started | -- |
+| 3A. Controls and events | Complete | Independent concurrency review; 13 MCP unit, 11 base-agent integration, and 12 control/event ChannelTransport tests; 188 CLI compatibility tests; full common gate green, 2026-08-17 |
 | 3B. MCP Tasks | Not started | -- |
 | 4. Provider self-client | Not started | -- |
 | 5. Hot stdio | Not started | -- |

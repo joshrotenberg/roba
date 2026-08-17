@@ -13,12 +13,23 @@ The first implementation is deliberately process-local:
   assistant answer as text plus typed `structuredContent`; provider failures,
   cancellation, blank prompts, `busy`, and `stopped` are typed tool results
   with `isError: true`.
+- `agent.steer` queues guidance for one named active operation.
+  `agent.interrupt` cancels that exact operation and waits for settlement.
+  Both require an operation id so a delayed control cannot affect a later
+  turn.
+- `agent.shutdown` permanently closes admission and drains active work before
+  reporting that the logical agent is stopped.
 - Result variants encode their terminal invariants: a completed result always
   has an outcome and a failed result always has a failure.
-- `roba://agent` dynamically reports configured policy, idle/running/stopped
-  state, session availability, current operation identity, and the latest
-  terminal result. Session identifiers are redacted from this resource; the
-  originating `agent.turn` result retains valid session evidence.
+- `roba://agent` dynamically reports configured policy,
+  idle/running/stopping/stopped state, session availability, current operation
+  identity, and the latest terminal result. Session identifiers are redacted
+  from this resource; the originating `agent.turn` result retains valid
+  session evidence.
+- `roba://events` and `roba://events{?after,limit}` expose bounded,
+  agent-wide replay. Global sequences continue across finite runs, source-run
+  sequences remain visible, lost history is explicit, and event projections
+  redact provider session ids.
 - `connect_in_process` returns an initialized production `McpClient` over
   Tower MCP's concurrent `ChannelTransport`.
 - `call_turn` is the typed client seam. It requires valid
@@ -28,10 +39,13 @@ The first implementation is deliberately process-local:
 Admission is single-flight. A second turn is refused as `busy`; it is never
 queued or silently treated as steering. A detached coordinator owns internal
 settlement, so dropping a Rust caller waiting on `AgentInstance::turn` cannot
-leave the instance permanently running. MCP request-cancellation behavior is
-not defined by this phase.
+leave the instance permanently running. With Tower MCP 0.22's current
+`ChannelTransport`, dropping a direct MCP call detaches only its waiter. The
+admitted operation stays visible and supervised until it finishes or an
+explicit `agent.interrupt` or `agent.shutdown` drains it. This is an
+intentional direct-call contract, not an implicit background queue.
 
-External transports, steering/interrupt/shutdown tools, agent-wide events,
-MCP Tasks, extension fragments, and provider self-access remain later phases
-in `../docs/design/mcp-native-agent-harness.md`. The root `roba run` command is
-the first production client of this process-local contract.
+External transports, MCP Tasks, extension fragments, and provider self-access
+remain later phases in `../docs/design/mcp-native-agent-harness.md`. The root
+`roba run` command is the first production client of this process-local
+contract.

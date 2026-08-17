@@ -7,16 +7,24 @@
 
 mod agent;
 mod contract;
+mod events;
 mod router;
 
 pub use agent::{AgentBuildError, AgentInstance, AgentStopError};
 pub use contract::{
-    AgentConfiguration, AgentRefusal, AgentRefusalKind, AgentSnapshot, AgentState, AgentTurnResult,
-    CancelledTurn, CompletedTurn, Cost, Effort, FailedTurn, FailureDetails, FailureKind,
-    LimitPolicy, OperationId, PermissionPolicy, SessionHandle, TokenUsage, ToolPolicy, TurnFailure,
-    TurnMetadata, TurnOutcome,
+    AgentConfiguration, AgentControlRefusal, AgentControlRefusalKind, AgentInterruptResult,
+    AgentRefusal, AgentRefusalKind, AgentShutdownResult, AgentSnapshot, AgentState,
+    AgentSteerResult, AgentTerminalState, AgentTurnResult, CancelledTurn, CompletedTurn, Cost,
+    Effort, FailedTurn, FailureDetails, FailureKind, LimitPolicy, OperationId, OperationSettlement,
+    PermissionPolicy, SessionHandle, TokenUsage, ToolPolicy, TurnFailure, TurnMetadata,
+    TurnOutcome,
+};
+pub use events::{
+    AGENT_EVENT_CAPACITY, AgentEvent, AgentEventError, AgentEventPage, AgentEventRecord,
+    AgentRunState, EventFailureDetails, EventTurnFailure, EventTurnOutcome,
 };
 pub use router::{
-    AGENT_RESOURCE_URI, AGENT_TURN_TOOL, AgentClientError, TurnInput, call_turn,
-    connect_in_process, router,
+    AGENT_EVENTS_TEMPLATE, AGENT_EVENTS_URI, AGENT_INTERRUPT_TOOL, AGENT_RESOURCE_URI,
+    AGENT_SHUTDOWN_TOOL, AGENT_STEER_TOOL, AGENT_TURN_TOOL, AgentClientError, InterruptInput,
+    ShutdownInput, SteerInput, TurnInput, call_turn, connect_in_process, router,
 };

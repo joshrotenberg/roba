@@ -11,7 +11,8 @@ use tower_mcp::schemars::{self, JsonSchema};
 pub struct OperationId(u64);
 
 impl OperationId {
-    pub(crate) fn new(value: u64) -> Self {
+    /// Construct an operation identity for a typed client request.
+    pub const fn new(value: u64) -> Self {
         Self(value)
     }
 
@@ -27,6 +28,7 @@ impl OperationId {
 pub enum AgentState {
     Idle,
     Running,
+    Stopping,
     Stopped,
 }
 
@@ -144,6 +146,180 @@ pub enum AgentRefusalKind {
     Busy,
     Stopped,
     Runtime,
+}
+
+/// Why an agent control operation could not be applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentControlRefusalKind {
+    InvalidPrompt,
+    Idle,
+    Stopping,
+    Stopped,
+    OperationMismatch,
+    OperationFinishing,
+    OperationSettled,
+    Unsupported,
+    Runtime,
+}
+
+/// Typed refusal for steering or interruption.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentControlRefusal {
+    pub kind: AgentControlRefusalKind,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_operation_id: Option<OperationId>,
+}
+
+/// Terminal disposition of one admitted operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTerminalState {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+/// Stable, compact evidence that an admitted operation has settled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct OperationSettlement {
+    pub operation_id: OperationId,
+    pub state: AgentTerminalState,
+}
+
+impl OperationSettlement {
+    pub(crate) fn from_turn(result: &AgentTurnResult) -> Option<Self> {
+        let (operation_id, state) = match result {
+            AgentTurnResult::Completed { operation_id, .. } => {
+                (*operation_id, AgentTerminalState::Completed)
+            }
+            AgentTurnResult::Failed { operation_id, .. } => {
+                (*operation_id, AgentTerminalState::Failed)
+            }
+            AgentTurnResult::Cancelled { operation_id, .. } => {
+                (*operation_id, AgentTerminalState::Cancelled)
+            }
+            AgentTurnResult::Refused { .. } => return None,
+        };
+        Some(Self {
+            operation_id,
+            state,
+        })
+    }
+}
+
+/// Result of queueing guidance for the active finite run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum AgentSteerResult {
+    Queued { operation_id: OperationId },
+    Refused { refusal: AgentControlRefusal },
+}
+
+impl AgentSteerResult {
+    pub(crate) fn refused(
+        kind: AgentControlRefusalKind,
+        message: impl Into<String>,
+        current_operation_id: Option<OperationId>,
+    ) -> Self {
+        Self::Refused {
+            refusal: AgentControlRefusal {
+                kind,
+                message: message.into(),
+                current_operation_id,
+            },
+        }
+    }
+
+    /// True when MCP should mark this as a tool execution error.
+    pub fn is_error(&self) -> bool {
+        matches!(self, Self::Refused { .. })
+    }
+
+    /// Human-facing text paired with the typed structured result.
+    pub fn display_text(&self) -> String {
+        match self {
+            Self::Queued { operation_id } => {
+                format!("guidance queued for operation {}", operation_id.get())
+            }
+            Self::Refused { refusal } => refusal.message.clone(),
+        }
+    }
+}
+
+/// Result of interrupting one exact admitted operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum AgentInterruptResult {
+    Settled {
+        settlement: OperationSettlement,
+        cancellation_requested: bool,
+    },
+    Refused {
+        refusal: AgentControlRefusal,
+    },
+}
+
+impl AgentInterruptResult {
+    pub(crate) fn refused(
+        kind: AgentControlRefusalKind,
+        message: impl Into<String>,
+        current_operation_id: Option<OperationId>,
+    ) -> Self {
+        Self::Refused {
+            refusal: AgentControlRefusal {
+                kind,
+                message: message.into(),
+                current_operation_id,
+            },
+        }
+    }
+
+    /// True when MCP should mark this as a tool execution error.
+    pub fn is_error(&self) -> bool {
+        matches!(self, Self::Refused { .. })
+    }
+
+    /// Human-facing text paired with the typed structured result.
+    pub fn display_text(&self) -> String {
+        match self {
+            Self::Settled {
+                settlement,
+                cancellation_requested,
+            } => {
+                let action = if *cancellation_requested {
+                    "interrupted"
+                } else {
+                    "already settled"
+                };
+                format!(
+                    "operation {} {action} as {:?}",
+                    settlement.operation_id.get(),
+                    settlement.state
+                )
+                .to_lowercase()
+            }
+            Self::Refused { refusal } => refusal.message.clone(),
+        }
+    }
+}
+
+/// Result of permanently shutting down the logical agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum AgentShutdownResult {
+    Stopped {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        drained: Option<OperationSettlement>,
+    },
+}
+
+impl AgentShutdownResult {
+    /// Human-facing text paired with the typed structured result.
+    pub fn display_text(&self) -> &'static str {
+        "agent stopped"
+    }
 }
 
 /// Typed application-level refusal returned as an MCP tool error result.
