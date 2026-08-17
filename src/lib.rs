@@ -32,6 +32,7 @@ pub mod prompt;
 pub mod rates;
 pub mod receipt;
 pub mod render;
+pub mod serve;
 pub mod show;
 pub mod stdin_probe;
 pub mod stream;
@@ -71,8 +72,14 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             "legacy one-shot options cannot be placed before `run`; place provider-neutral run options after `run`"
         );
     }
+    if matches!(&cli.command, Some(SubCommand::Serve(_))) && cli.ask != AskArgs::default() {
+        bail!(
+            "legacy one-shot options cannot be placed before `serve`; place provider-neutral agent options after `serve`"
+        );
+    }
     match cli.command {
         Some(SubCommand::Run(args)) => bounded::run(args).await,
+        Some(SubCommand::Serve(args)) => serve::run(args).await,
         Some(SubCommand::Bundle { cmd }) => bundle::run(cmd),
         Some(SubCommand::History(args)) => run_history(args),
         Some(SubCommand::Last(args)) => run_last(args),
@@ -1036,6 +1043,18 @@ pub fn classify_exit_code(err: &anyhow::Error) -> i32 {
 mod tests {
     use super::*;
     use claude_wrapper::auth::AuthErrorKind;
+
+    #[tokio::test]
+    async fn serve_rejects_legacy_options_placed_before_the_subcommand() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["roba", "--model", "legacy", "serve"]).unwrap();
+        let error = dispatch(cli).await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "legacy one-shot options cannot be placed before `serve`; place provider-neutral agent options after `serve`"
+        );
+    }
 
     fn ask(argv: &[&str]) -> AskArgs {
         use clap::Parser;

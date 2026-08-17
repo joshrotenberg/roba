@@ -5,7 +5,7 @@ Protocol contract. Each `agent.turn` call creates one finite `roba-core` run;
 the host retains the provider session between calls while remaining idle
 between provider processes.
 
-The operator interface is deliberately process-local:
+The operator contract has process-local and foreground stdio bindings:
 
 - `AgentInstance` owns a suspended `RunSpec`, one optional provider session,
   and at most one active `RunHandle`.
@@ -35,6 +35,10 @@ The operator interface is deliberately process-local:
 - `call_turn` is the typed client seam. It requires valid
   `structuredContent`, checks that MCP `isError` agrees with the typed status,
   and never treats display text as machine data.
+- `StdioBinding` serves the same control router over stdin/stdout with legacy
+  and final MCP lifecycle support. Requests dispatch concurrently, so status,
+  event reads, steering, and interruption can overtake a long synchronous
+  turn.
 
 The same `AgentInstance` also has a separate provider-facing projection. For
 each admitted finite operation, the host binds that projection to an ephemeral
@@ -97,11 +101,31 @@ admitted operation stays visible and supervised until it finishes or an
 explicit `agent.interrupt` or `agent.shutdown` drains it. This is an
 intentional direct-call contract, not an implicit background queue.
 
-Operator-facing external transports and extension fragments remain later
-phases in `../docs/design/mcp-native-agent-harness.md`. The private HTTP
-listener is operation-scoped provider plumbing, not a general HTTP binding.
-The current `self` handler is deliberately immediate. Before extensions add
-long-running provider callbacks, the endpoint host must add explicit request
-tracking and cancellation rather than generalizing the current teardown claim.
-The root `roba run` command is the first production control client of this
-contract.
+`StdioBinding` cross-couples the transport and logical agent lifetimes. Stdio
+EOF begins agent shutdown before Tower waits for in-flight requests, preventing
+a long synchronous turn from deadlocking the transport drain. Conversely,
+`agent.shutdown` stops the transport only after closing admission and draining
+the active run; Tower flushes that tool response before the binding returns.
+Every transport exit path awaits idempotent agent shutdown, including malformed
+or broken streams. A binding shutdown handle starts the same graceful drain;
+it never abandons the binding future.
+
+Foreground `StdioBinding::run` is single-use and reads stdin through a bounded
+async bridge backed by one ordinary detached reader thread. This avoids
+Tokio's uncancellable stdin blocking-pool read pinning runtime shutdown when a
+client keeps its pipe open after `agent.shutdown`. An embedding that continues
+after the binding returns should use `run_with_streams` with a reader it owns
+and can close.
+
+The root `roba run` command is the production in-process client, while
+`roba serve` owns one foreground stdio binding for clients such as `mcp-repl`.
+The latter starts idle and does not launch a provider until `agent.turn` is
+admitted. Provider failures remain typed results and leave the binding hot;
+only logical shutdown, stdio EOF, or the host's shutdown policy ends it.
+
+Unix/HTTP operator bindings and extension fragments remain later phases in
+`../docs/design/mcp-native-agent-harness.md`. The private HTTP listener is
+operation-scoped provider plumbing, not a general HTTP binding. The current
+`self` handler is deliberately immediate. Before extensions add long-running
+provider callbacks, the endpoint host must add explicit request tracking and
+cancellation rather than generalizing the current teardown claim.

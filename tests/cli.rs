@@ -437,6 +437,435 @@ fn bounded_run_invalid_host_configuration_fails_before_a_turn() {
 }
 
 #[test]
+fn serve_help_exposes_only_the_promptless_provider_neutral_surface() {
+    let output = roba()
+        .args(["serve", "--help"])
+        .output()
+        .expect("render serve help");
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+
+    let stdout = String::from_utf8(output.stdout).expect("serve help is UTF-8");
+    for expected in [
+        "--provider",
+        "--model",
+        "--effort",
+        "--instruction",
+        "--context",
+        "--writable",
+        "--full-auto",
+        "--max-turns",
+        "--max-cost-usd",
+        "--timeout",
+        "--resume",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "serve help omitted {expected:?}:\n{stdout}"
+        );
+    }
+    for absent in [
+        "<PROMPT>",
+        "--json",
+        "--config",
+        "--agent",
+        "--repl",
+        "--mcp",
+        "--max-workers",
+        "--max-worker-depth",
+    ] {
+        assert!(
+            !stdout.contains(absent),
+            "serve help advertised out-of-scope option {absent:?}:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn serve_rejects_run_only_legacy_and_parked_options() {
+    for args in [
+        &["serve", "--json"][..],
+        &["serve", "--config", "run.toml"][..],
+        &["serve", "--agent", "builder"][..],
+        &["serve", "--repl"][..],
+        &["serve", "--mcp"][..],
+        &["serve", "--max-workers", "2"][..],
+        &["serve", "--max-worker-depth", "1"][..],
+    ] {
+        roba()
+            .args(args)
+            .assert()
+            .failure()
+            .code(2)
+            .stderr(predicate::str::contains("unexpected argument"));
+    }
+
+    roba()
+        .args(["--model", "legacy-model", "serve"])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "legacy one-shot options cannot be placed before `serve`",
+        ));
+}
+
+const STABLE_MCP_PROTOCOL: &str = "2025-11-25";
+const FINAL_MCP_PROTOCOL: &str = "2026-07-28";
+const SERVE_PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[derive(Clone, Copy, Debug)]
+enum CliWireProtocol {
+    Stable,
+    Final,
+}
+
+struct ServeProcess {
+    child: std::process::Child,
+    stdin: Option<std::process::ChildStdin>,
+    frames: std::sync::mpsc::Receiver<std::io::Result<String>>,
+    reader: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ServeProcess {
+    fn spawn(mut command: std::process::Command) -> Self {
+        use std::process::Stdio;
+
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn stdio serve process");
+        let stdin = child.stdin.take().expect("serve stdin is piped");
+        let stdout = child.stdout.take().expect("serve stdout is piped");
+        let (sender, frames) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            use std::io::BufRead;
+
+            for line in std::io::BufReader::new(stdout).lines() {
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            child,
+            stdin: Some(stdin),
+            frames,
+            reader: Some(reader),
+        }
+    }
+
+    fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    fn send(&mut self, frame: serde_json::Value) {
+        use std::io::Write;
+
+        let stdin = self.stdin.as_mut().expect("serve stdin remains open");
+        serde_json::to_writer(&mut *stdin, &frame).expect("MCP request serializes");
+        stdin.write_all(b"\n").expect("MCP frame writes");
+        stdin.flush().expect("MCP frame flushes");
+    }
+
+    fn receive(&self) -> serde_json::Value {
+        let line = self
+            .frames
+            .recv_timeout(SERVE_PROCESS_TIMEOUT)
+            .expect("serve produced a response before the timeout")
+            .expect("serve stdout remained readable");
+        parse_wire_frame(line)
+    }
+
+    fn assert_idle(&mut self) {
+        assert!(
+            matches!(
+                self.frames
+                    .recv_timeout(std::time::Duration::from_millis(200)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ),
+            "promptless serve emitted stdout before receiving an MCP request"
+        );
+        assert!(
+            self.child.try_wait().expect("query serve child").is_none(),
+            "promptless serve exited instead of remaining idle"
+        );
+    }
+
+    fn close_input(&mut self) {
+        self.stdin.take();
+    }
+
+    fn wait_and_collect(&mut self) -> Vec<serde_json::Value> {
+        use std::io::Read;
+
+        let deadline = std::time::Instant::now() + SERVE_PROCESS_TIMEOUT;
+        let status = loop {
+            if let Some(status) = self.child.try_wait().expect("query serve child") {
+                break status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "serve did not exit before the process timeout"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(status.success(), "serve exited with {status}");
+
+        let mut stderr = String::new();
+        self.child
+            .stderr
+            .take()
+            .expect("serve stderr is piped")
+            .read_to_string(&mut stderr)
+            .expect("read serve stderr");
+        assert!(
+            stderr.is_empty(),
+            "serve leaked metadata to stderr: {stderr}"
+        );
+
+        self.reader
+            .take()
+            .expect("stdout reader exists")
+            .join()
+            .expect("stdout reader did not panic");
+        self.frames
+            .try_iter()
+            .map(|line| {
+                parse_wire_frame(line.expect("serve stdout remained readable until process exit"))
+            })
+            .collect()
+    }
+}
+
+impl Drop for ServeProcess {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+}
+
+fn serve_command() -> std::process::Command {
+    let mut command = std::process::Command::new(assert_cmd::cargo::cargo_bin!("roba"));
+    command.arg("serve");
+    command
+}
+
+fn parse_wire_frame(line: String) -> serde_json::Value {
+    let frame: serde_json::Value = serde_json::from_str(&line)
+        .unwrap_or_else(|error| panic!("stdout was not JSON: {error}: {line:?}"));
+    assert_eq!(frame["jsonrpc"], "2.0", "stdout was not JSON-RPC: {frame}");
+    frame
+}
+
+fn final_client_meta() -> serde_json::Value {
+    serde_json::json!({
+        "io.modelcontextprotocol/protocolVersion": FINAL_MCP_PROTOCOL,
+        "io.modelcontextprotocol/clientInfo": {
+            "name": "roba-cli-test",
+            "version": "0"
+        },
+        "io.modelcontextprotocol/clientCapabilities": {}
+    })
+}
+
+fn handshake_serve(server: &mut ServeProcess, protocol: CliWireProtocol) {
+    match protocol {
+        CliWireProtocol::Stable => {
+            server.send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": STABLE_MCP_PROTOCOL,
+                    "capabilities": {},
+                    "clientInfo": {"name": "roba-cli-test", "version": "0"}
+                }
+            }));
+            let response = server.receive();
+            assert_eq!(response["id"], 1);
+            assert_eq!(response["result"]["protocolVersion"], STABLE_MCP_PROTOCOL);
+            assert_eq!(response["result"]["serverInfo"]["name"], "roba-agent");
+            server.send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }));
+        }
+        CliWireProtocol::Final => {
+            server.send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "server/discover",
+                "params": {"_meta": final_client_meta()}
+            }));
+            let response = server.receive();
+            assert_eq!(response["id"], 1);
+            assert_eq!(
+                response["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+                "roba-agent"
+            );
+            assert!(
+                response["result"]["supportedVersions"]
+                    .as_array()
+                    .expect("discovery publishes versions")
+                    .contains(&serde_json::json!(FINAL_MCP_PROTOCOL))
+            );
+        }
+    }
+}
+
+fn send_shutdown(server: &mut ServeProcess, protocol: CliWireProtocol, id: u64) {
+    let mut params = serde_json::json!({"name": "agent.shutdown", "arguments": {}});
+    if matches!(protocol, CliWireProtocol::Final) {
+        params
+            .as_object_mut()
+            .expect("tool params are an object")
+            .insert("_meta".to_owned(), final_client_meta());
+    }
+    server.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": params
+    }));
+}
+
+#[test]
+fn serve_is_idle_and_wire_only_for_stable_and_final_clients_until_logical_shutdown() {
+    for protocol in [CliWireProtocol::Stable, CliWireProtocol::Final] {
+        let mut server = ServeProcess::spawn(serve_command());
+        server.assert_idle();
+        handshake_serve(&mut server, protocol);
+
+        #[cfg(unix)]
+        {
+            send_unix_signal(server.id(), "INT");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert!(
+                server
+                    .child
+                    .try_wait()
+                    .expect("query serve child")
+                    .is_none(),
+                "piped SIGINT stopped a {protocol:?} MCP server"
+            );
+        }
+
+        send_shutdown(&mut server, protocol, 2);
+        let response = server.receive();
+        assert_eq!(response["id"], 2);
+        assert_eq!(response["result"]["structuredContent"]["status"], "stopped");
+        assert!(
+            server.wait_and_collect().is_empty(),
+            "logical shutdown emitted unexpected trailing stdout"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn serve_eof_and_sigterm_cancel_and_reap_a_held_provider_child() {
+    for stop in ["EOF", "SIGTERM"] {
+        let bin = fake_claude_streaming_hold();
+        let home = tempfile::tempdir().expect("home");
+        let cfg = tempfile::tempdir().expect("cfg");
+        let provider_pid_path = home.path().join(format!("provider-{stop}.pid"));
+
+        let mut command = serve_command();
+        command
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.path().display()))
+            .env("HOME", home.path())
+            .env("XDG_CONFIG_HOME", cfg.path())
+            .env("ROBA_PROVIDER_PID", &provider_pid_path)
+            .current_dir(home.path());
+        let mut server = ServeProcess::spawn(command);
+        handshake_serve(&mut server, CliWireProtocol::Stable);
+        server.send(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "agent.turn", "arguments": {"text": "hold"}}
+        }));
+
+        let provider_pid = wait_for_pid_file(&provider_pid_path);
+        match stop {
+            "EOF" => server.close_input(),
+            "SIGTERM" => send_unix_signal(server.id(), "TERM"),
+            _ => unreachable!(),
+        }
+
+        let trailing = server.wait_and_collect();
+        assert!(
+            trailing.iter().any(|frame| {
+                frame["id"] == 2 && frame["result"]["structuredContent"]["status"] == "cancelled"
+            }),
+            "{stop} did not settle the held turn on the MCP wire: {trailing:?}"
+        );
+        assert!(
+            wait_for_process_exit(provider_pid),
+            "{stop} left provider child {provider_pid} alive"
+        );
+    }
+}
+
+#[cfg(unix)]
+fn send_unix_signal(pid: u32, signal: &str) {
+    let status = std::process::Command::new("kill")
+        .args([format!("-{signal}"), pid.to_string()])
+        .status()
+        .expect("invoke kill");
+    assert!(status.success(), "failed to send SIG{signal} to {pid}");
+}
+
+#[cfg(unix)]
+fn wait_for_pid_file(path: &std::path::Path) -> u32 {
+    let deadline = std::time::Instant::now() + SERVE_PROCESS_TIMEOUT;
+    loop {
+        if let Ok(contents) = std::fs::read_to_string(path)
+            && let Ok(pid) = contents.trim().parse()
+        {
+            return pid;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "provider did not publish its PID at {}",
+            path.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[cfg(unix)]
+fn wait_for_process_exit(pid: u32) -> bool {
+    use std::process::Stdio;
+
+    let deadline = std::time::Instant::now() + SERVE_PROCESS_TIMEOUT;
+    loop {
+        let alive = std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if !alive {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
 fn history_paths_flag_no_arg() {
     // --paths with no value should parse and run without panicking.
     // No real sessions may exist in CI; exit 0 is the contract.
@@ -3580,6 +4009,27 @@ printf '%s\n' '{"type":"result","subtype":"success","result":"too late","session
     std::fs::write(&path, script).expect("write fake claude");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
         .expect("chmod fake claude");
+    dir
+}
+
+/// Write a `claude` shim that publishes its PID and holds until cancelled.
+#[cfg(unix)]
+fn fake_claude_streaming_hold() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("fake claude dir");
+    let path = dir.path().join("claude");
+    let script = r#"#!/bin/sh
+case "$*" in
+  *--version*) echo '1.0.0 (fake)'; exit 0;;
+esac
+printf '%s\n' "$$" > "$ROBA_PROVIDER_PID"
+cat >/dev/null 2>&1
+exec /bin/sleep 30
+"#;
+    std::fs::write(&path, script).expect("write fake held claude");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod fake held claude");
     dir
 }
 

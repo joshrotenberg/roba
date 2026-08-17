@@ -181,9 +181,10 @@ tree or multi-agent routing to core.
 See `docs/design/mcp-native-agent-harness.md` for the contract, phase gates,
 cancellation semantics, transport plan, and parked Roba-to-Roba consequence.
 The workspace `roba-mcp` crate exposes the process-local contract, and
-provider-neutral `roba run` is its first production control client. There is
-no operator-facing external binding yet. The private HTTP listener is
-provider launch plumbing, not a general HTTP service.
+provider-neutral `roba run` is its in-process production control client.
+`roba serve` exposes the same single-agent router over foreground stdio for
+clients such as `mcp-repl`. The private HTTP listener remains provider launch
+plumbing, not a general operator HTTP service.
 
 ## Next seams, not current claims
 
@@ -230,12 +231,11 @@ out of scope.
 
 The cleanup and first MCP phases completed Codex hardening, authoritative
 lifecycle events, the hot single-agent contract, controls and replay, optional
-Tasks, and the provider self-client proof. Remaining work is:
+Tasks, the provider self-client proof, and the foreground stdio binding.
+Remaining work is:
 
-1. Add the foreground stdio binding and dogfood it through `mcp-repl` without
-   widening the finite core.
-2. Prove one small router fragment before defining a broader extension API.
-3. Keep operator HTTP, Unix sockets, scheduling, and federation parked until a
+1. Prove one small router fragment before defining a broader extension API.
+2. Keep operator HTTP, Unix sockets, scheduling, and federation parked until a
    concrete consumer justifies their authority and lifecycle costs.
 
 ## Resume checklist

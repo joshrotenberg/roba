@@ -6,28 +6,30 @@
 [![Downloads](https://img.shields.io/crates/d/roba.svg)](https://crates.io/crates/roba)
 [![License](https://img.shields.io/crates/l/roba.svg)](#license)
 
-A library-first, provider-neutral runtime for one finite, single-root agent
-run. One Roba process owns one intention, may steer its provider through
-multiple turns, and exits when the work is complete, failed, or cancelled.
-Claude Code and Codex are built-in provider adapters.
+A library-first, MCP-native agent harness built on a provider-neutral finite
+run core. Each `roba-core` run owns one intention, may steer its provider
+through multiple turns, and settles complete, failed, or cancelled. Claude
+Code and Codex are built-in provider adapters.
 
-Roba is not a daemon, a workflow engine, or a persistent session pool. A Rust
-host can create a suspended run without starting provider work, retain its
-`RunHandle`, and observe or control that run while the process is alive. The
-`roba run` command is the thin blocking CLI over the same core.
+Roba is not a hidden daemon, workflow engine, or persistent session pool. A
+Rust host can create a suspended run without starting provider work, retain
+its `RunHandle`, and observe or control that run while the process is alive.
+The `roba run` command is the thin blocking CLI over the same core; the
+foreground `roba serve` host may remain idle between several finite turns.
 
-The workspace also includes the first process-local `roba-mcp` layer. Its
+The workspace also includes the `roba-mcp` layer. Its
 `AgentInstance` remains hot and idle between prompts, creates one finite core
 run per accepted `agent.turn`, retains provider session continuity, and offers
 operation-scoped controls plus agent-wide replay. The provider-neutral
-`roba run` command uses this contract through an in-process MCP client; no
-operator-facing external transport is shipped yet. For each admitted finite
-operation, `roba-mcp` also binds a private authenticated loopback projection
-and attaches it to the built-in provider. That least-authority projection
-currently contains only the read-only `self` tool and structurally excludes
-turn admission and operator controls. Task-aware clients can background, poll,
-and cancel `agent.turn` through MCP Tasks while ordinary clients keep the same
-blocking tool contract.
+`roba run` command uses this contract through an in-process MCP client, while
+`roba serve` exposes the same single-agent contract over foreground stdio for
+MCP clients such as `mcp-repl`. For each admitted finite operation, `roba-mcp`
+also binds a private authenticated loopback projection and attaches it to the
+built-in provider. That least-authority projection currently contains only
+the read-only `self` tool and structurally excludes turn admission and
+operator controls. Task-aware clients can background, poll, and cancel
+`agent.turn` through MCP Tasks while ordinary clients keep the same blocking
+tool contract.
 
 The established single-prompt Claude CLI remains a supported compatibility
 surface while the provider-neutral library API stabilizes.
@@ -56,6 +58,38 @@ The CLI accepts explicit run flags for provider, model, effort, instructions,
 context, permissions, limits, timeout, and resume identity. It does not load a
 second run-specific config system. The legacy `roba.toml` profile and alias
 pool belong to the one-shot Claude compatibility command.
+
+## Hot MCP agents
+
+`roba serve` starts one promptless `AgentInstance` and reserves stdin and
+stdout for MCP wire data from the first byte. It accepts the same fixed agent
+template flags as `roba run`, without a prompt or `--json`:
+
+```bash
+# Interactive client over the final MCP lifecycle and Tasks extension.
+mcp-repl --protocol final -- ./target/debug/roba serve --provider codex
+
+# Or install Roba and let mcp-repl spawn it from PATH.
+mcp-repl --protocol final -- roba serve --provider claude --writable
+```
+
+Inside `mcp-repl`, `agent.turn text="..."` performs one blocking finite turn.
+Append `&` to create a Task, then use `jobs`, `read roba://agent`,
+`read roba://events`, `wait`, or `cancel`. `agent.interrupt` drains one named
+active operation and leaves the server idle and reusable. `agent.shutdown`,
+stdio EOF, or SIGTERM permanently closes admission, drains provider work and
+the private callback endpoint, flushes in-flight MCP responses, and exits.
+
+The logical agent and validated provider session remain hot; the provider
+process does not. Every accepted turn launches and settles one finite provider
+run. Limits and timeout flags are therefore per turn, not aggregate server
+budgets or idle deadlines. Provider failures are typed MCP tool results and do
+not terminate the server.
+
+For a piped stdio server, Roba consumes SIGINT without shutting down so
+`mcp-repl` can use Ctrl-C to stop waiting on a local command. Use
+`agent.shutdown`, EOF, or SIGTERM to end that server. When Roba owns a terminal
+directly, Ctrl-C requests graceful shutdown.
 
 Codex runs preserve [`codex exec`'s Git-repository safety
 check](https://learn.chatgpt.com/docs/non-interactive-mode). Run them inside a
@@ -97,17 +131,17 @@ The adopted v0.12 direction is an MCP-native, single-agent harness above this
 finite core. The process-local base contract now supplies one hot logical
 agent, single-flight `agent.turn`, typed structured results, `roba://agent`,
 operation-scoped steering/interruption, logical shutdown, agent-wide event
-replay, optional live Tasks for `agent.turn`, and an initialized Tower MCP
-`ChannelTransport` client. `roba run` is the first interface migrated onto
-that contract while preserving its existing stdout, JSON, and exit-code ABI
-for admitted runs. Each active operation now also gives Claude or Codex an
-ephemeral, authenticated `roba` MCP server containing only `self`; its URL and
-credential are transient launch material and its credential rotates between
-finite runs. Operator-facing external bindings and service fragments remain
-later gated phases. `mcp-repl` will provide the interactive client, so Roba
-does not need a custom REPL. The legacy `--mcp-config` flag is unrelated: it
-passes a user-supplied MCP server configuration through to a one-shot Claude
-invocation.
+replay, optional live Tasks for `agent.turn`, an initialized Tower MCP
+`ChannelTransport` client, and a foreground stdio binding. `roba run` crosses
+the in-process path while preserving its existing stdout, JSON, and exit-code
+ABI for admitted runs; `roba serve` is the hot external interface. Each active
+operation also gives Claude or Codex an ephemeral, authenticated `roba` MCP
+server containing only `self`; its URL and credential are transient launch
+material and its credential rotates between finite runs. Unix and operator
+HTTP bindings plus service fragments remain later gated phases. `mcp-repl` is
+the interactive client, so Roba does not need a custom REPL. The legacy
+`--mcp-config` flag is unrelated: it passes a user-supplied MCP server
+configuration through to a one-shot Claude invocation.
 
 An admitted `AgentInstance` turn now requires permission to bind an ephemeral
 IPv4 loopback listener. If the host environment forbids that bind, admission
@@ -129,11 +163,11 @@ The public implementation is split by responsibility:
 - `roba-core`: provider-neutral specifications, provider registry, root
   lifecycle, outcomes, failures, events, and transient provider launch context
 - `roba-mcp`: one process-local logical agent, typed MCP contract, bounded
-  replay, role-scoped routers, in-process control client, and private
-  operation-scoped provider binding
+  replay, role-scoped routers, in-process and foreground stdio control
+  bindings, and a private operation-scoped provider binding
 - `roba-types`: the dependency-light machine envelope, exit-code map, and run
   receipt types
-- `roba`: the explicit `run` adapter plus the original Claude CLI
+- `roba`: the explicit `run` and `serve` adapters plus the original Claude CLI
   compatibility surface
 
 See [the run-library design](docs/design/run-library-pivot.md) for the finite

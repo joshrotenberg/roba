@@ -11,7 +11,7 @@ use roba_core::{
 use roba_mcp::{AgentInstance, AgentTurnResult, TurnInput, call_turn, connect_in_process};
 
 use crate::VersionedResult;
-use crate::cli::{EffortLevel, RunArgs, RunProvider};
+use crate::cli::{AgentArgs, EffortLevel, RunArgs, RunProvider};
 
 /// A terminal provider-neutral run failure retained for exit-code and JSON
 /// classification by the binary boundary.
@@ -42,10 +42,7 @@ impl std::error::Error for BoundedRunError {}
 pub async fn run(args: RunArgs) -> Result<()> {
     let resolved = resolve_spec(&args)?;
 
-    let mut roba = Roba::new();
-    roba.register(ClaudeProvider)?;
-    roba.register(CodexProvider::default())?;
-    let agent = AgentInstance::new(roba, resolved.template)?;
+    let agent = build_agent_from_template(resolved.template)?;
     let client = connect_in_process(agent).await?;
     let turn = call_turn(
         &client,
@@ -239,6 +236,14 @@ struct ResolvedRun {
 }
 
 fn resolve_spec(args: &RunArgs) -> Result<ResolvedRun> {
+    Ok(ResolvedRun {
+        template: resolve_template(&args.agent)?,
+        prompt: Prompt::new(args.prompt.clone())?.into_inner(),
+    })
+}
+
+/// Resolve the fixed suspended template shared by one-shot and hot agents.
+pub(crate) fn resolve_template(args: &AgentArgs) -> Result<RunSpec> {
     let provider = args
         .provider
         .map(map_provider)
@@ -264,27 +269,36 @@ fn resolve_spec(args: &RunArgs) -> Result<ResolvedRun> {
     agent.effort = args.effort.map(map_effort);
     agent.instructions.clone_from(&args.instructions);
 
-    Ok(ResolvedRun {
-        template: RunSpec {
-            agent,
-            context: ContextSpec {
-                project: Vec::new(),
-                run: args.context.clone(),
-            },
-            execution: ExecutionSpec {
-                permissions,
-                tools: ToolPolicy::default(),
-                limits: LimitSpec {
-                    max_turns: args.max_turns,
-                    max_cost_usd: args.max_cost_usd,
-                    timeout_secs: args.timeout,
-                },
-                session,
-            },
-            initial_prompt: None,
+    Ok(RunSpec {
+        agent,
+        context: ContextSpec {
+            project: Vec::new(),
+            run: args.context.clone(),
         },
-        prompt: Prompt::new(args.prompt.clone())?.into_inner(),
+        execution: ExecutionSpec {
+            permissions,
+            tools: ToolPolicy::default(),
+            limits: LimitSpec {
+                max_turns: args.max_turns,
+                max_cost_usd: args.max_cost_usd,
+                timeout_secs: args.timeout,
+            },
+            session,
+        },
+        initial_prompt: None,
     })
+}
+
+/// Construct one configured hot agent with both built-in providers available.
+pub(crate) fn build_agent(args: &AgentArgs) -> Result<AgentInstance> {
+    build_agent_from_template(resolve_template(args)?)
+}
+
+fn build_agent_from_template(template: RunSpec) -> Result<AgentInstance> {
+    let mut roba = Roba::new();
+    roba.register(ClaudeProvider)?;
+    roba.register(CodexProvider::default())?;
+    Ok(AgentInstance::new(roba, template)?)
 }
 
 fn map_provider(provider: RunProvider) -> ProviderId {
@@ -322,6 +336,52 @@ mod tests {
             SubCommand::Run(args) => args,
             other => panic!("expected run args, got {other:?}"),
         }
+    }
+
+    fn parse_serve_agent(args: &[&str]) -> AgentArgs {
+        let cli = Cli::try_parse_from(
+            std::iter::once("roba")
+                .chain(std::iter::once("serve"))
+                .chain(args.iter().copied()),
+        )
+        .unwrap();
+        match cli.command.unwrap() {
+            SubCommand::Serve(args) => args.agent,
+            other => panic!("expected serve args, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_and_serve_resolve_the_same_suspended_agent_template() {
+        let shared = [
+            "--provider",
+            "codex",
+            "--model",
+            "configured",
+            "--effort",
+            "xhigh",
+            "--instruction",
+            "be exact",
+            "--context",
+            "the tests are authoritative",
+            "--writable",
+            "--timeout",
+            "30",
+            "--max-turns",
+            "12",
+            "--max-cost-usd",
+            "1.5",
+            "--resume",
+            "thread-1",
+        ];
+        let run = parse_run_args(&[&shared[..], &["hello"]].concat());
+        let serve = parse_serve_agent(&shared);
+
+        assert_eq!(
+            resolve_spec(&run).unwrap().template,
+            resolve_template(&serve).unwrap()
+        );
+        assert!(resolve_template(&serve).unwrap().initial_prompt.is_none());
     }
 
     #[test]

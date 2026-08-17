@@ -400,7 +400,8 @@ All bindings serve the same typed contract:
 
 - `ChannelTransport` is the production in-process path used by `roba run` and
   integration tests;
-- stdio is the first hot external binding and keeps stdout byte-clean MCP;
+- foreground stdio is the hot external binding used by `roba serve`; it keeps
+  stdout byte-clean MCP and supports the legacy and final lifecycle;
 - Unix domain socket support is local-only, uses a private parent directory,
   controlled socket permissions, peer checks where available, and explicit
   cleanup;
@@ -411,13 +412,19 @@ One binding per process is the default until a use case proves otherwise.
 Several bindings may share one `AgentInstance`, but all authorized callers then
 share authority over that same agent and active run.
 
-Transport EOF or server shutdown has an explicit policy. Stdio EOF shuts down
-the agent and drains provider work. Network bindings use graceful shutdown and
-do not leave hidden provider children.
+Transport EOF or server shutdown has an explicit policy. Stdio EOF begins
+logical agent shutdown before Tower drains in-flight requests, so a long
+synchronous turn cannot deadlock transport exit. Logical `agent.shutdown`
+stops the transport in the other direction only after closing admission and
+draining provider work; its response is flushed before the binding returns.
+Network bindings use graceful shutdown and do not leave hidden provider
+children.
 
 ## Compatibility boundary
 
-The first client migration is only provider-neutral `roba run`.
+The first client migration was provider-neutral `roba run`. The first external
+binding adds the unreleased `roba serve` subcommand without changing that run
+projection.
 
 Its flags, stdout answer, stderr metadata, versioned JSON, empty-result
 classification, and typed exit codes remain compatible. Its implementation
@@ -435,6 +442,12 @@ edge rather than representing preflight failure as provider work.
 The released legacy Claude one-shot command remains untouched until a separate
 compatibility decision. Profiles, aliases, bundles, receipts, history, and
 inspection commands are not silently pulled into the new contract.
+
+Adding `serve` reserves that bare subcommand spelling. The literal legacy
+prompt remains available as `roba -p serve`, but a user-defined alias named
+`serve` is shadowed by the built-in subcommand. This is the deliberate Phase 5
+CLI compatibility exception; all released one-shot flags and explicit prompt
+forms remain available.
 
 The deleted custom `roba-repl` remains deleted. `mcp-repl` is the interactive
 client and dogfood target.
@@ -769,8 +782,8 @@ identity. Federation does not reopen `roba-core` as a multi-agent runtime.
   published.
 - Shutdown first closes admission with `Stopping`, drains any active finite
   run, and only then publishes `Stopped`. Concurrent callers share the same
-  settlement. Phase 3A shuts down the logical agent only; binding EOF, signal,
-  and graceful transport exit remain Phase 5 work.
+  settlement. Phase 3A shut down the logical agent only; binding EOF, signal,
+  and graceful transport exit were deferred to and completed in Phase 5.
 - Interruption retains a provider session already known before the cancelled
   turn. A fresh turn interrupted before terminal session evidence is exposed
   cannot claim the provider-private session; its next turn starts fresh.
@@ -839,6 +852,50 @@ identity. Federation does not reopen `roba-core` as a multi-agent runtime.
   operator-facing HTTP binding parked in Phase 7. No paid real-provider
   dogfood was required for this mechanical checkpoint.
 
+## Phase 5 checkpoint decisions
+
+- `roba serve` owns one promptless `AgentInstance` and one foreground stdio
+  control binding. It accepts the same suspended provider template as
+  `roba run`, without a prompt, `--json`, or legacy profile/config layering.
+  The provider session remains hot across turns; the provider process remains
+  finite and is launched once per admitted operation.
+- The binding uses Tower's compiled legacy and final MCP lifecycle support and
+  concurrent request dispatch. It exposes the same control router as the
+  in-process client, including optional Task-backed `agent.turn`; it does not
+  advertise sampling, elicitation, or server notifications.
+- Stdio EOF and binding shutdown begin `AgentInstance::shutdown` before Tower
+  drains requests. Logical `agent.shutdown` propagates in the other direction
+  to stop transport input, then Tower drains and flushes its response. Every
+  transport return path awaits idempotent agent shutdown before surfacing a
+  transport error or success.
+- `StdioBinding::run` supplies Tower with a bounded async input bridge fed by one
+  ordinary stdin reader thread. Tokio's own stdin uses an uncancellable
+  blocking-pool read that can pin runtime shutdown when a client keeps its pipe
+  open after `agent.shutdown`; the bridge detaches that OS read from the Tokio
+  runtime while preserving backpressure, EOF, and read errors. Foreground
+  `run` is single-use and process-scoped; an embedding that continues after
+  the binding returns supplies its own controllable reader through
+  `run_with_streams`.
+- `agent.interrupt` drains only its named operation and leaves the hot server
+  reusable. Provider failures are typed MCP results and do not decide the
+  server process exit code. Agent-template limits and timeout apply to each
+  finite operation rather than the idle host lifetime or an aggregate budget.
+- Stdio owns both input and output from the first byte; the host prints no
+  banner or success output. EOF, logical shutdown, and SIGTERM are graceful
+  zero-exit requests. Startup/configuration and transport failures use the
+  ordinary generic failure exit, while clap misuse remains exit 2.
+- A piped stdio host consumes SIGINT without ending the agent so `mcp-repl`
+  can use Ctrl-C to stop waiting on a local command while the child shares its
+  foreground process group. A direct terminal host treats Ctrl-C as graceful
+  shutdown. EOF and `agent.shutdown` are the cross-platform explicit stop
+  paths for the piped server; SIGTERM is also graceful on Unix.
+- `serve` is now a reserved subcommand spelling. The explicit legacy prompt
+  remains available as `roba -p serve`, while an alias named `serve` is
+  shadowed; the ambiguous bare `roba serve` form selects the hot host.
+- `mcp-repl` remains an external client rather than a Roba dependency or a
+  custom REPL implementation. Task state, events, and provider sessions are
+  process-local and disappear when the foreground binding exits.
+
 ## Current phase ledger
 
 | Phase | Status | Evidence |
@@ -849,7 +906,7 @@ identity. Federation does not reopen `roba-core` as a multi-agent runtime.
 | 3A. Controls and events | Complete | Independent concurrency review; 13 MCP unit, 11 base-agent integration, and 12 control/event ChannelTransport tests; 188 CLI compatibility tests; full common gate green, 2026-08-17 |
 | 3B. MCP Tasks | Complete | Independent concurrency/API review; 13 MCP unit, 11 base-agent, 12 control/event, and 7 final-plus-legacy Task integration tests; 188 CLI compatibility tests; full common gate green, 2026-08-17 |
 | 4. Provider self-client | Complete | Three independent blocker reviews; 88 core tests; 15 MCP unit, 11 base-agent, 12 control/event, 7 Task, and 3 authenticated-loopback provider integration tests; 188 CLI compatibility tests; full common gate green, 2026-08-17 |
-| 5. Hot stdio | Not started | -- |
+| 5. Hot stdio | Complete | Independent lifecycle review; 15 MCP unit, 11 base-agent, 12 control/event, 7 Task, 3 provider-loopback, and 4 stable-plus-final stdio integration tests; 192 CLI tests including wire purity and real fake-provider child reaping; `mcp-repl` 0.3.0 final-protocol active fake-provider Task smoke; full common gate green, 2026-08-17 |
 | 6. First extension | Not started | -- |
 | 7. Optional bindings | Parked pending demand | -- |
 | Federation | Parked pending separate decision | -- |

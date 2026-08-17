@@ -10,6 +10,7 @@ mod contract;
 mod events;
 mod provider_endpoint;
 mod router;
+mod stdio;
 
 pub use agent::{AgentBuildError, AgentInstance, AgentStopError};
 pub use contract::{
@@ -31,3 +32,4 @@ pub use router::{
     AgentClientError, InterruptInput, ROBA_SELF_TOOL, SelfInput, ShutdownInput, SteerInput,
     TurnInput, agent_router, call_turn, connect_in_process, control_router, router,
 };
+pub use stdio::{StdioBinding, StdioBindingHandle};

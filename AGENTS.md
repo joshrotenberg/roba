@@ -15,12 +15,13 @@ cancellation, and waiting; `roba run` is the current thin blocking CLI.
 The v0.12 work adds an MCP-native layer above that finite core. The current
 `roba-mcp` crate supplies one hot `AgentInstance`, typed `agent.turn`,
 operation-scoped steering/interruption, logical shutdown, agent-wide replay,
-`roba://agent`, optional live Tasks for `agent.turn`, and an in-process MCP
-client. `roba run` crosses that contract and projects the typed result back
-onto its compatibility ABI. Each finite operation also gets a private,
-authenticated provider projection containing only the read-only `self` tool;
-Claude and Codex receive that endpoint as transient launch context. External
-operator transports and extensions remain later phases in
+`roba://agent`, optional live Tasks for `agent.turn`, an in-process MCP client,
+and a foreground stdio binding. `roba run` crosses that contract and projects
+the typed result back onto its compatibility ABI; `roba serve` keeps one
+configured logical agent hot for MCP clients such as `mcp-repl`. Each finite
+operation also gets a private, authenticated provider projection containing
+only the read-only `self` tool; Claude and Codex receive that endpoint as
+transient launch context. Extensions remain a later phase in
 `docs/design/mcp-native-agent-harness.md`.
 
 The original single-prompt Claude CLI remains a compatibility surface while
@@ -54,12 +55,15 @@ the provider-neutral API stabilizes.
   single-root lifecycle, provider boundary plus transient launch context, and
   provider registry
 - `roba-core/src/providers/{claude,codex}.rs` -- built-in provider adapters
-- `roba-mcp/src/{agent,contract,events,router,provider_endpoint}.rs` -- hot
-  single-agent state, typed MCP values, bounded agent-wide replay, role-scoped
-  routers, in-process control client, and private provider callback binding
+- `roba-mcp/src/{agent,contract,events,router,stdio,provider_endpoint}.rs` --
+  hot single-agent state, typed MCP values, bounded agent-wide replay,
+  role-scoped routers, in-process and stdio control bindings, and the private
+  provider callback binding
 - `src/main.rs` entry point; `src/lib.rs` dispatch plus bounded and legacy paths
 - `src/bounded.rs` -- explicit `roba run` flags to a suspended `RunSpec`, the
   in-process MCP call, and compatibility result projection
+- `src/serve.rs` -- foreground stdio host, signal policy, and graceful binding
+  shutdown for `roba serve`
 - `src/cli.rs` clap surface -- doc comments here ARE the `--help` reference
 - `src/session.rs` legacy flag -> `QueryCommand` wiring; `src/env.rs` legacy
   `ROBA_*` overrides
@@ -103,12 +107,12 @@ codes), never model compliance.
 
 ## Adding a CLI flag
 
-For an explicit provider-neutral `roba run` flag: add the clap field in
-`cli.rs` (terse first doc line plus detail), map it to `RunSpec` in
-`bounded.rs`, add parse-level conflict tests, add a mechanical test in
-`tests/cli.rs` when it touches exit codes or stream routing, and document it in
-the README if it is part of the agent ABI. Do not add it to legacy environment,
-profile, or config layering.
+For an explicit provider-neutral `roba run` or `roba serve` template flag: add
+the shared clap field in `cli.rs` (terse first doc line plus detail), map it to
+`RunSpec` in `bounded.rs`, add parse-level conflict tests, add a mechanical test
+in `tests/cli.rs` when it touches exit codes or stream routing, and document it
+in the README if it is part of the agent ABI. Do not add it to legacy
+environment, profile, or config layering.
 
 For a legacy one-shot flag, follow the full compatibility checklist in order:
 clap field in `cli.rs` -> `session.rs` wiring -> `ROBA_<PARAM>` override in

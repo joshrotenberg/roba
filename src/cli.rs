@@ -212,6 +212,12 @@ pub enum SubCommand {
     /// The command waits for one terminal outcome. Library callers may retain
     /// a `RunHandle` to observe, steer, or cancel a live run.
     Run(RunArgs),
+    /// Serve one hot provider-neutral Roba agent over stdio.
+    ///
+    /// The process starts idle and reserves stdin/stdout for MCP wire data.
+    /// Each accepted `agent.turn` creates one finite provider run while the
+    /// logical agent retains validated provider session continuity.
+    Serve(ServeArgs),
     /// Validate and inspect legacy Claude `.roba/` bundles without a provider.
     Bundle {
         #[command(subcommand)]
@@ -343,12 +349,10 @@ pub enum PersonaAction {
     },
 }
 
+/// Fixed configuration shared by one-shot and hot provider-neutral agents.
 #[derive(ClapArgs, Debug)]
-pub struct RunArgs {
-    /// Initial intention for this finite run.
-    pub prompt: String,
-
-    /// Provider for this run. Defaults to Claude.
+pub struct AgentArgs {
+    /// Provider for this agent. Defaults to Claude.
     #[arg(long, value_enum)]
     pub provider: Option<RunProvider>,
 
@@ -364,7 +368,7 @@ pub struct RunArgs {
     #[arg(long = "instruction")]
     pub instructions: Vec<String>,
 
-    /// Run-specific context. Repeat to compose in order.
+    /// Agent context. Repeat to compose in order.
     #[arg(long = "context")]
     pub context: Vec<String>,
 
@@ -376,25 +380,48 @@ pub struct RunArgs {
     #[arg(long, conflicts_with = "writable")]
     pub full_auto: bool,
 
-    /// Provider turn ceiling. Unsupported providers refuse before launch.
+    /// Per-run provider turn ceiling. Unsupported providers refuse before launch.
     #[arg(long)]
     pub max_turns: Option<u32>,
 
-    /// Provider-reported dollar ceiling. Unsupported providers refuse before launch.
+    /// Per-run provider-reported dollar ceiling. Unsupported providers refuse before launch.
     #[arg(long)]
     pub max_cost_usd: Option<f64>,
 
-    /// Wall-clock provider deadline in seconds.
+    /// Per-run wall-clock provider deadline in seconds.
     #[arg(long)]
     pub timeout: Option<u64>,
 
-    /// Resume a provider session/thread id.
+    /// Seed this agent from a provider session/thread id.
     #[arg(long)]
     pub resume: Option<String>,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct RunArgs {
+    #[command(flatten)]
+    pub agent: AgentArgs,
+
+    /// Initial intention for this finite run.
+    pub prompt: String,
 
     /// Emit the terminal run snapshot as a versioned JSON envelope.
     #[arg(long)]
     pub json: bool,
+}
+
+impl std::ops::Deref for RunArgs {
+    type Target = AgentArgs;
+
+    fn deref(&self) -> &Self::Target {
+        &self.agent
+    }
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct ServeArgs {
+    #[command(flatten)]
+    pub agent: AgentArgs,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -1564,9 +1591,9 @@ pub struct AskArgs {
     /// Passes claude's own `--mcp-config <FILE>` through, once per path. The
     /// servers in the file provide additional tools for the call. This is the
     /// THIN pass-through -- it points the existing `claude -p` at MCP server
-    /// JSON for one run. It is NOT the headless MCP *server* ("roba serve",
-    /// closed as a separate tool); don't confuse the two. roba forwards the
-    /// path verbatim and never reads the file -- claude reads it.
+    /// JSON for one run. It is not the hot Roba MCP host (`roba serve`); do
+    /// not confuse the two. Roba forwards the path verbatim and never reads
+    /// the file -- Claude reads it.
     #[arg(long, value_name = "FILE", help_heading = "MCP")]
     pub mcp_config: Vec<String>,
 
@@ -1658,6 +1685,79 @@ pub fn parse_kv(s: &str) -> std::result::Result<(String, String), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serve_is_promptless_and_accepts_the_provider_neutral_agent_flags() {
+        let cli = Cli::try_parse_from([
+            "roba",
+            "serve",
+            "--provider",
+            "codex",
+            "--model",
+            "configured",
+            "--effort",
+            "xhigh",
+            "--instruction",
+            "be exact",
+            "--context",
+            "the tests are authoritative",
+            "--writable",
+            "--max-turns",
+            "12",
+            "--max-cost-usd",
+            "1.5",
+            "--timeout",
+            "30",
+            "--resume",
+            "thread-1",
+        ])
+        .unwrap();
+        let Some(SubCommand::Serve(args)) = cli.command else {
+            panic!("expected serve subcommand");
+        };
+        assert_eq!(args.agent.provider, Some(RunProvider::Codex));
+        assert_eq!(args.agent.model.as_deref(), Some("configured"));
+        assert_eq!(args.agent.effort, Some(EffortLevel::Xhigh));
+        assert_eq!(args.agent.instructions, ["be exact"]);
+        assert_eq!(args.agent.context, ["the tests are authoritative"]);
+        assert!(args.agent.writable);
+        assert_eq!(args.agent.max_turns, Some(12));
+        assert_eq!(args.agent.max_cost_usd, Some(1.5));
+        assert_eq!(args.agent.timeout, Some(30));
+        assert_eq!(args.agent.resume.as_deref(), Some("thread-1"));
+    }
+
+    #[test]
+    fn run_keeps_its_prompt_json_and_provider_neutral_flags() {
+        let cli = Cli::try_parse_from([
+            "roba",
+            "run",
+            "--provider",
+            "codex",
+            "--full-auto",
+            "--json",
+            "hello",
+        ])
+        .unwrap();
+        let Some(SubCommand::Run(args)) = cli.command else {
+            panic!("expected run subcommand");
+        };
+        assert_eq!(args.agent.provider, Some(RunProvider::Codex));
+        assert!(args.agent.full_auto);
+        assert!(args.json);
+        assert_eq!(args.prompt, "hello");
+    }
+
+    #[test]
+    fn serve_rejects_prompts_and_run_only_output() {
+        assert!(Cli::try_parse_from(["roba", "serve", "hello"]).is_err());
+        assert!(Cli::try_parse_from(["roba", "serve", "--json"]).is_err());
+    }
+
+    #[test]
+    fn serve_permission_modes_are_mutually_exclusive() {
+        assert!(Cli::try_parse_from(["roba", "serve", "--writable", "--full-auto"]).is_err());
+    }
 
     #[test]
     fn parse_kv_splits_on_first_equals() {

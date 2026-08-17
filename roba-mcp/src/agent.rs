@@ -620,6 +620,22 @@ impl AgentInstance {
         }
     }
 
+    /// Wait for another caller to finish permanently stopping this agent.
+    ///
+    /// This is a passive lifecycle observation used by bindings. It never
+    /// initiates shutdown itself.
+    pub(crate) async fn wait_stopped(&self) -> AgentShutdownResult {
+        let mut receiver = self.inner.shutdown_tx.subscribe();
+        loop {
+            if let Some(result) = receiver.borrow().clone() {
+                return result;
+            }
+            if receiver.changed().await.is_err() {
+                return AgentShutdownResult::Stopped { drained: None };
+            }
+        }
+    }
+
     /// Read a bounded page from the agent-wide event journal.
     pub async fn event_page(
         &self,
