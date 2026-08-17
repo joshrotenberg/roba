@@ -238,23 +238,37 @@ text to recover Roba exit codes.
 `agent.turn` supports both normal and Task-aware callers through Tower MCP's
 live task handler plus synchronous fallback.
 
-The Task path must explicitly select over the finite run and
-`TaskContext::cancelled()`. On task cancellation it calls the matching
-`RunHandle::cancel`, waits for settlement, and only then returns a cancelled
-Task outcome. A task id or operation generation guards this path so delayed
-cancellation cannot affect a later run.
+Tower allocates the Task before Roba admits work. A Task preparation step then
+captures an opaque ticket for the exact finite run and publishes its operation
+id as Task metadata before returning the Task handle. The live handler selects
+over that ticket's settlement and `TaskContext::cancelled()`. It never resolves
+whichever operation happens to be current later, so delayed cancellation
+cannot affect a subsequent run.
+
+`tasks/cancel` is an immediate, eventually consistent acknowledgment. The live
+handler applies cancellation to the captured `RunHandle`, waits for agent
+settlement, and only then returns. Clients use `tasks/get` or `task_wait` as
+the settlement barrier. Completion wins when it is already observable; a
+Task cancellation that wins and settles the core run cancelled becomes a
+cancelled MCP Task. MCP's cancelled Task shape does not carry a
+`CallToolResult`, so exact structured-result parity applies to completed Task
+outcomes. That includes provider and domain failures: `isError: true` remains
+a completed Task carrying Roba's typed failure.
 
 The direct-call path deliberately separates request lifetime from admitted
 agent work. Dropping a synchronous MCP waiter leaves the exact operation
 running, supervised, and observable; the caller or another operator uses
 `agent.interrupt` or `agent.shutdown` to end it. This is pinned independently
 of transport cancellation because Tower MCP 0.22's `ChannelTransport` does
-not forward `notifications/cancelled`. Phase 3B Task cancellation remains an
+not forward `notifications/cancelled`. Task-backed cancellation is a separate
 execution-cancellation contract and targets its captured operation id.
 
-The process-scoped harness uses an in-memory MCP task store. Durable Tasks,
-restart reconciliation, and a background job database are workflow-layer
-features and are not implied.
+The process-scoped harness uses Tower's in-memory MCP task store. Roba extends
+the active lease so a long live run cannot disappear under Tower's default
+five-minute TTL, shortens it after settlement to retain the result for at
+least five minutes, and reclaims expired records on the next Task admission.
+Durable Tasks, restart reconciliation, and a background job database are
+workflow-layer features and are not implied.
 
 ## Router composition
 
@@ -706,7 +720,7 @@ identity. Federation does not reopen `roba-core` as a multi-agent runtime.
   `Running`.
 - This checkpoint did not define MCP request-cancellation behavior. Phase 3A
   later chose observable direct-call detachment plus explicit operation-scoped
-  interruption; Task cancellation remains separate Phase 3B work.
+  interruption; Task cancellation was deferred to and completed in Phase 3B.
 - `roba://agent` publishes only whether a provider session is available and
   redacts session identifiers from its retained latest-turn projection. The
   direct `agent.turn` result keeps validated session evidence for the caller
@@ -746,6 +760,31 @@ identity. Federation does not reopen `roba-core` as a multi-agent runtime.
   turn. A fresh turn interrupted before terminal session evidence is exposed
   cannot claim the provider-private session; its next turn starts fresh.
 
+## Phase 3B checkpoint decisions
+
+- `agent.turn` is one optional dual-path tool. Tower's Task preparation admits
+  and captures the exact finite run before publishing the Task handle; the
+  synchronous fallback keeps the direct-call behavior unchanged.
+- Roba publishes the captured operation id under
+  `com.github.joshrotenberg.roba/operation` Task metadata. Task cancellation
+  uses the opaque admission ticket itself rather than a task-id lookup or the
+  later current operation.
+- `tasks/cancel` acknowledges immediately. Polling `tasks/get` or awaiting the
+  Task is the settlement barrier. An already-observable completion wins a
+  cancellation race; otherwise Roba cancels and drains the finite run before
+  reporting the Task cancelled.
+- MCP cancelled Tasks cannot carry a tool result. Exact display,
+  `structuredContent`, and `isError` parity applies to completed Task outcomes,
+  including typed Roba provider failures. The agent snapshot and event replay
+  retain the underlying Roba cancellation settlement.
+- Tower's `MemoryTaskStore` remains the only task store. Active turns receive
+  a process-lifetime practical lease, settled results remain visible for at
+  least five minutes, and the next Task admission reclaims expired records.
+  Persistence and restart reconciliation remain outside the base harness.
+- The router opts into the final 2026-07-28 protocol and catches live-handler
+  panics so one glue-layer fault cannot leave a Task working forever. Provider
+  panics still settle through Roba's typed finite-run failure path.
+
 ## Current phase ledger
 
 | Phase | Status | Evidence |
@@ -754,7 +793,7 @@ identity. Federation does not reopen `roba-core` as a multi-agent runtime.
 | 1. Minimal in-process agent | Complete | Two independent correctness reviews; 1 unit and 11 ChannelTransport integration tests; full common gate green, 2026-08-17 |
 | 2. CLI over MCP | Complete | Two independent audits; 6 MCP unit plus 11 agent integration tests; 10 compatibility-projection unit and 188 CLI tests; full common gate green, 2026-08-17 |
 | 3A. Controls and events | Complete | Independent concurrency review; 13 MCP unit, 11 base-agent integration, and 12 control/event ChannelTransport tests; 188 CLI compatibility tests; full common gate green, 2026-08-17 |
-| 3B. MCP Tasks | Not started | -- |
+| 3B. MCP Tasks | Complete | Independent concurrency/API review; 13 MCP unit, 11 base-agent, 12 control/event, and 7 final-plus-legacy Task integration tests; 188 CLI compatibility tests; full common gate green, 2026-08-17 |
 | 4. Provider self-client | Not started | -- |
 | 5. Hot stdio | Not started | -- |
 | 6. First extension | Not started | -- |

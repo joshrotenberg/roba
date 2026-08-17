@@ -21,7 +21,9 @@ The workspace also includes the first process-local `roba-mcp` layer. Its
 run per accepted `agent.turn`, retains provider session continuity, and offers
 operation-scoped controls plus agent-wide replay. The provider-neutral
 `roba run` command uses this contract through an in-process MCP client; no
-external transport is shipped yet.
+external transport is shipped yet. Task-aware clients can also background,
+poll, and cancel `agent.turn` through MCP Tasks while ordinary clients keep
+the same blocking tool contract.
 
 The established single-prompt Claude CLI remains a supported compatibility
 surface while the provider-neutral library API stabilizes.
@@ -91,13 +93,14 @@ The adopted v0.12 direction is an MCP-native, single-agent harness above this
 finite core. The process-local base contract now supplies one hot logical
 agent, single-flight `agent.turn`, typed structured results, `roba://agent`,
 operation-scoped steering/interruption, logical shutdown, agent-wide event
-replay, and an initialized Tower MCP `ChannelTransport` client. `roba run` is
-the first interface migrated onto that contract while preserving its existing
-stdout, JSON, and exit-code ABI for admitted runs. Tasks, external bindings,
-provider-facing access, and service fragments remain later gated phases.
-`mcp-repl` will provide the interactive client, so Roba does not need a custom
-REPL. The legacy `--mcp-config` flag is unrelated: it passes an MCP server
-configuration through to a one-shot Claude invocation.
+replay, optional live Tasks for `agent.turn`, and an initialized Tower MCP
+`ChannelTransport` client. `roba run` is the first interface migrated onto
+that contract while preserving its existing stdout, JSON, and exit-code ABI
+for admitted runs. External bindings, provider-facing access, and service
+fragments remain later gated phases. `mcp-repl` will provide the interactive
+client, so Roba does not need a custom REPL. The legacy `--mcp-config` flag is
+unrelated: it passes an MCP server configuration through to a one-shot Claude
+invocation.
 
 The Steward prototype in `ok-v` is separate workflow-layer prior art. Its
 visible queue, bounded tick, lock, and receipt ideas may inform external tools,

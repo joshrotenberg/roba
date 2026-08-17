@@ -54,8 +54,23 @@ struct ActiveOperation {
     settlement: watch::Receiver<Option<AgentTurnResult>>,
 }
 
-enum TurnAdmission {
-    Admitted(Arc<ActiveOperation>),
+/// Opaque capability for one exact admitted finite run.
+#[derive(Clone)]
+pub(crate) struct AdmittedTurn {
+    active: Arc<ActiveOperation>,
+}
+
+impl AdmittedTurn {
+    /// Identity of the exact finite run captured by this capability.
+    pub(crate) fn operation_id(&self) -> OperationId {
+        self.active.id
+    }
+}
+
+/// Result of validating and attempting one turn admission.
+#[derive(Clone)]
+pub(crate) enum TurnAdmission {
+    Admitted(AdmittedTurn),
     Refused(AgentTurnResult),
 }
 
@@ -133,12 +148,17 @@ impl AgentInstance {
     /// the agent in `running` after its provider turn finishes.
     pub async fn turn(&self, text: String) -> AgentTurnResult {
         match self.admit_turn(text).await {
-            TurnAdmission::Admitted(active) => self.wait_for_settlement(active).await,
+            TurnAdmission::Admitted(turn) => self.wait_admitted(&turn).await,
             TurnAdmission::Refused(result) => result,
         }
     }
 
-    async fn admit_turn(&self, text: String) -> TurnAdmission {
+    /// Admit one turn without tying its settlement to the calling future.
+    ///
+    /// The returned capability is generation-fenced to this exact finite run.
+    /// It lets protocol adapters wait or cancel without resolving whichever
+    /// operation happens to be current later.
+    pub(crate) async fn admit_turn(&self, text: String) -> TurnAdmission {
         let mut control = self.inner.control.lock().await;
         match control.lifetime {
             AgentLifetime::Stopping | AgentLifetime::Stopped => {
@@ -213,7 +233,7 @@ impl AgentInstance {
         drop(control);
 
         self.spawn_operation(active.clone(), subscription, settlement_tx);
-        TurnAdmission::Admitted(active)
+        TurnAdmission::Admitted(AdmittedTurn { active })
     }
 
     fn spawn_operation(
@@ -257,6 +277,21 @@ impl AgentInstance {
                 return self.settle(active.id, snapshot).await;
             }
         }
+    }
+
+    /// Wait for one exact admitted turn to settle.
+    pub(crate) async fn wait_admitted(&self, turn: &AdmittedTurn) -> AgentTurnResult {
+        self.wait_for_settlement(turn.active.clone()).await
+    }
+
+    /// Cancel one exact admitted turn and wait until agent settlement.
+    ///
+    /// Cancellation is applied to the captured core handle, never to a
+    /// newly-current operation. A completion race is therefore harmless: the
+    /// already-terminal result wins and is returned unchanged.
+    pub(crate) async fn cancel_admitted_and_wait(&self, turn: &AdmittedTurn) -> AgentTurnResult {
+        let _ = turn.active.handle.cancel().await;
+        self.wait_for_settlement(turn.active.clone()).await
     }
 
     /// Return the latest inspectable agent state without starting work.

@@ -15,10 +15,10 @@ cancellation, and waiting; `roba run` is the current thin blocking CLI.
 The v0.12 work adds an MCP-native layer above that finite core. The current
 `roba-mcp` crate supplies one hot `AgentInstance`, typed `agent.turn`,
 operation-scoped steering/interruption, logical shutdown, agent-wide replay,
-`roba://agent`, and an in-process MCP client. `roba run` crosses that contract
-and projects the typed result back onto its compatibility ABI. MCP Tasks,
-provider-facing access, external transports, and extensions remain later
-phases in `docs/design/mcp-native-agent-harness.md`.
+`roba://agent`, optional live Tasks for `agent.turn`, and an in-process MCP
+client. `roba run` crosses that contract and projects the typed result back
+onto its compatibility ABI. Provider-facing access, external transports, and
+extensions remain later phases in `docs/design/mcp-native-agent-harness.md`.
 
 The original single-prompt Claude CLI remains a compatibility surface while
 the provider-neutral API stabilizes.

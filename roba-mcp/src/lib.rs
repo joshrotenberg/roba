@@ -25,6 +25,7 @@ pub use events::{
 };
 pub use router::{
     AGENT_EVENTS_TEMPLATE, AGENT_EVENTS_URI, AGENT_INTERRUPT_TOOL, AGENT_RESOURCE_URI,
-    AGENT_SHUTDOWN_TOOL, AGENT_STEER_TOOL, AGENT_TURN_TOOL, AgentClientError, InterruptInput,
-    ShutdownInput, SteerInput, TurnInput, call_turn, connect_in_process, router,
+    AGENT_SHUTDOWN_TOOL, AGENT_STEER_TOOL, AGENT_TASK_OPERATION_META_KEY, AGENT_TURN_TOOL,
+    AgentClientError, InterruptInput, ShutdownInput, SteerInput, TurnInput, call_turn,
+    connect_in_process, router,
 };

@@ -3,14 +3,19 @@
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::fmt;
+use std::sync::Arc;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
+use tower_mcp::async_task::{MemoryTaskStore, TaskStore};
 use tower_mcp::schemars::{self, JsonSchema, schema_for};
 use tower_mcp::{
     CallToolResult, ChannelTransport, Content, Error as McpError, McpClient, McpRouter,
-    ReadResourceResult, ResourceBuilder, ResourceTemplateBuilder, ToolBuilder,
+    ReadResourceResult, RequestContext, ResourceBuilder, ResourceTemplateBuilder, TaskContext,
+    TaskOutcome, TaskPreparation, ToolBuilder,
 };
 
+use crate::agent::TurnAdmission;
 use crate::{
     AGENT_EVENT_CAPACITY, AgentInstance, AgentInterruptResult, AgentShutdownResult,
     AgentSteerResult, AgentTurnResult, OperationId,
@@ -30,8 +35,22 @@ pub const AGENT_RESOURCE_URI: &str = "roba://agent";
 pub const AGENT_EVENTS_URI: &str = "roba://events";
 /// Cursor-paged agent-wide event resource template.
 pub const AGENT_EVENTS_TEMPLATE: &str = "roba://events{?after,limit}";
+/// Task metadata key carrying the exact admitted Roba operation identity.
+pub const AGENT_TASK_OPERATION_META_KEY: &str = "com.github.joshrotenberg.roba/operation";
 
 const DEFAULT_EVENT_LIMIT: usize = 100;
+// Keep an admitted live operation addressable for effectively the process
+// lifetime. This is the largest integer exactly representable by common JSON
+// clients. The handler shortens the lease after settlement.
+const ACTIVE_TASK_TTL_MS: u64 = 9_007_199_254_740_991;
+const SETTLED_TASK_RETENTION_MS: u64 = 300_000;
+const TASK_CREATION_SLACK_MS: u64 = 60_000;
+
+#[derive(Clone)]
+struct PreparedTurn {
+    admission: TurnAdmission,
+    prepared_at: Instant,
+}
 
 /// Input contract for [`AGENT_TURN_TOOL`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -121,20 +140,79 @@ impl StdError for AgentClientError {
 
 /// Build the base single-agent MCP router.
 pub fn router(agent: AgentInstance) -> McpRouter {
+    let task_store = Arc::new(MemoryTaskStore::new());
     let turn_output_schema = serde_json::to_value(schema_for!(AgentTurnResult))
         .expect("static agent turn schema must serialize");
-    let turn_agent = agent.clone();
+    let task_agent = agent.clone();
+    let task_execution_store = task_store.clone();
+    let fallback_agent = agent.clone();
+    let preparation_agent = agent.clone();
+    let preparation_store = task_store.clone();
     let turn = ToolBuilder::new(AGENT_TURN_TOOL)
         .description("Run one prompt through this logical Roba agent.")
         .output_schema(turn_output_schema)
-        .handler(move |input: TurnInput| {
-            let agent = turn_agent.clone();
+        .live_task_handler_with_context(
+            move |context: RequestContext, task: TaskContext, _input: TurnInput| {
+                let agent = task_agent.clone();
+                let store = task_execution_store.clone();
+                async move {
+                    let prepared =
+                        context
+                            .extension::<PreparedTurn>()
+                            .cloned()
+                            .ok_or_else(|| {
+                                McpError::internal(
+                                    "agent.turn task started without prepared turn admission",
+                                )
+                            })?;
+                    execute_task_turn(agent, task, prepared, store).await
+                }
+            },
+        )
+        .fallback_handler(move |input: TurnInput| {
+            let agent = fallback_agent.clone();
             async move {
                 let result = agent.turn(input.text).await;
                 encode_turn(&result)
             }
         })
-        .build();
+        .build()
+        .with_typed_task_preparation(move |task: TaskContext, input: TurnInput| {
+            let agent = preparation_agent.clone();
+            let store = preparation_store.clone();
+            async move {
+                let prepared_at = Instant::now();
+                // MemoryTaskStore hides expired records but only reclaims
+                // them when asked. Reclaim at the next task boundary so a hot
+                // agent does not accumulate every completed turn forever.
+                store.cleanup_expired();
+                let retained = store
+                    .set_ttl(task.task_id(), ACTIVE_TASK_TTL_MS)
+                    .await
+                    .map_err(|error| {
+                        McpError::internal(format!(
+                            "failed to retain live agent.turn task: {error}"
+                        ))
+                    })?;
+                if !retained {
+                    return Err(McpError::internal(
+                        "live agent.turn task disappeared during preparation",
+                    ));
+                }
+                let admission = agent.admit_turn(input.text).await;
+                let mut preparation = TaskPreparation::new().with_extension(PreparedTurn {
+                    admission: admission.clone(),
+                    prepared_at,
+                });
+                if let TurnAdmission::Admitted(turn) = admission {
+                    preparation = preparation.with_meta(serde_json::Map::from_iter([(
+                        AGENT_TASK_OPERATION_META_KEY.to_owned(),
+                        serde_json::json!({ "operationId": turn.operation_id() }),
+                    )]));
+                }
+                Ok(preparation)
+            }
+        });
 
     let steer_output_schema = serde_json::to_value(schema_for!(AgentSteerResult))
         .expect("static agent steer schema must serialize");
@@ -242,6 +320,7 @@ pub fn router(agent: AgentInstance) -> McpRouter {
 
     McpRouter::new()
         .server_info("roba-agent", env!("CARGO_PKG_VERSION"))
+        .task_store(task_store)
         .tool(turn)
         .tool(steer)
         .tool(interrupt)
@@ -249,6 +328,8 @@ pub fn router(agent: AgentInstance) -> McpRouter {
         .resource(state)
         .resource(events)
         .resource_template(events_template)
+        .with_tasks()
+        .catch_panics()
 }
 
 /// Connect and initialize a production in-process MCP client.
@@ -298,6 +379,71 @@ fn encode_turn(value: &AgentTurnResult) -> tower_mcp::Result<CallToolResult> {
     result.content = vec![Content::text(value.display_text())];
     result.is_error = value.is_error();
     Ok(result)
+}
+
+async fn execute_task_turn(
+    agent: AgentInstance,
+    task: TaskContext,
+    prepared: PreparedTurn,
+    store: Arc<MemoryTaskStore>,
+) -> tower_mcp::Result<TaskOutcome> {
+    let outcome = match prepared.admission {
+        TurnAdmission::Refused(result) => TaskOutcome::Completed(encode_turn(&result)?),
+        TurnAdmission::Admitted(turn) if task.is_cancelled() => {
+            settle_cancelled_task(&agent, &turn).await?
+        }
+        TurnAdmission::Admitted(turn) => {
+            tokio::select! {
+                biased;
+                result = agent.wait_admitted(&turn) => {
+                    TaskOutcome::Completed(encode_turn(&result)?)
+                }
+                () = task.cancelled() => settle_cancelled_task(&agent, &turn).await?,
+            }
+        }
+    };
+    retain_settled_task(&store, &task, prepared.prepared_at).await?;
+    Ok(outcome)
+}
+
+async fn settle_cancelled_task(
+    agent: &AgentInstance,
+    turn: &crate::agent::AdmittedTurn,
+) -> tower_mcp::Result<TaskOutcome> {
+    let result = agent.cancel_admitted_and_wait(turn).await;
+    if matches!(result, AgentTurnResult::Cancelled { .. }) {
+        Ok(TaskOutcome::Cancelled {
+            message: Some("agent turn cancelled".to_owned()),
+        })
+    } else {
+        Ok(TaskOutcome::Completed(encode_turn(&result)?))
+    }
+}
+
+async fn retain_settled_task(
+    store: &MemoryTaskStore,
+    task: &TaskContext,
+    prepared_at: Instant,
+) -> tower_mcp::Result<()> {
+    let elapsed_ms = u64::try_from(prepared_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    // Tower measures TTL from task creation, which slightly precedes task
+    // preparation. Include conservative slack so the visible terminal result
+    // remains available for at least the intended retention in practice.
+    let ttl_ms = elapsed_ms
+        .saturating_add(SETTLED_TASK_RETENTION_MS)
+        .saturating_add(TASK_CREATION_SLACK_MS);
+    let retained = store
+        .set_ttl(task.task_id(), ttl_ms)
+        .await
+        .map_err(|error| {
+            McpError::internal(format!("failed to retain settled agent.turn task: {error}"))
+        })?;
+    if !retained {
+        return Err(McpError::internal(
+            "agent.turn task disappeared before settlement was recorded",
+        ));
+    }
+    Ok(())
 }
 
 fn encode_steer(value: &AgentSteerResult) -> tower_mcp::Result<CallToolResult> {
