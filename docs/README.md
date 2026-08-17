@@ -5,15 +5,16 @@ small: historical proposals and implementation journals remain available in
 Git history, but they are not kept beside the active contract where they can be
 mistaken for shipped behavior.
 
-Documentation has four authoritative homes:
+Documentation has five authoritative homes:
 
-- the root `README.md` explains the product, its main workflows, and the stable
-  scripting contract;
+- the root `README.md` explains the current product and its main workflows;
 - `roba --help` and subcommand help are the CLI reference generated from
   `src/cli.rs`;
 - crate READMEs explain the public Rust surfaces owned by each workspace crate;
 - `docs/architecture/` records the durable decisions and boundaries behind the
-  current implementation.
+  current implementation;
+- `legacy-cli.md` records the supported Claude compatibility workflows and
+  stable scripting contract.
 
 The annotated `roba-config.sample.toml` is the reference for the legacy
 one-shot configuration format. It and every tracked example configuration are
@@ -28,3 +29,5 @@ decision and its rationale here, not a phase ledger or working-session log.
   provider-neutral execution core.
 - [`architecture/mcp-harness.md`](architecture/mcp-harness.md) -- the hot,
   single-agent MCP application layer above the core.
+- [`legacy-cli.md`](legacy-cli.md) -- the Claude-only compatibility command,
+  configuration model, and scripting ABI.

@@ -55,7 +55,8 @@ Examples -- for agents & scripts (deterministic, pipe-clean):
   the exit code (the success envelope is on stdout for empty/is_error;
   stdout is empty for the no-result-event case). Branch on $?.
   Unattended / CI recipe (--json + --bare + the cap trio + --trace, with
-  exit-code branching): see the README \"For agents & scripts\" section.
+  exit-code branching): see
+  https://github.com/joshrotenberg/roba/blob/main/docs/legacy-cli.md.
 
 Unattended runs (composing the legacy primitives):
   --full-auto -C <dir> -f <file>   edit the current checkout in place; the

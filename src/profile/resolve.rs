@@ -613,8 +613,7 @@ mod tests {
         assert_eq!(args.deny_tool, vec!["WebFetch".to_string()]);
     }
 
-    /// Spec-as-test for the precedence docs in README.md ("Permissions
-    /// precedence") and docs/profiles.md ("Permissions precedence").
+    /// Spec-as-test for the precedence documented in docs/legacy-cli.md.
     ///
     /// `--readonly` on the CLI actively suppresses a `writable = true`
     /// coming from a lower-priority profile layer: the trio

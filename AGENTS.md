@@ -1,8 +1,8 @@
 # AGENTS.md
 
 Instructions for coding agents working on this repo. For *driving* Roba (the
-legacy one-shot agent ABI: envelope, exit codes, and unattended-run recipes),
-see the README's "For agents & scripts" section and `roba --help`. This file is
+legacy one-shot agent ABI, exit codes, and unattended-run recipes), see
+`docs/legacy-cli.md#for-agents-and-scripts` and `roba --help`. This file is
 about contributing.
 
 ## What this is
@@ -80,7 +80,8 @@ the provider-neutral API stabilizes.
 - Doc homes: README (current concepts + agent ABI),
   `docs/architecture/` (implemented architectural decisions), `--help`
   (reference generated from `cli.rs`), crate READMEs (public Rust surfaces),
-  and parse-tested legacy config examples
+  `docs/legacy-cli.md` (Claude compatibility and scripting), and parse-tested
+  legacy config examples
 
 ## Build and test (all must pass before a PR)
 
