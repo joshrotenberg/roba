@@ -29,10 +29,8 @@ pub const GIT_STAGE_ALL_TOOL: &str = "git.stage_all";
 pub const GIT_WORKSPACE_RESOURCE_URI: &str = "roba://git/workspace";
 
 const EXTENSION_NAME: &str = "roba-git";
-// Git process startup can exceed a few seconds under Windows process
-// containment and concurrent host load. Keep calls bounded without mistaking
-// ordinary startup pressure for a hung command.
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(not(windows))]
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(12);
 const STAGE_MUTATION_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -182,11 +180,12 @@ impl GitWorkspace {
 
         let mutation = tokio::time::timeout(STAGE_MUTATION_TIMEOUT, async {
             let mut add = self.inner.repository.add();
-            add.all().with_timeout(COMMAND_TIMEOUT);
+            add.all();
+            apply_command_timeout(&mut add);
             add.execute().await?;
 
             let mut write_tree = self.inner.repository.write_tree();
-            write_tree.with_timeout(COMMAND_TIMEOUT);
+            apply_command_timeout(&mut write_tree);
             write_tree.execute().await
         })
         .await;
@@ -312,8 +311,8 @@ impl GitWorkspace {
             .branch()
             .null_terminate()
             .untracked_files("all")
-            .global_args(["--no-optional-locks", "-c", "core.fsmonitor=false"])
-            .with_timeout(COMMAND_TIMEOUT);
+            .global_args(["--no-optional-locks", "-c", "core.fsmonitor=false"]);
+        apply_command_timeout(&mut status);
         let status = status.execute().await?;
         let status = parse_full_status(&status.stdout_str())?;
 
@@ -363,8 +362,8 @@ impl GitWorkspace {
             .verify()
             .arg_str("--quiet")
             .arg_str("HEAD")
-            .global_args(["--no-optional-locks", "-c", "core.fsmonitor=false"])
-            .with_timeout(COMMAND_TIMEOUT);
+            .global_args(["--no-optional-locks", "-c", "core.fsmonitor=false"]);
+        apply_command_timeout(&mut command);
         let output = command.execute_raw_unchecked().await?;
         match output.exit_code {
             0 => Ok(Some(output.stdout_trimmed())),
@@ -393,6 +392,18 @@ impl GitWorkspace {
             after: self.snapshot_bounded().await.ok(),
         }
     }
+}
+
+#[cfg(not(windows))]
+fn apply_command_timeout(command: &mut impl GitCommand) {
+    command.with_timeout(COMMAND_TIMEOUT);
+}
+
+#[cfg(windows)]
+fn apply_command_timeout(_command: &mut impl GitCommand) {
+    // The enclosing snapshot or mutation deadline remains authoritative.
+    // git-spawn's timed Windows path creates a nested Job Object, which can
+    // strand Git in hosts that already contain the Roba process in a job.
 }
 
 fn encode_snapshot(snapshot: &GitWorkspaceSnapshot) -> Result<CallToolResult, McpError> {
