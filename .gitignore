@@ -2,5 +2,6 @@
 
 # maintainer-private agent context (auto-loaded locally, never tracked)
 CLAUDE.local.md
+CLAUDE.history.local.md
 
 # local design/working docs (never tracked; protects against `git add -A`)

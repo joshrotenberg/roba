@@ -149,10 +149,10 @@ The latter starts idle and does not launch a provider until `agent.turn` is
 admitted. Provider failures remain typed results and leave the binding hot;
 only logical shutdown, stdio EOF, or the host's shutdown policy ends it.
 
-Unix/HTTP operator bindings remain later phases in
-`../docs/design/mcp-native-agent-harness.md`. The private HTTP listener is
-operation-scoped provider plumbing, not a general HTTP binding. The base
-`self` handler is immediate and `roba-git` bounds its read calls. Before an
-extension adds arbitrary or long-running provider callbacks, the endpoint
-host must add explicit request tracking and cancellation rather than
-generalizing the current teardown claim.
+Unix/HTTP operator bindings remain future work described in
+[`docs/architecture/mcp-harness.md`](../../docs/architecture/mcp-harness.md).
+The private HTTP listener is operation-scoped provider plumbing, not a general
+HTTP binding. The base `self` handler is immediate and `roba-git` bounds its
+read calls. Before an extension adds arbitrary or long-running provider
+callbacks, the endpoint host must add explicit request tracking and
+cancellation rather than generalizing the current teardown claim.

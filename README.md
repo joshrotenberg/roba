@@ -207,10 +207,10 @@ tool, resource, template, or prompt collisions instead of replacing an
 existing capability. Git is read on demand through MCP and is not injected
 into prompts, so resumed turns do not accumulate duplicate context.
 
-See [the run-library design](docs/design/run-library-pivot.md) for the finite
-core decision and [the MCP-native harness
-plan](docs/design/mcp-native-agent-harness.md) for the adopted architecture,
-phase gates, and exact distinction between current and planned behavior.
+See [the finite-core architecture](docs/architecture/core.md) and the
+[MCP-native harness architecture](docs/architecture/mcp-harness.md) for the
+durable decisions, boundaries, and distinction between current and planned
+behavior.
 
 ## Legacy one-shot CLI
 
