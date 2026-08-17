@@ -1,8 +1,8 @@
-> Status: ACTIVE cleanup and hardening. The provider-neutral root-run core,
+> Status: ADOPTED finite-core decision. The provider-neutral root-run core,
 > Claude and Codex adapters, and blocking `roba run` path remain. The worker
-> tree, mission/process layers, GitHub pack, and shipped MCP/REPL adapters are
-> parked or removed. This document is the architecture decision and resume
-> point for the next v0.12 work.
+> tree, mission/process layers, GitHub pack, and former MCP/REPL adapters are
+> parked or removed. The new above-core MCP harness and phased resume point are
+> specified in `docs/design/mcp-native-agent-harness.md`.
 
 # Roba as a finite, provider-neutral root run
 
@@ -157,31 +157,28 @@ control server.
 | Mission projection and claimed work items | Park and remove | A workflow monitor can own this projection without changing root-run mechanics. |
 | Process capability registry | Park and remove | Repository and board authority is workflow policy, not a prerequisite for executing one run. |
 | GitHub workflow/process pack | Park outside Roba | GitHub-specific issue, branch, PR, review, and merge policy does not belong in the provider-neutral core. |
-| `roba-mcp` and `roba-repl` crates | Remove from the shipped workspace | They were adapters over an unstable, overgrown surface. The underlying `RunHandle` seam remains. |
-| Always-running server or session pool | Keep out | Finite process ownership is a useful constraint and makes completion and cancellation honest. |
+| Former `roba-mcp` and `roba-repl` crates | Keep removed in their old form | They were adapters over an unstable, overgrown surface. The new `roba-mcp` is a single-agent harness; `mcp-repl` stays external. |
+| Hot single-agent foreground host | Adopt above core | A transport-owned `AgentInstance` may remain idle between finite runs without changing core settlement. |
+| Hidden daemon or multi-agent session pool | Keep out | Lifetime and authority stay explicit; one instance owns at most one active finite run. |
 
 "Parked" means prior work can be consulted later. It does not mean the types,
 flags, crates, or behavior are current or compatibility promises.
 
-## Possible run-scoped MCP control adapter
+## Adopted above-core MCP harness
 
-MCP remains worth revisiting for a genuinely long run. The design should stay
-narrow:
+The finite run remains the execution unit. The adopted next layer is one hot,
+single-agent `AgentInstance` that creates a new finite run for each prompt,
+retains only the provider session between prompts, and exposes a canonical MCP
+contract. It may stay idle until its owning foreground transport shuts down.
 
-- One adapter instance is bound to one live `RunHandle` and ends with that run.
-- Tools mirror existing library operations such as `start`, `status`,
-  `events`, `steer`, `cancel`, and `wait`.
-- It adds no worker spawning, process capability, configuration, history,
-  repository administration, or provider-private state access.
-- Cursor and truncation semantics come directly from `event_page` and
-  `wait_for_events`.
-- Authentication and transport are adapter concerns and must not be persisted
-  in `RunSpec` or snapshots.
+The same composed service has role-scoped control and provider-facing
+projections. The provider may become an authenticated MCP client of its own
+harness for explicitly installed services such as context or Git. This does
+not add a worker tree or multi-agent routing to core.
 
-`mcp-repl` already provides an interactive interface to an MCP server. If this
-adapter returns, it can make a running Roba observable and steerable without a
-custom `roba-repl` crate. No current CLI flag or workspace crate exposes this
-surface.
+See `docs/design/mcp-native-agent-harness.md` for the contract, phase gates,
+cancellation semantics, transport plan, and parked Roba-to-Roba consequence.
+No current v0.11 CLI flag or workspace crate exposes this surface.
 
 ## Next seams, not current claims
 
@@ -213,7 +210,9 @@ out of scope.
 
 ## Explicit non-goals
 
-- No always-running Roba daemon.
+- No hidden or detached Roba daemon. A foreground, transport-owned single-agent
+  harness may remain hot until explicit shutdown.
+- No multi-agent router, persistent session pool, or built-in turn queue.
 - No multi-run session pool, scheduler, webhook, board, or queue in the core.
 - No hidden provider or child work after the owning run becomes terminal.
 - No provider-common option that one adapter silently ignores.
@@ -228,20 +227,20 @@ The cleanup completed Codex error/resume/cancellation hardening, restored the
 legacy persona surface, made lifecycle events authoritative, and added
 fail-loud serialization for removed policy fields. Remaining work is:
 
-1. Advance the next seams above without claiming unsupported portability or
-   isolation.
-2. Dogfood direct Rust and `roba run` paths with one root run at a time.
-3. Revisit a run-scoped MCP adapter only after the core handle has proven
-   stable and a long-running use case needs external observation or steering.
+1. Execute the phases in `mcp-native-agent-harness.md` without widening the
+   finite core.
+2. Move `roba run` through the in-process MCP contract only after the minimal
+   two-turn agent vertical passes.
+3. Add the provider self-client projection before broad workspace services.
 
 ## Resume checklist
 
 1. Read this document and `AGENTS.md`.
 2. Inspect `git status` and work on a focused feature branch.
-3. Confirm a proposed feature belongs to one finite root run. Put workflow
-   policy in an external layer by default.
+3. Confirm a proposed feature belongs either to one finite core run or to the
+   active above-core harness phase. Put workflow policy above both by default.
 4. Preserve the legacy CLI unless an explicit compatibility decision says
    otherwise.
 5. Run the repository's four required gates before publishing a review point.
-6. Update this status note when the current architecture or parked boundary
-   changes.
+6. Update the MCP harness phase ledger when the current architecture or parked
+   boundary changes.

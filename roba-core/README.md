@@ -61,10 +61,13 @@ projection, process-capability registry, and GitHub-specific workflow/process
 pack are parked and are not part of this API. The former `roba-mcp` and
 `roba-repl` crates are also not workspace members.
 
-A future run-scoped MCP adapter may expose a narrow subset of `RunHandle` for
-observability and steering. It should contain no execution logic of its own.
-An external client such as `mcp-repl` can supply an interactive interface, so
-the core does not require a custom REPL.
+The adopted above-core design adds one hot, single-agent MCP harness that
+creates a fresh finite `Run` for each prompt and retains provider session
+continuity between runs. That layer owns MCP schemas, router composition,
+transport lifetime, and operator/provider projections. It does not make this
+crate stateful, transport-aware, or multi-agent. An external client such as
+`mcp-repl` supplies the interactive interface, so core does not require a
+custom REPL.
 
 Steward in `ok-v` is separate workflow-layer prior art. It may consume or
 drive Roba in another project, but it is not part of `roba-core`.

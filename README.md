@@ -79,12 +79,14 @@ are parked and are not part of the current API. The `roba-mcp` and `roba-repl`
 crates and their `roba run --mcp` / `--repl` entry points were also removed
 from the shipped workspace.
 
-A run-scoped MCP control adapter remains a useful later option. It should be a
-thin wrapper over `RunHandle`, exposing only lifecycle observation and control
-such as start, status, events, steer, cancel, and wait. An existing client such
-as `mcp-repl` can provide an interactive interface to that adapter, so Roba
-does not need a custom REPL now. The legacy `--mcp-config` flag is unrelated:
-it passes an MCP server configuration through to a one-shot Claude invocation.
+The adopted v0.12 direction is an MCP-native, single-agent harness above this
+finite core. One hot logical agent will create a new finite run per prompt,
+retain provider session continuity, and expose the same composed service to
+operator clients and a capability-filtered provider client. It is phase-gated
+work, not behavior shipped by v0.11.0. `mcp-repl` will provide the interactive
+client, so Roba does not need a custom REPL. The legacy `--mcp-config` flag is
+unrelated: it passes an MCP server configuration through to a one-shot Claude
+invocation.
 
 The Steward prototype in `ok-v` is separate workflow-layer prior art. Its
 visible queue, bounded tick, lock, and receipt ideas may inform external tools,
@@ -105,8 +107,10 @@ The public implementation is split by responsibility:
 - `roba`: the explicit `run` adapter plus the original Claude CLI
   compatibility surface
 
-See [the run-library design](docs/design/run-library-pivot.md) for the current
-contract, cleanup decisions, and likely next work.
+See [the run-library design](docs/design/run-library-pivot.md) for the finite
+core decision and [the MCP-native harness
+plan](docs/design/mcp-native-agent-harness.md) for the adopted architecture,
+phase gates, and exact distinction between current and planned behavior.
 
 ## Legacy one-shot CLI
 

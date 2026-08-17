@@ -8,10 +8,15 @@ about contributing.
 ## What this is
 
 A library-first, provider-neutral runtime for one finite, single-root agent run
-(Rust, edition 2024). One Roba process owns the run and exits when it is
-complete, failed, or cancelled. Claude Code and Codex are provider adapters.
-Rust hosts can retain a public `RunHandle` for status, replayable events,
-steering, cancellation, and waiting; `roba run` is the thin blocking CLI.
+(Rust, edition 2024). Claude Code and Codex are provider adapters. Rust hosts
+can retain a public `RunHandle` for status, replayable events, steering,
+cancellation, and waiting; `roba run` is the current thin blocking CLI.
+
+The adopted v0.12 direction adds an MCP-native layer above that finite core.
+One hot `AgentInstance` will create a new finite run per submitted turn and
+expose role-scoped control and provider-facing MCP projections. The plan is in
+`docs/design/mcp-native-agent-harness.md`; it is not shipped behavior until the
+relevant phase passes its acceptance gates.
 
 The original single-prompt Claude CLI remains a compatibility surface while
 the provider-neutral API stabilizes.
@@ -21,15 +26,18 @@ the provider-neutral API stabilizes.
 - IN: provider-neutral finite root runs, explicit execution authority,
   lifecycle and event observation, boundary-safe steering, cancellation, and
   thin library/CLI adapters.
+- IN: the phase-gated, single-agent `roba-mcp` harness above core: one hot
+  logical agent, one active finite run, one canonical MCP contract, and
+  role-scoped operator/provider views.
 - IN: the legacy Claude one-shot path, its config/profile/persona surface, and
   its read-only inspection commands.
-- OUT: Roba-owned worker trees, a mission projection, process capabilities,
-  GitHub-specific workflow/process packs, a daemon, a persistent session pool,
+- OUT: Roba-owned worker trees, a mission projection, a multi-agent server, a
+  hidden daemon, a persistent session pool, a built-in scheduler or queue,
   hidden background work, or mutation of provider-private state.
-- PARKED: a run-scoped MCP control adapter may later wrap `RunHandle`.
-  `mcp-repl` can provide its interactive interface, so a custom Roba REPL is
-  not required. The former `roba-mcp` and `roba-repl` crates are not current
-  workspace members.
+- PARKED: Roba-to-Roba federation, Unix/HTTP bindings without demonstrated
+  demand, and broad GitHub workflow policy. These require separate evidence
+  after the base harness. `mcp-repl` remains the interactive client, so a
+  custom Roba REPL is not required.
 - Keep reusable provider mechanics in the wrapper crates. Keep workflow policy
   outside the core run abstraction.
 - Steward in `ok-v` is a separate workflow layer and useful prior art, not a
@@ -49,19 +57,28 @@ the provider-neutral API stabilizes.
   `src/cost.rs`, `src/worktree.rs`, `src/doctor.rs`, `src/jobs.rs` read-only
   subcommands; `src/receipt.rs` the run-receipt writer (the schema lives in
   `roba-types`)
-- Doc homes: README (concepts + agent ABI),
-  `docs/design/run-library-pivot.md` (current architecture and resume point),
-  `--help` (reference generated from `cli.rs`), and parse-tested legacy config
-  examples
+- Doc homes: README (current concepts + agent ABI),
+  `docs/design/run-library-pivot.md` (finite-core decision),
+  `docs/design/mcp-native-agent-harness.md` (adopted phased implementation
+  plan), `--help` (reference generated from `cli.rs`), and parse-tested legacy
+  config examples
 
 ## Build and test (all must pass before a PR)
 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo build --workspace --all-features
 cargo test --workspace --lib --all-features
 cargo test --test cli --all-features
+cargo test --workspace --doc --all-features
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps
+cargo build --release --all-features
+git diff --check
 ```
+
+Once `roba-mcp` is a workspace member, also run
+`cargo test -p roba-mcp --all-features` so its integration tests are included.
 
 `--workspace` covers the member crates alongside the `roba` binary:
 `roba-types` (the published, dependency-light machine contract: `--json`
