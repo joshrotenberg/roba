@@ -450,6 +450,40 @@ mod tests {
     }
 
     #[test]
+    fn every_shipped_user_config_is_semantically_clean() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut paths = vec![root.join("roba.toml"), root.join("roba-config.sample.toml")];
+
+        let examples = root.join("examples");
+        for entry in std::fs::read_dir(&examples).expect("examples directory exists") {
+            let path = entry.expect("read example entry").path();
+            let is_roba_toml = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("roba-") && name.ends_with(".toml"));
+            if is_roba_toml {
+                paths.push(path);
+            }
+        }
+        paths.sort();
+
+        assert_eq!(
+            paths.len(),
+            6,
+            "update this gate when shipped configs change"
+        );
+        for path in paths {
+            let mut findings = Vec::new();
+            lint_file(&path, root, &mut findings);
+            assert!(
+                findings.is_empty(),
+                "shipped config {} must pass semantic lint: {findings:#?}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
     fn builtin_shadowing_alias_is_flagged() {
         let dir = tempfile::tempdir().unwrap();
         let findings = findings_for(dir.path(), "[alias.show]\ntemplate = \"x ${@}\"\n");

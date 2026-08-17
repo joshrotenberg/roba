@@ -157,16 +157,16 @@ STYLE = "imperative, concise, no marketing"
 readonly = true
 git_status = true
 
-# PERSONA -- a role-bearing profile: a profile that pins a claude `agent` (the
-# role) plus its run envelope. Inspect these with `roba persona {list,show}`. The
-# `agent` names a native claude agent under `.claude/agents/` -- the role's
-# system prompt and tools live in that file, not here; this profile just names
-# it and wraps it. A full_auto persona (an autonomous worker) follows the same
-# shape as [profile.worker] above, with `agent` added.
+# PERSONA-READY -- uncomment `agent` only when that native Claude agent exists
+# under `.claude/agents/` (project or user scope). Keeping the pin commented
+# makes this starter portable; once enabled, inspect it with
+# `roba persona {list,show}`. The role's system prompt and declared tools live
+# in the agent file, while this profile supplies its run envelope. A full_auto
+# persona follows the same shape as [profile.worker] above, with `agent` added.
 #   roba --profile reviewer "is this safe to merge?"
 [profile.reviewer]
-description = "Read and comment PR reviewer"
-agent = "reviewer"
+description = "Read and comment PR review preset"
+# agent = "reviewer"
 readonly = true
 allow_tool = ["Bash(gh pr view:*)", "Bash(gh pr comment:*)"]
 
@@ -196,9 +196,8 @@ allow_tool = ["Bash(gh pr view:*)", "Bash(gh pr comment:*)"]
 # Pull a PR into a review prompt.  ->  roba review 42
 [alias.review]
 description = "Review a PR by number"
-agent = "reviewer"
 args = ["pr"]                     # positional 1 -> ${pr}
-flags = ["--readonly"]
+flags = ["--profile", "reviewer"]
 template = """
 Review PR #${pr} in this repo.
 
@@ -241,11 +240,10 @@ flags = ["--quiet"]
 template = "Write a conventional-commit message for:\n\n$(git diff --staged)"
 
 # Flag-shortcut (no template): args become the prompt verbatim.
-#   roba r "look at the auth module"  ->  --readonly --agent reviewer "look at the auth module"
+#   roba r "look at the auth module"  ->  --profile reviewer "look at the auth module"
 [alias.r]
 description = "Quick read-only review preset"
-agent = "reviewer"
-flags = ["--readonly"]
+flags = ["--profile", "reviewer"]
 
 # Self-hosted "draft an alias" verb (pure config form).  ->  roba draft "..."
 # The built-in `roba alias draft "..."` is the VALIDATED form -- it parses the

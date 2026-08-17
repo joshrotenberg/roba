@@ -366,15 +366,16 @@ flags or a library-built `RunSpec`.
 
 The fully-commented [`roba-config.sample.toml`](roba-config.sample.toml)
 documents every key with worked examples; `roba profile init` drops it
-in your project. Inspect with `roba profile {list,show,active}` and
-`roba alias {list,show}`.
+in your project. The starter and every shipped example pass the real parser
+and semantic `roba config lint` checks in CI. Inspect with
+`roba profile {list,show,active}` and `roba alias {list,show}`.
 
 A **persona** is the compatibility view of a profile that sets Claude's native
 `agent` field. Existing personas execute unchanged and are inspectable with
 `roba persona {list,show}` as well as the underlying profile commands.
 
-For ready-to-copy setups, [`examples/`](examples/) carries vetted bundles
-(each parse-tested in CI): [`roba-rust-dispatch.toml`](examples/roba-rust-dispatch.toml)
+For ready-to-copy setups, [`examples/`](examples/) carries vetted bundles:
+[`roba-rust-dispatch.toml`](examples/roba-rust-dispatch.toml)
 -- a worker-dispatch config proven on a real backlog run, with `fix` and
 `design` aliases; [`roba-reviewer.toml`](examples/roba-reviewer.toml), an
 enforced read-only, schema-validated reviewer in a few lines of TOML; and
