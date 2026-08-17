@@ -39,6 +39,8 @@ glob = "0.3"
 indicatif = "0.18"
 # The clap-free compatibility engine and provider-neutral finite-run core.
 roba-core = { version = "0.2.0", path = "roba-core" }
+# The typed single-agent MCP contract used by the provider-neutral CLI.
+roba-mcp = { version = "0.1.0", path = "roba-mcp" }
 # The machine contract (envelopes + exit codes), shared so the binary and the
 # published crate cannot disagree. version + path so `roba` can still publish.
 roba-types = { version = "0.1.1", path = "roba-types" }

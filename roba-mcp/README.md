@@ -21,6 +21,9 @@ The first implementation is deliberately process-local:
   originating `agent.turn` result retains valid session evidence.
 - `connect_in_process` returns an initialized production `McpClient` over
   Tower MCP's concurrent `ChannelTransport`.
+- `call_turn` is the typed client seam. It requires valid
+  `structuredContent`, checks that MCP `isError` agrees with the typed status,
+  and never treats display text as machine data.
 
 Admission is single-flight. A second turn is refused as `busy`; it is never
 queued or silently treated as steering. A detached coordinator owns internal
@@ -30,4 +33,5 @@ not defined by this phase.
 
 External transports, steering/interrupt/shutdown tools, agent-wide events,
 MCP Tasks, extension fragments, and provider self-access remain later phases
-in `../docs/design/mcp-native-agent-harness.md`.
+in `../docs/design/mcp-native-agent-harness.md`. The root `roba run` command is
+the first production client of this process-local contract.

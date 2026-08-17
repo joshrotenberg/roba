@@ -48,11 +48,13 @@
 //!   `VersionedResult` helper. `roba show` reuses the ask success
 //!   envelope verbatim (its `result` is a reconstructed `QueryResult`).
 //!
-//! A bounded `roba run --json` always writes its terminal snapshot in the
-//! `{ version, result }` stdout envelope, including a snapshot whose state is
-//! `failed`. For that failed case it also writes `{ version, error }` to
-//! stderr and exits nonzero. Other commands write one success or error
-//! envelope according to their result.
+//! Once a bounded `roba run --json` request is admitted, it writes its terminal
+//! snapshot in the `{ version, result }` stdout envelope, including a snapshot
+//! whose state is `failed`. For that failed case it also writes
+//! `{ version, error }` to stderr and exits nonzero. Host-preflight failures
+//! occur before a finite run exists and emit only the stderr error envelope.
+//! Other commands write one success or error envelope according to their
+//! result.
 //!
 //! ## Exit 6 has no stderr error envelope (deliberate)
 //!

@@ -13,10 +13,11 @@ can retain a public `RunHandle` for status, replayable events, steering,
 cancellation, and waiting; `roba run` is the current thin blocking CLI.
 
 The v0.12 work adds an MCP-native layer above that finite core. The current
-`roba-mcp` crate supplies the Phase 1 process-local base: one hot
-`AgentInstance`, typed `agent.turn`, `roba://agent`, and an in-process MCP
-client. Role-scoped controls, provider-facing access, external transports, and
-extensions remain later phases in `docs/design/mcp-native-agent-harness.md`.
+`roba-mcp` crate supplies one hot `AgentInstance`, typed `agent.turn`,
+`roba://agent`, and an in-process MCP client. `roba run` crosses that contract
+and projects the typed result back onto its compatibility ABI. Role-scoped
+controls, provider-facing access, external transports, and extensions remain
+later phases in `docs/design/mcp-native-agent-harness.md`.
 
 The original single-prompt Claude CLI remains a compatibility surface while
 the provider-neutral API stabilizes.
@@ -51,7 +52,8 @@ the provider-neutral API stabilizes.
 - `roba-mcp/src/{agent,contract,router}.rs` -- hot single-agent state, typed MCP
   values, base router, and in-process client binding
 - `src/main.rs` entry point; `src/lib.rs` dispatch plus bounded and legacy paths
-- `src/bounded.rs` -- explicit `roba run` flags to `RunSpec`
+- `src/bounded.rs` -- explicit `roba run` flags to a suspended `RunSpec`, the
+  in-process MCP call, and compatibility result projection
 - `src/cli.rs` clap surface -- doc comments here ARE the `--help` reference
 - `src/session.rs` legacy flag -> `QueryCommand` wiring; `src/env.rs` legacy
   `ROBA_*` overrides

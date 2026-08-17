@@ -178,7 +178,9 @@ not add a worker tree or multi-agent routing to core.
 
 See `docs/design/mcp-native-agent-harness.md` for the contract, phase gates,
 cancellation semantics, transport plan, and parked Roba-to-Roba consequence.
-No current v0.11 CLI flag or workspace crate exposes this surface.
+The workspace `roba-mcp` crate exposes the process-local contract, and
+provider-neutral `roba run` is its first production client. No external
+binding or provider-facing projection exists yet.
 
 ## Next seams, not current claims
 
@@ -229,8 +231,8 @@ fail-loud serialization for removed policy fields. Remaining work is:
 
 1. Execute the phases in `mcp-native-agent-harness.md` without widening the
    finite core.
-2. Move `roba run` through the in-process MCP contract only after the minimal
-   two-turn agent vertical passes.
+2. Add controls and agent-wide observation without turning the base into a
+   hidden queue.
 3. Add the provider self-client projection before broad workspace services.
 
 ## Resume checklist

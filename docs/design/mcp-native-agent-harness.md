@@ -278,6 +278,29 @@ bounded, and covered for repeated resumed turns.
 Dynamic installation by the model is out of scope. The host chooses modules
 and authority before the turn.
 
+### Extension parking lot
+
+These are candidate packages, not adopted deliverables. Each must justify its
+workflow semantics beyond wrapping a command and must leave the lower-level
+tool available as an escape hatch:
+
+- `roba-git` may build auditable, reconstructable repository workflows on
+  `git-spawn`, with raw Git still available when an abstraction is incomplete;
+- `roba-gh` may use `octocrab` for typed GitHub operations and expose useful
+  development-process steps, but a thin replacement for `gh` is not enough;
+- `roba-tick` may expose CRUD scheduling through MCP and submit turns,
+  steering, interruption, or shutdown as an ordinary client of a hot agent.
+  Scheduling remains a supervisor above the finite core. Any agent-controlled
+  cadence needs explicit bounds and an audit history;
+- `roba-pattern` may package prompts, skills, and work patterns such as staged
+  phases or provider-native delegation. Intentional self-calls require a
+  separate bounded recursion decision. Periodic session summarization and
+  rotation may reveal one small host primitive, while summarization policy
+  stays in the extension.
+
+The shared MCP contract makes these composable; it does not by itself make
+them necessary or safe.
+
 ## Control and agent projections
 
 The control projection is the northbound contract for operators and clients.
@@ -368,6 +391,14 @@ Its flags, stdout answer, stderr metadata, versioned JSON, empty-result
 classification, and typed exit codes remain compatible. Its implementation
 changes from direct `Run::begin`/`RunHandle::wait` calls to an in-process MCP
 client calling `agent.turn`.
+
+Compatibility applies to admitted run requests. Inputs that cannot construct
+a truthful agent host, currently a blank seeded resume id or a negative or
+non-finite cost ceiling, fail during host preflight. In JSON mode they emit a
+structured error on stderr without a terminal snapshot on stdout because no
+finite run existed. The former direct path admitted those invalid values far
+enough to manufacture a failed snapshot; Phase 2 intentionally tightens that
+edge rather than representing preflight failure as provider work.
 
 The released legacy Claude one-shot command remains untouched until a separate
 compatibility decision. Profiles, aliases, bundles, receipts, history, and
@@ -501,7 +532,8 @@ Required tests:
 Exit criterion:
 
 > The shipped provider-neutral CLI crosses MCP in-process with no observable
-> ABI regression.
+> ABI regression for admitted runs; construction-invalid configuration fails
+> earlier and never claims that a run existed.
 
 ### Phase 3A -- controls and agent-wide observation
 
@@ -675,13 +707,27 @@ identity. Federation does not reopen `roba-core` as a multi-agent runtime.
   direct `agent.turn` result keeps validated session evidence for the caller
   that initiated the operation.
 
+## Phase 2 checkpoint decisions
+
+- The CLI trusts only decoded `agent.turn` `structuredContent`. Display text
+  is never parsed as machine data, and missing, malformed, or contradictory
+  tool results fail closed.
+- The MCP result is projected back into the established `RunSnapshot` before
+  rendering. MCP operation ids and result tags do not leak into the v0.11 JSON
+  ABI, and typed failure details still drive exit codes and receipt cost.
+- A one-shot client shuts down its process-local MCP connection after the turn
+  call on both success and error paths.
+- Blank seeded session ids and negative or non-finite cost ceilings are now
+  host-preflight errors. This accepted invalid-input tightening is covered by
+  a CLI test and intentionally emits no synthetic terminal snapshot.
+
 ## Current phase ledger
 
 | Phase | Status | Evidence |
 |---|---|---|
 | 0. Architecture record | Complete | Design review plus full common gate green, 2026-08-17 |
 | 1. Minimal in-process agent | Complete | Two independent correctness reviews; 1 unit and 11 ChannelTransport integration tests; full common gate green, 2026-08-17 |
-| 2. CLI over MCP | Not started | -- |
+| 2. CLI over MCP | Complete | Two independent audits; 6 MCP unit plus 11 agent integration tests; 10 compatibility-projection unit and 188 CLI tests; full common gate green, 2026-08-17 |
 | 3A. Controls and events | Not started | -- |
 | 3B. MCP Tasks | Not started | -- |
 | 4. Provider self-client | Not started | -- |

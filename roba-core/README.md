@@ -66,9 +66,11 @@ hot, single-agent host that creates a fresh finite `Run` for each prompt,
 retains provider session continuity, and exposes a typed process-local MCP
 contract. That layer owns MCP schemas and application lifetime. Later phases
 add controls, router composition, transport lifetime, and operator/provider
-projections. None of this makes `roba-core` stateful, transport-aware, or
-multi-agent. An external client such as `mcp-repl` supplies the interactive
-interface, so core does not require a custom REPL.
+projections. The root `roba run` command now calls that process-local contract
+and maps its typed terminal result back to the established CLI snapshot. None
+of this makes `roba-core` stateful, transport-aware, or multi-agent. An
+external client such as `mcp-repl` supplies the interactive interface, so core
+does not require a custom REPL.
 
 Steward in `ok-v` is separate workflow-layer prior art. It may consume or
 drive Roba in another project, but it is not part of `roba-core`.

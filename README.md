@@ -18,15 +18,17 @@ host can create a suspended run without starting provider work, retain its
 
 The workspace also includes the first process-local `roba-mcp` layer. Its
 `AgentInstance` remains hot and idle between prompts, creates one finite core
-run per accepted `agent.turn`, and retains provider session continuity. This
-library contract is not wired into the root CLI or an external transport yet.
+run per accepted `agent.turn`, and retains provider session continuity. The
+provider-neutral `roba run` command uses this contract through an in-process
+MCP client; no external transport is shipped yet.
 
 The established single-prompt Claude CLI remains a supported compatibility
 surface while the provider-neutral library API stabilizes.
 
 ## Provider-neutral runs
 
-`roba run` starts one root run and waits for its terminal outcome:
+`roba run` calls the process-local `agent.turn` contract and waits for its one
+finite root run to reach a terminal outcome:
 
 ```bash
 # One blocking Codex run. Stdout is the final answer.
@@ -85,11 +87,13 @@ and custom `roba-repl` crates and their `roba run --mcp` / `--repl` entry
 points were removed.
 
 The adopted v0.12 direction is an MCP-native, single-agent harness above this
-finite core. Phase 1 now ships the process-local base contract: one hot logical
+finite core. The process-local base contract now supplies one hot logical
 agent, single-flight `agent.turn`, typed structured results, `roba://agent`,
-and an initialized Tower MCP `ChannelTransport` client. The root CLI still
-uses its direct finite-run path. Controls, Tasks, external bindings,
-provider-facing access, and service fragments remain later gated phases.
+and an initialized Tower MCP `ChannelTransport` client. `roba run` is the
+first interface migrated onto that contract while preserving its existing
+stdout, JSON, and exit-code ABI for admitted runs. Controls, Tasks, external
+bindings, provider-facing access, and service fragments remain later gated
+phases.
 `mcp-repl` will provide the interactive client, so Roba does not need a custom
 REPL. The legacy `--mcp-config` flag is unrelated: it passes an MCP server
 configuration through to a one-shot Claude invocation.

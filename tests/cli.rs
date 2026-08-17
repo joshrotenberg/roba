@@ -408,6 +408,35 @@ fn codex_unsupported_limit_refuses_before_cli_launch() {
 }
 
 #[test]
+fn bounded_run_invalid_host_configuration_fails_before_a_turn() {
+    for (args, expected) in [
+        (
+            vec!["run", "--max-cost-usd=-1", "--json", "hello"],
+            "maximum cost must be a finite non-negative number",
+        ),
+        (
+            vec!["run", "--resume", "", "--json", "hello"],
+            "seeded session id must not be empty",
+        ),
+    ] {
+        let output = roba()
+            .args(args)
+            .output()
+            .expect("reject invalid host input");
+        assert_eq!(output.status.code(), Some(roba_types::EXIT_FAILURE));
+        assert!(output.stdout.is_empty());
+        let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["exit_code"], roba_types::EXIT_FAILURE);
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(expected)
+        );
+    }
+}
+
+#[test]
 fn history_paths_flag_no_arg() {
     // --paths with no value should parse and run without panicking.
     // No real sessions may exist in CI; exit 0 is the contract.
@@ -3533,6 +3562,27 @@ exit {exit_code}
     dir
 }
 
+/// Write a `claude` shim that stays alive until the bounded adapter's timeout
+/// cancels it. The provider should never wait for the fallback success event.
+#[cfg(unix)]
+fn fake_claude_streaming_timeout() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("fake claude dir");
+    let path = dir.path().join("claude");
+    let script = r#"#!/bin/sh
+case "$*" in
+  *--version*) echo '1.0.0 (fake)'; exit 0;;
+esac
+cat >/dev/null 2>&1
+sleep 5
+printf '%s\n' '{"type":"result","subtype":"success","result":"too late","session_id":"late","is_error":false}'
+"#;
+    std::fs::write(&path, script).expect("write fake claude");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod fake claude");
+    dir
+}
+
 /// Write an executable `codex` shim that records argv and stdin before
 /// emitting either a successful JSONL turn or a structured failed turn.
 #[cfg(unix)]
@@ -4001,6 +4051,41 @@ fn bounded_run_json_preserves_recoverable_limit_details_after_nonzero_exit() {
     let message = error["error"]["message"].as_str().unwrap();
     assert!(message.contains("max-turns limit after 30 provider turns"));
     assert!(!message.contains("--output-format"));
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_run_timeout_crosses_mcp_and_keeps_exit_four() {
+    let bin = fake_claude_streaming_timeout();
+    let home = tempfile::tempdir().expect("home");
+    let cfg = tempfile::tempdir().expect("cfg");
+    let started = std::time::Instant::now();
+
+    let output = roba_with_fake_claude(bin.path(), home.path(), cfg.path())
+        .args([
+            "run",
+            "--provider",
+            "claude",
+            "--timeout",
+            "1",
+            "--json",
+            "hello",
+        ])
+        .output()
+        .expect("run timed bounded adapter through MCP");
+    assert_eq!(output.status.code(), Some(roba_types::EXIT_TIMEOUT));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(4),
+        "provider timeout did not cancel the slow child promptly"
+    );
+
+    let terminal: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(terminal["result"]["state"], "failed");
+    assert_eq!(terminal["result"]["failure"]["kind"], "timeout");
+
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["kind"], "timeout");
+    assert_eq!(error["error"]["exit_code"], roba_types::EXIT_TIMEOUT);
 }
 
 #[cfg(unix)]

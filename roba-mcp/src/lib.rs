@@ -16,4 +16,7 @@ pub use contract::{
     LimitPolicy, OperationId, PermissionPolicy, SessionHandle, TokenUsage, ToolPolicy, TurnFailure,
     TurnMetadata, TurnOutcome,
 };
-pub use router::{AGENT_RESOURCE_URI, AGENT_TURN_TOOL, TurnInput, connect_in_process, router};
+pub use router::{
+    AGENT_RESOURCE_URI, AGENT_TURN_TOOL, AgentClientError, TurnInput, call_turn,
+    connect_in_process, router,
+};
