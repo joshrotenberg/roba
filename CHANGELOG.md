@@ -15,6 +15,47 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-17
+
+### Added
+
+- add bounded provider-neutral runs (#457)
+- stream Codex run events (#465)
+- stream Claude run events (#467)
+- expose bounded run timing (#470)
+- provision hermetic bundle context (#471)
+- expose bounded run JSON (#473)
+- add zero-spawn bundle inspection (#475)
+
+
+### Changed
+
+- unify legacy run resolution (#468)
+- make Roba an MCP-native single-agent harness with Claude and Codex turns, hot MCP hosts, Tasks, controls and events, provider self-tools, extensions, and typed Git workflows (#488) (BREAKING)
+
+
+### Documentation
+
+- replace stale designs with current architecture (#493)
+- split legacy CLI guide from README (#494)
+
+
+### Fixed
+
+- make run event history honest (#463)
+- fully seal hermetic Claude settings (#477)
+- snapshot bundle inputs before provisioning (#479)
+- preserve recoverable provider-limit terminal details (#481)
+- make starter config portable (#492)
+- synchronize v0.12 workspace release (#495)
+
+
+### Maintenance
+
+- move workspace crates under crates (#491)
+
+
+
 ## [0.11.0] - 2026-07-22
 
 ### Added
