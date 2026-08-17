@@ -522,7 +522,7 @@ git diff --check
 
 Once `roba-mcp` exists, every phase also runs
 `cargo test -p roba-mcp --all-features` so crate integration tests under
-`roba-mcp/tests` cannot be skipped by a library-only workspace command.
+`crates/roba-mcp/tests` cannot be skipped by a library-only workspace command.
 
 Ignored live tests may spend money and are never folded silently into the
 common gate. A relevant phase adds the ignored mechanical smoke test, compiles

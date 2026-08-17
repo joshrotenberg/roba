@@ -23,7 +23,12 @@ categories = ["command-line-utilities"]
 # resolver "3" matches the edition-2024 package default so making this a
 # workspace does not change dependency resolution.
 [workspace]
-members = ["roba-types", "roba-core", "roba-mcp", "roba-git"]
+members = [
+    "crates/roba-types",
+    "crates/roba-core",
+    "crates/roba-mcp",
+    "crates/roba-git",
+]
 resolver = "3"
 
 [[bin]]
@@ -39,14 +44,14 @@ dialoguer = { version = "0.12", default-features = false, features = ["fuzzy-sel
 glob = "0.3"
 indicatif = "0.18"
 # The clap-free compatibility engine and provider-neutral finite-run core.
-roba-core = { version = "0.2.0", path = "roba-core" }
+roba-core = { version = "0.2.0", path = "crates/roba-core" }
 # Optional Layer-3 Git workspace service selected explicitly by `--git`.
-roba-git = { version = "0.1.0", path = "roba-git" }
+roba-git = { version = "0.1.0", path = "crates/roba-git" }
 # The typed single-agent MCP contract used by the provider-neutral CLI.
-roba-mcp = { version = "0.1.0", path = "roba-mcp" }
+roba-mcp = { version = "0.1.0", path = "crates/roba-mcp" }
 # The machine contract (envelopes + exit codes), shared so the binary and the
 # published crate cannot disagree. version + path so `roba` can still publish.
-roba-types = { version = "0.1.1", path = "roba-types" }
+roba-types = { version = "0.1.1", path = "crates/roba-types" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"

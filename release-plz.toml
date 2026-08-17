@@ -43,7 +43,7 @@ publish = true
 git_release_enable = false
 git_tag_enable = false
 changelog_update = true
-changelog_path = "roba-types/CHANGELOG.md"
+changelog_path = "crates/roba-types/CHANGELOG.md"
 
 # The clap-free compatibility engine and provider-neutral finite-run core.
 # Publishes to crates.io so the `roba` binary's path dep resolves on publish;
@@ -57,4 +57,4 @@ publish = true
 git_release_enable = false
 git_tag_enable = false
 changelog_update = true
-changelog_path = "roba-core/CHANGELOG.md"
+changelog_path = "crates/roba-core/CHANGELOG.md"
