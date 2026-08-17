@@ -43,10 +43,10 @@ pub const VERSION: u32 = 1;
 // references these constants, so a change here changes both. `0` (success) is
 // not a named constant -- it is the absence of a failure code.
 
-/// Generic failure -- a `claude` run failed for a reason with no more specific
-/// code, or roba itself errored.
+/// Generic failure -- a provider run failed for a reason with no more specific
+/// code, or Roba itself errored.
 pub const EXIT_FAILURE: i32 = 1;
-/// Authentication failure (`claude` is not logged in / the key is bad).
+/// Authentication failure (the selected provider is not authenticated).
 pub const EXIT_AUTH: i32 = 2;
 /// The wrapper's own `BudgetTracker` ceiling was hit (distinct from claude's
 /// `--max-budget-usd` CLI cap, which is [`EXIT_MAX_BUDGET`]).
@@ -140,8 +140,8 @@ impl ErrorEnvelope {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorBody {
     /// A small string union: `"auth" | "budget" | "timeout" | "history" |
-    /// "other"`. Mirrors the exit-code dispatch; a consumer can match on it or
-    /// on the [`exit_code`](Self::exit_code).
+    /// "limit" | "other"`. Mirrors the exit-code dispatch; a consumer can
+    /// match on it or on the [`exit_code`](Self::exit_code).
     pub kind: String,
     /// A human-readable summary of the failure.
     pub message: String,

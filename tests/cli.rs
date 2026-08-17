@@ -1,11 +1,12 @@
 //! Mechanical integration tests -- exercise the roba binary surface
-//! without ever calling claude. Covers: clap dispatch, conflict
+//! without calling a real provider. Covers: clap dispatch, conflict
 //! matrix, exit codes, file-side error paths.
 //!
-//! For tests that actually invoke claude, see `tests/live.rs`
+//! For tests that invoke real providers, see `tests/live.rs`
 //! (marked `#[ignore]`).
 
 use assert_cmd::Command;
+use clap::Parser;
 use predicates::prelude::*;
 
 fn roba() -> Command {
@@ -46,7 +47,7 @@ fn help_long_trailer_is_byte_clean_off_tty() {
     // Sanity: the styled sections are still present as plain text.
     assert!(stdout.contains("Examples -- for humans"));
     assert!(stdout.contains("Examples -- for agents & scripts"));
-    assert!(stdout.contains("Unattended workers"));
+    assert!(stdout.contains("Unattended runs"));
     assert!(stdout.contains("Environment variables:"));
     assert!(stdout.contains("Legacy one-shot configuration (roba.toml):"));
 }
@@ -75,19 +76,45 @@ fn history_help_describes_subcommand() {
 }
 
 #[test]
-fn bounded_run_help_exposes_provider_and_run_adapters() {
-    roba()
+fn bounded_run_help_exposes_the_finite_provider_surface() {
+    let output = roba()
         .args(["run", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("--provider"))
-        .stdout(predicate::str::contains("--config"))
-        .stdout(predicate::str::contains("--agent"))
-        .stdout(predicate::str::contains("--repl"))
-        .stdout(predicate::str::contains("--mcp"))
-        .stdout(predicate::str::contains("--json"))
-        .stdout(predicate::str::contains("--max-workers"))
-        .stdout(predicate::str::contains("--max-worker-depth"));
+        .output()
+        .expect("render run help");
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+
+    let stdout = String::from_utf8(output.stdout).expect("run help is UTF-8");
+    for expected in [
+        "<PROMPT>",
+        "--provider",
+        "--model",
+        "--effort",
+        "--instruction",
+        "--context",
+        "--writable",
+        "--full-auto",
+        "--resume",
+        "--json",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "run help omitted {expected:?}:\n{stdout}"
+        );
+    }
+    for parked in [
+        "--config",
+        "--agent",
+        "--repl",
+        "--mcp",
+        "--max-workers",
+        "--max-worker-depth",
+    ] {
+        assert!(
+            !stdout.contains(parked),
+            "run help still advertises parked option {parked:?}:\n{stdout}"
+        );
+    }
 }
 
 fn inspectable_bundle_fixture() -> tempfile::TempDir {
@@ -265,121 +292,107 @@ fn one_shot_bundle_uses_the_same_mcp_validation_before_provider_resolution() {
 }
 
 #[test]
-fn bounded_run_json_conflicts_with_stdio_control_adapters() {
-    for adapter in ["--repl", "--mcp"] {
-        roba()
-            .args(["run", "--json", adapter])
-            .assert()
-            .failure()
-            .code(2)
-            .stderr(predicate::str::contains("cannot be used with"));
-    }
+fn bounded_run_parses_provider_permissions_resume_and_prompt() {
+    let parsed = roba::cli::Cli::try_parse_from([
+        "roba",
+        "run",
+        "--provider",
+        "codex",
+        "--writable",
+        "--resume",
+        "thread-123",
+        "finish the migration",
+    ])
+    .expect("the direct run surface should parse");
+
+    let Some(roba::cli::SubCommand::Run(args)) = parsed.command else {
+        panic!("expected the run subcommand");
+    };
+    assert_eq!(args.provider, Some(roba::cli::RunProvider::Codex));
+    assert!(args.writable);
+    assert!(!args.full_auto);
+    assert_eq!(args.resume.as_deref(), Some("thread-123"));
+    assert_eq!(args.prompt, "finish the migration");
 }
 
 #[test]
-fn bounded_run_loads_a_named_agent_from_hierarchical_config() {
-    let temp = tempfile::tempdir().unwrap();
-    let config = temp.path().join("run.toml");
-    std::fs::write(
-        &config,
-        r#"
-[defaults]
-provider = "claude"
-
-[agents.builder]
-provider = "codex"
-max_turns = 1
-"#,
-    )
-    .unwrap();
-
+fn bounded_run_requires_a_prompt_at_parse_time() {
     roba()
-        .args([
-            "run",
-            "--config",
-            config.to_str().unwrap(),
-            "--agent",
-            "builder",
-            "hello",
-        ])
+        .args(["run", "--provider", "codex"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("<PROMPT>"))
+        .stderr(predicate::str::contains("required"));
+}
+
+#[test]
+fn bounded_run_provider_is_a_closed_value_enum() {
+    roba()
+        .args(["run", "--provider", "unknown", "hello"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("invalid value 'unknown'"))
+        .stderr(predicate::str::contains("claude"))
+        .stderr(predicate::str::contains("codex"));
+}
+
+#[test]
+fn bounded_run_permission_modes_are_mutually_exclusive() {
+    roba()
+        .args(["run", "--writable", "--full-auto", "hello"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn bounded_run_rejects_legacy_options_before_the_subcommand() {
+    roba()
+        .args(["--model", "legacy-model", "run", "hello"])
+        .env("PATH", "")
         .assert()
         .failure()
         .code(1)
         .stderr(predicate::str::contains(
-            "Codex provider does not support a max-turn ceiling",
+            "legacy one-shot options cannot be placed before `run`",
         ));
-}
 
-#[test]
-fn bounded_run_config_rejects_unknown_fields_before_provider_launch() {
-    let temp = tempfile::tempdir().unwrap();
-    let config = temp.path().join("run.toml");
-    std::fs::write(
-        &config,
-        r#"
-[defaults]
-provider = "codex"
-timeuot_secs = 30
-"#,
-    )
-    .unwrap();
-
-    roba()
-        .args(["run", "--config", config.to_str().unwrap(), "hello"])
-        .assert()
-        .failure()
-        .code(1)
-        .stderr(predicate::str::contains("unknown field `timeuot_secs`"));
-}
-
-#[test]
-fn bounded_worker_limits_must_be_supplied_together() {
-    roba()
-        .args(["run", "--max-workers", "2", "hello"])
-        .assert()
-        .failure()
-        .code(2)
-        .stderr(predicate::str::contains("--max-worker-depth"));
-}
-
-#[test]
-fn promptless_bounded_run_requires_a_control_adapter() {
-    roba()
-        .arg("run")
-        .assert()
-        .failure()
-        .code(1)
-        .stderr(predicate::str::contains("prompt-less run is suspended"));
-}
-
-#[test]
-fn promptless_bounded_run_json_uses_the_structured_error_envelope() {
     let output = roba()
-        .args(["run", "--json"])
+        .args(["--json", "run", "hello"])
+        .env("PATH", "")
         .output()
-        .expect("run prompt-less JSON invocation");
+        .expect("reject misplaced legacy JSON option");
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(error["version"], roba_types::VERSION);
-    assert_eq!(error["error"]["kind"], "other");
-    assert_eq!(error["error"]["exit_code"], 1);
     assert!(
         error["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("prompt-less run is suspended")
+            .contains("legacy one-shot options cannot be placed before `run`")
     );
 }
 
 #[test]
-fn bounded_repl_can_inspect_and_quit_a_suspended_run_without_provider_work() {
-    roba()
-        .args(["run", "--provider", "codex", "--repl"])
-        .write_stdin("/status\n/quit\n")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("\"state\":\"suspended\""));
+fn bounded_run_rejects_parked_and_removed_options() {
+    for args in [
+        &["run", "--config", "run.toml", "hello"][..],
+        &["run", "--agent", "builder", "hello"][..],
+        &["run", "--repl", "hello"][..],
+        &["run", "--mcp", "hello"][..],
+        &["run", "--max-workers", "2", "hello"][..],
+        &["run", "--max-worker-depth", "1", "hello"][..],
+    ] {
+        roba()
+            .args(args)
+            .assert()
+            .failure()
+            .code(2)
+            .stderr(predicate::str::contains("unexpected argument"));
+    }
 }
 
 #[test]
@@ -2178,6 +2191,86 @@ fn alias_show_unknown_errors_with_suggestion() {
         .stderr(predicate::str::contains("review"));
 }
 
+// ---------------------------------------------------------------------------
+// persona list / show -- role-bearing profiles (#428)
+// ---------------------------------------------------------------------------
+
+/// A project with one persona (a profile with `agent` set) and one plain
+/// profile, plus the persona's agent file so `persona show` can resolve it.
+fn persona_project() -> tempfile::TempDir {
+    make_dir_with_files(&[
+        (".git/HEAD", ""),
+        (
+            ".claude/agents/reviewer.md",
+            "---\nname: reviewer\ndescription: sample\n---\nYou review PRs.",
+        ),
+        (
+            "roba.toml",
+            r#"
+[profile.reviewer]
+description = "Read and comment PR reviewer"
+agent = "reviewer"
+allow_tool = ["Bash(gh pr view:*)"]
+
+[profile.plainish]
+model = "haiku"
+"#,
+        ),
+    ])
+}
+
+#[test]
+fn persona_list_shows_only_role_bearing_profiles() {
+    let project = persona_project();
+    let home = tempfile::tempdir().unwrap();
+    roba_in(&project, &home)
+        .args(["persona", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reviewer"))
+        .stdout(predicate::str::contains("Read and comment PR reviewer"))
+        // The plain profile (no agent) is not a persona.
+        .stdout(predicate::str::contains("plainish").not());
+}
+
+#[test]
+fn persona_show_prints_block_and_locates_agent() {
+    let project = persona_project();
+    let home = tempfile::tempdir().unwrap();
+    roba_in(&project, &home)
+        .args(["persona", "show", "reviewer"])
+        .assert()
+        .success()
+        // stdout: the re-parseable profile block.
+        .stdout(predicate::str::contains("[profile.reviewer]"))
+        .stdout(predicate::str::contains("agent = \"reviewer\""))
+        // stderr: the resolved agent file (metadata).
+        .stderr(predicate::str::contains("reviewer.md"));
+}
+
+#[test]
+fn persona_show_non_persona_errors() {
+    let project = persona_project();
+    let home = tempfile::tempdir().unwrap();
+    roba_in(&project, &home)
+        .args(["persona", "show", "plainish"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a persona"));
+}
+
+#[test]
+fn persona_show_unknown_errors_with_known_list() {
+    let project = persona_project();
+    let home = tempfile::tempdir().unwrap();
+    roba_in(&project, &home)
+        .args(["persona", "show", "nope"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no persona named `nope`"))
+        .stderr(predicate::str::contains("reviewer"));
+}
+
 #[test]
 fn session_unknown_name_errors_before_claude() {
     // `--session NAME` for an unconfigured NAME must fail loudly (and
@@ -2302,15 +2395,6 @@ fn help_mentions_alias_subcommand() {
         .assert()
         .success()
         .stdout(predicate::str::contains("alias"));
-}
-
-#[test]
-fn help_omits_removed_persona_subcommand() {
-    roba()
-        .arg("--help")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("persona").not());
 }
 
 // ---------------------------------------------------------------------------
@@ -3449,6 +3533,36 @@ exit {exit_code}
     dir
 }
 
+/// Write an executable `codex` shim that records argv and stdin before
+/// emitting either a successful JSONL turn or a structured failed turn.
+#[cfg(unix)]
+fn fake_codex_streaming() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("fake codex dir");
+    let path = dir.path().join("codex");
+    let script = r#"#!/bin/sh
+printf '%s\n' "$@" > "$ROBA_CAPTURE_ARGS"
+prompt=$(cat)
+printf '%s' "$prompt" > "$ROBA_CAPTURE_STDIN"
+printf '%s\n' '{"type":"thread.started","thread_id":"codex-thread-1"}'
+if [ "${ROBA_CODEX_FAILURE:-}" = 1 ]; then
+  printf '%s\n' '{"type":"turn.failed","error":{"message":"login required"}}'
+  printf '%s\n' '401 Unauthorized' >&2
+  exit 1
+fi
+if [ "${ROBA_CODEX_EMPTY:-}" = 1 ]; then
+  printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":0}}'
+  exit 0
+fi
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"codex answer"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":3}}'
+"#;
+    std::fs::write(&path, script).expect("write fake codex");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod fake codex");
+    dir
+}
+
 /// Like [`fake_claude`], but records one argument per line at
 /// `$ROBA_CAPTURE_ARGS` before returning a successful result.
 #[cfg(unix)]
@@ -3869,11 +3983,11 @@ fn bounded_run_json_preserves_recoverable_limit_details_after_nonzero_exit() {
         .args(["run", "--provider", "claude", "--json", "hello"])
         .output()
         .expect("run capped bounded JSON adapter");
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(5));
 
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let failure = &envelope["result"]["failure"];
-    assert_eq!(failure["kind"], "limit");
+    assert_eq!(failure["kind"], "max_turns");
     assert_eq!(failure["details"]["session"]["id"], "limit-session");
     assert_eq!(failure["details"]["usage"]["input"], 100);
     assert_eq!(failure["details"]["usage"]["output"], 20);
@@ -3882,9 +3996,127 @@ fn bounded_run_json_preserves_recoverable_limit_details_after_nonzero_exit() {
     assert_eq!(failure["details"]["provider_turns"], 30);
 
     let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["kind"], "limit");
+    assert_eq!(error["error"]["exit_code"], 5);
     let message = error["error"]["message"].as_str().unwrap();
     assert!(message.contains("max-turns limit after 30 provider turns"));
     assert!(!message.contains("--output-format"));
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_bounded_run_is_stdin_safe_and_normalized_at_the_cli_boundary() {
+    let bin = fake_codex_streaming();
+    let home = tempfile::tempdir().expect("home");
+    let cfg = tempfile::tempdir().expect("cfg");
+    let captured_args = home.path().join("codex-args.txt");
+    let captured_stdin = home.path().join("codex-stdin.txt");
+    let prompt = "sensitive fresh prompt";
+
+    let output = roba_with_fake_claude(bin.path(), home.path(), cfg.path())
+        .env("ROBA_CAPTURE_ARGS", &captured_args)
+        .env("ROBA_CAPTURE_STDIN", &captured_stdin)
+        .args([
+            "run",
+            "--provider",
+            "codex",
+            "--model",
+            "gpt-test",
+            "--effort",
+            "high",
+            "--writable",
+            "--json",
+            prompt,
+        ])
+        .output()
+        .expect("run fake Codex through the CLI");
+    assert!(
+        output.status.success(),
+        "Codex run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let outcome = &envelope["result"]["last_outcome"];
+    assert_eq!(envelope["result"]["state"], "completed");
+    assert_eq!(outcome["output"], "codex answer");
+    assert_eq!(outcome["session"]["provider"], "codex");
+    assert_eq!(outcome["session"]["id"], "codex-thread-1");
+    assert_eq!(outcome["usage"]["input"], 7);
+    assert_eq!(outcome["usage"]["output"], 3);
+
+    let argv = std::fs::read_to_string(&captured_args).unwrap();
+    assert!(argv.lines().any(|arg| arg == "exec"));
+    assert!(argv.lines().any(|arg| arg == "--json"));
+    assert!(argv.lines().any(|arg| arg == "gpt-test"));
+    assert!(argv.contains("model_reasoning_effort=\"high\""));
+    assert!(argv.lines().any(|arg| arg == "workspace-write"));
+    assert!(!argv.contains(prompt), "fresh prompt leaked into argv");
+    assert_eq!(std::fs::read_to_string(captured_stdin).unwrap(), prompt);
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_structured_failure_keeps_thread_and_auth_exit_code_end_to_end() {
+    let bin = fake_codex_streaming();
+    let home = tempfile::tempdir().expect("home");
+    let cfg = tempfile::tempdir().expect("cfg");
+    let captured_args = home.path().join("codex-failed-args.txt");
+    let captured_stdin = home.path().join("codex-failed-stdin.txt");
+
+    let output = roba_with_fake_claude(bin.path(), home.path(), cfg.path())
+        .env("ROBA_CAPTURE_ARGS", &captured_args)
+        .env("ROBA_CAPTURE_STDIN", &captured_stdin)
+        .env("ROBA_CODEX_FAILURE", "1")
+        .args(["run", "--provider", "codex", "--json", "hello"])
+        .output()
+        .expect("run failed fake Codex through the CLI");
+    assert_eq!(output.status.code(), Some(roba_types::EXIT_AUTH));
+
+    let terminal: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(terminal["result"]["state"], "failed");
+    assert_eq!(terminal["result"]["failure"]["kind"], "authentication");
+    assert_eq!(
+        terminal["result"]["failure"]["details"]["session"]["id"],
+        "codex-thread-1"
+    );
+
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["kind"], "auth");
+    assert_eq!(error["error"]["exit_code"], roba_types::EXIT_AUTH);
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("login required")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_empty_answer_uses_the_stable_unusable_result_exit() {
+    let bin = fake_codex_streaming();
+    let home = tempfile::tempdir().expect("home");
+    let cfg = tempfile::tempdir().expect("cfg");
+    let captured_args = home.path().join("codex-empty-args.txt");
+    let captured_stdin = home.path().join("codex-empty-stdin.txt");
+
+    let output = roba_with_fake_claude(bin.path(), home.path(), cfg.path())
+        .env("ROBA_CAPTURE_ARGS", &captured_args)
+        .env("ROBA_CAPTURE_STDIN", &captured_stdin)
+        .env("ROBA_CODEX_EMPTY", "1")
+        .args(["run", "--provider", "codex", "--json", "hello"])
+        .output()
+        .expect("run empty fake Codex through the CLI");
+    assert_eq!(output.status.code(), Some(roba_types::EXIT_UNUSABLE_RESULT));
+
+    let terminal: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(terminal["result"]["state"], "completed");
+    assert_eq!(terminal["result"]["last_outcome"]["output"], "");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("provider returned an empty result"));
+    assert!(serde_json::from_str::<serde_json::Value>(&stderr).is_err());
 }
 
 #[cfg(unix)]

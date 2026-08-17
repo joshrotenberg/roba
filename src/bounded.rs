@@ -1,44 +1,51 @@
-//! Thin CLI adapter for the new bounded-run library API.
+//! Thin CLI adapter for the provider-neutral finite-run API.
 
-use anyhow::{Context, Result, bail};
-use tokio::io::BufReader;
+use std::fmt;
 
+use anyhow::{Result, bail};
 use roba_core::{
-    ClaudeProvider, CodexProvider, ConfigLayer, Effort, PermissionPolicy, Prompt, ProviderId, Roba,
-    RobaConfig, RunOverrides, RunSpec, RunState, SessionHandle, SessionSpec,
+    AgentSpec, ClaudeProvider, CodexProvider, ContextSpec, Effort, ExecutionSpec, FailureKind,
+    LimitSpec, PermissionPolicy, Prompt, ProviderId, Roba, RunFailure, RunFailureDetails,
+    RunOutcome, RunSpec, RunState, SessionHandle, SessionSpec, ToolPolicy,
 };
 
 use crate::VersionedResult;
 use crate::cli::{EffortLevel, RunArgs, RunProvider};
 
-pub async fn run(args: RunArgs) -> Result<()> {
-    if args.prompt.is_none() && !args.repl && !args.mcp {
-        bail!("a prompt-less run is suspended; add --repl or --mcp so it can be started");
+/// A terminal provider-neutral run failure retained for exit-code and JSON
+/// classification by the binary boundary.
+#[derive(Debug, Clone)]
+pub struct BoundedRunError {
+    failure: RunFailure,
+}
+
+impl BoundedRunError {
+    pub(crate) fn new(failure: RunFailure) -> Self {
+        Self { failure }
     }
 
+    /// Inspect the normalized terminal failure.
+    pub fn failure(&self) -> &RunFailure {
+        &self.failure
+    }
+}
+
+impl fmt::Display for BoundedRunError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.failure.message)
+    }
+}
+
+impl std::error::Error for BoundedRunError {}
+
+pub async fn run(args: RunArgs) -> Result<()> {
     let spec = resolve_spec(&args)?;
 
     let mut roba = Roba::new();
-    roba.register(roba_mcp::WorkerMcpProvider::new(ClaudeProvider))?;
-    roba.register(roba_mcp::WorkerMcpProvider::new(CodexProvider::default()))?;
+    roba.register(ClaudeProvider)?;
+    roba.register(CodexProvider::default())?;
     let run = roba.create_run(spec)?;
-    if run.spec().initial_prompt.is_some() {
-        run.begin().await?;
-    }
-
-    if args.mcp {
-        return roba_mcp::serve_stdio(run.handle())
-            .await
-            .map_err(Into::into);
-    }
-    if args.repl {
-        eprintln!("roba run REPL; /help lists commands");
-        let reader = BufReader::new(tokio::io::stdin());
-        return roba_repl::Repl::new(run.handle())
-            .run(reader, tokio::io::stdout())
-            .await
-            .map_err(Into::into);
-    }
+    run.begin().await?;
 
     let terminal = run.handle().wait().await;
     if args.json {
@@ -47,25 +54,46 @@ pub async fn run(args: RunArgs) -> Result<()> {
             serde_json::to_string_pretty(&VersionedResult::new(&terminal))?
         );
     }
+
     match terminal.state {
         RunState::Completed => {
-            if !args.json
-                && let Some(outcome) = terminal.last_outcome
-            {
+            let outcome = terminal
+                .last_outcome
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("run completed without an outcome"))?;
+            if !outcome_is_usable(outcome) {
+                return Err(crate::unusable_result_error(
+                    roba_types::EXIT_UNUSABLE_RESULT,
+                    "provider returned an empty result",
+                ));
+            }
+            if !args.json {
                 println!("{}", outcome.output);
             }
             Ok(())
         }
-        RunState::Failed => bail!(
-            "{}",
-            terminal
-                .failure
-                .map(|failure| failure.message)
-                .unwrap_or_else(|| "run failed without a reported reason".to_string())
-        ),
-        RunState::Cancelled => bail!("run was cancelled"),
+        RunState::Failed => Err(anyhow::Error::new(BoundedRunError::new(
+            terminal.failure.unwrap_or_else(|| RunFailure {
+                kind: FailureKind::Provider,
+                message: "run failed without a reported reason".to_string(),
+                details: RunFailureDetails::default(),
+            }),
+        ))),
+        RunState::Cancelled => Err(anyhow::Error::new(BoundedRunError::new(RunFailure {
+            kind: FailureKind::Cancelled,
+            message: "run was cancelled".to_string(),
+            details: RunFailureDetails::default(),
+        }))),
         state => bail!("run ended wait in unexpected state {state:?}"),
     }
+}
+
+fn outcome_is_usable(outcome: &RunOutcome) -> bool {
+    !outcome.output.trim().is_empty()
+        || outcome
+            .structured_output
+            .as_ref()
+            .is_some_and(|value| !value.is_null())
 }
 
 #[cfg(test)]
@@ -74,58 +102,49 @@ fn terminal_json(snapshot: &roba_core::RunSnapshot) -> serde_json::Value {
 }
 
 fn resolve_spec(args: &RunArgs) -> Result<RunSpec> {
-    let mut config = match &args.config {
-        Some(path) => {
-            let input = std::fs::read_to_string(path)
-                .with_context(|| format!("reading run config {}", path.display()))?;
-            RobaConfig::from_toml(&input)
-                .with_context(|| format!("parsing run config {}", path.display()))?
-        }
-        None => RobaConfig::default(),
-    };
-    config
-        .defaults
+    let provider = args
         .provider
-        .get_or_insert_with(ProviderId::claude);
-
+        .map(map_provider)
+        .unwrap_or_else(ProviderId::claude);
     let permissions = if args.full_auto {
-        Some(PermissionPolicy::FullAuto)
+        PermissionPolicy::FullAuto
     } else if args.writable {
-        Some(PermissionPolicy::WorkspaceWrite)
+        PermissionPolicy::WorkspaceWrite
     } else {
-        None
+        PermissionPolicy::ReadOnly
     };
-    let provider = args.provider.map(map_provider);
-    let mut spec = config.resolve(
-        args.agent.as_deref(),
-        RunOverrides {
-            policy: ConfigLayer {
-                provider,
-                model: args.model.clone(),
-                effort: args.effort.map(map_effort),
-                instructions: args.instructions.clone(),
-                permissions,
+    let session = match &args.resume {
+        Some(id) => SessionSpec::Resume {
+            session: SessionHandle {
+                provider: provider.clone(),
+                id: id.clone(),
+            },
+        },
+        None => SessionSpec::Fresh,
+    };
+    let mut agent = AgentSpec::new(provider);
+    agent.model.clone_from(&args.model);
+    agent.effort = args.effort.map(map_effort);
+    agent.instructions.clone_from(&args.instructions);
+
+    Ok(RunSpec {
+        agent,
+        context: ContextSpec {
+            project: Vec::new(),
+            run: args.context.clone(),
+        },
+        execution: ExecutionSpec {
+            permissions,
+            tools: ToolPolicy::default(),
+            limits: LimitSpec {
                 max_turns: args.max_turns,
                 max_cost_usd: args.max_cost_usd,
                 timeout_secs: args.timeout,
-                max_workers: args.max_workers,
-                max_worker_depth: args.max_worker_depth,
-                ..ConfigLayer::default()
             },
-            context: args.context.clone(),
-            initial_prompt: args.prompt.clone().map(Prompt::new).transpose()?,
-            ..RunOverrides::default()
+            session,
         },
-    )?;
-    if let Some(id) = &args.resume {
-        spec.execution.session = SessionSpec::Resume {
-            session: SessionHandle {
-                provider: spec.agent.provider.clone(),
-                id: id.clone(),
-            },
-        };
-    }
-    Ok(spec)
+        initial_prompt: Some(Prompt::new(args.prompt.clone())?),
+    })
 }
 
 fn map_provider(provider: RunProvider) -> ProviderId {
@@ -166,127 +185,110 @@ mod tests {
     }
 
     #[test]
-    fn cli_resolution_preserves_config_policy_and_fences_resume_to_selected_provider() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("run.toml");
-        std::fs::write(
-            &path,
-            r#"
-[defaults]
-provider = "claude"
-permissions = "full_auto"
-
-[agents.builder]
-provider = "codex"
-model = "configured"
-"#,
-        )
-        .unwrap();
-        let path = path.to_str().unwrap();
-
+    fn cli_flags_resolve_directly_and_resume_is_fenced_to_the_provider() {
         let args = parse_run_args(&[
-            "--config",
-            path,
-            "--agent",
-            "builder",
+            "--provider",
+            "codex",
             "--model",
-            "overridden",
+            "configured",
+            "--effort",
+            "xhigh",
+            "--instruction",
+            "be exact",
+            "--context",
+            "the tests are authoritative",
+            "--writable",
+            "--timeout",
+            "30",
             "--resume",
             "thread-1",
             "hello",
         ]);
         let spec = resolve_spec(&args).unwrap();
         assert_eq!(spec.agent.provider, ProviderId::codex());
-        assert_eq!(spec.agent.model.as_deref(), Some("overridden"));
-        assert_eq!(spec.execution.permissions, PermissionPolicy::FullAuto);
+        assert_eq!(spec.agent.model.as_deref(), Some("configured"));
+        assert_eq!(spec.agent.effort, Some(Effort::XHigh));
+        assert_eq!(spec.agent.instructions, ["be exact"]);
+        assert_eq!(spec.context.run, ["the tests are authoritative"]);
+        assert_eq!(spec.execution.permissions, PermissionPolicy::WorkspaceWrite);
+        assert_eq!(spec.execution.limits.timeout_secs, Some(30));
         assert!(matches!(
             spec.execution.session,
             SessionSpec::Resume {
                 session: SessionHandle { provider, ref id }
             } if provider == ProviderId::codex() && id == "thread-1"
         ));
-
-        let args = parse_run_args(&[
-            "--config",
-            path,
-            "--agent",
-            "builder",
-            "--writable",
-            "hello",
-        ]);
-        let spec = resolve_spec(&args).unwrap();
-        assert_eq!(spec.execution.permissions, PermissionPolicy::WorkspaceWrite);
+        assert_eq!(spec.initial_prompt.unwrap().as_str(), "hello");
     }
 
     #[test]
-    fn terminal_json_preserves_each_terminal_snapshot_without_reshaping() {
-        use roba_core::{
-            Cost, FailureKind, ProviderId, RunFailure, RunFailureDetails, RunId, RunOutcome,
-            SessionHandle,
-        };
+    fn defaults_are_read_only_fresh_claude() {
+        let spec = resolve_spec(&parse_run_args(&["hello"])).unwrap();
+        assert_eq!(spec.agent.provider, ProviderId::claude());
+        assert_eq!(spec.execution.permissions, PermissionPolicy::ReadOnly);
+        assert_eq!(spec.execution.session, SessionSpec::Fresh);
+    }
 
-        let snapshot =
-            |state: RunState, outcome: Option<RunOutcome>, failure: Option<RunFailure>| {
-                roba_core::RunSnapshot {
-                    id: serde_json::from_value::<RunId>(serde_json::json!(1)).unwrap(),
-                    parent_id: None,
-                    depth: 0,
-                    state,
-                    created_at_unix_ms: Some(10),
-                    started_at_unix_ms: Some(20),
-                    finished_at_unix_ms: Some(30),
-                    elapsed_ms: Some(10),
-                    turns_completed: u32::from(outcome.is_some()),
-                    last_outcome: outcome,
-                    failure,
-                }
-            };
-        let completed = snapshot(
-            RunState::Completed,
-            Some(RunOutcome {
+    #[test]
+    fn terminal_json_wraps_the_public_snapshot_without_reshaping() {
+        use roba_core::{Cost, RunOutcome};
+
+        let completed = roba_core::RunSnapshot {
+            state: RunState::Completed,
+            created_at_unix_ms: Some(10),
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: Some(30),
+            elapsed_ms: Some(10),
+            turns_completed: 1,
+            last_outcome: Some(RunOutcome {
                 output: "done".to_string(),
                 session: None,
                 usage: None,
-                cost: None,
+                cost: Some(Cost::usd(1.25)),
                 duration_ms: Some(8),
                 provider_turns: Some(1),
                 structured_output: None,
             }),
-            None,
-        );
-        let failed = snapshot(
-            RunState::Failed,
-            None,
-            Some(RunFailure {
-                kind: FailureKind::Limit,
-                message: "turn limit reached".to_string(),
-                details: RunFailureDetails {
-                    session: Some(SessionHandle {
-                        provider: ProviderId::claude(),
-                        id: "limit-session".to_string(),
-                    }),
-                    usage: None,
-                    cost: Some(Cost::usd(1.25)),
-                    duration_ms: None,
-                    provider_turns: Some(30),
-                },
-            }),
-        );
-        let cancelled = snapshot(RunState::Cancelled, None, None);
+            failure: None,
+        };
 
-        for (snapshot, state) in [
-            (completed, "completed"),
-            (failed, "failed"),
-            (cancelled, "cancelled"),
-        ] {
-            let json = terminal_json(&snapshot);
-            assert_eq!(json["version"], roba_types::VERSION);
-            assert_eq!(json["result"]["state"], state);
-            assert_eq!(
-                json["result"],
-                serde_json::to_value(snapshot).unwrap(),
-                "the adapter must wrap the public snapshot without reshaping it"
-            );
-        }
+        let json = terminal_json(&completed);
+        assert_eq!(json["version"], roba_types::VERSION);
+        assert_eq!(json["result"]["state"], "completed");
+        assert_eq!(
+            json["result"],
+            serde_json::to_value(completed).unwrap(),
+            "the adapter must wrap the public snapshot without reshaping it"
+        );
+    }
+
+    #[test]
+    fn terminal_error_preserves_typed_failure() {
+        let error = BoundedRunError::new(RunFailure {
+            kind: FailureKind::Authentication,
+            message: "log in".to_string(),
+            details: RunFailureDetails::default(),
+        });
+        assert_eq!(error.failure().kind, FailureKind::Authentication);
+        assert_eq!(error.to_string(), "log in");
+    }
+
+    #[test]
+    fn empty_text_needs_non_null_structured_output_to_be_usable() {
+        let mut outcome = RunOutcome {
+            output: " \n".to_string(),
+            session: None,
+            usage: None,
+            cost: None,
+            duration_ms: None,
+            provider_turns: None,
+            structured_output: None,
+        };
+        assert!(!outcome_is_usable(&outcome));
+        outcome.structured_output = Some(serde_json::json!({"answer": 42}));
+        assert!(outcome_is_usable(&outcome));
+        outcome.structured_output = None;
+        outcome.output = "answer".to_string();
+        assert!(outcome_is_usable(&outcome));
     }
 }

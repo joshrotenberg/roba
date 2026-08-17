@@ -10,7 +10,7 @@
 //! {
 //!   "version": 1,
 //!   "error": {
-//!     "kind": "auth" | "budget" | "timeout" | "history" | "other",
+//!     "kind": "auth" | "budget" | "timeout" | "limit" | "history" | "other",
 //!     "message": "human-readable summary",
 //!     "exit_code": <int>,
 //!     "chain": ["top context", "...", "root cause"],
@@ -25,8 +25,8 @@
 //! empty, so consumers parsing the v1 shape are unaffected.
 //!
 //! The `kind` mirrors the same dispatch [`crate::classify_exit_code`]
-//! uses: it inspects the underlying `claude_wrapper::Error` variant
-//! when present, otherwise falls back to `"other"`.
+//! uses. Provider-neutral runs preserve a typed [`roba_core::RunFailure`];
+//! the legacy path inspects `claude_wrapper::Error` when available.
 //!
 //! ## Versioned ABI (v1)
 //!
@@ -48,8 +48,11 @@
 //!   `VersionedResult` helper. `roba show` reuses the ask success
 //!   envelope verbatim (its `result` is a reconstructed `QueryResult`).
 //!
-//! So the whole `--json` surface is `{ version, result, [refusal] }` on
-//! success and `{ version, error }` on failure, uniformly.
+//! A bounded `roba run --json` always writes its terminal snapshot in the
+//! `{ version, result }` stdout envelope, including a snapshot whose state is
+//! `failed`. For that failed case it also writes `{ version, error }` to
+//! stderr and exits nonzero. Other commands write one success or error
+//! envelope according to their result.
 //!
 //! ## Exit 6 has no stderr error envelope (deliberate)
 //!
@@ -69,8 +72,9 @@
 //! Version 1 guarantees:
 //!
 //! - Top-level `version: 1` is present on every `--json` output.
-//! - Success output carries a `result` field; error output carries an
-//!   `error` field. The two are mutually exclusive.
+//! - A single envelope carries either `result` or `error`. A failed bounded
+//!   run may deliberately emit a terminal-result envelope on stdout and a
+//!   separate error envelope on stderr.
 //! - Inner fields documented at v1 are preserved. New fields may be
 //!   added in a backward-compatible (additive) way without bumping the
 //!   version.
@@ -85,10 +89,20 @@
 pub use roba_types::{ErrorBody, ErrorEnvelope};
 
 /// Classify an [`anyhow::Error`] into the envelope's `kind` string.
-/// Matches the wrapper variant when downcastable; everything else is
-/// `"other"`.
+/// Matches a provider-neutral run failure or legacy wrapper variant when
+/// downcastable; everything else is `"other"`.
 pub fn kind_of(err: &anyhow::Error) -> &'static str {
-    if let Some(wrapper_err) = err.downcast_ref::<claude_wrapper::Error>() {
+    if let Some(run_error) = err.downcast_ref::<crate::bounded::BoundedRunError>() {
+        match run_error.failure().kind {
+            roba_core::FailureKind::Authentication => "auth",
+            roba_core::FailureKind::Timeout => "timeout",
+            roba_core::FailureKind::Budget | roba_core::FailureKind::MaxCost => "budget",
+            roba_core::FailureKind::MaxTurns | roba_core::FailureKind::Limit => "limit",
+            roba_core::FailureKind::Cancelled
+            | roba_core::FailureKind::Unsupported
+            | roba_core::FailureKind::Provider => "other",
+        }
+    } else if let Some(wrapper_err) = err.downcast_ref::<claude_wrapper::Error>() {
         match wrapper_err {
             claude_wrapper::Error::Auth { .. } => "auth",
             claude_wrapper::Error::BudgetExceeded { .. } => "budget",
@@ -262,6 +276,20 @@ mod tests {
         let value = envelope_value(&err, 4);
         assert_eq!(value["error"]["kind"], "timeout");
         assert_eq!(value["error"]["exit_code"], 4);
+    }
+
+    #[test]
+    fn provider_neutral_failure_keeps_typed_kind() {
+        let err = anyhow::Error::new(crate::bounded::BoundedRunError::new(
+            roba_core::RunFailure {
+                kind: roba_core::FailureKind::Authentication,
+                message: "Codex is not authenticated".to_string(),
+                details: roba_core::RunFailureDetails::default(),
+            },
+        ));
+        let value = envelope_value(&err, 2);
+        assert_eq!(value["error"]["kind"], "auth");
+        assert_eq!(value["error"]["exit_code"], 2);
     }
 
     #[test]

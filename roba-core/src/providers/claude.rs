@@ -5,17 +5,15 @@ use std::path::PathBuf;
 use anyhow::Result;
 use claude_wrapper::streaming::{BlockDelta, PartialMessageEvent, StreamEvent, stream_query};
 use claude_wrapper::types::QueryResult;
-use claude_wrapper::{
-    Claude, Effort as ClaudeEffort, McpConfigBuilder, OutputFormat, QueryCommand, TempMcpConfig,
-};
+use claude_wrapper::{Claude, Effort as ClaudeEffort, OutputFormat, QueryCommand};
 
 use crate::engine::{self, Config, Permissions, Session};
 use crate::provider::{
-    EventSink, Provider, ProviderCapabilities, ProviderContext, ProviderError, ProviderFuture,
+    EventSink, Provider, ProviderCapabilities, ProviderError, ProviderEvent, ProviderFuture,
 };
 use crate::run::{
-    Cost, Effort, FailureKind, PermissionPolicy, ProviderId, RunEvent, RunFailureDetails,
-    RunOutcome, SessionHandle, SessionSpec, TokenUsage, TurnRequest,
+    Cost, Effort, FailureKind, PermissionPolicy, ProviderId, RunFailureDetails, RunOutcome,
+    SessionHandle, SessionSpec, TokenUsage, TurnRequest,
 };
 
 /// Claude Code implementation of Roba's provider-neutral turn boundary.
@@ -28,8 +26,6 @@ pub struct ClaudeProvider {
 /// former unit struct as `ClaudeProvider`.
 #[allow(non_upper_case_globals)]
 pub const ClaudeProvider: ClaudeProvider = ClaudeProvider { binary: None };
-
-const WORKER_GUIDANCE: &str = "Roba owns all child work for this run. When the task calls for workers, use only the `mcp__roba_workers__spawn_worker` tool, then use `mcp__roba_workers__workers` and wait for every spawned worker before answering. Keep monitors current with the report_work_item, report_blocker, and report_artifact tools; those are claims and do not replace your final answer. Never launch Roba or provider CLIs in the shell to simulate workers, and never substitute provider-native subagents. If Roba refuses a spawn, report that refusal instead of using another mechanism.";
 
 impl ClaudeProvider {
     /// Use an explicit Claude executable instead of resolving `claude` from
@@ -65,20 +61,20 @@ impl ClaudeProvider {
     }
 
     fn bounded_command(config: &Config) -> QueryCommand {
-        // Roba owns bounded child-run creation. Claude's native Agent tool is
-        // not represented in the run tree and would bypass worker count,
-        // depth, cancellation, and event observation.
         engine::query_command(config)
             // `stream_query` consumes NDJSON but does not override the command's
             // output format or forward a stdin prompt itself.
             .output_format(OutputFormat::StreamJson)
             .prompt_via_stdin(false)
-            .disallowed_tool("Agent")
             .include_partial_messages()
     }
 
     fn config(request: &TurnRequest) -> Result<Config, ProviderError> {
         let mut config = Config::new(request.prompt.as_str());
+        // The legacy notice describes a one-shot process that will never be
+        // resumed. A bounded RunHandle may steer through resumed turns, so
+        // injecting that notice here would contradict the lifecycle contract.
+        config.no_agent_notice = true;
         config.model.clone_from(&request.spec.agent.model);
         config.effort = request.spec.agent.effort.map(map_effort);
         config.permissions = match request.spec.execution.permissions {
@@ -115,76 +111,6 @@ impl ClaudeProvider {
             config.append_system_prompt = Some(instructions.join("\n\n"));
         }
         Ok(config)
-    }
-
-    fn mcp_config(context: &ProviderContext) -> Result<Option<TempMcpConfig>, ProviderError> {
-        if context.mcp_endpoints().is_empty() {
-            return Ok(None);
-        }
-        let mut builder = McpConfigBuilder::new();
-        for endpoint in context.mcp_endpoints() {
-            builder = builder.http_server_with_headers(
-                endpoint.name(),
-                endpoint.url(),
-                [(
-                    "Authorization",
-                    format!("Bearer {}", endpoint.bearer_token()),
-                )],
-            );
-        }
-        builder.build_temp().map(Some).map_err(|error| {
-            ProviderError::new(
-                FailureKind::Provider,
-                format!("failed to build Claude MCP configuration: {error}"),
-            )
-        })
-    }
-
-    fn configure_internal_worker_control(config: &mut Config, context: &ProviderContext) {
-        if context
-            .mcp_endpoints()
-            .iter()
-            .any(|endpoint| endpoint.name() == "roba_workers")
-        {
-            config
-                .allow_tools
-                .push("mcp__roba_workers__spawn_worker".to_string());
-            config
-                .allow_tools
-                .push("mcp__roba_workers__workers".to_string());
-            config.allow_tools.extend([
-                "mcp__roba_workers__report_work_item".to_string(),
-                "mcp__roba_workers__report_blocker".to_string(),
-                "mcp__roba_workers__report_artifact".to_string(),
-            ]);
-            config.append_system_prompt = Some(match config.append_system_prompt.take() {
-                Some(existing) => format!("{existing}\n\n{WORKER_GUIDANCE}"),
-                None => WORKER_GUIDANCE.to_string(),
-            });
-        }
-        if context
-            .mcp_endpoints()
-            .iter()
-            .any(|endpoint| endpoint.name() == "roba_workers")
-            && let Some(control) = context.process_control()
-        {
-            config
-                .allow_tools
-                .push("mcp__roba_workers__process_capabilities".to_string());
-            config
-                .allow_tools
-                .push("mcp__roba_workers__invoke_process_action".to_string());
-            let process_guidance = std::iter::once(
-                "Use only the declared Roba process capabilities and their invoke_process_action tool for granted workflow actions. A declaration is process knowledge, not additional authority; refusals must be reported rather than bypassed.",
-            )
-            .chain(control.instructions())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-            config.append_system_prompt = Some(match config.append_system_prompt.take() {
-                Some(existing) => format!("{existing}\n\n{process_guidance}"),
-                None => process_guidance,
-            });
-        }
     }
 
     /// Normalize Claude's result without converting missing telemetry to zero.
@@ -269,20 +195,11 @@ impl Provider for ClaudeProvider {
     fn execute<'a>(
         &'a self,
         request: TurnRequest,
-        context: ProviderContext,
         events: &'a dyn EventSink,
     ) -> ProviderFuture<'a> {
         Box::pin(async move {
             self.validate(&request)?;
-            events.emit(RunEvent::TurnStarted {
-                provider: ProviderId::claude(),
-            });
-            let mut config = Self::config(&request)?;
-            let mcp_config = Self::mcp_config(&context)?;
-            if let Some(mcp_config) = &mcp_config {
-                config.mcp_config.push(mcp_config.path().to_string());
-            }
-            Self::configure_internal_worker_control(&mut config, &context);
+            let config = Self::config(&request)?;
             let claude = self.client(&config).map_err(|error| {
                 ProviderError::new(FailureKind::Provider, format!("Claude failed: {error:#}"))
             })?;
@@ -294,7 +211,7 @@ impl Provider for ClaudeProvider {
                     match serde_json::from_value::<QueryResult>(event.data) {
                         Ok(result) => {
                             if let Some(usage) = result.usage.as_ref() {
-                                events.emit(RunEvent::Usage {
+                                events.emit(ProviderEvent::Usage {
                                     usage: normalize_usage(usage),
                                 });
                             }
@@ -325,9 +242,6 @@ impl Provider for ClaudeProvider {
                 engine::surface_structured_output(&mut result);
             }
             let outcome = Self::normalize(result);
-            events.emit(RunEvent::TurnCompleted {
-                outcome: outcome.clone(),
-            });
             Ok(outcome)
         })
     }
@@ -339,7 +253,8 @@ fn terminal_failure(result: QueryResult) -> ProviderError {
         .get("subtype")
         .and_then(serde_json::Value::as_str);
     let kind = match subtype {
-        Some("error_max_turns" | "error_max_budget_usd") => FailureKind::Limit,
+        Some("error_max_turns") => FailureKind::MaxTurns,
+        Some("error_max_budget_usd") => FailureKind::MaxCost,
         _ => FailureKind::Provider,
     };
     let reported_reason = result
@@ -349,7 +264,7 @@ fn terminal_failure(result: QueryResult) -> ProviderError {
         .and_then(|errors| errors.iter().find_map(serde_json::Value::as_str))
         .or_else(|| (!result.result.is_empty()).then_some(result.result.as_str()));
     let details = terminal_details(&result);
-    let message = if kind == FailureKind::Limit {
+    let message = if matches!(kind, FailureKind::MaxTurns | FailureKind::MaxCost) {
         let turns = result
             .num_turns
             .map(|turns| format!(" after {turns} provider turns"))
@@ -398,7 +313,7 @@ fn emit_stream_event(event: &StreamEvent, sink: &dyn EventSink) {
         ..
     }) = event.partial_message()
     {
-        sink.emit(RunEvent::OutputDelta { text });
+        sink.emit(ProviderEvent::OutputDelta { text });
     }
 }
 
@@ -406,9 +321,9 @@ fn map_error(error: claude_wrapper::Error) -> ProviderError {
     let kind = match error {
         claude_wrapper::Error::Auth { .. } => FailureKind::Authentication,
         claude_wrapper::Error::Timeout { .. } => FailureKind::Timeout,
-        claude_wrapper::Error::MaxTurnsExceeded { .. }
-        | claude_wrapper::Error::MaxBudgetExceeded { .. }
-        | claude_wrapper::Error::BudgetExceeded { .. } => FailureKind::Limit,
+        claude_wrapper::Error::BudgetExceeded { .. } => FailureKind::Budget,
+        claude_wrapper::Error::MaxTurnsExceeded { .. } => FailureKind::MaxTurns,
+        claude_wrapper::Error::MaxBudgetExceeded { .. } => FailureKind::MaxCost,
         claude_wrapper::Error::VersionMismatch { .. }
         | claude_wrapper::Error::UntestedCliVersion { .. }
         | claude_wrapper::Error::DangerousNotAllowed { .. } => FailureKind::Unsupported,
@@ -432,7 +347,6 @@ mod tests {
     #[cfg(unix)]
     use std::sync::Mutex;
 
-    use claude_wrapper::ClaudeCommand;
     use serde_json::json;
 
     use super::*;
@@ -443,12 +357,12 @@ mod tests {
     #[cfg(unix)]
     #[derive(Default)]
     struct RecordingSink {
-        events: Mutex<Vec<RunEvent>>,
+        events: Mutex<Vec<ProviderEvent>>,
     }
 
     #[cfg(unix)]
     impl EventSink for RecordingSink {
-        fn emit(&self, event: RunEvent) {
+        fn emit(&self, event: ProviderEvent) {
             self.events.lock().unwrap().push(event);
         }
     }
@@ -582,76 +496,12 @@ fi
     }
 
     #[test]
-    fn worker_mcp_configuration_is_ephemeral_and_authenticated() {
-        let process = crate::ProcessControl::test_control(crate::ProcessCapabilityDescriptor {
-            id: crate::ProcessCapabilityId::new("test/process").unwrap(),
-            description: "test process".to_string(),
-            required_grants: Default::default(),
-            actions: vec![crate::ProcessActionSpec {
-                id: crate::ProcessActionId::new("record").unwrap(),
-                description: "record".to_string(),
-                input_schema: serde_json::json!({"type": "object"}),
-                destructive: false,
-            }],
-            instructions: vec!["Follow the test process.".to_string()],
-        });
-        let context = ProviderContext::for_run(None, Some(process)).with_mcp_endpoint(
-            crate::ProviderMcpEndpoint::new(
-                "roba_workers",
-                "http://127.0.0.1:4123/mcp",
-                "secret-worker-token",
-            ),
-        );
-        let config = ClaudeProvider::mcp_config(&context).unwrap().unwrap();
-        let json = std::fs::read_to_string(config.path()).unwrap();
-        let mut request_config = Config::new("test");
-        ClaudeProvider::configure_internal_worker_control(&mut request_config, &context);
+    fn bounded_turn_suppresses_the_legacy_single_turn_notice() {
+        let request = request(ProviderId::claude());
+        let config = ClaudeProvider::config(&request).unwrap();
 
-        assert!(json.contains("roba_workers"));
-        assert!(json.contains("http://127.0.0.1:4123/mcp"));
-        assert!(json.contains("Bearer secret-worker-token"));
-        assert_eq!(
-            request_config.allow_tools,
-            [
-                "mcp__roba_workers__spawn_worker",
-                "mcp__roba_workers__workers",
-                "mcp__roba_workers__report_work_item",
-                "mcp__roba_workers__report_blocker",
-                "mcp__roba_workers__report_artifact",
-                "mcp__roba_workers__process_capabilities",
-                "mcp__roba_workers__invoke_process_action"
-            ]
-        );
-        assert!(
-            request_config
-                .append_system_prompt
-                .as_deref()
-                .unwrap()
-                .starts_with(WORKER_GUIDANCE)
-        );
-        assert!(
-            request_config
-                .append_system_prompt
-                .as_deref()
-                .unwrap()
-                .contains("Never launch Roba or provider CLIs in the shell")
-        );
-        assert!(
-            request_config
-                .append_system_prompt
-                .as_deref()
-                .unwrap()
-                .contains("Follow the test process.")
-        );
-        let args = ClaudeProvider::bounded_command(&request_config).args();
-        assert!(args.iter().any(|arg| arg == "--disallowed-tools"));
-        assert!(args.iter().any(|arg| arg == "Agent"));
-        assert!(args.iter().any(|arg| arg == "--include-partial-messages"));
-        assert!(
-            args.windows(2)
-                .any(|args| args[0] == "--output-format" && args[1] == "stream-json")
-        );
-        assert!(!format!("{context:?}").contains("secret-worker-token"));
+        assert!(config.no_agent_notice);
+        assert!(crate::session::compose_append_system_prompt(&config).is_none());
     }
 
     #[cfg(unix)]
@@ -662,11 +512,7 @@ fi
 
         let fresh_events = RecordingSink::default();
         let fresh = provider
-            .execute(
-                request(ProviderId::claude()),
-                ProviderContext::default(),
-                &fresh_events,
-            )
+            .execute(request(ProviderId::claude()), &fresh_events)
             .await
             .unwrap();
         assert_eq!(fresh.output, "opened");
@@ -675,18 +521,14 @@ fi
         assert_eq!(fresh.usage.as_ref().unwrap().output, Some(2));
         assert_eq!(fresh.cost, Some(Cost::usd(0.02)));
         let fresh_events = fresh_events.events.into_inner().unwrap();
-        assert!(fresh_events.contains(&RunEvent::OutputDelta {
+        assert!(fresh_events.contains(&ProviderEvent::OutputDelta {
             text: "opened".to_string(),
         }));
         assert!(fresh_events.iter().any(|event| matches!(
             event,
-            RunEvent::Usage { usage }
+            ProviderEvent::Usage { usage }
                 if usage.input == Some(3) && usage.output == Some(2)
         )));
-        assert!(matches!(
-            fresh_events.last(),
-            Some(RunEvent::TurnCompleted { .. })
-        ));
 
         let mut resumed = request(ProviderId::claude());
         resumed.spec.execution.session = SessionSpec::Resume {
@@ -696,17 +538,14 @@ fi
             },
         };
         let resume_events = RecordingSink::default();
-        let resumed = provider
-            .execute(resumed, ProviderContext::default(), &resume_events)
-            .await
-            .unwrap();
+        let resumed = provider.execute(resumed, &resume_events).await.unwrap();
         assert_eq!(resumed.output, "resumed");
         assert!(
             resume_events
                 .events
                 .into_inner()
                 .unwrap()
-                .contains(&RunEvent::OutputDelta {
+                .contains(&ProviderEvent::OutputDelta {
                     text: "resumed".to_string(),
                 })
         );
@@ -765,10 +604,7 @@ fi
             .unwrap();
         let events = RecordingSink::default();
 
-        let error = provider
-            .execute(request, ProviderContext::default(), &events)
-            .await
-            .unwrap_err();
+        let error = provider.execute(request, &events).await.unwrap_err();
 
         assert_eq!(error.kind, FailureKind::Provider);
         assert!(
@@ -777,14 +613,9 @@ fi
             error.message
         );
         let events = events.events.into_inner().unwrap();
-        assert!(events.contains(&RunEvent::OutputDelta {
+        assert!(events.contains(&ProviderEvent::OutputDelta {
             text: "partial".to_string(),
         }));
-        assert!(
-            !events
-                .iter()
-                .any(|event| matches!(event, RunEvent::TurnCompleted { .. }))
-        );
     }
 
     #[cfg(unix)]
@@ -793,9 +624,10 @@ fi
         let temp = tempfile::tempdir().unwrap();
         let (provider, _) = fake_claude(&temp);
 
-        for (prompt, session, turns, cost, reason) in [
+        for (prompt, expected_kind, session, turns, cost, reason) in [
             (
                 "limit-turns",
+                FailureKind::MaxTurns,
                 "limit-session",
                 30,
                 1.25,
@@ -803,6 +635,7 @@ fi
             ),
             (
                 "limit-budget",
+                FailureKind::MaxCost,
                 "budget-session",
                 12,
                 2.75,
@@ -814,12 +647,9 @@ fi
                 .into_turn()
                 .unwrap();
             let events = RecordingSink::default();
-            let error = provider
-                .execute(request, ProviderContext::default(), &events)
-                .await
-                .unwrap_err();
+            let error = provider.execute(request, &events).await.unwrap_err();
 
-            assert_eq!(error.kind, FailureKind::Limit);
+            assert_eq!(error.kind, expected_kind);
             assert!(error.message.contains(reason), "{}", error.message);
             assert!(!error.message.contains("--output-format"));
             let details = error.details.as_deref().unwrap();
@@ -829,7 +659,7 @@ fi
             assert!(details.duration_ms.is_some());
             assert!(details.usage.is_some());
             assert!(events.events.into_inner().unwrap().iter().any(|event| {
-                matches!(event, RunEvent::Usage { usage } if usage.input.is_some())
+                matches!(event, ProviderEvent::Usage { usage } if usage.input.is_some())
             }));
         }
     }
@@ -845,11 +675,7 @@ fi
             .unwrap();
 
         let error = provider
-            .execute(
-                request,
-                ProviderContext::default(),
-                &RecordingSink::default(),
-            )
+            .execute(request, &RecordingSink::default())
             .await
             .unwrap_err();
 

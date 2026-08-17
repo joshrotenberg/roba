@@ -1,32 +1,22 @@
-//! Process-local lifecycle for one bounded Roba run.
+//! Process-local lifecycle for one finite Roba run.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, Weak};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
-use crate::mission::{
-    MissionArtifact, MissionAuthority, MissionBlocker, MissionClaims, MissionReport,
-    MissionReportError, MissionSnapshot, MissionWorkItem,
-};
-use crate::process::{ProcessCapabilityId, ProcessControl, RegisteredProcessCapability};
-use crate::provider::{EventSink, Provider, ProviderContext, ProviderError, execute_turn};
+use crate::provider::{EventSink, Provider, ProviderError, ProviderEvent, execute_turn};
 use crate::run::{
-    FailureKind, Prompt, ProviderId, RunEvent, RunFailure, RunId, RunOutcome, RunSpec, RunState,
-    SessionSpec, WorkerPolicy, WorkerSpec,
+    FailureKind, Prompt, ProviderId, RunEvent, RunFailure, RunOutcome, RunSpec, RunState,
+    SessionSpec,
 };
 
 /// Read-only view of a live or terminal run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunSnapshot {
-    pub id: RunId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_id: Option<RunId>,
-    pub depth: u32,
     pub state: RunState,
     /// Wall-clock creation time when the host clock can represent Unix time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -47,70 +37,6 @@ pub struct RunSnapshot {
     pub failure: Option<RunFailure>,
 }
 
-/// Read-only child-run view retained for the lifetime of the owning tree.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WorkerSnapshot {
-    pub id: RunId,
-    pub parent_id: RunId,
-    pub depth: u32,
-    pub provider: ProviderId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    pub run: RunSnapshot,
-}
-
-/// One sequenced event retained by the process-local run tree.
-///
-/// The root run observes events from every descendant. A child handle observes
-/// only itself and its descendants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RunEventRecord {
-    pub sequence: u64,
-    pub run_id: RunId,
-    /// Wall-clock occurrence time when the host clock can represent Unix time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub occurred_at_unix_ms: Option<u64>,
-    pub event: RunEvent,
-}
-
-/// Bounded event page returned for one run-tree cursor.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RunEventPage {
-    pub events: Vec<RunEventRecord>,
-    /// Highest tree-wide sequence inspected by this page. Supply this as the
-    /// next `after` cursor, even when no scoped event was returned.
-    pub next_sequence: u64,
-    /// Oldest sequence still retained for this run subtree.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub oldest_sequence: Option<u64>,
-    /// True when the requested cursor predates retained history for this run
-    /// subtree.
-    pub truncated: bool,
-    /// True when this run and all of its descendants can emit no more events.
-    pub terminal: bool,
-}
-
-/// Replayable subscription over one run and its descendants.
-pub struct RunEventSubscription {
-    handle: RunHandle,
-    cursor: u64,
-    reported_truncation_at: Option<u64>,
-}
-
-/// One item returned by a replayable event subscription.
-#[derive(Debug, Clone, PartialEq)]
-pub enum RunEventSubscriptionItem {
-    /// The subscription cursor predates retained history for this run subtree.
-    /// The next call replays the oldest retained scoped event, if any.
-    HistoryTruncated { oldest_sequence: Option<u64> },
-    /// One retained or newly emitted event.
-    Event(Box<RunEventRecord>),
-}
-
-/// Maximum records retained for one process-local run tree and returned in one
-/// event page.
-pub const RUN_EVENT_CAPACITY: usize = 256;
-
 impl RunSnapshot {
     /// True after no more provider work can start.
     pub fn is_terminal(&self) -> bool {
@@ -120,6 +46,51 @@ impl RunSnapshot {
         )
     }
 }
+
+/// One sequenced event retained for a run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunEventRecord {
+    pub sequence: u64,
+    /// Wall-clock occurrence time when the host clock can represent Unix time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at_unix_ms: Option<u64>,
+    pub event: RunEvent,
+}
+
+/// Bounded event page returned for one run cursor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunEventPage {
+    pub events: Vec<RunEventRecord>,
+    /// Highest sequence inspected by this page. Supply this as the next cursor.
+    pub next_sequence: u64,
+    /// Oldest sequence still retained by the bounded journal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_sequence: Option<u64>,
+    /// True when the requested cursor predates retained history.
+    pub truncated: bool,
+    /// True when this run can emit no more events.
+    pub terminal: bool,
+}
+
+/// Replayable subscription over retained and future run events.
+pub struct RunEventSubscription {
+    handle: RunHandle,
+    cursor: u64,
+    reported_truncation_at: Option<u64>,
+}
+
+/// One item returned by a replayable event subscription.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RunEventSubscriptionItem {
+    /// The cursor predates retained history. The next call begins replay at the
+    /// oldest retained event, if one exists.
+    HistoryTruncated { oldest_sequence: Option<u64> },
+    /// One retained or newly emitted event.
+    Event(Box<RunEventRecord>),
+}
+
+/// Maximum records retained for one run and returned in one event page.
+pub const RUN_EVENT_CAPACITY: usize = 256;
 
 /// Owning library value for one run. Cloned controls are obtained through
 /// [`Run::handle`].
@@ -137,56 +108,36 @@ impl Run {
                 adapter: provider_id,
             });
         }
-        let mut providers = BTreeMap::new();
-        providers.insert(provider_id, provider);
-        Self::with_components(spec, providers, BTreeMap::new())
-    }
 
-    #[cfg(test)]
-    pub(crate) fn with_providers(
-        spec: RunSpec,
-        providers: BTreeMap<ProviderId, Arc<dyn Provider>>,
-    ) -> Result<Self, RunControlError> {
-        Self::with_components(spec, providers, BTreeMap::new())
-    }
-
-    pub(crate) fn with_components(
-        spec: RunSpec,
-        providers: BTreeMap<ProviderId, Arc<dyn Provider>>,
-        capabilities: BTreeMap<ProcessCapabilityId, RegisteredProcessCapability>,
-    ) -> Result<Self, RunControlError> {
-        spec.execution
-            .workers
-            .validate()
-            .map_err(|_| RunControlError::InvalidWorkerPolicy)?;
-        let provider = providers
-            .get(&spec.agent.provider)
-            .cloned()
-            .ok_or_else(|| RunControlError::ProviderUnavailable(spec.agent.provider.clone()))?;
-        if spec.mission.capabilities().len() != capabilities.len()
-            || spec
-                .mission
-                .capabilities()
-                .iter()
-                .any(|id| !capabilities.contains_key(id))
-        {
-            return Err(RunControlError::ProcessCapabilitiesUnavailable);
-        }
-        let tree = Arc::new(RunTree::new(
-            spec.execution.workers,
-            providers,
-            capabilities,
-        ));
-        let inner = new_inner(spec, provider, tree.clone(), RunId::ROOT, None, 0);
-        tree.register(&inner);
+        let snapshot = RunSnapshot {
+            state: spec.initial_state(),
+            created_at_unix_ms: unix_time_ms(),
+            started_at_unix_ms: None,
+            finished_at_unix_ms: None,
+            elapsed_ms: None,
+            turns_completed: 0,
+            last_outcome: None,
+            failure: None,
+        };
+        let (snapshot_tx, _) = watch::channel(snapshot.clone());
+        let (cancel_tx, _) = watch::channel(false);
         Ok(Self {
-            handle: RunHandle { inner },
+            handle: RunHandle {
+                inner: Arc::new(Inner {
+                    spec,
+                    provider,
+                    control: AsyncMutex::new(Control {
+                        snapshot,
+                        started: false,
+                        started_at: None,
+                        steering: VecDeque::new(),
+                    }),
+                    snapshot_tx,
+                    cancel_tx,
+                    events: EventJournal::new(),
+                }),
+            },
         })
-    }
-
-    /// Identity of the root run within its process-local tree.
-    pub fn id(&self) -> RunId {
-        self.handle.inner.id
     }
 
     /// Clone a control and observation handle.
@@ -194,12 +145,12 @@ impl Run {
         self.handle.clone()
     }
 
-    /// Inspect the immutable resolved specification captured at creation.
+    /// Inspect the immutable specification captured at creation.
     pub fn spec(&self) -> &RunSpec {
         &self.handle.inner.spec
     }
 
-    /// Start a spec that already contains an initial prompt.
+    /// Start a specification that already contains an initial prompt.
     pub async fn begin(&self) -> Result<(), RunControlError> {
         self.handle.begin().await
     }
@@ -211,68 +162,10 @@ pub struct RunHandle {
     inner: Arc<Inner>,
 }
 
-/// Least-authority child-run capability minted for one executing provider.
-/// It cannot steer, cancel, or replace the parent's execution policy.
-#[derive(Clone)]
-pub struct WorkerControl {
-    inner: Weak<Inner>,
-}
-
-impl fmt::Debug for WorkerControl {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("WorkerControl")
-            .field("available", &self.inner.strong_count().gt(&0))
-            .finish()
-    }
-}
-
-impl WorkerControl {
-    fn handle(&self) -> Result<RunHandle, RunControlError> {
-        self.inner
-            .upgrade()
-            .map(|inner| RunHandle { inner })
-            .ok_or(RunControlError::Terminal)
-    }
-
-    /// Spawn a child with the same agent, context, and inherited authority as
-    /// the provider's exact parent run.
-    pub async fn spawn(&self, prompt: Prompt) -> Result<RunHandle, RunControlError> {
-        self.handle()?.spawn_inherited(prompt).await
-    }
-
-    /// Observe descendants of the provider's exact parent run.
-    pub fn workers(&self) -> Result<Vec<WorkerSnapshot>, RunControlError> {
-        Ok(self.handle()?.workers())
-    }
-
-    /// Publish a typed, explicitly agent-reported mission claim.
-    pub async fn report(&self, report: MissionReport) -> Result<(), MissionReportError> {
-        self.handle()
-            .map_err(|_| MissionReportError::RunUnavailable)?
-            .report(report)
-            .await
-    }
-}
-
 impl RunHandle {
-    /// Inspect the immutable resolved specification for this root or worker.
+    /// Inspect the immutable specification captured at creation.
     pub fn spec(&self) -> &RunSpec {
         &self.inner.spec
-    }
-
-    /// Identity within this process-local run tree.
-    pub fn id(&self) -> RunId {
-        self.inner.id
-    }
-
-    /// Parent identity, absent only for the root.
-    pub fn parent_id(&self) -> Option<RunId> {
-        self.inner.parent_id
-    }
-
-    /// Distance from the root. The root has depth zero.
-    pub fn depth(&self) -> u32 {
-        self.inner.depth
     }
 
     /// Start a suspended run with its first prompt.
@@ -289,7 +182,7 @@ impl RunHandle {
         Ok(())
     }
 
-    /// Start a ready run from its resolved initial prompt.
+    /// Start a ready run from its captured initial prompt.
     pub async fn begin(&self) -> Result<(), RunControlError> {
         let prompt = self
             .inner
@@ -309,20 +202,17 @@ impl RunHandle {
         Ok(())
     }
 
-    /// Queue guidance for the next safe provider turn boundary.
+    /// Queue guidance for the next safe provider-turn boundary.
     pub async fn steer(&self, prompt: Prompt) -> Result<(), RunControlError> {
         if !self.inner.provider.capabilities().resume {
             return Err(RunControlError::SteeringUnsupported);
         }
         let mut control = self.inner.control.lock().await;
-        if !matches!(
-            control.snapshot.state,
-            RunState::Running | RunState::Waiting
-        ) {
+        if control.snapshot.state != RunState::Running {
             return Err(RunControlError::NotRunning);
         }
         control.steering.push_back(prompt);
-        emit(&self.inner, RunEvent::SteeringQueued);
+        self.inner.events.emit(RunEvent::SteeringQueued);
         Ok(())
     }
 
@@ -331,128 +221,13 @@ impl RunHandle {
         self.inner.control.lock().await.snapshot.clone()
     }
 
-    /// Spawn a child with an explicitly selected agent while inheriting the
-    /// parent's execution authority and a fresh provider session.
-    pub async fn spawn_worker(&self, worker: WorkerSpec) -> Result<RunHandle, RunControlError> {
-        let parent = self.inner.control.lock().await;
-        if !matches!(parent.snapshot.state, RunState::Running | RunState::Waiting) {
-            return Err(RunControlError::NotRunning);
-        }
-
-        let depth = self.inner.depth.saturating_add(1);
-        let provider = self.inner.tree.provider(&worker.agent.provider)?;
-        if !self.inner.spec.mission.is_empty() && !provider.supports_process_control() {
-            return Err(RunControlError::ProviderProcessControlUnavailable(
-                worker.agent.provider,
-            ));
-        }
-
-        let mut execution = self.inner.spec.execution.clone();
-        execution.session = SessionSpec::Fresh;
-        let spec = RunSpec {
-            agent: worker.agent,
-            context: worker.context,
-            execution,
-            mission: self.inner.spec.mission.clone(),
-            initial_prompt: Some(worker.prompt),
-        };
-        let request = spec
-            .clone()
-            .into_turn()
-            .map_err(|_| RunControlError::WorkerPromptMissing)?;
-        if let Err(error) = provider.validate(&request) {
-            return Err(RunControlError::WorkerPreflight(error));
-        }
-        let id = self.inner.tree.reserve(depth)?;
-
-        let inner = new_inner(
-            spec,
-            provider,
-            self.inner.tree.clone(),
-            id,
-            Some(self.inner.id),
-            depth,
-        );
-        self.inner.tree.register(&inner);
-        let handle = RunHandle { inner };
-        emit(
-            &self.inner,
-            RunEvent::WorkerSpawned {
-                id,
-                parent_id: self.inner.id,
-                depth,
-                provider: handle.inner.spec.agent.provider.clone(),
-            },
-        );
-        drop(parent);
-        handle.begin().await?;
-        Ok(handle)
-    }
-
-    /// Spawn a child using the same agent and context as the parent.
-    pub async fn spawn_inherited(&self, prompt: Prompt) -> Result<RunHandle, RunControlError> {
-        self.spawn_worker(WorkerSpec {
-            agent: self.inner.spec.agent.clone(),
-            context: self.inner.spec.context.clone(),
-            prompt,
-        })
-        .await
-    }
-
-    /// All descendants owned by this run, ordered by creation id. Terminal
-    /// snapshots remain observable until the root tree is dropped.
-    pub fn workers(&self) -> Vec<WorkerSnapshot> {
-        self.inner.tree.descendants(self.inner.id)
-    }
-
-    /// Return the canonical mission projection shared by library adapters.
-    pub async fn mission(&self) -> MissionSnapshot {
-        MissionSnapshot {
-            root: self.status().await,
-            workers: self.workers(),
-            authority: MissionAuthority {
-                permissions: self.inner.spec.execution.permissions,
-                tools: self.inner.spec.execution.tools.clone(),
-                limits: self.inner.spec.execution.limits.clone(),
-                workers: self.inner.tree.policy,
-                process: self.inner.spec.mission.clone(),
-                process_capabilities: self
-                    .inner
-                    .tree
-                    .capabilities
-                    .values()
-                    .map(|capability| capability.descriptor.clone())
-                    .collect(),
-            },
-            claims: self.inner.tree.claims(self.inner.id),
-        }
-    }
-
-    /// Publish a typed claim while preserving runtime-derived mission facts.
-    pub async fn report(&self, report: MissionReport) -> Result<(), MissionReportError> {
-        let control = self.inner.control.lock().await;
-        if control.snapshot.is_terminal() {
-            return Err(MissionReportError::MissionClosed);
-        }
-        report.validate()?;
-        self.inner.tree.report(self.inner.id, report.clone());
-        self.inner
-            .tree
-            .events
-            .emit(self.inner.id, RunEvent::MissionReported { report });
-        drop(control);
-        Ok(())
-    }
-
-    /// Subscribe to retained and future normalized events for this run and its
-    /// descendants. The first call to [`RunEventSubscription::next`] replays
-    /// the oldest retained record.
+    /// Subscribe to retained and future normalized events. The first call to
+    /// [`RunEventSubscription::next`] replays the oldest retained record.
     pub fn subscribe(&self) -> RunEventSubscription {
         self.subscribe_after(0)
     }
 
-    /// Subscribe after an event sequence previously returned by
-    /// [`RunHandle::event_page`].
+    /// Subscribe after a sequence returned by [`RunHandle::event_page`].
     pub fn subscribe_after(&self, sequence: u64) -> RunEventSubscription {
         RunEventSubscription {
             handle: self.clone(),
@@ -468,50 +243,42 @@ impl RunHandle {
         limit: usize,
     ) -> Result<RunEventPage, RunControlError> {
         validate_event_limit(limit)?;
-        self.scoped_event_page(sequence, limit).await
+        self.event_page_inner(sequence, limit).await
     }
 
-    /// Wait until at least one scoped event is available or this run becomes
-    /// terminal. Unrelated sibling events are skipped while advancing the
-    /// tree-wide cursor.
+    /// Wait until an event is available, history truncation is known, or the
+    /// run is terminal.
     pub async fn wait_for_events(
         &self,
         sequence: u64,
         limit: usize,
     ) -> Result<RunEventPage, RunControlError> {
         validate_event_limit(limit)?;
-        let mut changed = self.inner.tree.events.subscribe();
+        let mut changed = self.inner.events.subscribe();
         let mut cursor = sequence;
         loop {
-            let page = self.scoped_event_page(cursor, limit).await?;
+            let page = self.event_page_inner(cursor, limit).await?;
             if !page.events.is_empty() || page.truncated || page.terminal {
                 return Ok(page);
             }
             cursor = page.next_sequence;
             if changed.changed().await.is_err() {
-                return self.scoped_event_page(cursor, limit).await;
+                return self.event_page_inner(cursor, limit).await;
             }
         }
     }
 
-    /// Cancel a suspended, ready, or running run. Running provider futures are
-    /// dropped at the cancellation boundary. A run already finishing retains
-    /// the outcome chosen before cancellation while its descendants settle.
+    /// Cancel a suspended, ready, or running run. A running provider future is
+    /// dropped before the run becomes terminal.
     pub async fn cancel(&self) -> Result<(), RunControlError> {
-        self.cancel_self().await?;
-        cancel_children(&self.inner).await;
-        Ok(())
-    }
-
-    async fn cancel_self(&self) -> Result<(), RunControlError> {
         let mut control = self.inner.control.lock().await;
         if control.snapshot.is_terminal() {
             return Err(RunControlError::Terminal);
         }
         match control.snapshot.state {
-            RunState::Running | RunState::Waiting => {
-                self.inner.cancel_tx.send_replace(true);
+            RunState::Running => {
                 set_state(&self.inner, &mut control, RunState::Finishing);
+                self.inner.cancel_tx.send_replace(true);
             }
             RunState::Finishing => {}
             _ => set_state(&self.inner, &mut control, RunState::Cancelled),
@@ -533,59 +300,30 @@ impl RunHandle {
         }
     }
 
-    async fn scoped_event_page(
+    async fn event_page_inner(
         &self,
         sequence: u64,
         limit: usize,
     ) -> Result<RunEventPage, RunControlError> {
-        let retained = self.inner.tree.events.page();
-        if sequence > retained.next_sequence {
-            return Err(RunControlError::EventCursorAhead {
-                requested: sequence,
-                newest: retained.next_sequence,
-            });
-        }
-        let journal_sequence = retained.next_sequence;
-        let mut next_sequence = journal_sequence;
-        let mut events = Vec::with_capacity(limit);
-        let mut oldest_sequence = None;
-        for record in retained.records {
-            if self.inner.tree.includes(self.inner.id, record.run_id) {
-                oldest_sequence.get_or_insert(record.sequence);
-                if record.sequence <= sequence {
-                    continue;
-                }
-                next_sequence = record.sequence;
-                events.push(record);
-                if events.len() == limit {
-                    break;
-                }
-            }
-        }
-        if events.len() < limit {
-            next_sequence = journal_sequence;
-        }
-        let truncated = retained.evicted_through.iter().any(|(run_id, evicted)| {
-            sequence < *evicted && self.inner.tree.includes(self.inner.id, *run_id)
-        });
+        let retained = self.inner.events.page(sequence, limit)?;
         Ok(RunEventPage {
-            events,
-            next_sequence,
-            oldest_sequence,
-            truncated,
+            events: retained.events,
+            next_sequence: retained.next_sequence,
+            oldest_sequence: retained.oldest_sequence,
+            truncated: retained.truncated,
             terminal: self.status().await.is_terminal(),
         })
     }
 }
 
 impl RunEventSubscription {
-    /// Last tree-wide sequence consumed by this subscription.
+    /// Last sequence consumed by this subscription.
     pub fn cursor(&self) -> u64 {
         self.cursor
     }
 
-    /// Wait for and return the next retained or future scoped event. Returns
-    /// `None` only after the run is terminal and no further event is pending.
+    /// Wait for and return the next retained or future event. Returns `None`
+    /// only after the run is terminal and no further event is pending.
     pub async fn next(&mut self) -> Result<Option<RunEventSubscriptionItem>, RunControlError> {
         loop {
             let page = self.handle.wait_for_events(self.cursor, 1).await?;
@@ -611,32 +349,19 @@ impl RunEventSubscription {
 }
 
 struct Inner {
-    id: RunId,
-    parent_id: Option<RunId>,
-    depth: u32,
     spec: RunSpec,
     provider: Arc<dyn Provider>,
-    tree: Arc<RunTree>,
     control: AsyncMutex<Control>,
     snapshot_tx: watch::Sender<RunSnapshot>,
     cancel_tx: watch::Sender<bool>,
-}
-
-struct RunTree {
-    policy: WorkerPolicy,
-    next_id: AtomicU64,
-    providers: BTreeMap<ProviderId, Arc<dyn Provider>>,
-    capabilities: BTreeMap<ProcessCapabilityId, RegisteredProcessCapability>,
-    records: StdMutex<BTreeMap<RunId, WorkerRecord>>,
-    claims: StdMutex<MissionClaimState>,
     events: EventJournal,
 }
 
-#[derive(Default)]
-struct MissionClaimState {
-    work_items: BTreeMap<(RunId, String), MissionWorkItem>,
-    blockers: BTreeMap<(RunId, String), MissionBlocker>,
-    artifacts: BTreeMap<(RunId, String), MissionArtifact>,
+struct Control {
+    snapshot: RunSnapshot,
+    started: bool,
+    started_at: Option<Instant>,
+    steering: VecDeque<Prompt>,
 }
 
 struct EventJournal {
@@ -647,199 +372,14 @@ struct EventJournal {
 struct EventJournalState {
     next_sequence: u64,
     records: VecDeque<RunEventRecord>,
-    evicted_through: BTreeMap<RunId, u64>,
+    evicted_through: u64,
 }
 
 struct RetainedEventPage {
-    records: Vec<RunEventRecord>,
+    events: Vec<RunEventRecord>,
     next_sequence: u64,
-    evicted_through: BTreeMap<RunId, u64>,
-}
-
-struct WorkerRecord {
-    parent_id: Option<RunId>,
-    depth: u32,
-    provider: ProviderId,
-    model: Option<String>,
-    snapshot: watch::Receiver<RunSnapshot>,
-    handle: Weak<Inner>,
-}
-
-struct Control {
-    snapshot: RunSnapshot,
-    started: bool,
-    started_at: Option<Instant>,
-    steering: VecDeque<Prompt>,
-}
-
-impl RunTree {
-    fn new(
-        policy: WorkerPolicy,
-        providers: BTreeMap<ProviderId, Arc<dyn Provider>>,
-        capabilities: BTreeMap<ProcessCapabilityId, RegisteredProcessCapability>,
-    ) -> Self {
-        Self {
-            policy,
-            next_id: AtomicU64::new(RunId::ROOT.get() + 1),
-            providers,
-            capabilities,
-            records: StdMutex::new(BTreeMap::new()),
-            claims: StdMutex::new(MissionClaimState::default()),
-            events: EventJournal::new(),
-        }
-    }
-
-    fn provider(&self, provider_id: &ProviderId) -> Result<Arc<dyn Provider>, RunControlError> {
-        self.providers
-            .get(provider_id)
-            .cloned()
-            .ok_or_else(|| RunControlError::ProviderUnavailable(provider_id.clone()))
-    }
-
-    fn reserve(&self, depth: u32) -> Result<RunId, RunControlError> {
-        if !self.policy.enabled() {
-            return Err(RunControlError::WorkersDisabled);
-        }
-        if depth > self.policy.max_depth {
-            return Err(RunControlError::WorkerDepthExceeded {
-                requested: depth,
-                maximum: self.policy.max_depth,
-            });
-        }
-        let value = self
-            .next_id
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |next| {
-                let already_reserved = next.saturating_sub(RunId::ROOT.get() + 1);
-                (already_reserved < u64::from(self.policy.max_workers)).then_some(next + 1)
-            })
-            .map_err(|_| RunControlError::WorkerLimitReached {
-                maximum: self.policy.max_workers,
-            })?;
-        Ok(RunId::from_counter(value))
-    }
-
-    fn register(&self, inner: &Arc<Inner>) {
-        lock_records(&self.records).insert(
-            inner.id,
-            WorkerRecord {
-                parent_id: inner.parent_id,
-                depth: inner.depth,
-                provider: inner.spec.agent.provider.clone(),
-                model: inner.spec.agent.model.clone(),
-                snapshot: inner.snapshot_tx.subscribe(),
-                handle: Arc::downgrade(inner),
-            },
-        );
-    }
-
-    fn descendants(&self, ancestor: RunId) -> Vec<WorkerSnapshot> {
-        let records = lock_records(&self.records);
-        records
-            .iter()
-            .filter(|(id, _)| **id != ancestor && is_descendant(&records, **id, ancestor))
-            .filter_map(|(id, record)| {
-                record.parent_id.map(|parent_id| WorkerSnapshot {
-                    id: *id,
-                    parent_id,
-                    depth: record.depth,
-                    provider: record.provider.clone(),
-                    model: record.model.clone(),
-                    run: record.snapshot.borrow().clone(),
-                })
-            })
-            .collect()
-    }
-
-    fn descendant_handles(&self, ancestor: RunId) -> Vec<RunHandle> {
-        let records = lock_records(&self.records);
-        let mut descendants = records
-            .iter()
-            .filter(|(id, _)| **id != ancestor && is_descendant(&records, **id, ancestor))
-            .filter_map(|(_, record)| record.handle.upgrade().map(|inner| (record.depth, inner)))
-            .collect::<Vec<_>>();
-        descendants.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
-        descendants
-            .into_iter()
-            .map(|(_, inner)| RunHandle { inner })
-            .collect()
-    }
-
-    fn includes(&self, ancestor: RunId, candidate: RunId) -> bool {
-        candidate == ancestor || is_descendant(&lock_records(&self.records), candidate, ancestor)
-    }
-
-    fn report(&self, reported_by: RunId, report: MissionReport) {
-        let mut claims = self
-            .claims
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match report {
-            MissionReport::WorkItem { id, title, state } => {
-                claims.work_items.insert(
-                    (reported_by, id.clone()),
-                    MissionWorkItem {
-                        id,
-                        title,
-                        state,
-                        reported_by,
-                    },
-                );
-            }
-            MissionReport::Blocker { id, message } => {
-                claims.blockers.insert(
-                    (reported_by, id.clone()),
-                    MissionBlocker {
-                        id,
-                        message,
-                        reported_by,
-                    },
-                );
-            }
-            MissionReport::Artifact {
-                id,
-                artifact_kind,
-                reference,
-            } => {
-                claims.artifacts.insert(
-                    (reported_by, id.clone()),
-                    MissionArtifact {
-                        id,
-                        kind: artifact_kind,
-                        reference,
-                        reported_by,
-                    },
-                );
-            }
-        }
-    }
-
-    fn claims(&self, ancestor: RunId) -> MissionClaims {
-        let claims = self
-            .claims
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let visible = |run_id| self.includes(ancestor, run_id);
-        MissionClaims {
-            work_items: claims
-                .work_items
-                .values()
-                .filter(|item| visible(item.reported_by))
-                .cloned()
-                .collect(),
-            blockers: claims
-                .blockers
-                .values()
-                .filter(|item| visible(item.reported_by))
-                .cloned()
-                .collect(),
-            artifacts: claims
-                .artifacts
-                .values()
-                .filter(|item| visible(item.reported_by))
-                .cloned()
-                .collect(),
-        }
-    }
+    oldest_sequence: Option<u64>,
+    truncated: bool,
 }
 
 impl EventJournal {
@@ -849,13 +389,13 @@ impl EventJournal {
             state: StdMutex::new(EventJournalState {
                 next_sequence: 1,
                 records: VecDeque::with_capacity(RUN_EVENT_CAPACITY),
-                evicted_through: BTreeMap::new(),
+                evicted_through: 0,
             }),
             revision,
         }
     }
 
-    fn emit(&self, run_id: RunId, event: RunEvent) {
+    fn emit(&self, event: RunEvent) {
         let sequence = {
             let mut state = self
                 .state
@@ -869,15 +409,10 @@ impl EventJournal {
             if state.records.len() == RUN_EVENT_CAPACITY
                 && let Some(evicted) = state.records.pop_front()
             {
-                state
-                    .evicted_through
-                    .entry(evicted.run_id)
-                    .and_modify(|sequence| *sequence = (*sequence).max(evicted.sequence))
-                    .or_insert(evicted.sequence);
+                state.evicted_through = state.evicted_through.max(evicted.sequence);
             }
             state.records.push_back(RunEventRecord {
                 sequence,
-                run_id,
                 occurred_at_unix_ms: unix_time_ms(),
                 event,
             });
@@ -890,105 +425,82 @@ impl EventJournal {
         self.revision.subscribe()
     }
 
-    fn page(&self) -> RetainedEventPage {
+    fn page(&self, after: u64, limit: usize) -> Result<RetainedEventPage, RunControlError> {
         let state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let next_sequence = state.next_sequence.saturating_sub(1);
-        RetainedEventPage {
-            records: state.records.iter().cloned().collect(),
+        let newest = state.next_sequence.saturating_sub(1);
+        if after > newest {
+            return Err(RunControlError::EventCursorAhead {
+                requested: after,
+                newest,
+            });
+        }
+        let events = state
+            .records
+            .iter()
+            .filter(|record| record.sequence > after)
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>();
+        let next_sequence = events
+            .last()
+            .map(|record| record.sequence)
+            .unwrap_or(newest);
+        Ok(RetainedEventPage {
+            events,
             next_sequence,
-            evicted_through: state.evicted_through.clone(),
-        }
+            oldest_sequence: state.records.front().map(|record| record.sequence),
+            truncated: after < state.evicted_through,
+        })
     }
 }
 
-fn lock_records(
-    records: &StdMutex<BTreeMap<RunId, WorkerRecord>>,
-) -> std::sync::MutexGuard<'_, BTreeMap<RunId, WorkerRecord>> {
-    records
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+struct JournalSink<'a> {
+    events: &'a EventJournal,
 }
 
-fn is_descendant(
-    records: &BTreeMap<RunId, WorkerRecord>,
-    mut candidate: RunId,
-    ancestor: RunId,
-) -> bool {
-    while let Some(parent) = records.get(&candidate).and_then(|record| record.parent_id) {
-        if parent == ancestor {
-            return true;
-        }
-        candidate = parent;
-    }
-    false
-}
-
-fn new_inner(
-    spec: RunSpec,
-    provider: Arc<dyn Provider>,
-    tree: Arc<RunTree>,
-    id: RunId,
-    parent_id: Option<RunId>,
-    depth: u32,
-) -> Arc<Inner> {
-    let snapshot = RunSnapshot {
-        id,
-        parent_id,
-        depth,
-        state: spec.initial_state(),
-        created_at_unix_ms: unix_time_ms(),
-        started_at_unix_ms: None,
-        finished_at_unix_ms: None,
-        elapsed_ms: None,
-        turns_completed: 0,
-        last_outcome: None,
-        failure: None,
-    };
-    let (snapshot_tx, _) = watch::channel(snapshot.clone());
-    let (cancel_tx, _) = watch::channel(false);
-    Arc::new(Inner {
-        id,
-        parent_id,
-        depth,
-        spec,
-        provider,
-        tree,
-        control: AsyncMutex::new(Control {
-            snapshot,
-            started: false,
-            started_at: None,
-            steering: VecDeque::new(),
-        }),
-        snapshot_tx,
-        cancel_tx,
-    })
-}
-
-struct JournalSink {
-    run_id: RunId,
-    events: Arc<RunTree>,
-}
-
-impl EventSink for JournalSink {
-    fn emit(&self, event: RunEvent) {
-        self.events.events.emit(self.run_id, event);
+impl EventSink for JournalSink<'_> {
+    fn emit(&self, event: ProviderEvent) {
+        self.events.emit(match event {
+            ProviderEvent::OutputDelta { text } => RunEvent::OutputDelta { text },
+            ProviderEvent::Usage { usage } => RunEvent::Usage { usage },
+            ProviderEvent::Warning { message } => RunEvent::Warning { message },
+        });
     }
 }
 
 fn spawn_driver(inner: Arc<Inner>, prompt: Prompt) {
     tokio::spawn(async move {
-        drive(inner, prompt).await;
+        let driver_inner = Arc::clone(&inner);
+        let result = tokio::spawn(async move {
+            drive(driver_inner, prompt).await;
+        })
+        .await;
+        if let Err(error) = result {
+            let message = if error.is_panic() {
+                "run driver panicked"
+            } else {
+                "run driver stopped unexpectedly"
+            };
+            fail(
+                &inner,
+                RunFailure {
+                    kind: FailureKind::Provider,
+                    message: message.to_string(),
+                    details: Default::default(),
+                },
+            )
+            .await;
+        }
     });
 }
 
 async fn drive(inner: Arc<Inner>, mut prompt: Prompt) {
     let mut session = inner.spec.execution.session.clone();
     let sink = JournalSink {
-        run_id: inner.id,
-        events: inner.tree.clone(),
+        events: &inner.events,
     };
 
     loop {
@@ -1012,47 +524,46 @@ async fn drive(inner: Arc<Inner>, mut prompt: Prompt) {
         };
 
         let mut cancelled = inner.cancel_tx.subscribe();
-        let worker_control = inner
-            .spec
-            .execution
-            .workers
-            .enabled()
-            .then(|| WorkerControl {
-                inner: Arc::downgrade(&inner),
-            });
-        let process_control = (!inner.tree.capabilities.is_empty())
-            .then(|| ProcessControl::new(inner.id, inner.tree.capabilities.clone()));
-        let context = if worker_control.is_some() || process_control.is_some() {
-            ProviderContext::for_run(worker_control, process_control)
-        } else {
-            ProviderContext::default()
-        };
+        inner.events.emit(RunEvent::TurnStarted {
+            provider: request.spec.agent.provider.clone(),
+        });
         let result = tokio::select! {
-            result = execute_turn(inner.provider.as_ref(), request, context, &sink) => Some(result),
+            result = execute_turn(inner.provider.as_ref(), request, &sink) => Some(result),
             () = wait_for_cancellation(&mut cancelled) => None,
         };
 
         let Some(result) = result else {
             let mut control = inner.control.lock().await;
-            set_state(&inner, &mut control, RunState::Finishing);
-            drop(control);
-            cancel_children(&inner).await;
-            let mut control = inner.control.lock().await;
             set_state(&inner, &mut control, RunState::Cancelled);
             return;
         };
 
+        let mut control = inner.control.lock().await;
+        if control.snapshot.state == RunState::Finishing || *inner.cancel_tx.borrow() {
+            set_state(&inner, &mut control, RunState::Cancelled);
+            return;
+        }
+
         match result {
             Err(error) => {
-                fail(&inner, error.into()).await;
+                let failure = RunFailure::from(error);
+                control.snapshot.failure = Some(failure.clone());
+                inner.events.emit(RunEvent::Failed { failure });
+                set_state(&inner, &mut control, RunState::Failed);
                 return;
             }
             Ok(outcome) => {
-                let mut control = inner.control.lock().await;
                 control.snapshot.turns_completed += 1;
                 control.snapshot.last_outcome = Some(outcome.clone());
+                inner.events.emit(RunEvent::TurnCompleted {
+                    outcome: outcome.clone(),
+                });
                 if let Some(next) = control.steering.pop_front() {
-                    let Some(next_session) = outcome.session else {
+                    let next_session = outcome.session.or_else(|| match &session {
+                        SessionSpec::Fresh => None,
+                        SessionSpec::Resume { session } => Some(session.clone()),
+                    });
+                    let Some(next_session) = next_session else {
                         let failure = RunFailure {
                             kind: FailureKind::Provider,
                             message: "provider returned no session handle required for steering"
@@ -1067,15 +578,9 @@ async fn drive(inner: Arc<Inner>, mut prompt: Prompt) {
                         session: next_session,
                     };
                     prompt = next;
-                    set_state(&inner, &mut control, RunState::Waiting);
-                    set_state(&inner, &mut control, RunState::Running);
                     drop(control);
                     continue;
                 }
-                set_state(&inner, &mut control, RunState::Finishing);
-                drop(control);
-                cancel_children(&inner).await;
-                let mut control = inner.control.lock().await;
                 set_state(&inner, &mut control, RunState::Completed);
                 return;
             }
@@ -1096,23 +601,16 @@ async fn wait_for_cancellation(receiver: &mut watch::Receiver<bool>) {
 
 async fn fail(inner: &Inner, failure: RunFailure) {
     let mut control = inner.control.lock().await;
+    if control.snapshot.is_terminal() {
+        return;
+    }
+    if control.snapshot.state == RunState::Finishing || *inner.cancel_tx.borrow() {
+        set_state(inner, &mut control, RunState::Cancelled);
+        return;
+    }
     control.snapshot.failure = Some(failure.clone());
-    set_state(inner, &mut control, RunState::Finishing);
-    drop(control);
-    cancel_children(inner).await;
-    let mut control = inner.control.lock().await;
+    inner.events.emit(RunEvent::Failed { failure });
     set_state(inner, &mut control, RunState::Failed);
-    emit(inner, RunEvent::Failed { failure });
-}
-
-async fn cancel_children(inner: &Inner) {
-    let children = inner.tree.descendant_handles(inner.id);
-    for child in &children {
-        let _ = child.cancel_self().await;
-    }
-    for child in children {
-        let _ = child.wait().await;
-    }
 }
 
 fn set_state(inner: &Inner, control: &mut Control, state: RunState) {
@@ -1123,8 +621,8 @@ fn set_state(inner: &Inner, control: &mut Control, state: RunState) {
             .started_at
             .map(|started| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
     }
+    inner.events.emit(RunEvent::StateChanged { state });
     inner.snapshot_tx.send_replace(control.snapshot.clone());
-    emit(inner, RunEvent::StateChanged { state });
 }
 
 fn mark_started(control: &mut Control) {
@@ -1137,10 +635,6 @@ fn unix_time_ms() -> Option<u64> {
         .duration_since(UNIX_EPOCH)
         .ok()
         .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
-}
-
-fn emit(inner: &Inner, event: RunEvent) {
-    inner.tree.events.emit(inner.id, event);
 }
 
 fn validate_event_limit(limit: usize) -> Result<(), RunControlError> {
@@ -1164,7 +658,7 @@ impl From<ProviderError> for RunFailure {
 }
 
 /// Invalid lifecycle operation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunControlError {
     ProviderMismatch {
         selected: ProviderId,
@@ -1175,20 +669,6 @@ pub enum RunControlError {
     NotRunning,
     SteeringUnsupported,
     Terminal,
-    InvalidWorkerPolicy,
-    ProcessCapabilitiesUnavailable,
-    ProviderUnavailable(ProviderId),
-    ProviderProcessControlUnavailable(ProviderId),
-    WorkersDisabled,
-    WorkerDepthExceeded {
-        requested: u32,
-        maximum: u32,
-    },
-    WorkerLimitReached {
-        maximum: u32,
-    },
-    WorkerPromptMissing,
-    WorkerPreflight(ProviderError),
     InvalidEventLimit {
         maximum: usize,
     },
@@ -1212,29 +692,6 @@ impl fmt::Display for RunControlError {
                 f.write_str("provider cannot resume and does not support steering")
             }
             Self::Terminal => f.write_str("run is already terminal"),
-            Self::InvalidWorkerPolicy => f.write_str(
-                "max_workers and max_depth must either both be zero or both be greater than zero",
-            ),
-            Self::ProcessCapabilitiesUnavailable => f.write_str(
-                "run declares process capabilities that were not validated by its host runtime",
-            ),
-            Self::ProviderUnavailable(provider) => {
-                write!(f, "provider {provider} is not registered for this run tree")
-            }
-            Self::ProviderProcessControlUnavailable(provider) => write!(
-                f,
-                "provider {provider} has no private process-control transport"
-            ),
-            Self::WorkersDisabled => f.write_str("this run does not permit child workers"),
-            Self::WorkerDepthExceeded { requested, maximum } => write!(
-                f,
-                "worker depth {requested} exceeds this run's maximum depth {maximum}"
-            ),
-            Self::WorkerLimitReached { maximum } => {
-                write!(f, "this run has reached its maximum of {maximum} workers")
-            }
-            Self::WorkerPromptMissing => f.write_str("worker prompt is missing"),
-            Self::WorkerPreflight(error) => write!(f, "worker preflight refused: {error}"),
             Self::InvalidEventLimit { maximum } => {
                 write!(f, "event page limit must be between 1 and {maximum}")
             }
@@ -1246,34 +703,142 @@ impl fmt::Display for RunControlError {
     }
 }
 
-impl std::error::Error for RunControlError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::WorkerPreflight(error) => Some(error),
-            _ => None,
-        }
-    }
-}
+impl std::error::Error for RunControlError {}
 
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     use tokio::sync::Notify;
 
     use super::*;
     use crate::provider::{ProviderCapabilities, ProviderFuture};
-    use crate::run::{
-        AgentSpec, ContextSpec, Cost, PermissionPolicy, RunFailureDetails, RunOutcome,
-        SessionHandle, TokenUsage, TurnRequest, WorkerPolicy, WorkerSpec,
-    };
-    use crate::{MissionReport, MissionWorkState};
+    use crate::run::{AgentSpec, Cost, RunFailureDetails, SessionHandle, TokenUsage, TurnRequest};
 
     struct RecordingProvider {
         calls: AtomicUsize,
         first_started: Notify,
         release_first: Notify,
         block: bool,
+        failure: Option<ProviderError>,
+    }
+
+    struct SessionlessProvider {
+        calls: AtomicUsize,
+        first_started: Notify,
+        release_first: Notify,
+        sessions: StdMutex<Vec<SessionSpec>>,
+    }
+
+    impl Provider for SessionlessProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::claude()
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                resume: true,
+                ..ProviderCapabilities::default()
+            }
+        }
+
+        fn validate(&self, _request: &TurnRequest) -> Result<(), ProviderError> {
+            Ok(())
+        }
+
+        fn execute<'a>(
+            &'a self,
+            request: TurnRequest,
+            _events: &'a dyn EventSink,
+        ) -> ProviderFuture<'a> {
+            Box::pin(async move {
+                self.sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(request.spec.execution.session.clone());
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                if call == 0 {
+                    self.first_started.notify_one();
+                    self.release_first.notified().await;
+                }
+                Ok(RunOutcome {
+                    output: request.prompt.into_inner(),
+                    session: None,
+                    usage: None,
+                    cost: None,
+                    duration_ms: None,
+                    provider_turns: None,
+                    structured_output: None,
+                })
+            })
+        }
+    }
+
+    struct PanickingProvider;
+
+    impl Provider for PanickingProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::claude()
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities::default()
+        }
+
+        fn validate(&self, _request: &TurnRequest) -> Result<(), ProviderError> {
+            Ok(())
+        }
+
+        fn execute<'a>(
+            &'a self,
+            _request: TurnRequest,
+            _events: &'a dyn EventSink,
+        ) -> ProviderFuture<'a> {
+            Box::pin(async move {
+                panic!("provider future panicked");
+            })
+        }
+    }
+
+    struct EventfulProvider;
+
+    impl Provider for EventfulProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::claude()
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities::default()
+        }
+
+        fn validate(&self, _request: &TurnRequest) -> Result<(), ProviderError> {
+            Ok(())
+        }
+
+        fn execute<'a>(
+            &'a self,
+            request: TurnRequest,
+            events: &'a dyn EventSink,
+        ) -> ProviderFuture<'a> {
+            Box::pin(async move {
+                events.emit(ProviderEvent::OutputDelta {
+                    text: "chunk".to_string(),
+                });
+                events.emit(ProviderEvent::Warning {
+                    message: "provider warning".to_string(),
+                });
+                Ok(RunOutcome {
+                    output: request.prompt.into_inner(),
+                    session: None,
+                    usage: None,
+                    cost: None,
+                    duration_ms: None,
+                    provider_turns: None,
+                    structured_output: None,
+                })
+            })
+        }
     }
 
     impl Provider for RecordingProvider {
@@ -1288,14 +853,13 @@ mod tests {
             }
         }
 
-        fn validate(&self, _request: &crate::TurnRequest) -> Result<(), ProviderError> {
+        fn validate(&self, _request: &TurnRequest) -> Result<(), ProviderError> {
             Ok(())
         }
 
         fn execute<'a>(
             &'a self,
             request: TurnRequest,
-            _context: ProviderContext,
             _events: &'a dyn EventSink,
         ) -> ProviderFuture<'a> {
             Box::pin(async move {
@@ -1305,6 +869,9 @@ mod tests {
                     if self.block {
                         self.release_first.notified().await;
                     }
+                }
+                if let Some(error) = &self.failure {
+                    return Err(error.clone());
                 }
                 Ok(RunOutcome {
                     output: request.prompt.into_inner(),
@@ -1328,51 +895,8 @@ mod tests {
             first_started: Notify::new(),
             release_first: Notify::new(),
             block,
+            failure: None,
         })
-    }
-
-    struct LimitProvider;
-
-    impl Provider for LimitProvider {
-        fn id(&self) -> ProviderId {
-            ProviderId::claude()
-        }
-
-        fn capabilities(&self) -> ProviderCapabilities {
-            ProviderCapabilities::default()
-        }
-
-        fn validate(&self, _request: &TurnRequest) -> Result<(), ProviderError> {
-            Ok(())
-        }
-
-        fn execute<'a>(
-            &'a self,
-            _request: TurnRequest,
-            _context: ProviderContext,
-            _events: &'a dyn EventSink,
-        ) -> ProviderFuture<'a> {
-            Box::pin(async {
-                Err(
-                    ProviderError::new(FailureKind::Limit, "turn limit reached").with_details(
-                        RunFailureDetails {
-                            session: Some(SessionHandle {
-                                provider: ProviderId::claude(),
-                                id: "limit-session".to_string(),
-                            }),
-                            usage: Some(TokenUsage {
-                                input: Some(100),
-                                output: Some(20),
-                                ..TokenUsage::default()
-                            }),
-                            cost: Some(Cost::usd(1.25)),
-                            duration_ms: Some(321),
-                            provider_turns: Some(30),
-                        },
-                    ),
-                )
-            })
-        }
     }
 
     #[tokio::test]
@@ -1393,160 +917,10 @@ mod tests {
         let terminal = run.handle().wait().await;
         assert_eq!(terminal.state, RunState::Completed);
         assert_eq!(terminal.last_outcome.unwrap().output, "hello");
-        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn mission_projection_separates_runtime_facts_from_reported_claims() {
-        let provider = provider(false);
-        let spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()));
-        let run = Run::new(spec, provider.clone()).unwrap();
-
-        let empty = run.handle().mission().await;
-        assert_eq!(empty.root.state, RunState::Suspended);
-        assert!(empty.workers.is_empty());
-        assert!(empty.claims.work_items.is_empty());
-        assert_eq!(empty.authority.workers, WorkerPolicy::default());
-        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
-
-        run.handle()
-            .report(MissionReport::WorkItem {
-                id: "issue-1".to_string(),
-                title: "Implement the first issue".to_string(),
-                state: MissionWorkState::InProgress,
-            })
-            .await
-            .unwrap();
-        run.handle()
-            .report(MissionReport::Artifact {
-                id: "pr-1".to_string(),
-                artifact_kind: "pull_request".to_string(),
-                reference: "https://example.invalid/pr/1".to_string(),
-            })
-            .await
-            .unwrap();
-        run.handle()
-            .report(MissionReport::WorkItem {
-                id: "issue-1".to_string(),
-                title: "Implement the first issue".to_string(),
-                state: MissionWorkState::Completed,
-            })
-            .await
-            .unwrap();
-
-        let mission = run.handle().mission().await;
-        assert_eq!(mission.root.state, RunState::Suspended);
-        assert_eq!(mission.claims.work_items.len(), 1);
-        assert_eq!(mission.claims.work_items[0].reported_by, run.id());
-        assert_eq!(
-            mission.claims.work_items[0].state,
-            MissionWorkState::Completed
-        );
-        assert_eq!(mission.claims.artifacts.len(), 1);
-        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
-
-        let events = run
-            .handle()
-            .event_page(0, RUN_EVENT_CAPACITY)
-            .await
-            .unwrap();
-        assert_eq!(
-            events
-                .events
-                .iter()
-                .filter(|record| matches!(record.event, RunEvent::MissionReported { .. }))
-                .count(),
-            3
-        );
-    }
-
-    #[tokio::test]
-    async fn snapshots_and_events_expose_process_local_run_timing() {
-        let provider = provider(true);
-        let spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
-            .with_prompt(Prompt::new("hello").unwrap());
-        let run = Run::new(spec, provider.clone()).unwrap();
-        let handle = run.handle();
-
-        let created = handle.status().await;
-        assert!(created.created_at_unix_ms.is_some());
-        assert!(created.started_at_unix_ms.is_none());
-        assert!(created.finished_at_unix_ms.is_none());
-        assert!(created.elapsed_ms.is_none());
-
-        run.begin().await.unwrap();
-        provider.first_started.notified().await;
-        let running = handle.status().await;
-        assert!(running.started_at_unix_ms.is_some());
-        assert!(running.finished_at_unix_ms.is_none());
-        assert!(running.elapsed_ms.is_none());
-
-        provider.release_first.notify_one();
-        let terminal = handle.wait().await;
-        assert_eq!(terminal.state, RunState::Completed);
+        assert!(terminal.started_at_unix_ms.is_some());
         assert!(terminal.finished_at_unix_ms.is_some());
         assert!(terminal.elapsed_ms.is_some());
-
-        let events = handle.event_page(0, RUN_EVENT_CAPACITY).await.unwrap();
-        assert!(!events.events.is_empty());
-        assert!(
-            events
-                .events
-                .iter()
-                .all(|record| record.occurred_at_unix_ms.is_some())
-        );
-    }
-
-    #[tokio::test]
-    async fn failed_turn_details_survive_snapshot_and_event_settlement() {
-        let spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
-            .with_prompt(Prompt::new("bounded work").unwrap());
-        let run = Run::new(spec, Arc::new(LimitProvider)).unwrap();
-        run.begin().await.unwrap();
-
-        let terminal = run.handle().wait().await;
-        assert_eq!(terminal.state, RunState::Failed);
-        let failure = terminal.failure.unwrap();
-        assert_eq!(failure.kind, FailureKind::Limit);
-        assert_eq!(
-            failure.details.session.as_ref().unwrap().id,
-            "limit-session"
-        );
-        assert_eq!(failure.details.provider_turns, Some(30));
-        assert_eq!(failure.details.cost, Some(Cost::usd(1.25)));
-
-        let events = run
-            .handle()
-            .event_page(0, RUN_EVENT_CAPACITY)
-            .await
-            .unwrap();
-        assert!(events.events.iter().any(|record| {
-            matches!(
-                &record.event,
-                RunEvent::Failed { failure }
-                    if failure.kind == FailureKind::Limit
-                        && failure.details.session.as_ref().is_some_and(|session| session.id == "limit-session")
-                        && failure.details.provider_turns == Some(30)
-            )
-        }));
-    }
-
-    #[tokio::test]
-    async fn cancelling_before_start_has_no_fabricated_start_or_elapsed_time() {
-        let run = Run::new(
-            RunSpec::suspended(AgentSpec::new(ProviderId::claude())),
-            provider(false),
-        )
-        .unwrap();
-        let handle = run.handle();
-        handle.cancel().await.unwrap();
-        let terminal = handle.wait().await;
-
-        assert_eq!(terminal.state, RunState::Cancelled);
-        assert!(terminal.created_at_unix_ms.is_some());
-        assert!(terminal.started_at_unix_ms.is_none());
-        assert!(terminal.finished_at_unix_ms.is_some());
-        assert!(terminal.elapsed_ms.is_none());
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -1571,7 +945,143 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_drops_the_provider_turn() {
+    async fn resumed_run_reuses_known_session_when_outcome_omits_it() {
+        let provider = Arc::new(SessionlessProvider {
+            calls: AtomicUsize::new(0),
+            first_started: Notify::new(),
+            release_first: Notify::new(),
+            sessions: StdMutex::new(Vec::new()),
+        });
+        let known = SessionHandle {
+            provider: ProviderId::claude(),
+            id: "known-session".to_string(),
+        };
+        let mut spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+            .with_prompt(Prompt::new("first").unwrap());
+        spec.execution.session = SessionSpec::Resume {
+            session: known.clone(),
+        };
+        let run = Run::new(spec, provider.clone()).unwrap();
+        run.begin().await.unwrap();
+        provider.first_started.notified().await;
+        run.handle()
+            .steer(Prompt::new("second").unwrap())
+            .await
+            .unwrap();
+        provider.release_first.notify_one();
+
+        let terminal = run.handle().wait().await;
+        assert_eq!(terminal.state, RunState::Completed);
+        assert_eq!(terminal.turns_completed, 2);
+        let sessions = provider
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            sessions.as_slice(),
+            [
+                SessionSpec::Resume {
+                    session: known.clone()
+                },
+                SessionSpec::Resume { session: known }
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_run_without_reported_session_cannot_steer() {
+        let provider = Arc::new(SessionlessProvider {
+            calls: AtomicUsize::new(0),
+            first_started: Notify::new(),
+            release_first: Notify::new(),
+            sessions: StdMutex::new(Vec::new()),
+        });
+        let run = Run::new(
+            RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+                .with_prompt(Prompt::new("first").unwrap()),
+            provider.clone(),
+        )
+        .unwrap();
+        run.begin().await.unwrap();
+        provider.first_started.notified().await;
+        run.handle()
+            .steer(Prompt::new("second").unwrap())
+            .await
+            .unwrap();
+        provider.release_first.notify_one();
+
+        let terminal = run.handle().wait().await;
+        assert_eq!(terminal.state, RunState::Failed);
+        assert_eq!(terminal.turns_completed, 1);
+        assert!(
+            terminal
+                .failure
+                .unwrap()
+                .message
+                .contains("no session handle")
+        );
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn provider_panic_settles_failed_instead_of_stranding_waiters() {
+        let run = Run::new(
+            RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+                .with_prompt(Prompt::new("hello").unwrap()),
+            Arc::new(PanickingProvider),
+        )
+        .unwrap();
+        run.begin().await.unwrap();
+
+        let terminal = tokio::time::timeout(Duration::from_secs(1), run.handle().wait())
+            .await
+            .expect("panicked driver did not settle");
+        assert_eq!(terminal.state, RunState::Failed);
+        let failure = terminal.failure.unwrap();
+        assert_eq!(failure.kind, FailureKind::Provider);
+        assert_eq!(failure.message, "run driver panicked");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_wraps_provider_observations_in_authoritative_boundaries() {
+        let run = Run::new(
+            RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+                .with_prompt(Prompt::new("hello").unwrap()),
+            Arc::new(EventfulProvider),
+        )
+        .unwrap();
+        run.begin().await.unwrap();
+        assert_eq!(run.handle().wait().await.state, RunState::Completed);
+
+        let page = run
+            .handle()
+            .event_page(0, RUN_EVENT_CAPACITY)
+            .await
+            .unwrap();
+        let events = page
+            .events
+            .iter()
+            .map(|record| &record.event)
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                RunEvent::StateChanged {
+                    state: RunState::Running
+                },
+                RunEvent::TurnStarted { .. },
+                RunEvent::OutputDelta { text },
+                RunEvent::Warning { message },
+                RunEvent::TurnCompleted { .. },
+                RunEvent::StateChanged {
+                    state: RunState::Completed
+                }
+            ] if text == "chunk" && message == "provider warning"
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancellation_drops_the_provider_turn_before_settling() {
         let provider = provider(true);
         let spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
             .with_prompt(Prompt::new("first").unwrap());
@@ -1583,6 +1093,35 @@ mod tests {
         let terminal = run.handle().wait().await;
         assert_eq!(terminal.state, RunState::Cancelled);
         assert_eq!(terminal.turns_completed, 0);
+        assert!(terminal.finished_at_unix_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn cancellation_that_acquires_control_before_settlement_wins() {
+        let provider = provider(true);
+        let run = Run::new(
+            RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+                .with_prompt(Prompt::new("first").unwrap()),
+            provider.clone(),
+        )
+        .unwrap();
+        run.begin().await.unwrap();
+        provider.first_started.notified().await;
+
+        // Hold settlement at the control lock. Queue cancellation first, then
+        // make the provider outcome ready. Once the lock opens, cancel must
+        // linearize before the already-selected provider result.
+        let guard = run.handle.inner.control.lock().await;
+        let handle = run.handle();
+        let cancellation = tokio::spawn(async move { handle.cancel().await });
+        tokio::task::yield_now().await;
+        provider.release_first.notify_one();
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        cancellation.await.unwrap().unwrap();
+        assert_eq!(run.handle().wait().await.state, RunState::Cancelled);
+        assert_eq!(run.handle().status().await.turns_completed, 0);
     }
 
     #[tokio::test]
@@ -1604,39 +1143,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn late_subscribers_replay_retained_events_without_cursor_loss() {
+    async fn event_pages_are_bounded_replayable_and_reject_future_cursors() {
         let provider = provider(false);
-        let spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
-            .with_prompt(Prompt::new("hello").unwrap());
-        let run = Run::new(spec, provider).unwrap();
+        let run = Run::new(
+            RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+                .with_prompt(Prompt::new("hello").unwrap()),
+            provider,
+        )
+        .unwrap();
         run.begin().await.unwrap();
-        assert_eq!(run.handle().wait().await.state, RunState::Completed);
+        let terminal = run.handle().wait().await;
+        assert!(terminal.is_terminal());
 
-        let handle = run.handle();
-        let first = handle.event_page(0, 1).await.unwrap();
+        let first = run.handle().event_page(0, 1).await.unwrap();
         assert_eq!(first.events.len(), 1);
-        assert_eq!(first.events[0].sequence, first.next_sequence);
-        assert!(!first.truncated);
-
-        let rest = handle
+        let rest = run
+            .handle()
             .event_page(first.next_sequence, RUN_EVENT_CAPACITY)
             .await
             .unwrap();
         assert!(!rest.events.is_empty());
-        assert!(
-            rest.events
-                .iter()
-                .all(|record| record.sequence > first.next_sequence)
-        );
+        assert!(rest.terminal);
         assert_eq!(
-            rest.events.last().unwrap().event,
-            RunEvent::StateChanged {
-                state: RunState::Completed
+            run.handle()
+                .event_page(rest.next_sequence + 1, 1)
+                .await
+                .unwrap_err(),
+            RunControlError::EventCursorAhead {
+                requested: rest.next_sequence + 1,
+                newest: rest.next_sequence,
             }
         );
-        assert!(rest.terminal);
 
-        let mut subscription = handle.subscribe();
+        let mut subscription = run.handle().subscribe();
         let mut replayed = Vec::new();
         while let Some(item) = subscription.next().await.unwrap() {
             match item {
@@ -1647,172 +1186,19 @@ mod tests {
             }
         }
         assert_eq!(replayed.len(), first.events.len() + rest.events.len());
-        assert_eq!(subscription.cursor(), rest.next_sequence);
     }
 
     #[tokio::test]
-    async fn waiting_event_cursor_wakes_when_a_suspended_run_starts() {
+    async fn event_history_reports_truncation_once_then_replays_retained_records() {
         let provider = provider(true);
         let run = Run::new(
-            RunSpec::suspended(AgentSpec::new(ProviderId::claude())),
+            RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+                .with_prompt(Prompt::new("hello").unwrap()),
             provider.clone(),
         )
         .unwrap();
-        let handle = run.handle();
-        let waiter = tokio::spawn({
-            let handle = handle.clone();
-            async move { handle.wait_for_events(0, 1).await.unwrap() }
-        });
-
-        handle.start(Prompt::new("hello").unwrap()).await.unwrap();
-        let page = waiter.await.unwrap();
-        assert_eq!(page.events.len(), 1);
-        assert_eq!(
-            page.events[0].event,
-            RunEvent::StateChanged {
-                state: RunState::Running
-            }
-        );
-        provider.first_started.notified().await;
-        handle.cancel().await.unwrap();
-        assert_eq!(handle.wait().await.state, RunState::Cancelled);
-    }
-
-    #[test]
-    fn bounded_event_journal_reports_truncated_history() {
-        let journal = EventJournal::new();
-        for index in 0..=RUN_EVENT_CAPACITY {
-            journal.emit(
-                RunId::ROOT,
-                RunEvent::Warning {
-                    message: index.to_string(),
-                },
-            );
-        }
-
-        let page = journal.page();
-        assert_eq!(page.records.len(), RUN_EVENT_CAPACITY);
-        assert_eq!(page.records.first().unwrap().sequence, 2);
-        assert_eq!(page.next_sequence, RUN_EVENT_CAPACITY as u64 + 1);
-        assert_eq!(page.evicted_through.get(&RunId::ROOT), Some(&1));
-    }
-
-    #[tokio::test]
-    async fn future_event_cursors_are_refused() {
-        let run = Run::new(
-            RunSpec::suspended(AgentSpec::new(ProviderId::claude())),
-            provider(false),
-        )
-        .unwrap();
-
-        assert_eq!(
-            run.handle().event_page(1, 1).await.unwrap_err(),
-            RunControlError::EventCursorAhead {
-                requested: 1,
-                newest: 0,
-            }
-        );
-    }
-
-    struct WorkerProvider {
-        calls: AtomicUsize,
-        self_spawned: AtomicUsize,
-        root_started: Notify,
-        worker_started: Notify,
-        release_root: Notify,
-    }
-
-    impl Provider for WorkerProvider {
-        fn id(&self) -> ProviderId {
-            ProviderId::claude()
-        }
-
-        fn capabilities(&self) -> ProviderCapabilities {
-            ProviderCapabilities {
-                resume: true,
-                ..ProviderCapabilities::default()
-            }
-        }
-
-        fn validate(&self, _request: &TurnRequest) -> Result<(), ProviderError> {
-            Ok(())
-        }
-
-        fn execute<'a>(
-            &'a self,
-            request: TurnRequest,
-            context: ProviderContext,
-            _events: &'a dyn EventSink,
-        ) -> ProviderFuture<'a> {
-            Box::pin(async move {
-                self.calls.fetch_add(1, Ordering::SeqCst);
-                match request.prompt.as_str() {
-                    "root" => {
-                        self.root_started.notify_one();
-                        self.release_root.notified().await;
-                    }
-                    "block worker" => {
-                        self.worker_started.notify_one();
-                        std::future::pending::<()>().await;
-                    }
-                    "self spawn" => {
-                        let worker = context
-                            .worker_control()
-                            .expect("enabled root has worker control")
-                            .spawn(Prompt::new("worker").unwrap())
-                            .await
-                            .unwrap();
-                        self.self_spawned
-                            .store(worker.id().get() as usize, Ordering::SeqCst);
-                        assert_eq!(worker.wait().await.state, RunState::Completed);
-                    }
-                    _ => {}
-                }
-                Ok(RunOutcome {
-                    output: request.prompt.into_inner(),
-                    session: Some(SessionHandle {
-                        provider: ProviderId::claude(),
-                        id: "session-1".to_string(),
-                    }),
-                    usage: None,
-                    cost: None,
-                    duration_ms: None,
-                    provider_turns: None,
-                    structured_output: None,
-                })
-            })
-        }
-    }
-
-    fn worker_root(policy: WorkerPolicy) -> (Run, Arc<WorkerProvider>) {
-        let provider = Arc::new(WorkerProvider {
-            calls: AtomicUsize::new(0),
-            self_spawned: AtomicUsize::new(0),
-            root_started: Notify::new(),
-            worker_started: Notify::new(),
-            release_root: Notify::new(),
-        });
-        let mut spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
-            .with_prompt(Prompt::new("root").unwrap());
-        spec.execution.workers = policy;
-        (Run::new(spec, provider.clone()).unwrap(), provider)
-    }
-
-    #[tokio::test]
-    async fn scoped_history_gaps_return_immediately_and_subscriptions_report_them() {
-        let (run, provider) = worker_root(WorkerPolicy {
-            max_workers: 1,
-            max_depth: 1,
-        });
         run.begin().await.unwrap();
-        provider.root_started.notified().await;
-        let worker = run
-            .handle()
-            .spawn_inherited(Prompt::new("block worker").unwrap())
-            .await
-            .unwrap();
-        provider.worker_started.notified().await;
-
+        provider.first_started.notified().await;
         for index in 0..=RUN_EVENT_CAPACITY {
             run.handle()
                 .steer(Prompt::new(format!("guidance {index}")).unwrap())
@@ -1820,17 +1206,9 @@ mod tests {
                 .unwrap();
         }
 
-        let page = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            worker.wait_for_events(0, 1),
-        )
-        .await
-        .expect("a known history gap must not long poll")
-        .unwrap();
-        assert!(page.events.is_empty());
+        let page = run.handle().event_page(0, 1).await.unwrap();
         assert!(page.truncated);
-        assert_eq!(page.oldest_sequence, None);
-        assert!(!page.terminal);
+        assert_eq!(page.events.len(), 1);
 
         let mut subscription = run.handle().subscribe();
         assert!(matches!(
@@ -1849,424 +1227,86 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unrelated_evictions_do_not_truncate_a_new_child_scope() {
-        let (run, provider) = worker_root(WorkerPolicy {
-            max_workers: 1,
-            max_depth: 1,
-        });
-        run.begin().await.unwrap();
-        provider.root_started.notified().await;
-        for index in 0..=RUN_EVENT_CAPACITY {
-            run.handle()
-                .steer(Prompt::new(format!("guidance {index}")).unwrap())
-                .await
-                .unwrap();
-        }
-
-        let worker = run
-            .handle()
-            .spawn_inherited(Prompt::new("block worker").unwrap())
-            .await
-            .unwrap();
-        provider.worker_started.notified().await;
-        let page = worker.event_page(0, RUN_EVENT_CAPACITY).await.unwrap();
-        assert!(!page.events.is_empty());
-        assert!(!page.truncated);
-
-        run.handle().cancel().await.unwrap();
-        assert_eq!(run.handle().wait().await.state, RunState::Cancelled);
-    }
-
-    #[tokio::test]
-    async fn cancelling_while_finishing_does_not_publish_an_early_terminal_state() {
-        let (run, provider) = worker_root(WorkerPolicy {
-            max_workers: 1,
-            max_depth: 1,
-        });
-        run.begin().await.unwrap();
-        provider.root_started.notified().await;
-        let worker = run
-            .handle()
-            .spawn_inherited(Prompt::new("block worker").unwrap())
-            .await
-            .unwrap();
-        provider.worker_started.notified().await;
-
-        let worker_control = worker.inner.control.lock().await;
-        provider.release_root.notify_one();
-        loop {
-            if run.handle().status().await.state == RunState::Finishing {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-
-        let cancellation = tokio::spawn({
-            let handle = run.handle();
-            async move { handle.cancel().await }
-        });
-        tokio::task::yield_now().await;
-        assert_eq!(run.handle().status().await.state, RunState::Finishing);
-        drop(worker_control);
-
-        cancellation.await.unwrap().unwrap();
-        assert_eq!(run.handle().wait().await.state, RunState::Completed);
-        let page = run
-            .handle()
-            .event_page(0, RUN_EVENT_CAPACITY)
-            .await
-            .unwrap();
-        assert!(!page.events.iter().any(|record| {
-            record.run_id == run.id()
-                && record.event
-                    == RunEvent::StateChanged {
-                        state: RunState::Cancelled,
-                    }
-        }));
-        let child_cancelled = page
-            .events
-            .iter()
-            .find(|record| {
-                record.run_id == worker.id()
-                    && record.event
-                        == RunEvent::StateChanged {
-                            state: RunState::Cancelled,
-                        }
-            })
-            .unwrap()
-            .sequence;
-        let root_completed = page
-            .events
-            .iter()
-            .find(|record| {
-                record.run_id == run.id()
-                    && record.event
-                        == RunEvent::StateChanged {
-                            state: RunState::Completed,
-                        }
-            })
-            .unwrap()
-            .sequence;
-        assert!(child_cancelled < root_completed);
-    }
-
-    #[tokio::test]
-    async fn child_runs_are_owned_observable_and_counted_for_the_tree_lifetime() {
-        let (run, provider) = worker_root(WorkerPolicy {
-            max_workers: 2,
-            max_depth: 1,
-        });
-        run.begin().await.unwrap();
-        provider.root_started.notified().await;
-
-        let worker = run
-            .handle()
-            .spawn_inherited(Prompt::new("worker").unwrap())
-            .await
-            .unwrap();
-        assert_eq!(worker.parent_id(), Some(run.id()));
-        assert_eq!(worker.depth(), 1);
-        assert_eq!(worker.wait().await.state, RunState::Completed);
-
-        let workers = run.handle().workers();
-        assert_eq!(workers.len(), 1);
-        assert_eq!(workers[0].id, worker.id());
-        assert_eq!(workers[0].parent_id, run.id());
-        assert_eq!(workers[0].run.state, RunState::Completed);
-        assert_eq!(
-            workers[0].run.last_outcome.as_ref().unwrap().output,
-            "worker"
+    async fn provider_failure_details_survive_lifecycle_settlement() {
+        let failure = ProviderError::new(FailureKind::MaxTurns, "turn limit reached").with_details(
+            RunFailureDetails {
+                session: Some(SessionHandle {
+                    provider: ProviderId::claude(),
+                    id: "resume-me".to_string(),
+                }),
+                usage: Some(TokenUsage {
+                    output: Some(9),
+                    ..TokenUsage::default()
+                }),
+                cost: Some(Cost::usd(1.25)),
+                duration_ms: Some(12),
+                provider_turns: Some(30),
+            },
         );
-        let root_events = run
-            .handle()
-            .event_page(0, RUN_EVENT_CAPACITY)
-            .await
-            .unwrap();
-        assert!(
-            root_events
-                .events
-                .iter()
-                .any(|record| record.run_id == worker.id())
-        );
-        let worker_events = worker.event_page(0, RUN_EVENT_CAPACITY).await.unwrap();
-        assert!(!worker_events.events.is_empty());
-        assert!(
-            worker_events
-                .events
-                .iter()
-                .all(|record| record.run_id == worker.id())
-        );
-
-        provider.release_root.notify_one();
-        assert_eq!(run.handle().wait().await.state, RunState::Completed);
-        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
-    }
-
-    #[tokio::test]
-    async fn reporters_cannot_overwrite_sibling_claims_or_report_after_terminal() {
-        let (run, provider) = worker_root(WorkerPolicy {
-            max_workers: 1,
-            max_depth: 1,
-        });
-        run.begin().await.unwrap();
-        provider.root_started.notified().await;
-        let worker = run
-            .handle()
-            .spawn_inherited(Prompt::new("block worker").unwrap())
-            .await
-            .unwrap();
-        provider.worker_started.notified().await;
-
-        for (handle, title, state) in [
-            (run.handle(), "root claim", MissionWorkState::InProgress),
-            (worker.clone(), "worker claim", MissionWorkState::Completed),
-        ] {
-            handle
-                .report(MissionReport::WorkItem {
-                    id: "shared-id".to_string(),
-                    title: title.to_string(),
-                    state,
-                })
-                .await
-                .unwrap();
-        }
-        let mission = run.handle().mission().await;
-        assert_eq!(mission.claims.work_items.len(), 2);
-        assert!(
-            mission
-                .claims
-                .work_items
-                .iter()
-                .any(|item| { item.reported_by == run.id() && item.title == "root claim" })
-        );
-        assert!(
-            mission
-                .claims
-                .work_items
-                .iter()
-                .any(|item| { item.reported_by == worker.id() && item.title == "worker claim" })
-        );
-
-        provider.release_root.notify_one();
-        assert_eq!(run.handle().wait().await.state, RunState::Completed);
-        assert_eq!(worker.wait().await.state, RunState::Cancelled);
-        assert_eq!(
-            worker
-                .report(MissionReport::Blocker {
-                    id: "late".to_string(),
-                    message: "too late".to_string(),
-                })
-                .await
-                .unwrap_err(),
-            MissionReportError::MissionClosed
-        );
-    }
-
-    #[tokio::test]
-    async fn disabled_depth_and_total_limits_fail_closed() {
-        let (disabled, provider) = worker_root(WorkerPolicy::default());
-        disabled.begin().await.unwrap();
-        provider.root_started.notified().await;
-        assert_eq!(
-            disabled
-                .handle()
-                .spawn_inherited(Prompt::new("worker").unwrap())
-                .await
-                .err()
-                .unwrap(),
-            RunControlError::WorkersDisabled
-        );
-        provider.release_root.notify_one();
-        disabled.handle().wait().await;
-
-        let (limited, provider) = worker_root(WorkerPolicy {
-            max_workers: 1,
-            max_depth: 1,
-        });
-        limited.begin().await.unwrap();
-        provider.root_started.notified().await;
-        let first = limited
-            .handle()
-            .spawn_inherited(Prompt::new("block worker").unwrap())
-            .await
-            .unwrap();
-        provider.worker_started.notified().await;
-        assert_eq!(
-            first
-                .spawn_inherited(Prompt::new("grandchild").unwrap())
-                .await
-                .err()
-                .unwrap(),
-            RunControlError::WorkerDepthExceeded {
-                requested: 2,
-                maximum: 1,
-            }
-        );
-        assert_eq!(
-            limited
-                .handle()
-                .spawn_inherited(Prompt::new("two").unwrap())
-                .await
-                .err()
-                .unwrap(),
-            RunControlError::WorkerLimitReached { maximum: 1 }
-        );
-        provider.release_root.notify_one();
-        limited.handle().wait().await;
-    }
-
-    #[tokio::test]
-    async fn parent_completion_cancels_live_descendants_before_it_finishes() {
-        let (run, provider) = worker_root(WorkerPolicy {
-            max_workers: 2,
-            max_depth: 2,
-        });
-        run.begin().await.unwrap();
-        provider.root_started.notified().await;
-        let worker = run
-            .handle()
-            .spawn_inherited(Prompt::new("block worker").unwrap())
-            .await
-            .unwrap();
-        provider.worker_started.notified().await;
-
-        provider.release_root.notify_one();
-        let root_terminal = run.handle().wait().await;
-        assert_eq!(root_terminal.state, RunState::Completed);
-        assert_eq!(worker.wait().await.state, RunState::Cancelled);
-        assert_eq!(run.handle().workers()[0].run.state, RunState::Cancelled);
-    }
-
-    #[tokio::test]
-    async fn cancellation_closes_the_spawn_boundary_immediately() {
-        let (run, provider) = worker_root(WorkerPolicy {
-            max_workers: 1,
-            max_depth: 1,
-        });
-        run.begin().await.unwrap();
-        provider.root_started.notified().await;
-        run.handle().cancel().await.unwrap();
-        assert_eq!(
-            run.handle()
-                .spawn_inherited(Prompt::new("too late").unwrap())
-                .await
-                .err()
-                .unwrap(),
-            RunControlError::NotRunning
-        );
-        assert_eq!(run.handle().wait().await.state, RunState::Cancelled);
-    }
-
-    #[tokio::test]
-    async fn executing_provider_gets_only_its_exact_worker_capability() {
-        let provider = Arc::new(WorkerProvider {
+        let provider = Arc::new(RecordingProvider {
             calls: AtomicUsize::new(0),
-            self_spawned: AtomicUsize::new(0),
-            root_started: Notify::new(),
-            worker_started: Notify::new(),
-            release_root: Notify::new(),
+            first_started: Notify::new(),
+            release_first: Notify::new(),
+            block: false,
+            failure: Some(failure),
         });
-        let mut spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
-            .with_prompt(Prompt::new("self spawn").unwrap());
-        spec.execution.workers = WorkerPolicy {
-            max_workers: 1,
-            max_depth: 1,
-        };
-        let run = Run::new(spec, provider.clone()).unwrap();
-
+        let run = Run::new(
+            RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+                .with_prompt(Prompt::new("hello").unwrap()),
+            provider,
+        )
+        .unwrap();
         run.begin().await.unwrap();
-        assert_eq!(run.handle().wait().await.state, RunState::Completed);
-        assert_eq!(provider.self_spawned.load(Ordering::SeqCst), 2);
-        let workers = run.handle().workers();
-        assert_eq!(workers.len(), 1);
-        assert_eq!(workers[0].parent_id, run.id());
-        assert_eq!(workers[0].run.state, RunState::Completed);
-    }
+        let terminal = run.handle().wait().await;
 
-    struct ImmediateCodexProvider;
-
-    impl Provider for ImmediateCodexProvider {
-        fn id(&self) -> ProviderId {
-            ProviderId::codex()
-        }
-
-        fn capabilities(&self) -> ProviderCapabilities {
-            ProviderCapabilities::default()
-        }
-
-        fn validate(&self, request: &TurnRequest) -> Result<(), ProviderError> {
-            if request.spec.agent.provider == ProviderId::codex() {
-                Ok(())
-            } else {
-                Err(ProviderError::unsupported("wrong provider"))
-            }
-        }
-
-        fn execute<'a>(
-            &'a self,
-            request: TurnRequest,
-            _context: ProviderContext,
-            _events: &'a dyn EventSink,
-        ) -> ProviderFuture<'a> {
-            Box::pin(async move {
-                Ok(RunOutcome {
-                    output: request.prompt.into_inner(),
-                    session: None,
-                    usage: None,
-                    cost: None,
-                    duration_ms: None,
-                    provider_turns: None,
-                    structured_output: None,
-                })
-            })
-        }
+        assert_eq!(terminal.state, RunState::Failed);
+        let failure = terminal.failure.unwrap();
+        assert_eq!(failure.kind, FailureKind::MaxTurns);
+        assert_eq!(failure.details.session.unwrap().id, "resume-me");
+        assert_eq!(failure.details.cost.unwrap().amount, 1.25);
+        assert_eq!(failure.details.provider_turns, Some(30));
     }
 
     #[tokio::test]
-    async fn trusted_worker_agent_selection_can_change_provider_but_not_execution_authority() {
-        let root_provider = Arc::new(WorkerProvider {
+    async fn failure_subscription_drains_terminal_events_before_ending() {
+        let provider = Arc::new(RecordingProvider {
             calls: AtomicUsize::new(0),
-            self_spawned: AtomicUsize::new(0),
-            root_started: Notify::new(),
-            worker_started: Notify::new(),
-            release_root: Notify::new(),
+            first_started: Notify::new(),
+            release_first: Notify::new(),
+            block: false,
+            failure: Some(ProviderError::new(
+                FailureKind::Provider,
+                "provider stopped",
+            )),
         });
-        let mut spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
-            .with_prompt(Prompt::new("root").unwrap());
-        spec.execution.permissions = PermissionPolicy::WorkspaceWrite;
-        spec.execution.workers = WorkerPolicy {
-            max_workers: 1,
-            max_depth: 1,
-        };
-        let mut providers: BTreeMap<ProviderId, Arc<dyn Provider>> = BTreeMap::new();
-        providers.insert(ProviderId::claude(), root_provider.clone());
-        providers.insert(ProviderId::codex(), Arc::new(ImmediateCodexProvider));
-        let run = Run::with_providers(spec, providers).unwrap();
+        let run = Run::new(
+            RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+                .with_prompt(Prompt::new("hello").unwrap()),
+            provider,
+        )
+        .unwrap();
+        let mut subscription = run.handle().subscribe();
         run.begin().await.unwrap();
-        root_provider.root_started.notified().await;
 
-        let worker = run
-            .handle()
-            .spawn_worker(WorkerSpec {
-                agent: AgentSpec::new(ProviderId::codex()),
-                context: ContextSpec::default(),
-                prompt: Prompt::new("worker").unwrap(),
-            })
-            .await
-            .unwrap();
-        assert_eq!(
-            worker.spec().execution.permissions,
-            PermissionPolicy::WorkspaceWrite
-        );
-        assert_eq!(worker.spec().execution.session, SessionSpec::Fresh);
-        assert_eq!(
-            worker.spec().execution.workers,
-            run.spec().execution.workers
-        );
-        assert_eq!(worker.wait().await.state, RunState::Completed);
-        assert_eq!(worker.status().await.last_outcome.unwrap().output, "worker");
+        let mut events = Vec::new();
+        while let Some(item) = subscription.next().await.unwrap() {
+            if let RunEventSubscriptionItem::Event(record) = item {
+                events.push(record.event);
+            }
+        }
 
-        root_provider.release_root.notify_one();
-        run.handle().wait().await;
+        assert!(matches!(
+            events.as_slice(),
+            [
+                RunEvent::StateChanged {
+                    state: RunState::Running
+                },
+                RunEvent::TurnStarted { .. },
+                RunEvent::Failed { .. },
+                RunEvent::StateChanged {
+                    state: RunState::Failed
+                }
+            ]
+        ));
     }
 }

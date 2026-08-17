@@ -9,8 +9,6 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::process::MissionPolicy;
-
 /// Stable provider identity used in resolved specifications and receipts.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -190,49 +188,6 @@ pub struct LimitSpec {
     pub timeout_secs: Option<u64>,
 }
 
-/// Process-local worker-tree bounds captured from the root run.
-///
-/// Both values are zero by default, which disables child runs. Once a tree is
-/// created, descendants cannot widen this policy.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkerPolicy {
-    /// Maximum number of descendants created during this run, including
-    /// workers that have already reached a terminal state.
-    pub max_workers: u32,
-    /// Maximum distance from the root. A direct child has depth 1.
-    pub max_depth: u32,
-}
-
-impl WorkerPolicy {
-    /// True when the policy permits at least one direct child.
-    pub fn enabled(self) -> bool {
-        self.max_workers > 0 && self.max_depth > 0
-    }
-
-    /// Require either a fully disabled or fully bounded policy.
-    pub fn validate(self) -> Result<(), WorkerPolicyError> {
-        if (self.max_workers == 0) == (self.max_depth == 0) {
-            Ok(())
-        } else {
-            Err(WorkerPolicyError)
-        }
-    }
-}
-
-/// A worker policy specified only one of its required bounds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WorkerPolicyError;
-
-impl fmt::Display for WorkerPolicyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(
-            "max_workers and max_depth must either both be zero or both be greater than zero",
-        )
-    }
-}
-
-impl std::error::Error for WorkerPolicyError {}
-
 /// Opaque provider conversation identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionHandle {
@@ -253,6 +208,7 @@ pub enum SessionSpec {
 
 /// Execution policy separate from agent identity and prompt context.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionSpec {
     #[serde(default)]
     pub permissions: PermissionPolicy,
@@ -262,26 +218,19 @@ pub struct ExecutionSpec {
     pub limits: LimitSpec,
     #[serde(default)]
     pub session: SessionSpec,
-    /// Root-owned process-local child-run bounds. Descendants inherit this
-    /// value; worker spawn requests cannot replace it.
-    #[serde(default)]
-    pub workers: WorkerPolicy,
 }
 
 /// Fully inspectable intent for one bounded Roba run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunSpec {
     pub agent: AgentSpec,
     #[serde(default)]
     pub context: ContextSpec,
     #[serde(default)]
     pub execution: ExecutionSpec,
-    /// Immutable process capabilities, explicit grants, and completion rule
-    /// captured for the whole run tree.
-    #[serde(default)]
-    pub mission: MissionPolicy,
     /// Absence is intentional: the run remains suspended until `start` is
-    /// called by a library, CLI, REPL, or MCP client.
+    /// called through a retained run handle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_prompt: Option<Prompt>,
 }
@@ -293,7 +242,6 @@ impl RunSpec {
             agent,
             context: ContextSpec::default(),
             execution: ExecutionSpec::default(),
-            mission: MissionPolicy::default(),
             initial_prompt: None,
         }
     }
@@ -343,49 +291,13 @@ pub struct TurnRequest {
     pub prompt: Prompt,
 }
 
-/// Identity unique within one process-local run tree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct RunId(u64);
-
-impl RunId {
-    pub(crate) const ROOT: Self = Self(1);
-
-    /// Numeric identity, useful for display and adapter arguments.
-    pub fn get(self) -> u64 {
-        self.0
-    }
-
-    pub(crate) fn from_counter(value: u64) -> Self {
-        Self(value)
-    }
-}
-
-impl fmt::Display for RunId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-/// Trusted host input for one child run. Execution authority is intentionally
-/// absent: the child inherits its parent's permissions, tools, limits, and
-/// worker policy, and always begins a fresh provider session.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkerSpec {
-    pub agent: AgentSpec,
-    #[serde(default)]
-    pub context: ContextSpec,
-    pub prompt: Prompt,
-}
-
-/// Coarse lifecycle state shared by library, CLI, REPL, and MCP adapters.
+/// Coarse lifecycle state shared by library callers and thin adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunState {
     Suspended,
     Ready,
     Running,
-    Waiting,
     Finishing,
     Completed,
     Failed,
@@ -452,41 +364,22 @@ pub struct RunOutcome {
     pub structured_output: Option<serde_json::Value>,
 }
 
-/// Normalized provider event.
+/// Normalized run event.
+///
+/// The lifecycle owns turn boundaries, state changes, steering, and terminal
+/// failure. Provider adapters can contribute only output, usage, and warning
+/// observations through [`crate::provider::ProviderEvent`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunEvent {
-    StateChanged {
-        state: RunState,
-    },
-    TurnStarted {
-        provider: ProviderId,
-    },
-    OutputDelta {
-        text: String,
-    },
-    Usage {
-        usage: TokenUsage,
-    },
-    Warning {
-        message: String,
-    },
+    StateChanged { state: RunState },
+    TurnStarted { provider: ProviderId },
+    OutputDelta { text: String },
+    Usage { usage: TokenUsage },
+    Warning { message: String },
     SteeringQueued,
-    WorkerSpawned {
-        id: RunId,
-        parent_id: RunId,
-        depth: u32,
-        provider: ProviderId,
-    },
-    MissionReported {
-        report: crate::mission::MissionReport,
-    },
-    TurnCompleted {
-        outcome: RunOutcome,
-    },
-    Failed {
-        failure: RunFailure,
-    },
+    TurnCompleted { outcome: RunOutcome },
+    Failed { failure: RunFailure },
 }
 
 /// Portable failure category. Provider-native details remain in the message.
@@ -495,6 +388,9 @@ pub enum RunEvent {
 pub enum FailureKind {
     Authentication,
     Timeout,
+    Budget,
+    MaxTurns,
+    MaxCost,
     Limit,
     Cancelled,
     Unsupported,
@@ -506,9 +402,8 @@ pub enum FailureKind {
 ///
 /// Limit terminals commonly carry enough information to resume the provider
 /// session and account for the work completed before the boundary. Keeping
-/// that evidence beside the failure lets library, CLI, REPL, and MCP callers
-/// make the same recovery decision without parsing a provider-specific
-/// message.
+/// that evidence beside the failure lets every caller make the same recovery
+/// decision without parsing a provider-specific message.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RunFailureDetails {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -571,6 +466,25 @@ mod tests {
     }
 
     #[test]
+    fn removed_mission_and_worker_policy_fail_loudly() {
+        let old = serde_json::json!({
+            "agent": { "provider": "claude" },
+            "mission": { "objective": "do the work" },
+            "execution": {
+                "workers": { "max_workers": 2 },
+                "permissions": "read_only"
+            }
+        });
+        let error = serde_json::from_value::<RunSpec>(old).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("unknown field `mission`")
+                || message.contains("unknown field `workers`"),
+            "unexpected serde error: {message}"
+        );
+    }
+
+    #[test]
     fn missing_usage_is_not_rendered_as_zero() {
         let usage = TokenUsage::default();
         assert!(usage.is_unreported());
@@ -591,7 +505,7 @@ mod tests {
         );
 
         let failure = RunFailure {
-            kind: FailureKind::Limit,
+            kind: FailureKind::MaxTurns,
             message: "limit reached".to_string(),
             details: RunFailureDetails {
                 session: Some(SessionHandle {
@@ -610,26 +524,5 @@ mod tests {
         assert_eq!(json["details"]["provider_turns"], 30);
         assert!(json["details"].get("usage").is_none());
         assert_eq!(serde_json::from_value::<RunFailure>(json).unwrap(), failure);
-    }
-
-    #[test]
-    fn worker_policy_requires_both_bounds() {
-        assert!(WorkerPolicy::default().validate().is_ok());
-        assert!(
-            WorkerPolicy {
-                max_workers: 4,
-                max_depth: 2,
-            }
-            .validate()
-            .is_ok()
-        );
-        assert!(
-            WorkerPolicy {
-                max_workers: 4,
-                max_depth: 0,
-            }
-            .validate()
-            .is_err()
-        );
     }
 }

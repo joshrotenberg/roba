@@ -45,7 +45,7 @@ Examples -- for agents & scripts (deterministic, pipe-clean):
   roba -q \"one-line summary\" > out.txt                 answer only, no metadata
   roba --no-retry \"...\"; echo \"exit=$?\"                typed exit codes
   roba --session ci-bot \"follow up\"                    resume a named session
-  roba --full-auto -C repo -f task.md                  fire an unattended worker
+  roba --full-auto -C repo -f task.md                  fire an unattended run
   Exit codes: 0 ok (refusals included), 1 failure, 2 auth, 3 budget
   (wrapper tracker), 4 timeout, 5 max-turns (recoverable -- finish the
   lifecycle), 6 no usable output (empty/is_error result, or a streaming run
@@ -57,7 +57,7 @@ Examples -- for agents & scripts (deterministic, pipe-clean):
   Unattended / CI recipe (--json + --bare + the cap trio + --trace, with
   exit-code branching): see the README \"For agents & scripts\" section.
 
-Unattended workers (composing the primitives):
+Unattended runs (composing the legacy primitives):
   --full-auto -C <dir> -f <file>   edit the current checkout in place; the
                                    orchestrator owns the branch and PR (-C
                                    chdirs first, so -f resolves inside <dir>)
@@ -96,8 +96,8 @@ Legacy one-shot configuration (roba.toml):
   auto-applies. [alias.NAME] defines shortcut verbs; [session] binds
   NAME = \"uuid\" handles for --session NAME. roba-config.sample.toml
   (written by `roba profile init`) lists every valid key. See the
-  `roba profile` and `roba alias` subcommands. Profiles remain readable for
-  compatibility; new bounded runs use `roba run --config` and [agents.NAME].";
+  `roba profile` and `roba alias` subcommands. Profiles remain the legacy
+  Claude one-shot configuration surface; `roba run` uses explicit flags.";
 
 /// The blurb shown when `roba` is run with no resolvable prompt on a TTY.
 ///
@@ -207,12 +207,10 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum SubCommand {
-    /// Run the new bounded, provider-neutral Roba agent.
+    /// Run one finite provider-neutral Roba agent.
     ///
-    /// With no adapter, waits for one terminal outcome. `--repl` and `--mcp`
-    /// expose the same process-local run handle for its lifetime. Omitting the
-    /// prompt is valid only with one of those adapters and leaves the run
-    /// suspended until a client starts it.
+    /// The command waits for one terminal outcome. Library callers may retain
+    /// a `RunHandle` to observe, steer, or cancel a live run.
     Run(RunArgs),
     /// Validate and inspect legacy Claude `.roba/` bundles without a provider.
     Bundle {
@@ -250,6 +248,15 @@ pub enum SubCommand {
     Alias {
         #[command(subcommand)]
         action: AliasAction,
+    },
+    /// Inspect personas: role-bearing profiles (`[profile.NAME]` with `agent`).
+    ///
+    /// A persona is a legacy profile that pins a Claude agent (the role) plus
+    /// its run envelope. `list` shows role-bearing profiles; `show NAME`
+    /// prints one and locates its agent file. Read-only.
+    Persona {
+        #[command(subcommand)]
+        action: PersonaAction,
     },
     /// List detached runs from their receipts (a ps-like view).
     ///
@@ -325,20 +332,23 @@ pub enum RunProvider {
     Codex,
 }
 
+#[derive(Subcommand, Debug)]
+pub enum PersonaAction {
+    /// List personas: profiles that pin an `agent` (the role).
+    List,
+    /// Show one persona's `[profile.NAME]` block and its resolved agent file.
+    Show {
+        /// Persona name (the `[profile.NAME]` whose `agent` is set).
+        name: String,
+    },
+}
+
 #[derive(ClapArgs, Debug)]
 pub struct RunArgs {
-    /// Initial intention. Omit with --repl or --mcp to create a suspended run.
-    pub prompt: Option<String>,
+    /// Initial intention for this finite run.
+    pub prompt: String,
 
-    /// Explicit hierarchical run config. This does not discover legacy roba.toml files.
-    #[arg(long, value_name = "PATH")]
-    pub config: Option<PathBuf>,
-
-    /// Named agent from --config.
-    #[arg(long, requires = "config")]
-    pub agent: Option<String>,
-
-    /// Provider override for the root agent. Defaults to config, then Claude.
+    /// Provider for this run. Defaults to Claude.
     #[arg(long, value_enum)]
     pub provider: Option<RunProvider>,
 
@@ -350,7 +360,7 @@ pub struct RunArgs {
     #[arg(long, value_enum)]
     pub effort: Option<EffortLevel>,
 
-    /// Persistent root-agent instruction. Repeat to compose in order.
+    /// Root-agent instruction. Repeat to compose in order.
     #[arg(long = "instruction")]
     pub instructions: Vec<String>,
 
@@ -378,30 +388,13 @@ pub struct RunArgs {
     #[arg(long)]
     pub timeout: Option<u64>,
 
-    /// Maximum number of process-local child runs created by this run.
-    /// Requires --max-worker-depth.
-    #[arg(long, requires = "max_worker_depth")]
-    pub max_workers: Option<u32>,
-
-    /// Maximum child-run depth from the root. Requires --max-workers.
-    #[arg(long, requires = "max_workers")]
-    pub max_worker_depth: Option<u32>,
-
     /// Resume a provider session/thread id.
     #[arg(long)]
     pub resume: Option<String>,
 
     /// Emit the terminal run snapshot as a versioned JSON envelope.
-    #[arg(long, conflicts_with_all = ["repl", "mcp"])]
+    #[arg(long)]
     pub json: bool,
-
-    /// Drive the run through a line-oriented REPL on stdin/stdout.
-    #[arg(long, conflicts_with = "mcp")]
-    pub repl: bool,
-
-    /// Serve run control as MCP over stdin/stdout.
-    #[arg(long, conflicts_with = "repl")]
-    pub mcp: bool,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -1005,7 +998,7 @@ pub struct HistoryArgs {
     pub worktree: Option<String>,
 }
 
-#[derive(ClapArgs, Debug, Default)]
+#[derive(ClapArgs, Debug, Default, PartialEq)]
 pub struct AskArgs {
     // ----- Prompt sources ---------------------------------------------------
     /// Prompt text (positional). Pass `-` for explicit stdin.
@@ -1630,8 +1623,7 @@ pub struct AskArgs {
     // ----- Legacy profiles --------------------------------------------------
     /// Apply a legacy one-shot profile (user, project, or env source).
     ///
-    /// New bounded runs should use `roba run --config PATH --agent NAME` and
-    /// the hierarchical `[agents.NAME]` format instead.
+    /// `roba run` is a separate provider-neutral surface with explicit flags.
     #[arg(long, value_name = "NAME", help_heading = "Profiles")]
     pub profile: Option<String>,
 
