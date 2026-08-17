@@ -1,7 +1,7 @@
 //! Hot single-agent application state above finite core runs.
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use roba_core::{
@@ -13,9 +13,10 @@ use tokio::sync::{Mutex, watch};
 use crate::contract::{
     AgentConfiguration, AgentControlRefusalKind, AgentInterruptResult, AgentRefusalKind,
     AgentShutdownResult, AgentSnapshot, AgentState, AgentSteerResult, AgentTurnResult, OperationId,
-    OperationSettlement,
+    OperationSettlement, ProviderSelfSnapshot,
 };
 use crate::events::{AgentEventError, AgentEventJournal, AgentEventPage};
+use crate::provider_endpoint::ProviderEndpoint;
 
 /// One hot logical agent with at most one active finite core run.
 #[derive(Clone)]
@@ -52,6 +53,26 @@ struct ActiveOperation {
     id: OperationId,
     handle: RunHandle,
     settlement: watch::Receiver<Option<AgentTurnResult>>,
+    provider_endpoint: ProviderEndpoint,
+}
+
+/// Weak reference used by provider callback routers to avoid retaining their
+/// owning `AgentInstance` through the server task.
+#[derive(Clone)]
+pub(crate) struct WeakAgentInstance {
+    inner: Weak<Inner>,
+}
+
+impl WeakAgentInstance {
+    pub(crate) async fn provider_self(
+        &self,
+        operation_id: OperationId,
+    ) -> Option<ProviderSelfSnapshot> {
+        let agent = AgentInstance {
+            inner: self.inner.upgrade()?,
+        };
+        agent.provider_self(operation_id).await
+    }
 }
 
 /// Opaque capability for one exact admitted finite run.
@@ -75,6 +96,12 @@ pub(crate) enum TurnAdmission {
 }
 
 impl AgentInstance {
+    pub(crate) fn downgrade(&self) -> WeakAgentInstance {
+        WeakAgentInstance {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+
     /// Construct an idle host from a suspended run template.
     ///
     /// Construction never starts provider work. A seeded resume handle is
@@ -203,7 +230,22 @@ impl AgentInstance {
             },
             None => SessionSpec::Fresh,
         };
-        let run = match self.inner.runtime.create_run(spec) {
+        let (provider_endpoint, launch_context) =
+            match ProviderEndpoint::start(self.clone(), operation_id).await {
+                Ok(endpoint) => endpoint,
+                Err(error) => {
+                    return TurnAdmission::Refused(AgentTurnResult::refused(
+                        AgentRefusalKind::Runtime,
+                        error.to_string(),
+                        None,
+                    ));
+                }
+            };
+        let run = match self
+            .inner
+            .runtime
+            .create_run_with_launch_context(spec, launch_context)
+        {
             Ok(run) => run,
             Err(error) => {
                 return TurnAdmission::Refused(AgentTurnResult::refused(
@@ -220,6 +262,7 @@ impl AgentInstance {
             id: operation_id,
             handle,
             settlement,
+            provider_endpoint,
         });
         if let Err(error) = active.handle.start(prompt).await {
             return TurnAdmission::Refused(AgentTurnResult::refused(
@@ -228,6 +271,9 @@ impl AgentInstance {
                 None,
             ));
         }
+        active
+            .provider_endpoint
+            .close_when_run_settles(active.handle.clone());
         control.next_operation_id = next_operation_id;
         control.active = Some(active.clone());
         drop(control);
@@ -261,6 +307,7 @@ impl AgentInstance {
                     .events
                     .append_history_gap(operation_id, None);
             }
+            active.provider_endpoint.shutdown().await;
             let result = coordinator.settle(operation_id, snapshot).await;
             settlement_tx.send_replace(Some(result));
         });
@@ -274,6 +321,7 @@ impl AgentInstance {
             }
             if settlement.changed().await.is_err() {
                 let snapshot = recover_run(&active.handle).await;
+                active.provider_endpoint.shutdown().await;
                 return self.settle(active.id, snapshot).await;
             }
         }
@@ -313,6 +361,19 @@ impl AgentInstance {
                 .map(AgentTurnResult::without_session_evidence),
             created_at_unix_ms: self.inner.created_at_unix_ms,
         }
+    }
+
+    async fn provider_self(&self, operation_id: OperationId) -> Option<ProviderSelfSnapshot> {
+        let control = self.inner.control.lock().await;
+        (control.lifetime == AgentLifetime::Open
+            && control
+                .active
+                .as_ref()
+                .is_some_and(|active| active.id == operation_id))
+        .then_some(ProviderSelfSnapshot {
+            operation_id,
+            state: AgentState::Running,
+        })
     }
 
     /// Permanently stop an idle agent.

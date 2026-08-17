@@ -16,9 +16,10 @@ use tower_mcp::{
 };
 
 use crate::agent::TurnAdmission;
+use crate::provider_endpoint::PROVIDER_MCP_SERVER_NAME;
 use crate::{
     AGENT_EVENT_CAPACITY, AgentInstance, AgentInterruptResult, AgentShutdownResult,
-    AgentSteerResult, AgentTurnResult, OperationId,
+    AgentSteerResult, AgentTurnResult, OperationId, ProviderSelfSnapshot,
 };
 
 /// Base tool for one finite turn through the logical agent.
@@ -29,6 +30,11 @@ pub const AGENT_STEER_TOOL: &str = "agent.steer";
 pub const AGENT_INTERRUPT_TOOL: &str = "agent.interrupt";
 /// Control tool for permanently stopping the logical agent.
 pub const AGENT_SHUTDOWN_TOOL: &str = "agent.shutdown";
+/// Harmless identity callback exposed only to the executing provider.
+///
+/// Provider clients see the fully qualified name `roba.self` because the
+/// private MCP server itself is named `roba`.
+pub const ROBA_SELF_TOOL: &str = "self";
 /// Dynamic state resource for the logical agent.
 pub const AGENT_RESOURCE_URI: &str = "roba://agent";
 /// Default agent-wide event resource.
@@ -80,6 +86,11 @@ pub struct InterruptInput {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ShutdownInput {}
+
+/// Empty input contract for [`ROBA_SELF_TOOL`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SelfInput {}
 
 /// Failure to call or decode the typed [`AGENT_TURN_TOOL`] contract.
 #[derive(Debug)]
@@ -138,8 +149,8 @@ impl StdError for AgentClientError {
     }
 }
 
-/// Build the base single-agent MCP router.
-pub fn router(agent: AgentInstance) -> McpRouter {
+/// Build the operator/control projection for one logical agent.
+pub fn control_router(agent: AgentInstance) -> McpRouter {
     let task_store = Arc::new(MemoryTaskStore::new());
     let turn_output_schema = serde_json::to_value(schema_for!(AgentTurnResult))
         .expect("static agent turn schema must serialize");
@@ -330,6 +341,51 @@ pub fn router(agent: AgentInstance) -> McpRouter {
         .resource_template(events_template)
         .with_tasks()
         .catch_panics()
+}
+
+/// Build the least-authority projection injected into one provider operation.
+///
+/// This is an explicit allowlist, not a filtered control router. It contains
+/// no turn admission, steering, interruption, shutdown, Tasks, event history,
+/// configuration, or retained provider-session state.
+pub fn agent_router(agent: AgentInstance, operation_id: OperationId) -> McpRouter {
+    let weak_agent = agent.downgrade();
+    let output_schema = serde_json::to_value(schema_for!(ProviderSelfSnapshot))
+        .expect("static provider self schema must serialize");
+    let self_tool = ToolBuilder::new(ROBA_SELF_TOOL)
+        .description("Identify this exact active Roba provider operation.")
+        .output_schema(output_schema)
+        .read_only_safe()
+        .handler(move |_input: SelfInput| {
+            let agent = weak_agent.clone();
+            async move {
+                let snapshot = agent.provider_self(operation_id).await.ok_or_else(|| {
+                    McpError::tool_with_name(
+                        ROBA_SELF_TOOL,
+                        "provider operation is unavailable or has expired",
+                    )
+                })?;
+                let mut result = CallToolResult::from_serialize(&snapshot)?;
+                result.content = vec![Content::text(format!(
+                    "Roba operation {} is running",
+                    operation_id.get()
+                ))];
+                Ok(result)
+            }
+        })
+        .build();
+
+    McpRouter::new()
+        .server_info(PROVIDER_MCP_SERVER_NAME, env!("CARGO_PKG_VERSION"))
+        .tool(self_tool)
+        .catch_panics()
+}
+
+/// Build the base operator projection.
+///
+/// Kept as the compatibility name used by existing clients and tests.
+pub fn router(agent: AgentInstance) -> McpRouter {
+    control_router(agent)
 }
 
 /// Connect and initialize a production in-process MCP client.

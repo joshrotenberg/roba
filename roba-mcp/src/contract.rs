@@ -138,6 +138,16 @@ pub struct AgentSnapshot {
     pub created_at_unix_ms: Option<u64>,
 }
 
+/// Least-authority identity exposed to the currently executing provider.
+///
+/// This projection deliberately omits agent configuration, retained provider
+/// session evidence, prior turn results, event history, and control authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderSelfSnapshot {
+    pub operation_id: OperationId,
+    pub state: AgentState,
+}
+
 /// Why a turn was refused before provider work began.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

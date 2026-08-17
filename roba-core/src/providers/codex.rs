@@ -3,10 +3,14 @@
 use std::path::PathBuf;
 
 use codex_wrapper::types::{JsonLineEvent, QueryResult};
-use codex_wrapper::{ApprovalPolicyConfig, Codex, ExecCommand, ExecResumeCommand, SandboxMode};
+use codex_wrapper::{
+    ApprovalPolicyConfig, Codex, ExecCommand, ExecResumeCommand, McpConfigBuilder, McpServerConfig,
+    SandboxMode,
+};
 
 use crate::provider::{
     EventSink, Provider, ProviderCapabilities, ProviderError, ProviderEvent, ProviderFuture,
+    ProviderLaunchContext,
 };
 use crate::run::{
     Effort, FailureKind, PermissionPolicy, ProviderId, RunFailureDetails, RunOutcome,
@@ -19,6 +23,9 @@ pub struct CodexProvider {
     binary: Option<PathBuf>,
 }
 
+const ROBA_SELF_SERVER: &str = "roba";
+const ROBA_SELF_TOOL_APPROVAL: &str = "mcp_servers.roba.tools.self.approval_mode=\"approve\"";
+
 impl CodexProvider {
     /// Use an explicit Codex executable instead of resolving `codex` from
     /// `PATH`. This is useful for embedded hosts and deterministic tests.
@@ -28,7 +35,11 @@ impl CodexProvider {
         }
     }
 
-    fn client(&self, request: &TurnRequest) -> Result<Codex, ProviderError> {
+    fn client(
+        &self,
+        request: &TurnRequest,
+        launch_context: &ProviderLaunchContext,
+    ) -> Result<Codex, ProviderError> {
         let mut builder = Codex::builder();
         if let Some(binary) = &self.binary {
             builder = builder.binary(binary);
@@ -36,10 +47,13 @@ impl CodexProvider {
         if let Some(seconds) = request.spec.execution.limits.timeout_secs {
             builder = builder.timeout_secs(seconds);
         }
+        for (name, value) in mcp_configuration(launch_context).environment {
+            builder = builder.env(name, value);
+        }
         builder.build().map_err(map_error)
     }
 
-    fn fresh_command(request: &TurnRequest) -> ExecCommand {
+    fn fresh_command(request: &TurnRequest, launch_context: &ProviderLaunchContext) -> ExecCommand {
         let mut command = ExecCommand::new(render_prompt(request)).prompt_via_stdin();
         if let Some(model) = &request.spec.agent.model {
             command = command.model(model.clone());
@@ -62,10 +76,17 @@ impl CodexProvider {
                 .sandbox(SandboxMode::WorkspaceWrite)
                 .approval_policy(ApprovalPolicyConfig::Never),
         };
+        for value in mcp_configuration(launch_context).overrides {
+            command = command.config(value);
+        }
         command
     }
 
-    fn resume_command(request: &TurnRequest, session_id: &str) -> ExecResumeCommand {
+    fn resume_command(
+        request: &TurnRequest,
+        session_id: &str,
+        launch_context: &ProviderLaunchContext,
+    ) -> ExecResumeCommand {
         // codex-wrapper 0.3.1 exposes stdin prompts for ExecCommand only.
         // ExecResumeCommand therefore still places the resumed prompt in argv.
         let mut command = ExecResumeCommand::new()
@@ -89,6 +110,9 @@ impl CodexProvider {
                 .config("sandbox_mode=\"workspace-write\"")
                 .approval_policy(ApprovalPolicyConfig::Never),
         };
+        for value in mcp_configuration(launch_context).overrides {
+            command = command.config(value);
+        }
         command
     }
 
@@ -196,9 +220,18 @@ impl Provider for CodexProvider {
         request: TurnRequest,
         events: &'a dyn EventSink,
     ) -> ProviderFuture<'a> {
+        self.execute_with_launch_context(request, ProviderLaunchContext::default(), events)
+    }
+
+    fn execute_with_launch_context<'a>(
+        &'a self,
+        request: TurnRequest,
+        launch_context: ProviderLaunchContext,
+        events: &'a dyn EventSink,
+    ) -> ProviderFuture<'a> {
         Box::pin(async move {
             self.validate(&request)?;
-            let codex = self.client(&request)?;
+            let codex = self.client(&request, &launch_context)?;
             let mut captured = Vec::new();
             let stream_result = {
                 let mut capture = |event| {
@@ -209,7 +242,7 @@ impl Provider for CodexProvider {
                     SessionSpec::Fresh => {
                         codex_wrapper::streaming::stream_exec(
                             &codex,
-                            &Self::fresh_command(&request),
+                            &Self::fresh_command(&request, &launch_context),
                             &mut capture,
                         )
                         .await
@@ -217,7 +250,7 @@ impl Provider for CodexProvider {
                     SessionSpec::Resume { session } => {
                         codex_wrapper::streaming::stream_exec_resume(
                             &codex,
-                            &Self::resume_command(&request, &session.id),
+                            &Self::resume_command(&request, &session.id, &launch_context),
                             &mut capture,
                         )
                         .await
@@ -379,6 +412,40 @@ fn emit_stream_event(event: &codex_wrapper::types::JsonLineEvent, sink: &dyn Eve
     }
 }
 
+struct CodexMcpConfiguration {
+    overrides: Vec<String>,
+    environment: Vec<(String, String)>,
+}
+
+fn mcp_configuration(launch_context: &ProviderLaunchContext) -> CodexMcpConfiguration {
+    let mut configuration = CodexMcpConfiguration {
+        overrides: Vec::new(),
+        environment: Vec::new(),
+    };
+    for (index, endpoint) in launch_context.mcp_endpoints().iter().enumerate() {
+        let variable = format!("ROBA_INTERNAL_MCP_TOKEN_{index}");
+        configuration
+            .environment
+            .push((variable.clone(), endpoint.bearer_token().to_string()));
+        configuration.overrides.extend(
+            McpConfigBuilder::new()
+                .server(
+                    endpoint.name(),
+                    McpServerConfig::http(endpoint.url())
+                        .bearer_token_env_var(variable)
+                        .required(),
+                )
+                .config_overrides(),
+        );
+        if endpoint.name() == ROBA_SELF_SERVER {
+            configuration
+                .overrides
+                .push(ROBA_SELF_TOOL_APPROVAL.to_string());
+        }
+    }
+    configuration
+}
+
 fn render_prompt(request: &TurnRequest) -> String {
     let mut sections = Vec::new();
     sections.extend(request.spec.agent.instructions.iter().cloned());
@@ -445,9 +512,13 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let marker = temp.path().join("blocked.pid");
+        let args_marker = temp.path().join("codex.args");
+        let token_marker = temp.path().join("codex.token");
         let binary = temp.path().join("codex");
         let script = format!(
             r#"#!/bin/sh
+printf '%s\n' "$@" > '{}'
+printf '%s' "${{ROBA_INTERNAL_MCP_TOKEN_0-}}" > '{}'
 prompt=$(cat)
 if [ "$prompt" = "block" ]; then
   printf '%s' "$$" > '{}'
@@ -497,6 +568,8 @@ printf '%s\n' '{{"type":"thread.started","thread_id":"thread-1"}}'
 printf '{{"type":"item.completed","item":{{"type":"agent_message","text":"%s"}}}}\n' "$text"
 printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_tokens":2}}}}'
 "#,
+            args_marker.display(),
+            token_marker.display(),
             marker.display()
         );
         std::fs::write(&binary, script).unwrap();
@@ -511,6 +584,16 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
             .with_prompt(Prompt::new("hello").unwrap())
             .into_turn()
             .unwrap()
+    }
+
+    fn launch_context() -> ProviderLaunchContext {
+        ProviderLaunchContext::default().with_mcp_endpoint(
+            crate::provider::ProviderMcpEndpoint::new(
+                ROBA_SELF_SERVER,
+                "http://127.0.0.1:4123/mcp",
+                "secret-provider-token",
+            ),
+        )
     }
 
     #[test]
@@ -581,7 +664,8 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
             let mut turn = request();
             turn.spec.execution.permissions = policy;
 
-            let fresh = CodexProvider::fresh_command(&turn).args();
+            let fresh =
+                CodexProvider::fresh_command(&turn, &ProviderLaunchContext::default()).args();
             assert!(
                 fresh
                     .windows(2)
@@ -592,7 +676,12 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
             assert!(fresh.iter().any(|arg| arg == "-"));
             assert!(!fresh.iter().any(|arg| arg == "hello"));
 
-            let resumed = CodexProvider::resume_command(&turn, "known-thread").args();
+            let resumed = CodexProvider::resume_command(
+                &turn,
+                "known-thread",
+                &ProviderLaunchContext::default(),
+            )
+            .args();
             assert!(
                 resumed
                     .windows(2)
@@ -608,6 +697,74 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
             // codex-wrapper 0.3.1 has no resume-stdin API.
             assert!(resumed.iter().any(|arg| arg == "hello"));
         }
+    }
+
+    #[test]
+    fn launch_context_builds_exact_mcp_overrides_and_secret_environment() {
+        let context = launch_context();
+        let configuration = mcp_configuration(&context);
+        assert_eq!(
+            configuration.overrides,
+            [
+                "mcp_servers.roba.url=\"http://127.0.0.1:4123/mcp\"",
+                "mcp_servers.roba.bearer_token_env_var=\"ROBA_INTERNAL_MCP_TOKEN_0\"",
+                "mcp_servers.roba.required=true",
+                ROBA_SELF_TOOL_APPROVAL,
+            ]
+        );
+        assert_eq!(
+            configuration.environment,
+            [(
+                "ROBA_INTERNAL_MCP_TOKEN_0".to_string(),
+                "secret-provider-token".to_string()
+            )]
+        );
+
+        for args in [
+            CodexProvider::fresh_command(&request(), &context).args(),
+            CodexProvider::resume_command(&request(), "thread-1", &context).args(),
+        ] {
+            for expected in &configuration.overrides {
+                assert!(
+                    args.windows(2)
+                        .any(|pair| { pair[0] == "-c" && pair[1] == *expected })
+                );
+            }
+            assert!(!args.iter().any(|arg| arg.contains("secret-provider-token")));
+        }
+        assert!(!format!("{context:?}").contains("secret-provider-token"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_binary_receives_mcp_overrides_and_secret_only_in_environment() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, _) = fake_codex(&temp);
+        let events = RecordingSink::default();
+
+        let outcome = provider
+            .execute_with_launch_context(request(), launch_context(), &events)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.output, "opened");
+        let args = std::fs::read_to_string(temp.path().join("codex.args")).unwrap();
+        for expected in [
+            "mcp_servers.roba.url=\"http://127.0.0.1:4123/mcp\"",
+            "mcp_servers.roba.bearer_token_env_var=\"ROBA_INTERNAL_MCP_TOKEN_0\"",
+            "mcp_servers.roba.required=true",
+            ROBA_SELF_TOOL_APPROVAL,
+        ] {
+            assert!(
+                args.lines().any(|arg| arg == expected),
+                "missing {expected}"
+            );
+        }
+        assert!(!args.contains("secret-provider-token"));
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("codex.token")).unwrap(),
+            "secret-provider-token"
+        );
     }
 
     #[cfg(unix)]

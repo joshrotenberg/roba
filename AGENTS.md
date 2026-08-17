@@ -17,8 +17,11 @@ The v0.12 work adds an MCP-native layer above that finite core. The current
 operation-scoped steering/interruption, logical shutdown, agent-wide replay,
 `roba://agent`, optional live Tasks for `agent.turn`, and an in-process MCP
 client. `roba run` crosses that contract and projects the typed result back
-onto its compatibility ABI. Provider-facing access, external transports, and
-extensions remain later phases in `docs/design/mcp-native-agent-harness.md`.
+onto its compatibility ABI. Each finite operation also gets a private,
+authenticated provider projection containing only the read-only `self` tool;
+Claude and Codex receive that endpoint as transient launch context. External
+operator transports and extensions remain later phases in
+`docs/design/mcp-native-agent-harness.md`.
 
 The original single-prompt Claude CLI remains a compatibility surface while
 the provider-neutral API stabilizes.
@@ -36,10 +39,10 @@ the provider-neutral API stabilizes.
 - OUT: Roba-owned worker trees, a mission projection, a multi-agent server, a
   hidden daemon, a persistent session pool, a built-in scheduler or queue,
   hidden background work, or mutation of provider-private state.
-- PARKED: Roba-to-Roba federation, Unix/HTTP bindings without demonstrated
-  demand, and broad GitHub workflow policy. These require separate evidence
-  after the base harness. `mcp-repl` remains the interactive client, so a
-  custom Roba REPL is not required.
+- PARKED: Roba-to-Roba federation, operator-facing Unix/HTTP bindings without
+  demonstrated demand, and broad GitHub workflow policy. These require
+  separate evidence after the base harness. `mcp-repl` remains the interactive
+  client, so a custom Roba REPL is not required.
 - Keep reusable provider mechanics in the wrapper crates. Keep workflow policy
   outside the core run abstraction.
 - Steward in `ok-v` is a separate workflow layer and useful prior art, not a
@@ -48,11 +51,12 @@ the provider-neutral API stabilizes.
 ## Structure
 
 - `roba-core/src/{run,lifecycle,provider,runtime}.rs` -- public run contracts,
-  single-root lifecycle, provider boundary, and provider registry
+  single-root lifecycle, provider boundary plus transient launch context, and
+  provider registry
 - `roba-core/src/providers/{claude,codex}.rs` -- built-in provider adapters
-- `roba-mcp/src/{agent,contract,events,router}.rs` -- hot single-agent state,
-  typed MCP values, bounded agent-wide replay, base router, and in-process
-  client binding
+- `roba-mcp/src/{agent,contract,events,router,provider_endpoint}.rs` -- hot
+  single-agent state, typed MCP values, bounded agent-wide replay, role-scoped
+  routers, in-process control client, and private provider callback binding
 - `src/main.rs` entry point; `src/lib.rs` dispatch plus bounded and legacy paths
 - `src/bounded.rs` -- explicit `roba run` flags to a suspended `RunSpec`, the
   in-process MCP call, and compatibility result projection

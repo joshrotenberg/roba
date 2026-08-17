@@ -8,7 +8,10 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
-use crate::provider::{EventSink, Provider, ProviderError, ProviderEvent, execute_turn};
+use crate::provider::{
+    EventSink, Provider, ProviderError, ProviderEvent, ProviderLaunchContext,
+    execute_turn_with_launch_context,
+};
 use crate::run::{
     FailureKind, Prompt, ProviderId, RunEvent, RunFailure, RunOutcome, RunSpec, RunState,
     SessionSpec,
@@ -101,6 +104,16 @@ pub struct Run {
 impl Run {
     /// Create a run without starting provider work.
     pub fn new(spec: RunSpec, provider: Arc<dyn Provider>) -> Result<Self, RunControlError> {
+        Self::new_with_launch_context(spec, provider, ProviderLaunchContext::default())
+    }
+
+    /// Create a run with transient provider launch material without starting
+    /// provider work.
+    pub fn new_with_launch_context(
+        spec: RunSpec,
+        provider: Arc<dyn Provider>,
+        launch_context: ProviderLaunchContext,
+    ) -> Result<Self, RunControlError> {
         let provider_id = provider.id();
         if spec.agent.provider != provider_id {
             return Err(RunControlError::ProviderMismatch {
@@ -126,6 +139,7 @@ impl Run {
                 inner: Arc::new(Inner {
                     spec,
                     provider,
+                    launch_context,
                     control: AsyncMutex::new(Control {
                         snapshot,
                         started: false,
@@ -351,6 +365,7 @@ impl RunEventSubscription {
 struct Inner {
     spec: RunSpec,
     provider: Arc<dyn Provider>,
+    launch_context: ProviderLaunchContext,
     control: AsyncMutex<Control>,
     snapshot_tx: watch::Sender<RunSnapshot>,
     cancel_tx: watch::Sender<bool>,
@@ -528,7 +543,12 @@ async fn drive(inner: Arc<Inner>, mut prompt: Prompt) {
             provider: request.spec.agent.provider.clone(),
         });
         let result = tokio::select! {
-            result = execute_turn(inner.provider.as_ref(), request, &sink) => Some(result),
+            result = execute_turn_with_launch_context(
+                inner.provider.as_ref(),
+                request,
+                inner.launch_context.clone(),
+                &sink,
+            ) => Some(result),
             () = wait_for_cancellation(&mut cancelled) => None,
         };
 
@@ -722,6 +742,7 @@ mod tests {
         release_first: Notify,
         block: bool,
         failure: Option<ProviderError>,
+        launch_contexts: StdMutex<Vec<ProviderLaunchContext>>,
     }
 
     struct SessionlessProvider {
@@ -887,6 +908,19 @@ mod tests {
                 })
             })
         }
+
+        fn execute_with_launch_context<'a>(
+            &'a self,
+            request: TurnRequest,
+            launch_context: ProviderLaunchContext,
+            events: &'a dyn EventSink,
+        ) -> ProviderFuture<'a> {
+            self.launch_contexts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(launch_context);
+            self.execute(request, events)
+        }
     }
 
     fn provider(block: bool) -> Arc<RecordingProvider> {
@@ -896,6 +930,7 @@ mod tests {
             release_first: Notify::new(),
             block,
             failure: None,
+            launch_contexts: StdMutex::new(Vec::new()),
         })
     }
 
@@ -942,6 +977,40 @@ mod tests {
         assert_eq!(terminal.turns_completed, 2);
         assert_eq!(terminal.last_outcome.unwrap().output, "second");
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn launch_context_is_reused_across_resumed_turns_in_one_run() {
+        let provider = provider(true);
+        let context = ProviderLaunchContext::default().with_mcp_endpoint(
+            crate::provider::ProviderMcpEndpoint::new(
+                "roba",
+                "http://127.0.0.1:4123/mcp",
+                "run-scoped-token",
+            ),
+        );
+        let spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+            .with_prompt(Prompt::new("first").unwrap());
+        let run = Run::new_with_launch_context(spec, provider.clone(), context.clone()).unwrap();
+        run.begin().await.unwrap();
+        provider.first_started.notified().await;
+        run.handle()
+            .steer(Prompt::new("second").unwrap())
+            .await
+            .unwrap();
+        provider.release_first.notify_one();
+
+        let terminal = run.handle().wait().await;
+        assert_eq!(terminal.state, RunState::Completed);
+        assert_eq!(terminal.turns_completed, 2);
+        assert_eq!(
+            provider
+                .launch_contexts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_slice(),
+            [context.clone(), context]
+        );
     }
 
     #[tokio::test]
@@ -1249,6 +1318,7 @@ mod tests {
             release_first: Notify::new(),
             block: false,
             failure: Some(failure),
+            launch_contexts: StdMutex::new(Vec::new()),
         });
         let run = Run::new(
             RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
@@ -1278,6 +1348,7 @@ mod tests {
                 FailureKind::Provider,
                 "provider stopped",
             )),
+            launch_contexts: StdMutex::new(Vec::new()),
         });
         let run = Run::new(
             RunSpec::suspended(AgentSpec::new(ProviderId::claude()))

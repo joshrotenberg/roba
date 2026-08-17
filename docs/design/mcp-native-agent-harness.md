@@ -330,22 +330,25 @@ Both are built from the same service modules and capture the same
 Runtime denial without discovery filtering is not sufficient because it gives
 the model a misleading tool catalog and increases accidental calls.
 
-At minimum, the agent projection excludes:
+The current agent projection is an explicit allowlist containing only the
+read-only `self` tool. It excludes:
 
 - `agent.turn`;
-- `agent.interrupt` and `agent.shutdown`;
+- `agent.steer`, `agent.interrupt`, and `agent.shutdown`;
+- Tasks, agent state, and event history;
 - authority and module configuration;
 - credentials and provider-private session state.
 
-Read-only status or event resources may be shared. Reporting, request-input,
-or completion tools may be added as optional modules rather than core mission
-machinery.
+Later reporting, request-input, or completion tools may be added as optional
+modules rather than core mission machinery. Sharing another control resource
+with the provider requires an explicit least-authority decision; it does not
+happen automatically.
 
 ## Provider as a client of Roba
 
-Before starting a provider turn, the harness may bind the agent projection to
-a private authenticated endpoint. A non-serializable launch context passes
-that endpoint to the provider adapter:
+Before starting a provider turn, the harness binds the agent projection to a
+private authenticated loopback endpoint. A non-serializable launch context
+passes that endpoint to the provider adapter:
 
 ```text
 ProviderLaunchContext
@@ -357,17 +360,27 @@ ProviderMcpEndpoint
   redacted bearer credential
 ```
 
-The endpoint and credential are host-local launch material. They never enter
-`RunSpec`, JSON output, receipts, debug formatting, or persisted provider
-session metadata.
+The endpoint and credential are host-local launch material. Roba does not
+structurally place them in `RunSpec`, `TurnRequest`, JSON result schemas,
+receipts, event projections, or persisted provider session metadata. Debug
+formatting may include the loopback URL for diagnosis but redacts the bearer
+credential. The executing provider necessarily receives the credential and
+can repeat any observed text in its own output; launch-context redaction is
+not a content-filtering security boundary.
 
 Claude and Codex adapters translate the same provider-neutral endpoint into
-their wrapper-native configuration. The endpoint name remains stable across
-resumed turns; its credential may rotate for every finite run.
+their wrapper-native configuration. The endpoint name remains `roba` and the
+same endpoint is reused across resumed provider turns in one finite run. A new
+finite run binds a new listener and rotates the credential; the operating
+system may reuse a numeric port after the prior listener closes.
 
 The provider-facing credential is scoped to the active operation and revoked
-or made unreachable when that operation settles. In-flight service calls are
-cancelled or drained as part of run cancellation.
+when that operation settles. Run cancellation drops the provider future,
+revokes the credential, stops accepting requests, and waits for the endpoint
+server before publishing agent settlement. The only current callback handler,
+`self`, is immediate and read-only. A future extension with long-running
+provider callbacks must add explicit request tracking and cancellation before
+claiming that arbitrary in-flight handlers are forcibly drained.
 
 The historical provider context and endpoint code is prior art for this seam,
 but worker and process controls are not restored with it.
@@ -622,7 +635,7 @@ Deliverables:
 - build separate control and agent projections over one `AgentInstance`;
 - bind the agent projection privately with a run-scoped credential;
 - attach that endpoint mechanically through Claude and Codex adapters;
-- add one harmless callback tool/resource as the deterministic re-entry proof;
+- add one harmless callback tool as the deterministic re-entry proof;
 - do not add Git, GitHub, workers, or process controls yet.
 
 Required tests:
@@ -633,10 +646,12 @@ Required tests:
 - an executing fake provider calls back into the harness without deadlock;
 - agent discovery excludes turn, interrupt, shutdown, and authority controls;
 - an invalid or expired credential is refused;
-- callback cancellation and run cancellation drain each other;
+- run cancellation drops the provider-owned callback client and revokes the
+  private endpoint before settlement is published;
 - Claude's temporary MCP configuration is private and removed;
 - Codex receives its credential through an environment variable, not argv;
-- endpoint state and credentials never serialize into run or MCP results;
+- endpoint state and credentials are not structurally serialized into run or
+  MCP results;
 - fake Claude and Codex binaries prove exact endpoint attachment mechanically.
 
 A separately authorized real-provider callback may be recorded as manual
@@ -785,6 +800,45 @@ identity. Federation does not reopen `roba-core` as a multi-agent runtime.
   panics so one glue-layer fault cannot leave a Task working forever. Provider
   panics still settle through Roba's typed finite-run failure path.
 
+## Phase 4 checkpoint decisions
+
+- `ProviderLaunchContext` is a transient value beside `RunSpec` and
+  `TurnRequest`, not a field inside either serializable contract. The provider
+  trait keeps its original execution method and adds a defaulted
+  context-aware method, so existing third-party providers remain source
+  compatible. One context is reused across steered provider turns within a
+  finite run.
+- Every admitted `AgentInstance` operation binds one private IPv4 loopback MCP
+  endpoint before provider work starts. Its provider-native server name is
+  `roba`; a new finite operation binds a new endpoint and rotates its bearer
+  credential.
+- The provider router is an explicit allowlist with one immediate, read-only
+  tool named `self`. It has no control tools, Tasks, resources, configuration,
+  events, or retained session evidence. Recursive `agent.turn` access is
+  absent from discovery and dispatch rather than rejected after admission.
+- Claude receives the endpoint through an owner-private temporary MCP file and
+  an exact `mcp__roba__self` allowlist entry. Codex receives wrapper-generated
+  MCP overrides and the bearer only through a child environment variable,
+  with approval narrowed to `roba.self`. The ordinary direct provider APIs
+  continue to use an empty launch context.
+- Operation settlement revokes the credential, closes the listener, and waits
+  for endpoint shutdown before publishing the agent result. This is sufficient
+  for the current immediate `self` handler. Long-running extension callbacks
+  require explicit request tracking and cancellation before Roba can promise
+  forced in-flight drain semantics.
+- Binding an ephemeral IPv4 loopback listener is a deliberate turn-admission
+  prerequisite. If the environment forbids it, the host returns a typed
+  runtime refusal before provider work starts rather than silently removing
+  the provider projection.
+- Roba structurally omits launch URLs and credentials from run requests,
+  snapshots, events, and MCP results. Launch-context Debug may show the
+  loopback URL but redacts the credential. This does not stop an executing
+  provider from repeating a credential it was intentionally given; provider
+  output remains untrusted content.
+- The private HTTP endpoint is provider launch plumbing, not the optional
+  operator-facing HTTP binding parked in Phase 7. No paid real-provider
+  dogfood was required for this mechanical checkpoint.
+
 ## Current phase ledger
 
 | Phase | Status | Evidence |
@@ -794,7 +848,7 @@ identity. Federation does not reopen `roba-core` as a multi-agent runtime.
 | 2. CLI over MCP | Complete | Two independent audits; 6 MCP unit plus 11 agent integration tests; 10 compatibility-projection unit and 188 CLI tests; full common gate green, 2026-08-17 |
 | 3A. Controls and events | Complete | Independent concurrency review; 13 MCP unit, 11 base-agent integration, and 12 control/event ChannelTransport tests; 188 CLI compatibility tests; full common gate green, 2026-08-17 |
 | 3B. MCP Tasks | Complete | Independent concurrency/API review; 13 MCP unit, 11 base-agent, 12 control/event, and 7 final-plus-legacy Task integration tests; 188 CLI compatibility tests; full common gate green, 2026-08-17 |
-| 4. Provider self-client | Not started | -- |
+| 4. Provider self-client | Complete | Three independent blocker reviews; 88 core tests; 15 MCP unit, 11 base-agent, 12 control/event, 7 Task, and 3 authenticated-loopback provider integration tests; 188 CLI compatibility tests; full common gate green, 2026-08-17 |
 | 5. Hot stdio | Not started | -- |
 | 6. First extension | Not started | -- |
 | 7. Optional bindings | Parked pending demand | -- |

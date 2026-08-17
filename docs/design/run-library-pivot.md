@@ -172,15 +172,18 @@ retains only the provider session between prompts, and exposes a canonical MCP
 contract. It may stay idle until its owning foreground transport shuts down.
 
 The same composed service has role-scoped control and provider-facing
-projections. The provider may become an authenticated MCP client of its own
-harness for explicitly installed services such as context or Git. This does
-not add a worker tree or multi-agent routing to core.
+projections. Each active provider is now an authenticated MCP client of its
+own harness through an operation-scoped loopback endpoint. The current
+provider projection contains only the read-only `self` proof tool; later
+explicitly installed services may add context or Git without adding a worker
+tree or multi-agent routing to core.
 
 See `docs/design/mcp-native-agent-harness.md` for the contract, phase gates,
 cancellation semantics, transport plan, and parked Roba-to-Roba consequence.
 The workspace `roba-mcp` crate exposes the process-local contract, and
-provider-neutral `roba run` is its first production client. No external
-binding or provider-facing projection exists yet.
+provider-neutral `roba run` is its first production control client. There is
+no operator-facing external binding yet. The private HTTP listener is
+provider launch plumbing, not a general HTTP service.
 
 ## Next seams, not current claims
 
@@ -225,15 +228,15 @@ out of scope.
 
 ## Near-term work
 
-The cleanup completed Codex error/resume/cancellation hardening, restored the
-legacy persona surface, made lifecycle events authoritative, and added
-fail-loud serialization for removed policy fields. Remaining work is:
+The cleanup and first MCP phases completed Codex hardening, authoritative
+lifecycle events, the hot single-agent contract, controls and replay, optional
+Tasks, and the provider self-client proof. Remaining work is:
 
-1. Execute the phases in `mcp-native-agent-harness.md` without widening the
-   finite core.
-2. Add controls and agent-wide observation without turning the base into a
-   hidden queue.
-3. Add the provider self-client projection before broad workspace services.
+1. Add the foreground stdio binding and dogfood it through `mcp-repl` without
+   widening the finite core.
+2. Prove one small router fragment before defining a broader extension API.
+3. Keep operator HTTP, Unix sockets, scheduling, and federation parked until a
+   concrete consumer justifies their authority and lifecycle costs.
 
 ## Resume checklist
 
@@ -243,6 +246,6 @@ fail-loud serialization for removed policy fields. Remaining work is:
    active above-core harness phase. Put workflow policy above both by default.
 4. Preserve the legacy CLI unless an explicit compatibility decision says
    otherwise.
-5. Run the repository's four required gates before publishing a review point.
+5. Run the repository's complete common gate before publishing a review point.
 6. Update the MCP harness phase ledger when the current architecture or parked
    boundary changes.

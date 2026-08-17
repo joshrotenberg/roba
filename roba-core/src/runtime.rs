@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::lifecycle::{Run, RunControlError};
-use crate::provider::Provider;
+use crate::provider::{Provider, ProviderLaunchContext};
 use crate::run::{ProviderId, RunSpec};
 
 /// Process-local Roba runtime. It owns provider adapters but no daemon,
@@ -52,11 +52,22 @@ impl Roba {
 
     /// Construct one bounded run without starting provider work.
     pub fn create_run(&self, spec: RunSpec) -> Result<Run, RuntimeError> {
+        self.create_run_with_launch_context(spec, ProviderLaunchContext::default())
+    }
+
+    /// Construct one bounded run with transient provider launch material
+    /// without starting provider work.
+    pub fn create_run_with_launch_context(
+        &self,
+        spec: RunSpec,
+        launch_context: ProviderLaunchContext,
+    ) -> Result<Run, RuntimeError> {
         let provider = self
             .providers
             .get(&spec.agent.provider)
             .ok_or_else(|| RuntimeError::ProviderUnavailable(spec.agent.provider.clone()))?;
-        Run::new(spec, Arc::clone(provider)).map_err(RuntimeError::Run)
+        Run::new_with_launch_context(spec, Arc::clone(provider), launch_context)
+            .map_err(RuntimeError::Run)
     }
 }
 

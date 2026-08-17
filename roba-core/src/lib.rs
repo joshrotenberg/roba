@@ -36,7 +36,8 @@ pub use lifecycle::{
 };
 pub use provider::{
     EventSink, NoopEventSink, Provider, ProviderCapabilities, ProviderError, ProviderEvent,
-    ProviderFuture, execute_turn,
+    ProviderFuture, ProviderLaunchContext, ProviderMcpEndpoint, execute_turn,
+    execute_turn_with_launch_context,
 };
 pub use providers::claude::ClaudeProvider;
 pub use providers::codex::CodexProvider;

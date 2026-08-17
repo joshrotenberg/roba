@@ -21,9 +21,13 @@ The workspace also includes the first process-local `roba-mcp` layer. Its
 run per accepted `agent.turn`, retains provider session continuity, and offers
 operation-scoped controls plus agent-wide replay. The provider-neutral
 `roba run` command uses this contract through an in-process MCP client; no
-external transport is shipped yet. Task-aware clients can also background,
-poll, and cancel `agent.turn` through MCP Tasks while ordinary clients keep
-the same blocking tool contract.
+operator-facing external transport is shipped yet. For each admitted finite
+operation, `roba-mcp` also binds a private authenticated loopback projection
+and attaches it to the built-in provider. That least-authority projection
+currently contains only the read-only `self` tool and structurally excludes
+turn admission and operator controls. Task-aware clients can background, poll,
+and cancel `agent.turn` through MCP Tasks while ordinary clients keep the same
+blocking tool contract.
 
 The established single-prompt Claude CLI remains a supported compatibility
 surface while the provider-neutral library API stabilizes.
@@ -96,11 +100,19 @@ operation-scoped steering/interruption, logical shutdown, agent-wide event
 replay, optional live Tasks for `agent.turn`, and an initialized Tower MCP
 `ChannelTransport` client. `roba run` is the first interface migrated onto
 that contract while preserving its existing stdout, JSON, and exit-code ABI
-for admitted runs. External bindings, provider-facing access, and service
-fragments remain later gated phases. `mcp-repl` will provide the interactive
-client, so Roba does not need a custom REPL. The legacy `--mcp-config` flag is
-unrelated: it passes an MCP server configuration through to a one-shot Claude
+for admitted runs. Each active operation now also gives Claude or Codex an
+ephemeral, authenticated `roba` MCP server containing only `self`; its URL and
+credential are transient launch material and its credential rotates between
+finite runs. Operator-facing external bindings and service fragments remain
+later gated phases. `mcp-repl` will provide the interactive client, so Roba
+does not need a custom REPL. The legacy `--mcp-config` flag is unrelated: it
+passes a user-supplied MCP server configuration through to a one-shot Claude
 invocation.
+
+An admitted `AgentInstance` turn now requires permission to bind an ephemeral
+IPv4 loopback listener. If the host environment forbids that bind, admission
+returns a typed runtime refusal before provider work begins; Roba does not
+silently launch the provider without the promised self-client contract.
 
 The Steward prototype in `ok-v` is separate workflow-layer prior art. Its
 visible queue, bounded tick, lock, and receipt ideas may inform external tools,
@@ -115,9 +127,10 @@ places a resumed prompt in the child process arguments.
 The public implementation is split by responsibility:
 
 - `roba-core`: provider-neutral specifications, provider registry, root
-  lifecycle, outcomes, failures, and events
+  lifecycle, outcomes, failures, events, and transient provider launch context
 - `roba-mcp`: one process-local logical agent, typed MCP contract, bounded
-  replay, base router, and in-process client binding
+  replay, role-scoped routers, in-process control client, and private
+  operation-scoped provider binding
 - `roba-types`: the dependency-light machine envelope, exit-code map, and run
   receipt types
 - `roba`: the explicit `run` adapter plus the original Claude CLI

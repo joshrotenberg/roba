@@ -11,11 +11,17 @@ keywords = ["agent", "mcp", "claude", "codex", "llm"]
 categories = ["development-tools"]
 
 [dependencies]
+axum = "0.8"
 roba-core = { version = "0.2.0", path = "../roba-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt", "sync"] }
-tower-mcp = { version = "0.22", default-features = false, features = ["protocol-2026-07-28"] }
+tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
+tower-mcp = { version = "0.22", default-features = false, features = ["http", "protocol-2026-07-28"] }
+uuid = { version = "1", default-features = false, features = ["v4"] }
 
 [dev-dependencies]
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

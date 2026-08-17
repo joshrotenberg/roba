@@ -5,11 +5,14 @@ use std::path::PathBuf;
 use anyhow::Result;
 use claude_wrapper::streaming::{BlockDelta, PartialMessageEvent, StreamEvent, stream_query};
 use claude_wrapper::types::QueryResult;
-use claude_wrapper::{Claude, Effort as ClaudeEffort, OutputFormat, QueryCommand};
+use claude_wrapper::{
+    Claude, Effort as ClaudeEffort, McpConfigBuilder, OutputFormat, QueryCommand, TempMcpConfig,
+};
 
 use crate::engine::{self, Config, Permissions, Session};
 use crate::provider::{
     EventSink, Provider, ProviderCapabilities, ProviderError, ProviderEvent, ProviderFuture,
+    ProviderLaunchContext,
 };
 use crate::run::{
     Cost, Effort, FailureKind, PermissionPolicy, ProviderId, RunFailureDetails, RunOutcome,
@@ -26,6 +29,9 @@ pub struct ClaudeProvider {
 /// former unit struct as `ClaudeProvider`.
 #[allow(non_upper_case_globals)]
 pub const ClaudeProvider: ClaudeProvider = ClaudeProvider { binary: None };
+
+const ROBA_SELF_SERVER: &str = "roba";
+const ROBA_SELF_TOOL: &str = "mcp__roba__self";
 
 impl ClaudeProvider {
     /// Use an explicit Claude executable instead of resolving `claude` from
@@ -113,6 +119,42 @@ impl ClaudeProvider {
         Ok(config)
     }
 
+    fn mcp_config(
+        launch_context: &ProviderLaunchContext,
+    ) -> Result<Option<TempMcpConfig>, ProviderError> {
+        if launch_context.mcp_endpoints().is_empty() {
+            return Ok(None);
+        }
+        let mut builder = McpConfigBuilder::new();
+        for endpoint in launch_context.mcp_endpoints() {
+            builder = builder.http_server_with_headers(
+                endpoint.name(),
+                endpoint.url(),
+                [(
+                    "Authorization",
+                    format!("Bearer {}", endpoint.bearer_token()),
+                )],
+            );
+        }
+        builder.build_temp().map(Some).map_err(|error| {
+            ProviderError::new(
+                FailureKind::Provider,
+                format!("failed to build Claude MCP configuration: {error}"),
+            )
+        })
+    }
+
+    fn allow_roba_self(config: &mut Config, launch_context: &ProviderLaunchContext) {
+        if launch_context
+            .mcp_endpoints()
+            .iter()
+            .any(|endpoint| endpoint.name() == ROBA_SELF_SERVER)
+            && !config.allow_tools.iter().any(|tool| tool == ROBA_SELF_TOOL)
+        {
+            config.allow_tools.push(ROBA_SELF_TOOL.to_string());
+        }
+    }
+
     /// Normalize Claude's result without converting missing telemetry to zero.
     pub fn normalize(result: QueryResult) -> RunOutcome {
         let structured_output = result.extra.get("structured_output").cloned();
@@ -197,9 +239,23 @@ impl Provider for ClaudeProvider {
         request: TurnRequest,
         events: &'a dyn EventSink,
     ) -> ProviderFuture<'a> {
+        self.execute_with_launch_context(request, ProviderLaunchContext::default(), events)
+    }
+
+    fn execute_with_launch_context<'a>(
+        &'a self,
+        request: TurnRequest,
+        launch_context: ProviderLaunchContext,
+        events: &'a dyn EventSink,
+    ) -> ProviderFuture<'a> {
         Box::pin(async move {
             self.validate(&request)?;
-            let config = Self::config(&request)?;
+            let mut config = Self::config(&request)?;
+            let mcp_config = Self::mcp_config(&launch_context)?;
+            if let Some(mcp_config) = &mcp_config {
+                config.mcp_config.push(mcp_config.path().to_string());
+            }
+            Self::allow_roba_self(&mut config, &launch_context);
             let claude = self.client(&config).map_err(|error| {
                 ProviderError::new(FailureKind::Provider, format!("Claude failed: {error:#}"))
             })?;
@@ -347,6 +403,7 @@ mod tests {
     #[cfg(unix)]
     use std::sync::Mutex;
 
+    use claude_wrapper::ClaudeCommand;
     use serde_json::json;
 
     use super::*;
@@ -372,16 +429,27 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let marker = temp.path().join("blocked.pid");
+        let args_marker = temp.path().join("claude.args");
+        let mcp_config_marker = temp.path().join("claude.mcp.json");
+        let mcp_path_marker = temp.path().join("claude.mcp.path");
         let binary = temp.path().join("claude");
         let script = format!(
             r#"#!/bin/sh
 prompt=
 resuming=false
+previous=
+: > '{}'
 for arg do
+  printf '%s\n' "$arg" >> '{}'
+  if [ "$previous" = --mcp-config ]; then
+    cp "$arg" '{}'
+    printf '%s' "$arg" > '{}'
+  fi
   prompt=$arg
   if [ "$arg" = --resume ]; then
     resuming=true
   fi
+  previous=$arg
 done
 case "$prompt" in
   block)
@@ -422,6 +490,10 @@ if [ "$terminal" = true ]; then
   printf '{{"type":"result","subtype":"success","result":"%s","session_id":"session-1","total_cost_usd":0.02,"duration_ms":10,"num_turns":1,"is_error":false,"usage":{{"input_tokens":3,"output_tokens":2}}}}\n' "$text"
 fi
 "#,
+            args_marker.display(),
+            args_marker.display(),
+            mcp_config_marker.display(),
+            mcp_path_marker.display(),
             marker.display()
         );
         std::fs::write(&binary, script).unwrap();
@@ -436,6 +508,16 @@ fi
             .with_prompt(Prompt::new("hello").unwrap())
             .into_turn()
             .unwrap()
+    }
+
+    fn launch_context() -> ProviderLaunchContext {
+        ProviderLaunchContext::default().with_mcp_endpoint(
+            crate::provider::ProviderMcpEndpoint::new(
+                ROBA_SELF_SERVER,
+                "http://127.0.0.1:4123/mcp",
+                "secret-provider-token",
+            ),
+        )
     }
 
     #[test]
@@ -502,6 +584,105 @@ fi
 
         assert!(config.no_agent_notice);
         assert!(crate::session::compose_append_system_prompt(&config).is_none());
+    }
+
+    #[test]
+    fn launch_context_builds_exact_private_config_and_self_allowlist() {
+        let context = launch_context();
+        let mcp_config = ClaudeProvider::mcp_config(&context).unwrap().unwrap();
+        let path = PathBuf::from(mcp_config.path());
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "mcpServers": {
+                    "roba": {
+                        "type": "http",
+                        "url": "http://127.0.0.1:4123/mcp",
+                        "headers": {
+                            "Authorization": "Bearer secret-provider-token"
+                        }
+                    }
+                }
+            })
+        );
+
+        let mut config = ClaudeProvider::config(&request(ProviderId::claude())).unwrap();
+        config.mcp_config.push(mcp_config.path().to_string());
+        ClaudeProvider::allow_roba_self(&mut config, &context);
+        ClaudeProvider::allow_roba_self(&mut config, &context);
+        assert_eq!(
+            config
+                .allow_tools
+                .iter()
+                .filter(|tool| tool.as_str() == ROBA_SELF_TOOL)
+                .count(),
+            1
+        );
+
+        let args = ClaudeProvider::bounded_command(&config).args();
+        assert!(
+            args.windows(2)
+                .any(|pair| { pair == ["--mcp-config", mcp_config.path()] })
+        );
+        assert!(args.windows(2).any(|pair| {
+            pair[0] == "--allowed-tools" && pair[1].split(',').any(|tool| tool == ROBA_SELF_TOOL)
+        }));
+        assert!(!args.iter().any(|arg| arg.contains("secret-provider-token")));
+        assert!(!format!("{context:?}").contains("secret-provider-token"));
+
+        drop(mcp_config);
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn temporary_mcp_config_is_owner_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mcp_config = ClaudeProvider::mcp_config(&launch_context())
+            .unwrap()
+            .unwrap();
+        let mode = std::fs::metadata(mcp_config.path())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_binary_receives_exact_mcp_attachment_and_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, _) = fake_claude(&temp);
+        let events = RecordingSink::default();
+
+        let outcome = provider
+            .execute_with_launch_context(request(ProviderId::claude()), launch_context(), &events)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.output, "opened");
+        let args = std::fs::read_to_string(temp.path().join("claude.args")).unwrap();
+        assert!(args.lines().any(|arg| arg == "--mcp-config"));
+        assert!(args.lines().any(|arg| arg == "--allowed-tools"));
+        assert!(args.contains(ROBA_SELF_TOOL));
+        assert!(!args.contains("secret-provider-token"));
+        let value: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(temp.path().join("claude.mcp.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            value["mcpServers"]["roba"]["url"],
+            "http://127.0.0.1:4123/mcp"
+        );
+        assert_eq!(
+            value["mcpServers"]["roba"]["headers"]["Authorization"],
+            "Bearer secret-provider-token"
+        );
+        let original_path = std::fs::read_to_string(temp.path().join("claude.mcp.path")).unwrap();
+        assert!(!PathBuf::from(original_path).exists());
     }
 
     #[cfg(unix)]

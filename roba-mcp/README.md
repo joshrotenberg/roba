@@ -5,7 +5,7 @@ Protocol contract. Each `agent.turn` call creates one finite `roba-core` run;
 the host retains the provider session between calls while remaining idle
 between provider processes.
 
-The first implementation is deliberately process-local:
+The operator interface is deliberately process-local:
 
 - `AgentInstance` owns a suspended `RunSpec`, one optional provider session,
   and at most one active `RunHandle`.
@@ -35,6 +35,33 @@ The first implementation is deliberately process-local:
 - `call_turn` is the typed client seam. It requires valid
   `structuredContent`, checks that MCP `isError` agrees with the typed status,
   and never treats display text as machine data.
+
+The same `AgentInstance` also has a separate provider-facing projection. For
+each admitted finite operation, the host binds that projection to an ephemeral
+IPv4 loopback port, mints a high-entropy bearer credential, and passes the
+endpoint to `roba-core` as non-serializable launch context. Claude receives an
+owner-private temporary MCP configuration; Codex receives wrapper-native
+configuration plus the bearer through a child environment variable. The
+credential rotates for every finite run and is revoked when that run settles.
+
+The provider router is an explicit allowlist, not the control router with
+runtime denials. It publishes one immediate, read-only tool named `self`
+(qualified as `roba.self` by provider clients). It publishes no turns,
+steering, interruption, shutdown, Tasks, resources, configuration, event
+history, or retained session evidence. This proves provider re-entry without
+opening recursion or operator authority.
+
+Launch URLs and credentials are absent from `RunSpec`, `TurnRequest`, run and
+MCP result schemas, and event projections. Launch-context diagnostics may show
+the loopback URL but redact the bearer credential. A provider process
+necessarily receives the credential and could repeat it in its own output;
+Roba's guarantee is that the host does not structurally copy that launch
+material into public values or log the credential.
+
+Loopback binding is a deliberate admission prerequisite. A host that forbids
+an ephemeral IPv4 loopback listener receives a typed runtime refusal before
+provider work starts; the agent does not silently downgrade to a run without
+its provider projection.
 
 `agent.turn` is one optional dual-path MCP tool. A caller that negotiates
 Tasks receives a process-local live Task; a caller without Tasks uses the
@@ -70,7 +97,11 @@ admitted operation stays visible and supervised until it finishes or an
 explicit `agent.interrupt` or `agent.shutdown` drains it. This is an
 intentional direct-call contract, not an implicit background queue.
 
-External transports, extension fragments, and provider self-access remain
-later phases in `../docs/design/mcp-native-agent-harness.md`. The root
-`roba run` command is the first production client of this process-local
+Operator-facing external transports and extension fragments remain later
+phases in `../docs/design/mcp-native-agent-harness.md`. The private HTTP
+listener is operation-scoped provider plumbing, not a general HTTP binding.
+The current `self` handler is deliberately immediate. Before extensions add
+long-running provider callbacks, the endpoint host must add explicit request
+tracking and cancellation rather than generalizing the current teardown claim.
+The root `roba run` command is the first production control client of this
 contract.

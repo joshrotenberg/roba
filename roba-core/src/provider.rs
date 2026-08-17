@@ -8,6 +8,94 @@ use serde::{Deserialize, Serialize};
 
 use crate::run::{FailureKind, ProviderId, RunFailureDetails, RunOutcome, TokenUsage, TurnRequest};
 
+/// One ephemeral MCP endpoint made available only to the provider run being
+/// executed.
+///
+/// Credentials are deliberately omitted from [`fmt::Debug`] output and this
+/// type does not implement serde. Launch material must never be folded into a
+/// serializable [`TurnRequest`], run result, or receipt.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ProviderMcpEndpoint {
+    name: String,
+    url: String,
+    bearer_token: String,
+}
+
+impl ProviderMcpEndpoint {
+    /// Construct an endpoint after its listener and authentication boundary
+    /// are ready.
+    pub fn new(
+        name: impl Into<String>,
+        url: impl Into<String>,
+        bearer_token: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            url: url.into(),
+            bearer_token: bearer_token.into(),
+        }
+    }
+
+    /// Stable server name exposed to the provider.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Ephemeral host-local endpoint URL.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Deliberate secret access for an adapter configuring its child process.
+    /// Callers must not log or persist this value.
+    pub fn bearer_token(&self) -> &str {
+        &self.bearer_token
+    }
+}
+
+impl fmt::Debug for ProviderMcpEndpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderMcpEndpoint")
+            .field("name", &self.name)
+            .field("url", &self.url)
+            .field("bearer_token", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Transient, non-serializable launch material for one finite provider run.
+///
+/// The same context is reused for resumed provider turns within that run. A
+/// higher-level host may mint a fresh context for the next finite run.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct ProviderLaunchContext {
+    mcp_endpoints: Vec<ProviderMcpEndpoint>,
+}
+
+impl ProviderLaunchContext {
+    /// Ephemeral MCP endpoints an adapter must attach to this provider run.
+    pub fn mcp_endpoints(&self) -> &[ProviderMcpEndpoint] {
+        &self.mcp_endpoints
+    }
+
+    /// Add an already-running endpoint without changing serializable run
+    /// intent or authority.
+    pub fn with_mcp_endpoint(mut self, endpoint: ProviderMcpEndpoint) -> Self {
+        self.mcp_endpoints.push(endpoint);
+        self
+    }
+}
+
+impl fmt::Debug for ProviderLaunchContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderLaunchContext")
+            .field("mcp_endpoints", &self.mcp_endpoints)
+            .finish()
+    }
+}
+
 /// Capabilities whose absence must cause pre-spawn refusal when requested.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderCapabilities {
@@ -106,12 +194,38 @@ pub trait Provider: Send + Sync {
     /// should still call their own validation when invoked directly.
     fn execute<'a>(&'a self, request: TurnRequest, events: &'a dyn EventSink)
     -> ProviderFuture<'a>;
+
+    /// Execute with transient host-local launch material.
+    ///
+    /// Providers that do not need launch material remain source-compatible:
+    /// the default delegates to [`Provider::execute`]. Context-aware adapters
+    /// override this method while keeping ordinary direct execution as the
+    /// empty-context path.
+    fn execute_with_launch_context<'a>(
+        &'a self,
+        request: TurnRequest,
+        _launch_context: ProviderLaunchContext,
+        events: &'a dyn EventSink,
+    ) -> ProviderFuture<'a> {
+        self.execute(request, events)
+    }
 }
 
 /// Validate and execute one request through a provider.
 pub async fn execute_turn(
     provider: &dyn Provider,
     request: TurnRequest,
+    events: &dyn EventSink,
+) -> Result<RunOutcome, ProviderError> {
+    execute_turn_with_launch_context(provider, request, ProviderLaunchContext::default(), events)
+        .await
+}
+
+/// Validate and execute one request with transient provider launch material.
+pub async fn execute_turn_with_launch_context(
+    provider: &dyn Provider,
+    request: TurnRequest,
+    launch_context: ProviderLaunchContext,
     events: &dyn EventSink,
 ) -> Result<RunOutcome, ProviderError> {
     if request.spec.agent.provider != provider.id() {
@@ -122,11 +236,14 @@ pub async fn execute_turn(
         )));
     }
     provider.validate(&request)?;
-    provider.execute(request, events).await
+    provider
+        .execute_with_launch_context(request, launch_context, events)
+        .await
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
@@ -134,6 +251,7 @@ mod tests {
 
     struct FakeProvider {
         calls: AtomicUsize,
+        contexts: Mutex<Vec<ProviderLaunchContext>>,
     }
 
     impl Provider for FakeProvider {
@@ -167,12 +285,26 @@ mod tests {
                 })
             })
         }
+
+        fn execute_with_launch_context<'a>(
+            &'a self,
+            request: TurnRequest,
+            launch_context: ProviderLaunchContext,
+            events: &'a dyn EventSink,
+        ) -> ProviderFuture<'a> {
+            self.contexts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(launch_context);
+            self.execute(request, events)
+        }
     }
 
     #[tokio::test]
     async fn provider_mismatch_refuses_before_execute() {
         let provider = FakeProvider {
             calls: AtomicUsize::new(0),
+            contexts: Mutex::new(Vec::new()),
         };
         let request = RunSpec::suspended(AgentSpec::new(ProviderId::codex()))
             .with_prompt(Prompt::new("hello").unwrap())
@@ -190,6 +322,7 @@ mod tests {
     async fn matching_provider_returns_normalized_outcome() {
         let provider = FakeProvider {
             calls: AtomicUsize::new(0),
+            contexts: Mutex::new(Vec::new()),
         };
         let request = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
             .with_prompt(Prompt::new("hello").unwrap())
@@ -201,5 +334,55 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.output, "hello");
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            provider
+                .contexts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_slice(),
+            [ProviderLaunchContext::default()]
+        );
+    }
+
+    #[tokio::test]
+    async fn launch_context_reaches_context_aware_provider_without_secret_debug_output() {
+        let provider = FakeProvider {
+            calls: AtomicUsize::new(0),
+            contexts: Mutex::new(Vec::new()),
+        };
+        let request = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+            .with_prompt(Prompt::new("hello").unwrap())
+            .into_turn()
+            .unwrap();
+        let context = ProviderLaunchContext::default().with_mcp_endpoint(ProviderMcpEndpoint::new(
+            "roba",
+            "http://127.0.0.1:4123/mcp",
+            "secret-provider-token",
+        ));
+
+        let outcome =
+            execute_turn_with_launch_context(&provider, request, context.clone(), &NoopEventSink)
+                .await
+                .unwrap();
+
+        assert_eq!(outcome.output, "hello");
+        assert_eq!(
+            provider
+                .contexts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_slice(),
+            std::slice::from_ref(&context)
+        );
+        assert!(!format!("{context:?}").contains("secret-provider-token"));
+        assert_eq!(context.mcp_endpoints()[0].name(), "roba");
+        assert_eq!(
+            context.mcp_endpoints()[0].url(),
+            "http://127.0.0.1:4123/mcp"
+        );
+        assert_eq!(
+            context.mcp_endpoints()[0].bearer_token(),
+            "secret-provider-token"
+        );
     }
 }
