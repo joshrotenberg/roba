@@ -717,6 +717,36 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
     }
 
     #[test]
+    fn operation_model_and_effort_are_reapplied_to_fresh_and_resumed_turns() {
+        let mut fresh = request();
+        fresh.spec.agent.model = Some("codex-operation-model".to_string());
+        fresh.spec.agent.effort = Some(Effort::High);
+        let mut resumed = fresh.clone();
+        resumed.spec.execution.session = SessionSpec::Resume {
+            session: SessionHandle {
+                provider: ProviderId::codex(),
+                id: "thread-1".to_string(),
+            },
+        };
+
+        let fresh_args =
+            CodexProvider::fresh_command(&fresh, &ProviderLaunchContext::default()).args();
+        let resumed_args =
+            CodexProvider::resume_command(&resumed, "thread-1", &ProviderLaunchContext::default())
+                .args();
+        for args in [fresh_args, resumed_args] {
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--model", "codex-operation-model"])
+            );
+            assert!(
+                args.windows(2)
+                    .any(|pair| { pair == ["-c", "model_reasoning_effort=\"high\""] })
+            );
+        }
+    }
+
+    #[test]
     fn launch_bootstrap_precedes_explicit_context_for_fresh_and_resumed_turns() {
         let mut fresh = request();
         fresh.spec.agent.instructions = vec!["agent instruction".to_owned()];

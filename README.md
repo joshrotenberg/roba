@@ -100,8 +100,9 @@ current or latest provider read evidence.
 
 The base control contract is:
 
-- `agent.turn` admits one finite operation;
-- `agent.steer` queues guidance for one exact active operation;
+- `agent.turn` admits one finite operation, with optional operation-local
+  model, effort, and limit overrides;
+- `agent.follow_up` queues another prompt for one exact active operation;
 - `agent.interrupt` cancels one operation, drains it, and keeps the agent hot;
 - `agent.shutdown` permanently closes admission and drains active work;
 - `roba://agent` reports redacted configuration and current state;
@@ -208,6 +209,7 @@ configuration are parsed and semantically linted in CI.
 - [Documentation map](docs/README.md)
 - [Finite-core architecture](docs/architecture/core.md)
 - [MCP harness architecture](docs/architecture/mcp-harness.md)
+- [Agent control semantics](docs/architecture/agent-control.md)
 - [Legacy Claude CLI guide](docs/legacy-cli.md)
 - [Annotated legacy configuration](roba-config.sample.toml)
 

@@ -140,20 +140,28 @@ wait last
 Task cancellation does not shut down the logical agent. A later `agent.turn`
 can reuse it.
 
-## 8. Observe, steer, or interrupt an active operation
+## 8. Observe, follow up, or interrupt an active operation
 
 `roba://agent` reports the current operation id. Controls require that id so a
 delayed command cannot affect a later turn.
 
 ```text
 read roba://agent
-agent.steer operation_id=1 text="Focus only on the failing integration test."
+agent.follow_up operation_id=1 text="Focus only on the failing integration test."
 agent.interrupt operation_id=1
 ```
 
-Steering queues guidance for the next safe resumed-provider boundary; it does
-not mutate an arbitrary in-flight provider prompt. Interruption cancels and
-drains only that operation, leaving the hot agent reusable.
+Follow-up queues another prompt for the next resumed-provider boundary; it
+does not mutate the in-flight provider prompt. Interruption cancels and drains
+only that operation, leaving the hot agent reusable.
+
+`agent.turn` also accepts optional one-operation overrides. They apply to the
+initial provider turn and every queued follow-up in that operation, then the
+host returns to its configured defaults:
+
+```text
+agent.turn text="Investigate the failing tests." overrides={"model":"provider-model-id","effort":"high","limits":{"timeout_secs":900}}
+```
 
 ## 9. Inspect Roba-declared context over MCP
 
@@ -234,7 +242,7 @@ that intentionally manages another Roba.
 | One explicit follow-up | `roba run --resume` |
 | Several sequential turns | `roba serve` + MCP client |
 | Long work plus observation | MCP Task on `agent.turn` |
-| Mid-run guidance or cancellation | `agent.steer` / `agent.interrupt` |
+| Follow-up work or cancellation | `agent.follow_up` / `agent.interrupt` |
 | Repository-aware observation | `--git` |
 | Custom host or scheduler | `AgentInstance` + MCP binding |
 

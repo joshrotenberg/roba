@@ -15,9 +15,9 @@ use crate::context::{
     ContextSnapshot, OperationContext,
 };
 use crate::contract::{
-    AgentConfiguration, AgentControlRefusalKind, AgentInterruptResult, AgentRefusalKind,
-    AgentShutdownResult, AgentSnapshot, AgentState, AgentSteerResult, AgentTurnResult, OperationId,
-    OperationSettlement, ProviderSelfSnapshot,
+    AgentConfiguration, AgentControlRefusalKind, AgentFollowUpResult, AgentInterruptResult,
+    AgentRefusalKind, AgentShutdownResult, AgentSnapshot, AgentState, AgentTurnResult, OperationId,
+    OperationSettlement, ProviderSelfSnapshot, TurnOverrides,
 };
 use crate::events::{AgentEventError, AgentEventJournal, AgentEventPage};
 use crate::extensions::{AgentExtensionError, AgentExtensions};
@@ -63,6 +63,7 @@ struct ActiveOperation {
     settlement: watch::Receiver<Option<AgentTurnResult>>,
     provider_endpoint: ProviderEndpoint,
     context: OperationContext,
+    configuration: AgentConfiguration,
 }
 
 /// Weak reference used by provider callback routers to avoid retaining their
@@ -221,14 +222,7 @@ impl AgentInstance {
                 Some(session)
             }
         };
-        let configuration = AgentConfiguration {
-            provider: template.agent.provider.to_string(),
-            model: template.agent.model.clone(),
-            effort: template.agent.effort.map(Into::into),
-            permissions: template.execution.permissions.into(),
-            tools: template.execution.tools.clone().into(),
-            limits: template.execution.limits.clone().into(),
-        };
+        let configuration = AgentConfiguration::from_run_spec(&template);
 
         let (shutdown_tx, _) = watch::channel(None);
         let agent = Self {
@@ -267,7 +261,17 @@ impl AgentInstance {
     /// waiter. Dropping a caller waiting on this method therefore cannot wedge
     /// the agent in `running` after its provider turn finishes.
     pub async fn turn(&self, text: String) -> AgentTurnResult {
-        match self.admit_turn(text).await {
+        self.turn_with_overrides(text, TurnOverrides::default())
+            .await
+    }
+
+    /// Submit one prompt with operation-local provider settings and ceilings.
+    pub async fn turn_with_overrides(
+        &self,
+        text: String,
+        overrides: TurnOverrides,
+    ) -> AgentTurnResult {
+        match self.admit_turn_with_overrides(text, overrides).await {
             TurnAdmission::Admitted(turn) => self.wait_admitted(&turn).await,
             TurnAdmission::Refused(result) => result,
         }
@@ -278,7 +282,11 @@ impl AgentInstance {
     /// The returned capability is generation-fenced to this exact finite run.
     /// It lets protocol adapters wait or cancel without resolving whichever
     /// operation happens to be current later.
-    pub(crate) async fn admit_turn(&self, text: String) -> TurnAdmission {
+    pub(crate) async fn admit_turn_with_overrides(
+        &self,
+        text: String,
+        overrides: TurnOverrides,
+    ) -> TurnAdmission {
         let mut control = self.inner.control.lock().await;
         match control.lifetime {
             AgentLifetime::Stopping | AgentLifetime::Stopped => {
@@ -317,6 +325,13 @@ impl AgentInstance {
         let operation_id = OperationId::new(control.next_operation_id);
 
         let mut spec = self.inner.template.clone();
+        if let Err(message) = apply_turn_overrides(&mut spec, overrides) {
+            return TurnAdmission::Refused(AgentTurnResult::refused(
+                AgentRefusalKind::InvalidConfiguration,
+                message,
+                None,
+            ));
+        }
         spec.execution.session = match &control.session {
             Some(session) => SessionSpec::Resume {
                 session: session.clone(),
@@ -329,6 +344,7 @@ impl AgentInstance {
             spec.execution.permissions,
         );
         let operation_context = OperationContext::new(self.inner.context_plan.clone(), bootstrap);
+        let configuration = AgentConfiguration::from_run_spec(&spec);
         let (provider_endpoint, launch_context) = match ProviderEndpoint::start(
             self.clone(),
             operation_id,
@@ -368,6 +384,7 @@ impl AgentInstance {
             settlement,
             provider_endpoint,
             context: operation_context,
+            configuration,
         });
         if let Err(error) = active.handle.start(prompt).await {
             return TurnAdmission::Refused(AgentTurnResult::refused(
@@ -413,7 +430,9 @@ impl AgentInstance {
                     .append_history_gap(operation_id, None);
             }
             active.provider_endpoint.shutdown().await;
-            let result = coordinator.settle(operation_id, snapshot).await;
+            let result = coordinator
+                .settle(operation_id, snapshot, active.configuration.clone())
+                .await;
             settlement_tx.send_replace(Some(result));
         });
     }
@@ -427,7 +446,9 @@ impl AgentInstance {
             if settlement.changed().await.is_err() {
                 let snapshot = recover_run(&active.handle).await;
                 active.provider_endpoint.shutdown().await;
-                return self.settle(active.id, snapshot).await;
+                return self
+                    .settle(active.id, snapshot, active.configuration.clone())
+                    .await;
             }
         }
     }
@@ -452,6 +473,10 @@ impl AgentInstance {
         let control = self.inner.control.lock().await;
         AgentSnapshot {
             configuration: self.inner.configuration.clone(),
+            active_configuration: control
+                .active
+                .as_ref()
+                .map(|active| active.configuration.clone()),
             state: match control.lifetime {
                 AgentLifetime::Stopping => AgentState::Stopping,
                 AgentLifetime::Stopped => AgentState::Stopped,
@@ -595,12 +620,12 @@ impl AgentInstance {
         Ok(())
     }
 
-    /// Queue guidance for one exact active operation.
-    pub async fn steer(&self, operation_id: OperationId, text: String) -> AgentSteerResult {
+    /// Queue a follow-up for one exact active operation.
+    pub async fn follow_up(&self, operation_id: OperationId, text: String) -> AgentFollowUpResult {
         let prompt = match Prompt::new(text) {
             Ok(prompt) => prompt,
             Err(error) => {
-                return AgentSteerResult::refused(
+                return AgentFollowUpResult::refused(
                     AgentControlRefusalKind::InvalidPrompt,
                     error.to_string(),
                     self.current_operation_id().await,
@@ -611,14 +636,14 @@ impl AgentInstance {
             let control = self.inner.control.lock().await;
             match control.lifetime {
                 AgentLifetime::Stopping => {
-                    return AgentSteerResult::refused(
+                    return AgentFollowUpResult::refused(
                         AgentControlRefusalKind::Stopping,
                         "agent is stopping",
                         control.active.as_ref().map(|active| active.id),
                     );
                 }
                 AgentLifetime::Stopped => {
-                    return AgentSteerResult::refused(
+                    return AgentFollowUpResult::refused(
                         AgentControlRefusalKind::Stopped,
                         "agent is stopped",
                         None,
@@ -629,7 +654,7 @@ impl AgentInstance {
             match &control.active {
                 Some(active) if active.id == operation_id => active.handle.clone(),
                 Some(active) => {
-                    return AgentSteerResult::refused(
+                    return AgentFollowUpResult::refused(
                         AgentControlRefusalKind::OperationMismatch,
                         format!(
                             "operation {} is active, not {}",
@@ -645,14 +670,14 @@ impl AgentInstance {
                     .and_then(AgentTurnResult::operation_id)
                     == Some(operation_id) =>
                 {
-                    return AgentSteerResult::refused(
+                    return AgentFollowUpResult::refused(
                         AgentControlRefusalKind::OperationSettled,
                         format!("operation {} has already settled", operation_id.get()),
                         None,
                     );
                 }
                 None => {
-                    return AgentSteerResult::refused(
+                    return AgentFollowUpResult::refused(
                         AgentControlRefusalKind::Idle,
                         "agent has no active operation",
                         None,
@@ -660,35 +685,45 @@ impl AgentInstance {
                 }
             }
         };
-        match handle.steer(prompt).await {
-            Ok(()) => AgentSteerResult::Queued { operation_id },
-            Err(RunControlError::SteeringUnsupported) => AgentSteerResult::refused(
+        match handle.follow_up(prompt).await {
+            Ok(()) => AgentFollowUpResult::Queued { operation_id },
+            Err(RunControlError::FollowUpUnsupported) => AgentFollowUpResult::refused(
                 AgentControlRefusalKind::Unsupported,
-                "provider cannot resume and does not support steering",
+                "provider cannot resume and does not support follow-ups",
+                Some(operation_id),
+            ),
+            Err(RunControlError::FollowUpQueueFull { .. }) => AgentFollowUpResult::refused(
+                AgentControlRefusalKind::QueueFull,
+                "follow-up queue is full",
                 Some(operation_id),
             ),
             Err(RunControlError::NotRunning | RunControlError::Terminal) => {
                 let current = self.current_operation_id().await;
                 if current == Some(operation_id) {
-                    AgentSteerResult::refused(
+                    AgentFollowUpResult::refused(
                         AgentControlRefusalKind::OperationFinishing,
                         format!("operation {} is finishing", operation_id.get()),
                         Some(operation_id),
                     )
                 } else {
-                    AgentSteerResult::refused(
+                    AgentFollowUpResult::refused(
                         AgentControlRefusalKind::OperationSettled,
                         format!("operation {} has settled", operation_id.get()),
                         current,
                     )
                 }
             }
-            Err(error) => AgentSteerResult::refused(
+            Err(error) => AgentFollowUpResult::refused(
                 AgentControlRefusalKind::Runtime,
                 error.to_string(),
                 self.current_operation_id().await,
             ),
         }
+    }
+
+    /// Source-compatible alias for [`AgentInstance::follow_up`].
+    pub async fn steer(&self, operation_id: OperationId, text: String) -> AgentFollowUpResult {
+        self.follow_up(operation_id, text).await
     }
 
     /// Cancel one exact active operation and wait for agent-level settlement.
@@ -853,16 +888,24 @@ impl AgentInstance {
             .map(|active| active.id)
     }
 
-    async fn settle(&self, operation_id: OperationId, snapshot: RunSnapshot) -> AgentTurnResult {
+    async fn settle(
+        &self,
+        operation_id: OperationId,
+        snapshot: RunSnapshot,
+        configuration: AgentConfiguration,
+    ) -> AgentTurnResult {
         let reported_session = reported_session(&snapshot);
         let invalid_evidence_message =
             invalid_terminal_evidence(&snapshot, &self.inner.template.agent.provider);
         let invalid_evidence = invalid_evidence_message.is_some();
         let result = match invalid_evidence_message {
-            Some(message) => {
-                AgentTurnResult::invalid_provider_result(operation_id, snapshot, message)
-            }
-            None => AgentTurnResult::terminal(operation_id, snapshot),
+            Some(message) => AgentTurnResult::invalid_provider_result(
+                operation_id,
+                snapshot,
+                message,
+                configuration,
+            ),
+            None => AgentTurnResult::terminal(operation_id, snapshot, configuration),
         };
         let mut control = self.inner.control.lock().await;
         if !control
@@ -930,6 +973,39 @@ fn unix_time_ms() -> Option<u64> {
         .duration_since(UNIX_EPOCH)
         .ok()
         .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+}
+
+fn apply_turn_overrides(spec: &mut RunSpec, overrides: TurnOverrides) -> Result<(), String> {
+    if let Some(model) = overrides.model {
+        if model.trim().is_empty() {
+            return Err("turn override model must not be empty".to_string());
+        }
+        spec.agent.model = Some(model);
+    }
+    if let Some(effort) = overrides.effort {
+        spec.agent.effort = Some(effort.into());
+    }
+    if let Some(max_turns) = overrides.limits.max_turns {
+        if max_turns == 0 {
+            return Err("turn override max_turns must be greater than zero".to_string());
+        }
+        spec.execution.limits.max_turns = Some(max_turns);
+    }
+    if let Some(max_cost_usd) = overrides.limits.max_cost_usd {
+        if !max_cost_usd.is_finite() || max_cost_usd <= 0.0 {
+            return Err(
+                "turn override max_cost_usd must be finite and greater than zero".to_string(),
+            );
+        }
+        spec.execution.limits.max_cost_usd = Some(max_cost_usd);
+    }
+    if let Some(timeout_secs) = overrides.limits.timeout_secs {
+        if timeout_secs == 0 {
+            return Err("turn override timeout_secs must be greater than zero".to_string());
+        }
+        spec.execution.limits.timeout_secs = Some(timeout_secs);
+    }
+    Ok(())
 }
 
 fn reported_session(snapshot: &RunSnapshot) -> Option<CoreSessionHandle> {

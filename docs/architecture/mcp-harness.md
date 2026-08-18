@@ -22,7 +22,7 @@ pool or multi-agent server.
 The control projection exposes:
 
 - `agent.turn` -- admit one prompt, returning a typed terminal result;
-- `agent.steer` -- queue guidance for one exact active operation;
+- `agent.follow_up` -- queue another provider turn for one exact active operation;
 - `agent.interrupt` -- cancel one exact operation and await settlement;
 - `agent.shutdown` -- close admission permanently and drain active work;
 - `roba://agent` -- redacted configuration and current agent state;
@@ -33,8 +33,10 @@ The control projection exposes:
   generation-fenced content reads.
 
 Admission is single-flight. A concurrent turn receives a typed `busy` refusal;
-the base contract does not hide a queue. Operation identifiers fence delayed
-steering and interruption so stale controls cannot affect later work.
+the base contract does not hide a turn-admission queue. Operation identifiers
+fence delayed follow-up and interruption so stale controls cannot affect later
+work. Follow-up prompts are a separate bounded FIFO owned by the active
+operation and are applied only at provider-turn boundaries.
 
 Provider and domain failures are successful MCP exchanges with typed
 `structuredContent` and `isError: true`. JSON-RPC errors are reserved for
@@ -64,7 +66,7 @@ loopback MCP endpoint for the provider process. Its base surface contains the
 read-only `self`, `context.manifest`, and `context.read` tools plus role-scoped
 context resources. The tools and resources expose the same generation-fenced
 contract; tools are the portable provider path when native MCP resource access
-is unavailable. The projection structurally excludes turn admission, steering,
+is unavailable. The projection structurally excludes turn admission, follow-up,
 interrupt, shutdown, prior results, configuration, and operator event history.
 
 Each operation receives a new listener and credential. The credential is

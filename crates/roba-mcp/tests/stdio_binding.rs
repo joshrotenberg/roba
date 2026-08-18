@@ -330,7 +330,7 @@ fn assert_control_instructions(result: &Value) {
         "roba://agent",
         "roba://context",
         "roba://events",
-        "agent.steer",
+        "agent.follow_up",
         "agent.interrupt",
         "agent.shutdown",
         "inspect discovery",

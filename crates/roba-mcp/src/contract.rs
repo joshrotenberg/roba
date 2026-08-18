@@ -45,6 +45,19 @@ pub struct AgentConfiguration {
     pub limits: LimitPolicy,
 }
 
+impl AgentConfiguration {
+    pub(crate) fn from_run_spec(spec: &roba_core::RunSpec) -> Self {
+        Self {
+            provider: spec.agent.provider.to_string(),
+            model: spec.agent.model.clone(),
+            effort: spec.agent.effort.map(Into::into),
+            permissions: spec.execution.permissions.into(),
+            tools: spec.execution.tools.clone().into(),
+            limits: spec.execution.limits.clone().into(),
+        }
+    }
+}
+
 /// Provider-neutral reasoning effort configured for the hosted agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -64,6 +77,18 @@ impl From<roba_core::Effort> for Effort {
             roba_core::Effort::High => Self::High,
             roba_core::Effort::XHigh => Self::XHigh,
             roba_core::Effort::Max => Self::Max,
+        }
+    }
+}
+
+impl From<Effort> for roba_core::Effort {
+    fn from(value: Effort) -> Self {
+        match value {
+            Effort::Low => Self::Low,
+            Effort::Medium => Self::Medium,
+            Effort::High => Self::High,
+            Effort::XHigh => Self::XHigh,
+            Effort::Max => Self::Max,
         }
     }
 }
@@ -114,6 +139,21 @@ pub struct LimitPolicy {
     pub timeout_secs: Option<u64>,
 }
 
+/// Provider settings and ceilings applied to one admitted operation only.
+///
+/// Follow-ups within that operation retain the same effective configuration.
+/// Authority, provider identity, context, tools, and session continuity remain
+/// fixed by the hosted agent.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TurnOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Effort>,
+    #[serde(default)]
+    pub limits: LimitPolicy,
+}
+
 impl From<roba_core::LimitSpec> for LimitPolicy {
     fn from(value: roba_core::LimitSpec) -> Self {
         Self {
@@ -128,6 +168,9 @@ impl From<roba_core::LimitSpec> for LimitPolicy {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentSnapshot {
     pub configuration: AgentConfiguration,
+    /// Effective configuration for the active operation, including one-turn overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_configuration: Option<AgentConfiguration>,
     pub state: AgentState,
     pub session_available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -153,6 +196,7 @@ pub struct ProviderSelfSnapshot {
 #[serde(rename_all = "snake_case")]
 pub enum AgentRefusalKind {
     InvalidPrompt,
+    InvalidConfiguration,
     Busy,
     Stopped,
     Runtime,
@@ -169,11 +213,12 @@ pub enum AgentControlRefusalKind {
     OperationMismatch,
     OperationFinishing,
     OperationSettled,
+    QueueFull,
     Unsupported,
     Runtime,
 }
 
-/// Typed refusal for steering or interruption.
+/// Typed refusal for follow-up or interruption.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentControlRefusal {
     pub kind: AgentControlRefusalKind,
@@ -219,15 +264,15 @@ impl OperationSettlement {
     }
 }
 
-/// Result of queueing guidance for the active finite run.
+/// Result of queueing a follow-up for the active finite run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]
-pub enum AgentSteerResult {
+pub enum AgentFollowUpResult {
     Queued { operation_id: OperationId },
     Refused { refusal: AgentControlRefusal },
 }
 
-impl AgentSteerResult {
+impl AgentFollowUpResult {
     pub(crate) fn refused(
         kind: AgentControlRefusalKind,
         message: impl Into<String>,
@@ -251,12 +296,15 @@ impl AgentSteerResult {
     pub fn display_text(&self) -> String {
         match self {
             Self::Queued { operation_id } => {
-                format!("guidance queued for operation {}", operation_id.get())
+                format!("follow-up queued for operation {}", operation_id.get())
             }
             Self::Refused { refusal } => refusal.message.clone(),
         }
     }
 }
+
+/// Source-compatible name for [`AgentFollowUpResult`].
+pub type AgentSteerResult = AgentFollowUpResult;
 
 /// Result of interrupting one exact admitted operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -363,8 +411,12 @@ pub enum AgentTurnResult {
 }
 
 impl AgentTurnResult {
-    pub(crate) fn terminal(operation_id: OperationId, snapshot: roba_core::RunSnapshot) -> Self {
-        let metadata = TurnMetadata::from(&snapshot);
+    pub(crate) fn terminal(
+        operation_id: OperationId,
+        snapshot: roba_core::RunSnapshot,
+        configuration: AgentConfiguration,
+    ) -> Self {
+        let metadata = TurnMetadata::from_snapshot(&snapshot, configuration);
         match snapshot.state {
             roba_core::RunState::Completed => match snapshot.last_outcome {
                 Some(outcome) => Self::Completed {
@@ -437,8 +489,9 @@ impl AgentTurnResult {
         operation_id: OperationId,
         mut snapshot: roba_core::RunSnapshot,
         message: String,
+        configuration: AgentConfiguration,
     ) -> Self {
-        let metadata = TurnMetadata::from(&snapshot);
+        let metadata = TurnMetadata::from_snapshot(&snapshot, configuration);
         if let Some(outcome) = &mut snapshot.last_outcome {
             outcome.session = None;
             outcome.cost = None;
@@ -543,6 +596,8 @@ impl From<roba_core::SessionHandle> for SessionHandle {
 /// Timing and accounting common to every admitted terminal turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TurnMetadata {
+    /// Effective provider settings and limits used for this admitted operation.
+    pub configuration: AgentConfiguration,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at_unix_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -554,9 +609,10 @@ pub struct TurnMetadata {
     pub turns_completed: u32,
 }
 
-impl From<&roba_core::RunSnapshot> for TurnMetadata {
-    fn from(value: &roba_core::RunSnapshot) -> Self {
+impl TurnMetadata {
+    fn from_snapshot(value: &roba_core::RunSnapshot, configuration: AgentConfiguration) -> Self {
         Self {
+            configuration,
             created_at_unix_ms: value.created_at_unix_ms,
             started_at_unix_ms: value.started_at_unix_ms,
             finished_at_unix_ms: value.finished_at_unix_ms,
@@ -574,7 +630,7 @@ pub struct CompletedTurn {
     pub outcome: TurnOutcome,
 }
 
-/// A failed turn. A prior successful steering turn may also be present.
+/// A failed operation. A prior successful follow-up turn may also be present.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FailedTurn {
     #[serde(flatten)]
@@ -584,7 +640,7 @@ pub struct FailedTurn {
     pub failure: TurnFailure,
 }
 
-/// A cancelled turn. Earlier completed steering turns remain observable.
+/// A cancelled operation. Earlier completed follow-up turns remain observable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CancelledTurn {
     #[serde(flatten)]

@@ -51,6 +51,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
         &client,
         TurnInput {
             text: resolved.prompt,
+            overrides: None,
         },
     )
     .await;
@@ -485,12 +486,22 @@ mod tests {
         assert_eq!(error.to_string(), "prompt must not be empty");
     }
 
+    fn test_agent_configuration() -> serde_json::Value {
+        serde_json::json!({
+            "provider": "claude",
+            "permissions": "read_only",
+            "tools": { "allow": [], "deny": [] },
+            "limits": {}
+        })
+    }
+
     #[test]
     fn mcp_result_projects_to_the_existing_terminal_json_without_reshaping() {
         let result: AgentTurnResult = serde_json::from_value(serde_json::json!({
             "status": "completed",
             "operation_id": 1,
             "run": {
+                "configuration": test_agent_configuration(),
                 "created_at_unix_ms": 10,
                 "started_at_unix_ms": 20,
                 "finished_at_unix_ms": 30,
@@ -557,6 +568,7 @@ mod tests {
                 "status": "failed",
                 "operation_id": 1,
                 "run": {
+                    "configuration": test_agent_configuration(),
                     "turns_completed": 0,
                     "failure": {
                         "kind": wire_kind,
@@ -580,6 +592,7 @@ mod tests {
             "status": "cancelled",
             "operation_id": 7,
             "run": {
+                "configuration": test_agent_configuration(),
                 "created_at_unix_ms": 10,
                 "finished_at_unix_ms": 20,
                 "elapsed_ms": 10,
@@ -599,6 +612,7 @@ mod tests {
             "status": "completed",
             "operation_id": 1,
             "run": {
+                "configuration": test_agent_configuration(),
                 "turns_completed": 1,
                 "outcome": { "output": " \n" }
             }

@@ -17,6 +17,9 @@ use crate::run::{
     SessionSpec,
 };
 
+/// Maximum follow-ups retained for one active finite run.
+pub const MAX_PENDING_FOLLOW_UPS: usize = 16;
+
 /// Read-only view of a live or terminal run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunSnapshot {
@@ -144,7 +147,7 @@ impl Run {
                         snapshot,
                         started: false,
                         started_at: None,
-                        steering: VecDeque::new(),
+                        follow_ups: VecDeque::new(),
                     }),
                     snapshot_tx,
                     cancel_tx,
@@ -216,18 +219,28 @@ impl RunHandle {
         Ok(())
     }
 
-    /// Queue guidance for the next safe provider-turn boundary.
-    pub async fn steer(&self, prompt: Prompt) -> Result<(), RunControlError> {
+    /// Queue a follow-up for the next provider-turn boundary.
+    pub async fn follow_up(&self, prompt: Prompt) -> Result<(), RunControlError> {
         if !self.inner.provider.capabilities().resume {
-            return Err(RunControlError::SteeringUnsupported);
+            return Err(RunControlError::FollowUpUnsupported);
         }
         let mut control = self.inner.control.lock().await;
         if control.snapshot.state != RunState::Running {
             return Err(RunControlError::NotRunning);
         }
-        control.steering.push_back(prompt);
-        self.inner.events.emit(RunEvent::SteeringQueued);
+        if control.follow_ups.len() >= MAX_PENDING_FOLLOW_UPS {
+            return Err(RunControlError::FollowUpQueueFull {
+                maximum: MAX_PENDING_FOLLOW_UPS,
+            });
+        }
+        control.follow_ups.push_back(prompt);
+        self.inner.events.emit(RunEvent::FollowUpQueued);
         Ok(())
+    }
+
+    /// Compatibility alias for [`RunHandle::follow_up`].
+    pub async fn steer(&self, prompt: Prompt) -> Result<(), RunControlError> {
+        self.follow_up(prompt).await
     }
 
     /// Return the latest in-memory snapshot.
@@ -376,7 +389,7 @@ struct Control {
     snapshot: RunSnapshot,
     started: bool,
     started_at: Option<Instant>,
-    steering: VecDeque<Prompt>,
+    follow_ups: VecDeque<Prompt>,
 }
 
 struct EventJournal {
@@ -578,7 +591,7 @@ async fn drive(inner: Arc<Inner>, mut prompt: Prompt) {
                 inner.events.emit(RunEvent::TurnCompleted {
                     outcome: outcome.clone(),
                 });
-                if let Some(next) = control.steering.pop_front() {
+                if let Some(next) = control.follow_ups.pop_front() {
                     let next_session = outcome.session.or_else(|| match &session {
                         SessionSpec::Fresh => None,
                         SessionSpec::Resume { session } => Some(session.clone()),
@@ -586,7 +599,7 @@ async fn drive(inner: Arc<Inner>, mut prompt: Prompt) {
                     let Some(next_session) = next_session else {
                         let failure = RunFailure {
                             kind: FailureKind::Provider,
-                            message: "provider returned no session handle required for steering"
+                            message: "provider returned no session handle required for a follow-up"
                                 .to_string(),
                             details: Default::default(),
                         };
@@ -598,6 +611,7 @@ async fn drive(inner: Arc<Inner>, mut prompt: Prompt) {
                         session: next_session,
                     };
                     prompt = next;
+                    inner.events.emit(RunEvent::FollowUpApplied);
                     drop(control);
                     continue;
                 }
@@ -687,7 +701,10 @@ pub enum RunControlError {
     Suspended,
     AlreadyStarted,
     NotRunning,
-    SteeringUnsupported,
+    FollowUpUnsupported,
+    FollowUpQueueFull {
+        maximum: usize,
+    },
     Terminal,
     InvalidEventLimit {
         maximum: usize,
@@ -707,9 +724,12 @@ impl fmt::Display for RunControlError {
             ),
             Self::Suspended => f.write_str("run is suspended; supply its initial prompt first"),
             Self::AlreadyStarted => f.write_str("run has already started"),
-            Self::NotRunning => f.write_str("run is not accepting steering"),
-            Self::SteeringUnsupported => {
-                f.write_str("provider cannot resume and does not support steering")
+            Self::NotRunning => f.write_str("run is not accepting follow-ups"),
+            Self::FollowUpUnsupported => {
+                f.write_str("provider cannot resume and does not support follow-ups")
+            }
+            Self::FollowUpQueueFull { maximum } => {
+                write!(f, "follow-up queue is full (maximum {maximum})")
             }
             Self::Terminal => f.write_str("run is already terminal"),
             Self::InvalidEventLimit { maximum } => {
@@ -959,7 +979,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn steering_runs_at_the_next_resumed_boundary() {
+    async fn follow_up_runs_at_the_next_resumed_boundary() {
         let provider = provider(true);
         let spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
             .with_prompt(Prompt::new("first").unwrap());
@@ -967,7 +987,7 @@ mod tests {
         run.begin().await.unwrap();
         provider.first_started.notified().await;
         run.handle()
-            .steer(Prompt::new("second").unwrap())
+            .follow_up(Prompt::new("second").unwrap())
             .await
             .unwrap();
         provider.release_first.notify_one();
@@ -977,6 +997,67 @@ mod tests {
         assert_eq!(terminal.turns_completed, 2);
         assert_eq!(terminal.last_outcome.unwrap().output, "second");
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+
+        let events = run
+            .handle()
+            .event_page(0, RUN_EVENT_CAPACITY)
+            .await
+            .unwrap()
+            .events;
+        let queued = events
+            .iter()
+            .position(|record| record.event == RunEvent::FollowUpQueued)
+            .unwrap();
+        let applied = events
+            .iter()
+            .position(|record| record.event == RunEvent::FollowUpApplied)
+            .unwrap();
+        let second_started = events
+            .iter()
+            .enumerate()
+            .filter(|(_, record)| matches!(record.event, RunEvent::TurnStarted { .. }))
+            .nth(1)
+            .map(|(index, _)| index)
+            .unwrap();
+        assert!(queued < applied);
+        assert!(applied < second_started);
+    }
+
+    #[tokio::test]
+    async fn follow_up_queue_is_bounded_and_fifo() {
+        let provider = provider(true);
+        let run = Run::new(
+            RunSpec::suspended(AgentSpec::new(ProviderId::claude()))
+                .with_prompt(Prompt::new("first").unwrap()),
+            provider.clone(),
+        )
+        .unwrap();
+        run.begin().await.unwrap();
+        provider.first_started.notified().await;
+        for index in 0..MAX_PENDING_FOLLOW_UPS {
+            run.handle()
+                .follow_up(Prompt::new(format!("follow-up {index}")).unwrap())
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            run.handle()
+                .follow_up(Prompt::new("overflow").unwrap())
+                .await
+                .unwrap_err(),
+            RunControlError::FollowUpQueueFull {
+                maximum: MAX_PENDING_FOLLOW_UPS,
+            }
+        );
+        provider.release_first.notify_one();
+
+        let terminal = run.handle().wait().await;
+        assert_eq!(terminal.state, RunState::Completed);
+        assert_eq!(terminal.turns_completed, MAX_PENDING_FOLLOW_UPS as u32 + 1);
+        assert_eq!(
+            terminal.last_outcome.unwrap().output,
+            format!("follow-up {}", MAX_PENDING_FOLLOW_UPS - 1)
+        );
     }
 
     #[tokio::test]
@@ -998,7 +1079,7 @@ mod tests {
         run.begin().await.unwrap();
         provider.first_started.notified().await;
         run.handle()
-            .steer(Prompt::new("second").unwrap())
+            .follow_up(Prompt::new("second").unwrap())
             .await
             .unwrap();
         provider.release_first.notify_one();
@@ -1037,7 +1118,7 @@ mod tests {
         run.begin().await.unwrap();
         provider.first_started.notified().await;
         run.handle()
-            .steer(Prompt::new("second").unwrap())
+            .follow_up(Prompt::new("second").unwrap())
             .await
             .unwrap();
         provider.release_first.notify_one();
@@ -1077,7 +1158,7 @@ mod tests {
         run.begin().await.unwrap();
         provider.first_started.notified().await;
         run.handle()
-            .steer(Prompt::new("second").unwrap())
+            .follow_up(Prompt::new("second").unwrap())
             .await
             .unwrap();
         provider.release_first.notify_one();
@@ -1272,10 +1353,9 @@ mod tests {
         run.begin().await.unwrap();
         provider.first_started.notified().await;
         for index in 0..=RUN_EVENT_CAPACITY {
-            run.handle()
-                .steer(Prompt::new(format!("guidance {index}")).unwrap())
-                .await
-                .unwrap();
+            run.handle().inner.events.emit(RunEvent::Warning {
+                message: format!("warning {index}"),
+            });
         }
 
         let page = run.handle().event_page(0, 1).await.unwrap();

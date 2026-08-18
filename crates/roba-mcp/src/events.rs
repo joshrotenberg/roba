@@ -64,8 +64,10 @@ pub enum AgentEvent {
     Usage { usage: TokenUsage },
     /// A provider or lifecycle warning was emitted.
     Warning { message: String },
-    /// Guidance was queued for the next safe provider-turn boundary.
-    SteeringQueued,
+    /// A follow-up was queued for the next provider-turn boundary.
+    FollowUpQueued,
+    /// The oldest queued follow-up was applied to a resumed provider turn.
+    FollowUpApplied,
     /// One provider turn completed successfully.
     ///
     /// The public payload deliberately has no provider session field.
@@ -98,7 +100,8 @@ impl From<roba_core::RunEvent> for AgentEvent {
                 usage: usage.into(),
             },
             roba_core::RunEvent::Warning { message } => Self::Warning { message },
-            roba_core::RunEvent::SteeringQueued => Self::SteeringQueued,
+            roba_core::RunEvent::FollowUpQueued => Self::FollowUpQueued,
+            roba_core::RunEvent::FollowUpApplied => Self::FollowUpApplied,
             roba_core::RunEvent::TurnCompleted { outcome } => Self::TurnCompleted {
                 outcome: outcome.into(),
             },

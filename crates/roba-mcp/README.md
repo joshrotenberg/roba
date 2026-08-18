@@ -14,11 +14,14 @@ The operator contract has process-local and foreground stdio bindings:
   guidance.
 - `AgentInstance` owns a suspended `RunSpec`, one optional provider session,
   and at most one active `RunHandle`.
-- `agent.turn { "text": ... }` waits for one finite run. Success returns the
+- `agent.turn { "text": ..., "overrides": ... }` waits for one finite run.
+  Optional model, effort, and limit overrides apply only to that operation.
+  Success returns the
   assistant answer as text plus typed `structuredContent`; provider failures,
   cancellation, blank prompts, `busy`, and `stopped` are typed tool results
   with `isError: true`.
-- `agent.steer` queues guidance for one named active operation.
+- `agent.follow_up` queues another prompt for one named active operation at
+  the next provider-turn boundary.
   `agent.interrupt` cancels that exact operation and waits for settlement.
   Both require an operation id so a delayed control cannot affect a later
   turn.
@@ -46,7 +49,7 @@ The operator contract has process-local and foreground stdio bindings:
   and never treats display text as machine data.
 - `StdioBinding` serves the same control router over stdin/stdout with legacy
   and final MCP lifecycle support. Requests dispatch concurrently, so status,
-  event reads, steering, and interruption can overtake a long synchronous
+  event reads, follow-up, and interruption can overtake a long synchronous
   turn.
 
 The same `AgentInstance` also has a separate provider-facing projection. For
@@ -66,7 +69,7 @@ tools so provider adapters do not depend on native resource support. Every
 base tool is included in the exact provider launch allowlist. Installed
 extensions may contribute separate provider tools or resources, but nothing
 from their control fragment is mirrored automatically. The base publishes no
-turns, steering, interruption, shutdown, Tasks, configuration, event history,
+turns, follow-up, interruption, shutdown, Tasks, configuration, event history,
 or retained session evidence. This proves provider re-entry without opening
 recursion or operator authority.
 
@@ -167,7 +170,7 @@ next Task admission. Task durability and restart reconciliation remain
 workflow-layer concerns.
 
 Admission is single-flight. A second turn is refused as `busy`; it is never
-queued or silently treated as steering. A detached coordinator owns internal
+queued or silently treated as a follow-up. A detached coordinator owns internal
 settlement, so dropping a Rust caller waiting on `AgentInstance::turn` cannot
 leave the instance permanently running. With Tower MCP 0.22's current
 `ChannelTransport`, dropping a direct MCP call detaches only its waiter. The
