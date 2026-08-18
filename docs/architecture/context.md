@@ -306,9 +306,9 @@ contract; prose cannot grant it.
    conflicting instructions, unsafe locators, and excessive prompt weight.
 5. Mechanically inventory clean-home, ambient, controlled, fresh, resume, and
    follow-up behavior for both built-in providers.
-4. Add explicit acknowledgement and gate provider-facing mutation on the
+6. Add explicit acknowledgement and gate provider-facing mutation on the
    required evidence policy.
-5. Apply the same manifest to parent-spawned Robas without inheriting the
+7. Apply the same manifest to parent-spawned Robas without inheriting the
    parent's transcript or ambient environment by accident.
 
 ## Sources

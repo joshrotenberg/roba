@@ -4,6 +4,9 @@ Instructions for coding agents contributing to Roba. For driving Roba, use
 `roba --help`, `roba run --help`, `roba serve --help`, and
 [`docs/running-roba.md`](docs/running-roba.md).
 
+Read [`ARCHITECTURE.md`](ARCHITECTURE.md) before changing a top-level layer,
+ownership boundary, authority path, lifecycle, or evidence contract.
+
 ## What this is
 
 Roba is a library-first, MCP-native harness for one logical coding agent
@@ -52,6 +55,8 @@ provider projections, and exposes staging only to writable operator views.
 - `src/bounded.rs` -- finite CLI resolution and process-local MCP call.
 - `src/serve.rs` -- stdio host, signal policy, and graceful shutdown.
 - `src/{main,lib,error}.rs` -- entry point, dispatch, and machine/human errors.
+- `ARCHITECTURE.md` -- authoritative system map, ownership boundaries, and
+  invariants.
 - `docs/architecture/` -- implemented architectural contracts.
 - `docs/running-roba.md` -- progressively richer usage examples.
 

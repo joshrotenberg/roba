@@ -218,6 +218,7 @@ so absent cost, duration, or usage never becomes an invented zero.
 
 ## Documentation
 
+- [Architecture guide](ARCHITECTURE.md)
 - [Documentation map](docs/README.md)
 - [Finite-core architecture](docs/architecture/core.md)
 - [MCP harness architecture](docs/architecture/mcp-harness.md)
