@@ -53,6 +53,21 @@ pub const AGENT_CONTEXT_ENTRY_TEMPLATE: &str = "roba://context/entry{?id,generat
 /// Task metadata key carrying the exact admitted Roba operation identity.
 pub const AGENT_TASK_OPERATION_META_KEY: &str = "com.github.joshrotenberg.roba/operation";
 
+/// Stable operator guidance published during MCP initialization/discovery.
+///
+/// Keep this deliberately compact. Tool and resource discovery remain the
+/// canonical API reference; these instructions explain the lifecycle and
+/// point clients at the dynamic state they need to operate it correctly.
+const CONTROL_INSTRUCTIONS: &str = "\
+This endpoint controls one persistent logical Roba agent. Start work with \
+agent.turn; use MCP Tasks for long-running turns. Only one operation may run \
+at a time. Read roba://agent for current state and operation identity, \
+roba://context for supplied context and provenance, and roba://events for \
+observation. Use agent.steer to guide active work, agent.interrupt to cancel \
+work while keeping the agent available, and agent.shutdown only when the host \
+should terminate. Additional capabilities may be exposed as MCP extensions; \
+inspect discovery rather than assuming they exist.";
+
 const DEFAULT_EVENT_LIMIT: usize = 100;
 // Keep an admitted live operation addressable for effectively the process
 // lifetime. This is the largest integer exactly representable by common JSON
@@ -392,6 +407,7 @@ pub(crate) fn base_control_router(agent: AgentInstance) -> McpRouter {
 
     McpRouter::new()
         .server_info("roba-agent", env!("CARGO_PKG_VERSION"))
+        .instructions(CONTROL_INSTRUCTIONS)
         .task_store(task_store)
         .tool(turn)
         .tool(steer)

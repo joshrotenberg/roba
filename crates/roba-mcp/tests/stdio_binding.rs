@@ -284,6 +284,7 @@ impl WireClient {
                 let result = result(&response);
                 assert_eq!(result["protocolVersion"], STABLE_PROTOCOL);
                 assert_eq!(result["serverInfo"]["name"], "roba-agent");
+                assert_control_instructions(result);
                 self.send(json!({
                     "jsonrpc": "2.0",
                     "method": "notifications/initialized"
@@ -303,6 +304,7 @@ impl WireClient {
                         .expect("discovery publishes protocol versions")
                         .contains(&json!(FINAL_PROTOCOL))
                 );
+                assert_control_instructions(result);
             }
         }
     }
@@ -315,6 +317,29 @@ impl WireClient {
 fn result(frame: &Value) -> &Value {
     assert!(frame.get("error").is_none(), "request failed: {frame}");
     frame.get("result").expect("response contains result")
+}
+
+fn assert_control_instructions(result: &Value) {
+    let instructions = result["instructions"]
+        .as_str()
+        .expect("Roba publishes operator guidance during handshake");
+    for expected in [
+        "one persistent logical Roba agent",
+        "agent.turn",
+        "MCP Tasks",
+        "roba://agent",
+        "roba://context",
+        "roba://events",
+        "agent.steer",
+        "agent.interrupt",
+        "agent.shutdown",
+        "inspect discovery",
+    ] {
+        assert!(
+            instructions.contains(expected),
+            "control instructions omitted {expected:?}: {instructions}"
+        );
+    }
 }
 
 fn structured<T: serde::de::DeserializeOwned>(frame: &Value) -> T {
@@ -388,6 +413,9 @@ async fn channel_observation(protocol: Protocol) -> ContractObservation {
                 .await
                 .expect("stable ChannelTransport initializes");
             assert_eq!(initialized.protocol_version, STABLE_PROTOCOL);
+            assert_control_instructions(
+                &serde_json::to_value(initialized).expect("initialize result serializes"),
+            );
             client
         }
         Protocol::Final => {
@@ -398,10 +426,13 @@ async fn channel_observation(protocol: Protocol) -> ContractObservation {
                 .connect_simple(ChannelTransport::new(roba_mcp::router(agent)))
                 .await
                 .expect("final ChannelTransport connects");
-            client
+            let discovered = client
                 .discover("roba-channel-test", "0")
                 .await
                 .expect("final ChannelTransport discovers");
+            assert_control_instructions(
+                &serde_json::to_value(discovered).expect("discover result serializes"),
+            );
             client
         }
     };

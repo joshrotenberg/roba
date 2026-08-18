@@ -88,6 +88,11 @@ mcp-repl --protocol final -- roba serve --provider claude --writable
 mcp-repl --protocol final -- roba -C /path/to/repo serve --provider codex --git
 ```
 
+During stable `initialize` and final `server/discover`, Roba publishes a short
+operator guide explaining the single-flight lifecycle and pointing clients to
+the state, context, and event resources. Clients decide how to render it;
+`mcp-repl` includes it in the connection banner.
+
 Inside `mcp-repl`, call `agent.turn text="..."`. Append `&` to create a
 Task, then use `jobs`, `read roba://agent`, `read roba://events`, `wait`, or
 `cancel`. `read roba://context` shows the declared context manifest and the
