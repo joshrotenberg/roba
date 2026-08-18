@@ -1,10 +1,15 @@
 //! Versioned provider-neutral startup configuration for `roba run` and
 //! `roba serve`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use roba_context::{
+    CatalogDefinition, CatalogEntry, CatalogFingerprint, CatalogManifest, CatalogOrigin,
+    CatalogOriginKind, CatalogSelection, CatalogSelectionSpec, CatalogSource, ContextCatalog,
+    PromptArgumentDefinition, builtin_definitions,
+};
 use roba_core::{
     AgentSpec, ContextSpec, Effort, ExecutionSpec, LimitSpec, PermissionPolicy, ProviderId,
     RunSpec, SessionHandle, SessionSpec, ToolPolicy,
@@ -81,13 +86,67 @@ pub struct EffectiveExecutionConfig {
     pub resume_seeded: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EffectiveContextConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub project: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub run: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prompts: Vec<String>,
+    pub builtins: EffectiveCatalogBuiltinsConfig,
+    pub catalog: CatalogManifest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<EffectiveCatalogSelection>,
+}
+
+impl Default for EffectiveContextConfig {
+    fn default() -> Self {
+        let catalog = ContextCatalog::builtins();
+        Self {
+            project: Vec::new(),
+            run: Vec::new(),
+            agent: None,
+            skills: Vec::new(),
+            prompts: Vec::new(),
+            builtins: EffectiveCatalogBuiltinsConfig::default(),
+            catalog: catalog.manifest().clone(),
+            selection: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EffectiveCatalogBuiltinsConfig {
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disable: Vec<String>,
+}
+
+impl Default for EffectiveCatalogBuiltinsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            disable: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EffectiveCatalogSelection {
+    pub agent: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prompts: Vec<String>,
+    pub fingerprint: CatalogFingerprint,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +211,52 @@ struct FileContextConfig {
     project: Vec<String>,
     #[serde(default)]
     run: Vec<String>,
+    agent: Option<String>,
+    #[serde(default)]
+    skills: Vec<String>,
+    #[serde(default)]
+    prompts: Vec<String>,
+    #[serde(default)]
+    builtins: FileCatalogBuiltinsConfig,
+    #[serde(default)]
+    definitions: Vec<FileCatalogDefinition>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileCatalogBuiltinsConfig {
+    enabled: Option<bool>,
+    #[serde(default)]
+    disable: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum FileCatalogDefinition {
+    Agent {
+        id: String,
+        description: String,
+        inline: Option<String>,
+        path: Option<PathBuf>,
+        #[serde(default)]
+        default_skills: Vec<String>,
+    },
+    Skill {
+        id: String,
+        description: String,
+        inline: Option<String>,
+        path: Option<PathBuf>,
+    },
+    Prompt {
+        id: String,
+        description: String,
+        inline: Option<String>,
+        path: Option<PathBuf>,
+        #[serde(default)]
+        requires: Vec<String>,
+        #[serde(default)]
+        arguments: Vec<PromptArgumentDefinition>,
+    },
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -172,6 +277,13 @@ struct FileGitConfig {
 struct Layer {
     source: ConfigSource,
     config: StartupFile,
+    definitions: Vec<CatalogDefinition>,
+}
+
+#[derive(Debug)]
+struct CatalogDefinitionLayer {
+    source: ConfigSource,
+    definitions: Vec<CatalogDefinition>,
 }
 
 /// Resolve the effective cwd's startup stack and explicit CLI overrides.
@@ -238,6 +350,10 @@ fn resolve_from(
                 vec!["default".to_string()],
             ),
             (
+                "context.builtins.enabled".to_string(),
+                vec!["default".to_string()],
+            ),
+            (
                 "extensions.git.enabled".to_string(),
                 vec!["default".to_string()],
             ),
@@ -247,11 +363,15 @@ fn resolve_from(
             ),
         ]),
     };
+    let mut catalog_layers = Vec::new();
     for layer in layers {
-        merge_layer(&mut effective, layer);
+        merge_layer(&mut effective, &mut catalog_layers, layer);
     }
     merge_cli(&mut effective, args);
     validate_effective(&effective, args.resume.as_deref())?;
+    let (catalog, catalog_selection) = resolve_catalog(&effective.context, catalog_layers)?;
+    effective.context.catalog = catalog.manifest().clone();
+    effective.context.selection = catalog_selection.as_ref().map(effective_catalog_selection);
 
     let provider = match effective.agent.provider {
         RunProvider::Claude => ProviderId::claude(),
@@ -400,7 +520,7 @@ fn load_layer(path: &Path, kind: ConfigSourceKind) -> Result<Option<Layer>> {
     if value.get("version").is_none() {
         return Ok(None);
     }
-    let config: StartupFile = toml::from_str(&content).map_err(|error| {
+    let mut config: StartupFile = toml::from_str(&content).map_err(|error| {
         anyhow::anyhow!(
             "parsing provider-neutral config at {}: {error}",
             path.display()
@@ -413,17 +533,28 @@ fn load_layer(path: &Path, kind: ConfigSourceKind) -> Result<Option<Layer>> {
             path.display()
         );
     }
+    let definitions = std::mem::take(&mut config.context.definitions)
+        .into_iter()
+        .map(FileCatalogDefinition::resolve)
+        .collect::<Result<Vec<_>>>()
+        .with_context(|| format!("resolving managed context in {}", path.display()))?;
     Ok(Some(Layer {
         source: ConfigSource {
             kind,
             path: path.to_path_buf(),
         },
         config,
+        definitions,
     }))
 }
 
-fn merge_layer(effective: &mut EffectiveStartupConfig, layer: Layer) {
+fn merge_layer(
+    effective: &mut EffectiveStartupConfig,
+    catalog_layers: &mut Vec<CatalogDefinitionLayer>,
+    layer: Layer,
+) {
     let label = layer.source.path.display().to_string();
+    let source = layer.source.clone();
     let config = layer.config;
     effective.sources.push(layer.source);
 
@@ -469,6 +600,37 @@ fn merge_layer(effective: &mut EffectiveStartupConfig, layer: Layer) {
     if !config.context.run.is_empty() {
         effective.context.run.extend(config.context.run);
         append_source(effective, "context.run", &label);
+    }
+    if let Some(value) = config.context.agent {
+        effective.context.agent = Some(value);
+        replace_source(effective, "context.agent", &label);
+    }
+    if !config.context.skills.is_empty() {
+        effective.context.skills.extend(config.context.skills);
+        append_source(effective, "context.skills", &label);
+    }
+    if !config.context.prompts.is_empty() {
+        effective.context.prompts.extend(config.context.prompts);
+        append_source(effective, "context.prompts", &label);
+    }
+    if let Some(value) = config.context.builtins.enabled {
+        effective.context.builtins.enabled = value;
+        replace_source(effective, "context.builtins.enabled", &label);
+    }
+    if !config.context.builtins.disable.is_empty() {
+        effective
+            .context
+            .builtins
+            .disable
+            .extend(config.context.builtins.disable);
+        append_source(effective, "context.builtins.disable", &label);
+    }
+    if !layer.definitions.is_empty() {
+        append_source(effective, "context.definitions", &label);
+        catalog_layers.push(CatalogDefinitionLayer {
+            source,
+            definitions: layer.definitions,
+        });
     }
     if let Some(value) = config.extensions.git.enabled {
         effective.extensions.git.enabled = value;
@@ -578,6 +740,20 @@ fn validate_effective(effective: &EffectiveStartupConfig, resume: Option<&str>) 
     {
         bail!("context values must not be empty");
     }
+    if effective.context.agent.is_none()
+        && (!effective.context.skills.is_empty() || !effective.context.prompts.is_empty())
+    {
+        bail!("context.skills and context.prompts require context.agent");
+    }
+    reject_duplicate_values("context.skills", &effective.context.skills)?;
+    reject_duplicate_values("context.prompts", &effective.context.prompts)?;
+    reject_duplicate_values(
+        "context.builtins.disable",
+        &effective.context.builtins.disable,
+    )?;
+    if !effective.context.builtins.enabled && !effective.context.builtins.disable.is_empty() {
+        bail!("context.builtins.disable cannot be used when built-ins are disabled");
+    }
     if effective.execution.max_turns == Some(0) {
         bail!("execution.max_turns must be greater than zero");
     }
@@ -595,6 +771,161 @@ fn validate_effective(effective: &EffectiveStartupConfig, resume: Option<&str>) 
         bail!("--resume must not be empty");
     }
     Ok(())
+}
+
+fn reject_duplicate_values(field: &str, values: &[String]) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for value in values {
+        if !seen.insert(value) {
+            bail!("{field} contains duplicate id {value}");
+        }
+    }
+    Ok(())
+}
+
+fn resolve_catalog(
+    config: &EffectiveContextConfig,
+    layers: Vec<CatalogDefinitionLayer>,
+) -> Result<(ContextCatalog, Option<CatalogSelection>)> {
+    let mut builder = ContextCatalog::builder();
+    if config.builtins.enabled {
+        let disabled = config
+            .builtins
+            .disable
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let definitions = builtin_definitions();
+        let known = definitions
+            .iter()
+            .map(CatalogDefinition::id)
+            .collect::<BTreeSet<_>>();
+        if let Some(id) = disabled.iter().find(|id| !known.contains(**id)) {
+            bail!("context.builtins.disable contains unknown built-in id {id}");
+        }
+        let origin = CatalogOrigin::new(CatalogOriginKind::BuiltIn, "roba built-ins");
+        for definition in definitions {
+            if !disabled.contains(definition.id()) {
+                builder
+                    .add(origin.clone(), ".", definition)
+                    .context("loading shipped managed context")?;
+            }
+        }
+    }
+
+    for layer in layers {
+        let label = layer.source.path.display().to_string();
+        let origin =
+            CatalogOrigin::new(catalog_origin_kind(layer.source.kind), &label).with_locator(&label);
+        let base_directory = layer.source.path.parent().unwrap_or_else(|| Path::new("."));
+        for definition in layer.definitions {
+            builder
+                .add(origin.clone(), base_directory, definition)
+                .with_context(|| format!("loading managed context from {label}"))?;
+        }
+    }
+
+    let catalog = builder
+        .build()
+        .context("validating managed context catalog")?;
+    let selection = config
+        .agent
+        .as_ref()
+        .map(|agent| {
+            catalog.select(&CatalogSelectionSpec {
+                agent: agent.clone(),
+                skills: config.skills.clone(),
+                prompts: config.prompts.clone(),
+            })
+        })
+        .transpose()
+        .context("resolving managed context selection")?;
+    Ok((catalog, selection))
+}
+
+fn catalog_origin_kind(kind: ConfigSourceKind) -> CatalogOriginKind {
+    match kind {
+        ConfigSourceKind::User => CatalogOriginKind::User,
+        ConfigSourceKind::Project => CatalogOriginKind::Project,
+        ConfigSourceKind::Explicit => CatalogOriginKind::Explicit,
+    }
+}
+
+fn effective_catalog_selection(selection: &CatalogSelection) -> EffectiveCatalogSelection {
+    EffectiveCatalogSelection {
+        agent: selection.agent.id().to_owned(),
+        skills: selection
+            .skills
+            .iter()
+            .map(CatalogEntry::id)
+            .map(str::to_owned)
+            .collect(),
+        prompts: selection
+            .prompts
+            .iter()
+            .map(CatalogEntry::id)
+            .map(str::to_owned)
+            .collect(),
+        fingerprint: selection.fingerprint.clone(),
+    }
+}
+
+impl FileCatalogDefinition {
+    fn resolve(self) -> Result<CatalogDefinition> {
+        Ok(match self {
+            Self::Agent {
+                id,
+                description,
+                inline,
+                path,
+                default_skills,
+            } => CatalogDefinition::Agent {
+                source: configured_catalog_source(&id, inline, path)?,
+                id,
+                description,
+                default_skills,
+            },
+            Self::Skill {
+                id,
+                description,
+                inline,
+                path,
+            } => CatalogDefinition::Skill {
+                source: configured_catalog_source(&id, inline, path)?,
+                id,
+                description,
+            },
+            Self::Prompt {
+                id,
+                description,
+                inline,
+                path,
+                requires,
+                arguments,
+            } => CatalogDefinition::Prompt {
+                source: configured_catalog_source(&id, inline, path)?,
+                id,
+                description,
+                requires,
+                arguments,
+            },
+        })
+    }
+}
+
+fn configured_catalog_source(
+    id: &str,
+    inline: Option<String>,
+    path: Option<PathBuf>,
+) -> Result<CatalogSource> {
+    match (inline, path) {
+        (Some(content), None) => Ok(CatalogSource::Inline { content }),
+        (None, Some(path)) => Ok(CatalogSource::MarkdownPath { path }),
+        (None, None) => bail!("context definition {id} requires exactly one of inline or path"),
+        (Some(_), Some(_)) => {
+            bail!("context definition {id} cannot declare both inline and path")
+        }
+    }
 }
 
 fn map_effort(effort: EffortLevel) -> Effort {
@@ -748,11 +1079,186 @@ mod tests {
     }
 
     #[test]
+    fn managed_catalog_layers_resolve_paths_selection_and_safe_provenance() {
+        let temp = TempDir::new().unwrap();
+        let user = temp.path().join("user/roba/roba.toml");
+        write(
+            &user,
+            "version = 1\n\
+             [context]\nskills = ['local.review']\n\
+             [[context.definitions]]\nkind = 'skill'\nid = 'local.review'\ndescription = 'Review carefully.'\npath = 'skills/review.md'\n",
+        );
+        write(
+            &user.parent().unwrap().join("skills/review.md"),
+            "Private review material that must not be serialized.",
+        );
+
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        write(
+            &repo.join("roba.toml"),
+            "version = 1\n\
+             [context]\nagent = 'local.worker'\nprompts = ['local.issue']\n\
+             [[context.definitions]]\nkind = 'agent'\nid = 'local.worker'\ndescription = 'Local worker.'\ninline = 'Private agent material.'\ndefault_skills = ['local.review']\n\
+             [[context.definitions]]\nkind = 'prompt'\nid = 'local.issue'\ndescription = 'Work one issue.'\ninline = 'Private prompt material for {{issue}}.'\nrequires = ['roba.repository-change']\narguments = [{ name = 'issue', description = 'Issue id.', required = true }]\n",
+        );
+
+        let resolved = resolve_from(&args(&[]), &repo, Some(user.clone())).unwrap();
+        let context = &resolved.effective.context;
+        assert_eq!(context.agent.as_deref(), Some("local.worker"));
+        assert_eq!(context.skills, ["local.review"]);
+        assert_eq!(context.prompts, ["local.issue"]);
+        let selection = context.selection.as_ref().unwrap();
+        assert_eq!(selection.agent, "local.worker");
+        assert_eq!(selection.skills, ["local.review", "roba.repository-change"]);
+        assert_eq!(selection.prompts, ["local.issue"]);
+        assert!(selection.fingerprint.as_str().starts_with("sha256:"));
+
+        let review = context
+            .catalog
+            .entries
+            .iter()
+            .find(|entry| entry.id() == "local.review")
+            .unwrap();
+        match review {
+            CatalogEntry::Skill { origin, source, .. } => {
+                assert_eq!(origin.kind, CatalogOriginKind::User);
+                assert_eq!(origin.locator.as_deref(), Some(user.to_str().unwrap()));
+                assert!(matches!(
+                    source,
+                    roba_context::CatalogSourceMetadata::MarkdownPath { path }
+                        if path == Path::new("skills/review.md")
+                ));
+            }
+            other => panic!("expected skill metadata, got {other:?}"),
+        }
+
+        let serialized = serde_json::to_string(&resolved.effective).unwrap();
+        for body in [
+            "Private review material",
+            "Private agent material",
+            "Private prompt material",
+        ] {
+            assert!(!serialized.contains(body));
+        }
+        assert_eq!(
+            resolved.effective.provenance["context.definitions"],
+            [
+                user.display().to_string(),
+                repo.join("roba.toml").display().to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn catalog_selection_is_opt_in_and_builtins_can_be_disabled_or_filtered() {
+        let empty = resolve_from(&args(&["--no-config"]), Path::new("."), None).unwrap();
+        assert!(empty.effective.context.agent.is_none());
+        assert!(empty.effective.context.selection.is_none());
+        assert_eq!(empty.effective.context.catalog.entries.len(), 3);
+        assert!(empty.template.agent.instructions.is_empty());
+        assert!(empty.template.context.project.is_empty());
+        assert!(empty.template.context.run.is_empty());
+
+        let temp = TempDir::new().unwrap();
+        write(
+            &temp.path().join("roba.toml"),
+            "version = 1\n[context.builtins]\nenabled = false\n",
+        );
+        let disabled = resolve_from(&args(&[]), temp.path(), None).unwrap();
+        assert!(disabled.effective.context.catalog.entries.is_empty());
+
+        write(
+            &temp.path().join("roba.toml"),
+            "version = 1\n\
+             [context]\nagent = 'roba.repo-worker'\n\
+             [context.builtins]\ndisable = ['roba.issue-worker']\n",
+        );
+        let filtered = resolve_from(&args(&[]), temp.path(), None).unwrap();
+        assert!(
+            filtered
+                .effective
+                .context
+                .catalog
+                .entries
+                .iter()
+                .all(|entry| entry.id() != "roba.issue-worker")
+        );
+        assert_eq!(
+            filtered
+                .effective
+                .context
+                .selection
+                .as_ref()
+                .unwrap()
+                .skills,
+            ["roba.repository-change"]
+        );
+    }
+
+    #[test]
+    fn invalid_catalog_configuration_fails_before_provider_work() {
+        let temp = TempDir::new().unwrap();
+        let config = temp.path().join("roba.toml");
+
+        write(
+            &config,
+            "version = 1\n[context]\nskills = ['roba.repository-change']\n",
+        );
+        assert!(
+            resolve_from(&args(&[]), temp.path(), None)
+                .unwrap_err()
+                .to_string()
+                .contains("require context.agent")
+        );
+
+        write(
+            &config,
+            "version = 1\n\
+             [[context.definitions]]\nkind = 'skill'\nid = 'local.bad'\ndescription = 'Bad.'\ninline = 'body'\npath = 'bad.md'\n",
+        );
+        assert!(
+            format!(
+                "{:#}",
+                resolve_from(&args(&[]), temp.path(), None).unwrap_err()
+            )
+            .contains("cannot declare both inline and path")
+        );
+
+        write(
+            &config,
+            "version = 1\n[context.builtins]\ndisable = ['roba.missing']\n",
+        );
+        assert!(
+            resolve_from(&args(&[]), temp.path(), None)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown built-in id")
+        );
+
+        write(
+            &config,
+            "version = 1\n\
+             [[context.definitions]]\nkind = 'skill'\nid = 'local.duplicate'\ndescription = 'One.'\ninline = 'one'\n\
+             [[context.definitions]]\nkind = 'skill'\nid = 'local.duplicate'\ndescription = 'Two.'\ninline = 'two'\n",
+        );
+        assert!(
+            format!(
+                "{:#}",
+                resolve_from(&args(&[]), temp.path(), None).unwrap_err()
+            )
+            .contains("duplicate catalog artifact id")
+        );
+    }
+
+    #[test]
     fn tracked_startup_sample_is_the_real_strict_schema() {
         let config: StartupFile = toml::from_str(include_str!("../roba-startup.sample.toml"))
             .expect("tracked provider-neutral startup sample must parse");
         assert_eq!(config.version, CONFIG_VERSION);
         assert_eq!(config.agent.provider, Some(RunProvider::Codex));
+        assert_eq!(config.context.agent.as_deref(), Some("roba.repo-worker"));
+        assert_eq!(config.context.prompts, ["roba.issue-worker"]);
         assert_eq!(config.extensions.git.enabled, Some(true));
         assert_eq!(config.extensions.git.progress_interval_secs, Some(5));
     }
@@ -763,6 +1269,8 @@ mod tests {
             .expect("Roba's checked-in self configuration must parse");
         assert_eq!(config.version, CONFIG_VERSION);
         assert_eq!(config.agent.provider, Some(RunProvider::Codex));
+        assert_eq!(config.context.agent.as_deref(), Some("roba.repo-worker"));
+        assert_eq!(config.context.prompts, ["roba.issue-worker"]);
         assert_eq!(
             config.execution.permissions,
             Some(PermissionPolicy::ReadOnly)

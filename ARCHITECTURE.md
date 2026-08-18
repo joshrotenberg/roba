@@ -263,13 +263,14 @@ ordered stack:
 5. the operation directive;
 6. dynamic MCP resources containing current facts.
 
-`roba-context` now owns the strict, bounded data catalog for agent roles,
-skills, and reusable prompts. It resolves inline or repository-local Markdown
-sources, records content-free provenance and fingerprints, and computes a
-deterministic selection. It is not yet consumed by startup configuration or
-projected through MCP; that integration remains in
-[#514](https://github.com/joshrotenberg/roba/issues/514). The current operation
-directive is the `agent.turn` prompt and is not yet a manifest entry.
+`roba-context` owns the strict, bounded data catalog for agent roles, skills,
+and reusable prompts. The root host now loads built-in and configured inline
+or repository-local Markdown definitions, records content-free provenance and
+fingerprints, and computes an optional deterministic selection during startup.
+No selected catalog material is projected through MCP yet; that remaining
+integration stays in [#514](https://github.com/joshrotenberg/roba/issues/514).
+The current operation directive is the `agent.turn` prompt and is not yet a
+manifest entry.
 
 Today, explicit `AgentSpec.instructions` and `ContextSpec` values are still
 delivered by provider adapters on every provider turn. Extension context joins

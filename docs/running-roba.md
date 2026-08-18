@@ -28,6 +28,10 @@ instructions = ["Work in small, reviewable steps."]
 permissions = "read_only"
 timeout_secs = 900
 
+[context]
+agent = "roba.repo-worker"
+prompts = ["roba.issue-worker"]
+
 [extensions.git]
 enabled = true
 progress_interval_secs = 5
@@ -37,6 +41,12 @@ With that file in the repository, the smallest commands become `roba run
 "Summarize this repository"` and `mcp-repl -- roba serve`. CLI flags override
 file scalars and append explicit instruction or context entries. Inspect the
 resolved values and their sources with `roba config effective`.
+
+Managed context selection is optional. The startup host validates selected
+agent, skill, and prompt IDs and reports body-free provenance and fingerprints.
+The current implementation does not yet deliver those selected bodies through
+MCP; raw instructions and context retain their existing provider behavior
+until the remaining #514 projection slice lands.
 
 ## 1. One read-only CLI run
 

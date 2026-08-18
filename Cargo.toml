@@ -56,6 +56,8 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 # Provider-neutral finite-run core.
 roba-core.workspace = true
+# Managed agent, skill, and prompt catalog resolved by startup configuration.
+roba-context.workspace = true
 # Optional Layer-3 Git workspace service selected explicitly by `--git`.
 roba-git.workspace = true
 # The typed single-agent MCP contract used by the provider-neutral CLI.

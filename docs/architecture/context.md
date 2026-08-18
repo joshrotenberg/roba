@@ -298,9 +298,9 @@ contract; prose cannot grant it.
 
 ## Next slices
 
-1. Load the typed `roba-context` catalog through startup configuration and
-   project its selected metadata, material, and reusable prompts through MCP.
-   Add explicit activation modes as that integration is defined in
+1. Project the startup-resolved `roba-context` catalog's selected metadata,
+   material, and reusable prompts through MCP. Startup loading and body-free
+   effective provenance are implemented; delivery and acquisition remain in
    [GitHub issue #514](https://github.com/joshrotenberg/roba/issues/514).
 2. Move the reserved base surface through the same internal contribution
    compiler without making it replaceable.

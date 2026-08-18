@@ -21,6 +21,18 @@ timeout_secs = 900
 
 [context]
 project = ["Tests are the acceptance boundary."]
+agent = "roba.repo-worker"
+skills = []
+prompts = ["roba.issue-worker"]
+
+[context.builtins]
+enabled = true
+
+[[context.definitions]]
+kind = "skill"
+id = "local.project-conventions"
+description = "Repository-specific engineering conventions."
+path = ".roba/skills/project-conventions.md"
 
 [extensions.git]
 enabled = true
@@ -33,11 +45,23 @@ unsupported versions, invalid limits, and provider controls that the selected
 adapter cannot enforce fail before provider work begins. Provider-private
 session ids are CLI-only and are never accepted from or printed in this file.
 
-The schema contains only behavior Roba can enforce today. A Git progress
-interval of `0` disables periodic active-operation sampling while retaining
-the admission baseline and final refresh. A context isolation `mode` is not
-accepted until that capability ships. Strict unknown-field rejection prevents
-a plausible-looking future key from being silently ignored.
+The managed catalog is resolved and validated at startup. Built-ins are
+available by default, but absence of `context.agent` preserves ambient-only
+behavior and creates no effective selection. Selecting skills or prompts
+requires an agent. Local definitions use exactly one bounded `inline` value or
+Markdown `path`; paths resolve relative to the file that declares them and
+cannot escape that directory. Definition IDs cannot replace another layer or
+the reserved `roba.*` namespace.
+
+This first startup slice records the resolved catalog and selection without
+yet projecting selected material through MCP or provider launch. That delivery
+work remains in [GitHub issue #514](https://github.com/joshrotenberg/roba/issues/514),
+so configuration inspection must not be mistaken for provider acquisition.
+
+A Git progress interval of `0` disables periodic active-operation sampling
+while retaining the admission baseline and final refresh. A context isolation
+`mode` is not accepted until that capability ships. Strict unknown-field
+rejection prevents a plausible-looking future key from being silently ignored.
 
 ## Discovery and precedence
 
@@ -53,11 +77,14 @@ At each directory it recognizes one versioned candidate:
 - `.roba.toml`;
 - `.roba/roba.toml`.
 
-Farthest files load first and closer files win scalar conflicts. Instruction
-and context lists compose in layer order. Two versioned sibling candidates are
-an ambiguity error. `--config PATH` uses only one explicit file; `--no-config`
-uses built-in defaults. Explicit CLI values override files, while repeated
-`--instruction` and `--context` values append to the declared stack.
+Farthest files load first and closer files win scalar conflicts. Instruction,
+raw context, selected skill/prompt, disabled-built-in, and definition lists
+compose in layer order. Duplicate selected IDs and duplicate definition IDs
+fail closed rather than being silently deduplicated or replaced. Two versioned
+sibling candidates are an ambiguity error. `--config PATH` uses only one
+explicit file; `--no-config` uses built-in defaults. Explicit CLI values
+override files, while repeated `--instruction` and `--context` values append
+to the declared stack.
 
 Unversioned files are not accepted. Roba never guesses whether a file intended
 an older schema or silently translates keys with different semantics. The old
@@ -73,9 +100,11 @@ project configuration.
 `roba config effective` resolves and validates the same startup stack without
 starting a provider. It prints safe TOML by default or a versioned JSON
 envelope with `--json`. The result lists loaded files and the winning source
-for every scalar; composed lists retain all contributing sources. A supplied
-`--resume` is represented only by `resume_seeded = true`, never by its opaque
-provider id.
+for every scalar; composed lists retain all contributing sources. Managed
+catalog output contains selected IDs, resolved transitive skills, origins,
+relative source locators, and SHA-256 fingerprints, but never inline or file
+bodies. A supplied `--resume` is represented only by `resume_seeded = true`,
+never by its opaque provider id.
 
 ```bash
 roba -C /path/to/repo config effective
