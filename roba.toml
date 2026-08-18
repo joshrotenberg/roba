@@ -29,7 +29,7 @@ timeout_secs = 1800
 [context]
 project = [
   "Roba is an MCP-native harness for one logical Claude or Codex agent, built on a finite provider-neutral core.",
-  "The checked-in source, tests, AGENTS.md, and docs/architecture describe the current contract; legacy compatibility material is not architectural guidance.",
+  "The checked-in source, tests, AGENTS.md, and docs/architecture describe the current contract; historical designs live only in Git history.",
 ]
 
 [extensions.git]

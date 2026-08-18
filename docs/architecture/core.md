@@ -47,8 +47,8 @@ portable controls fail honestly instead of being approximated.
 
 Transient launch material is separate from serializable run intent.
 `ProviderLaunchContext` may carry operation-scoped MCP endpoints and exact tool
-names, but endpoint credentials never appear in `RunSpec`, snapshots, events,
-or receipts. One launch context remains stable across resumed provider turns
+names, but endpoint credentials never appear in `RunSpec`, snapshots, or
+events. One launch context remains stable across resumed provider turns
 inside the same finite run.
 
 The core does not depend on Tower MCP or any transport. It knows only the
@@ -64,11 +64,6 @@ stdout, JSON, stderr, and exit-code behavior.
 continuity across several finite core runs and supplies hot-agent lifetime,
 MCP schemas, Tasks, bindings, and extensions. Those concerns are not core run
 semantics.
-
-The original bare `roba PROMPT` Claude command remains a compatibility surface
-with profiles, aliases, personas, bundles, receipts, and inspection commands.
-Its provider-specific configuration model must not leak into `RunSpec` by
-accident.
 
 ## Boundaries
 

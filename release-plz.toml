@@ -46,7 +46,7 @@ git_release_enable = false
 git_tag_enable = false
 changelog_update = false
 
-# The clap-free compatibility engine and provider-neutral finite-run core.
+# The clap-free provider-neutral finite-run core and provider adapters.
 # Publishes to crates.io so the `roba` binary's path dep resolves on publish;
 # no git tag or GitHub release of its own (those belong to the `roba` binary).
 # release-plz publishes it before roba-mcp, roba-git, and the root binary.

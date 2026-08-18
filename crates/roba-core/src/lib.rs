@@ -1,7 +1,6 @@
 //! roba-core: the clap-free engine for one finite agent run.
 //!
-//! This crate owns the provider-neutral run contract plus the compatibility
-//! engine used by the current CLI:
+//! This crate owns the provider-neutral run contract and built-in adapters:
 //!
 //! - [`run`] and [`provider`] -- provider-neutral specifications, outcomes,
 //!   events, and the provider-turn boundary. A prompt-less [`RunSpec`] is
@@ -10,25 +9,18 @@
 //!   event replay, follow-ups at resumable turn boundaries, cancellation, and
 //!   terminal settlement.
 //! - [`providers`] -- built-in Claude and Codex adapters behind the same run
-//!   model. Claude also remains the compatibility provider for the legacy CLI.
-//! - [`engine`] -- the pre-pivot config-and-run seam. [`engine::run`] remains
-//!   available while the CLI migrates, and delegates execution through
-//!   [`struct@ClaudeProvider`].
-//! - [`session`] -- [`session::apply_session`], the single `Config ->
-//!   QueryCommand` mapper the engine feeds, plus the permission/notice
-//!   composition it consumes.
+//!   model.
 //!
-//! The `roba` binary depends on this crate. Prompt composition, legacy
-//! profile/env layering, live streaming display, output formatting, and
-//! exit-code classification stay in the CLI crate.
+//! The Claude adapter's command mapping remains private implementation detail.
+//! No provider-native configuration type is part of the public core contract.
 
-pub mod engine;
+mod engine;
 pub mod lifecycle;
 pub mod provider;
 pub mod providers;
 pub mod run;
 pub mod runtime;
-pub mod session;
+mod session;
 
 pub use lifecycle::{
     MAX_PENDING_FOLLOW_UPS, RUN_EVENT_CAPACITY, Run, RunControlError, RunEventPage, RunEventRecord,

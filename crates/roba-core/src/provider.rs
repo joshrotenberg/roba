@@ -13,7 +13,7 @@ use crate::run::{FailureKind, ProviderId, RunFailureDetails, RunOutcome, TokenUs
 ///
 /// Credentials are deliberately omitted from [`fmt::Debug`] output and this
 /// type does not implement serde. Launch material must never be folded into a
-/// serializable [`TurnRequest`], run result, or receipt.
+/// serializable [`TurnRequest`], run result, or event.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ProviderMcpEndpoint {
     name: String,

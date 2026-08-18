@@ -54,17 +54,6 @@ impl ClaudeProvider {
         builder.build().map_err(Into::into)
     }
 
-    /// Execute the pre-pivot Claude config without changing its behavior.
-    /// This is the compatibility seam used by [`crate::engine::run`].
-    pub async fn execute_legacy(&self, config: &Config) -> Result<QueryResult> {
-        let claude = self.client(config)?;
-        let mut result = engine::execute(config, &claude).await?;
-        if config.json_schema.is_some() {
-            engine::surface_structured_output(&mut result);
-        }
-        Ok(result)
-    }
-
     fn bounded_command(config: &Config) -> QueryCommand {
         engine::query_command(config)
             // `stream_query` consumes NDJSON but does not override the command's
@@ -76,15 +65,11 @@ impl ClaudeProvider {
 
     fn config(request: &TurnRequest) -> Result<Config, ProviderError> {
         let mut config = Config::new(request.prompt.as_str());
-        // The legacy notice describes a one-shot process that will never be
-        // resumed. A bounded RunHandle may steer through resumed turns, so
-        // injecting that notice here would contradict the lifecycle contract.
-        config.no_agent_notice = true;
         config.model.clone_from(&request.spec.agent.model);
         config.effort = request.spec.agent.effort.map(map_effort);
         config.permissions = match request.spec.execution.permissions {
             PermissionPolicy::ReadOnly => Permissions::ReadOnly,
-            PermissionPolicy::WorkspaceWrite => Permissions::Writable,
+            PermissionPolicy::WorkspaceWrite => Permissions::WorkspaceWrite,
             PermissionPolicy::FullAuto => Permissions::FullAuto,
         };
         config
@@ -301,15 +286,12 @@ impl Provider for ClaudeProvider {
                 return Err(terminal_failure(terminal.expect("checked above")));
             }
             stream_result.map_err(map_error)?;
-            let mut result = terminal.ok_or_else(|| {
+            let result = terminal.ok_or_else(|| {
                 ProviderError::new(
                     FailureKind::Provider,
                     "Claude stream ended without a result event",
                 )
             })?;
-            if config.json_schema.is_some() {
-                engine::surface_structured_output(&mut result);
-            }
             let outcome = Self::normalize(result);
             Ok(outcome)
         })
@@ -759,15 +741,6 @@ fi
     }
 
     #[test]
-    fn bounded_turn_suppresses_the_legacy_single_turn_notice() {
-        let request = request(ProviderId::claude());
-        let config = ClaudeProvider::config(&request).unwrap();
-
-        assert!(config.no_agent_notice);
-        assert!(crate::session::compose_append_system_prompt(&config).is_none());
-    }
-
-    #[test]
     fn explicit_context_is_appended_again_for_fresh_and_resumed_turns() {
         let mut fresh = request(ProviderId::claude());
         fresh.spec.agent.instructions = vec!["agent".to_string()];
@@ -787,12 +760,6 @@ fi
                 config.append_system_prompt.as_deref(),
                 Some("agent\n\nproject\n\nrun")
             );
-            // Provider-native user/project/local settings, CLAUDE.md, skills,
-            // hooks, MCP, and memory remain ambient on the current bounded
-            // path. A future controlled/hermetic mode must opt out explicitly.
-            assert_eq!(config.setting_sources, None);
-            assert!(!config.strict_mcp_config);
-            assert!(!config.exclude_dynamic_system_prompt_sections);
         }
     }
 

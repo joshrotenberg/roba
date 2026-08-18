@@ -8,16 +8,12 @@ repository = "https://github.com/joshrotenberg/roba"
 homepage = "https://github.com/joshrotenberg/roba"
 documentation = "https://docs.rs/roba-types"
 readme = "README.md"
-description = "roba's stable machine contract: the --json envelope shapes and the exit-code map. No async runtime."
-keywords = ["roba", "claude", "cli", "json", "envelope"]
+description = "roba's machine contract: provider-neutral JSON envelopes and exit codes."
+keywords = ["roba", "agent", "cli", "json", "envelope"]
 categories = ["command-line-utilities", "api-bindings"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-# json-only: no async, so no tokio. QueryResult is a plain serde data type;
-# this pulls the wrapper's result shape without its runtime.
-claude-wrapper = { version = "0.14", default-features = false, features = ["json"] }
 
 [dev-dependencies]
-tempfile = "3"
+serde_json = "1"

@@ -1,37 +1,21 @@
-//! roba's stable machine contract, as a dependency-light library.
+//! Roba's provider-neutral machine contract, as a dependency-light library.
 //!
-//! roba is meant to be consumed as a subprocess whose `--json` output and
-//! exit code are a stable ABI. This crate is that ABI, extracted so a
+//! Roba can be consumed as a subprocess whose `--json` output and exit code
+//! form a machine ABI. This crate is that ABI, extracted so a
 //! downstream harness can deserialize against it and branch on the exit code
-//! without depending on the whole `roba` binary (tokio, clap, termimad, ...).
+//! without depending on the whole `roba` binary.
 //!
-//! Three pieces:
+//! Two pieces:
 //!
 //! - **Exit codes** ([`EXIT_FAILURE`] .. [`EXIT_MAX_BUDGET`]) -- the full map
 //!   the binary returns. The `roba` binary references these same constants, so
 //!   the crate and the binary cannot disagree.
-//! - **`--json` envelopes** ([`SuccessEnvelope`], [`VersionedResult`],
-//!   [`ErrorEnvelope`]) -- the uniform `{ version, result[, refusal] }` /
-//!   `{ version, error }` shapes. Each is generic over the payload and derives
-//!   both `Serialize` (roba serializes a borrow, no clone) and `Deserialize`
-//!   (a consumer deserializes owned), so there is one type per shape and no
-//!   drift between producer and consumer.
-//! - **Run receipts** ([`receipt`]) -- the durable outcome record a detached
-//!   run leaves behind (`$XDG_STATE_HOME/roba/runs/<id>.json`), as a
-//!   read-side contract: the record shape, the path-resolution precedence,
-//!   and best-effort readers. Only the roba binary writes receipts.
-//!
-//! The result payload is claude's own [`QueryResult`], re-exported here. This
-//! crate pulls `claude-wrapper` with `default-features = false, features =
-//! ["json"]`, so it carries serde but **no async runtime**.
-
-pub mod receipt;
+//! - **JSON envelopes** ([`VersionedResult`] and [`ErrorEnvelope`]) -- the
+//!   provider-neutral `{ version, result }` and `{ version, error }` shapes.
+//!   They derive both `Serialize` and `Deserialize` so producer and consumer
+//!   share one type per shape.
 
 use serde::{Deserialize, Serialize};
-
-/// claude's result payload -- the shape inside a success envelope's `result`.
-/// Re-exported (not mirrored) so it cannot drift from claude's contract.
-pub use claude_wrapper::types::QueryResult;
 
 /// The current `--json` ABI version. Every envelope carries it as the first
 /// field a consumer should check before inspecting anything else.
@@ -67,38 +51,8 @@ pub const EXIT_MAX_BUDGET: i32 = 7;
 
 // -- Envelopes --------------------------------------------------------------
 
-/// The `--json` success envelope for a prompt run: `{ version, result,
-/// refusal }`. `result` holds a [`QueryResult`]; `refusal` is true when the
-/// response looked like a refusal, so a consumer can branch on
-/// "got an answer" vs "got refused" without parsing the body.
-///
-/// Generic over the payload so the producer serializes with `T = &QueryResult`
-/// (no clone) and a consumer deserializes `SuccessEnvelope<QueryResult>`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SuccessEnvelope<T> {
-    /// ABI version ([`VERSION`]).
-    pub version: u32,
-    /// The run's result payload.
-    pub result: T,
-    /// True when the response looked like a refusal.
-    pub refusal: bool,
-}
-
-impl<T> SuccessEnvelope<T> {
-    /// Wrap a payload at the current ABI version.
-    pub fn new(result: T, refusal: bool) -> Self {
-        Self {
-            version: VERSION,
-            result,
-            refusal,
-        }
-    }
-}
-
-/// The `--json` success envelope for read-only management commands and
-/// bounded terminal run snapshots: `{ version, result }`, without the legacy
-/// prompt-run-only `refusal` flag. Generic over the payload `T`, which differs
-/// per command.
+/// The `--json` success envelope: `{ version, result }`.
+/// Generic over the provider-neutral payload `T`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionedResult<T> {
     /// ABI version ([`VERSION`]).
@@ -139,8 +93,8 @@ impl ErrorEnvelope {
 /// The failure detail inside an [`ErrorEnvelope`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorBody {
-    /// A small string union: `"auth" | "budget" | "timeout" | "history" |
-    /// "limit" | "other"`. Mirrors the exit-code dispatch; a consumer can
+    /// A small string union such as `"auth"`, `"timeout"`, `"limit"`, or
+    /// `"other"`. Mirrors the exit-code dispatch; a consumer can
     /// match on it or on the [`exit_code`](Self::exit_code).
     pub kind: String,
     /// A human-readable summary of the failure.
@@ -157,18 +111,6 @@ pub struct ErrorBody {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn success_envelope_round_trips() {
-        // Serialize as a borrow (the producer shape), deserialize as owned
-        // (the consumer shape) -- the two directions agree on one struct.
-        let payload = serde_json::json!({ "result": "hi", "session_id": "s1" });
-        let json = serde_json::to_string(&SuccessEnvelope::new(&payload, false)).unwrap();
-        let back: SuccessEnvelope<serde_json::Value> = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.version, 1);
-        assert!(!back.refusal);
-        assert_eq!(back.result["session_id"], "s1");
-    }
 
     #[test]
     fn versioned_result_round_trips() {

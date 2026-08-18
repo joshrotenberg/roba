@@ -3,83 +3,55 @@
 Provider-neutral contracts and a process-local lifecycle for one finite,
 single-root Roba run.
 
-[roba](https://github.com/joshrotenberg/roba) is library-first. This crate lets
+[Roba](https://github.com/joshrotenberg/roba) is library-first. This crate lets
 a Rust host construct, execute, observe, follow up, cancel, and await one run
-without depending on clap, terminal behavior, a daemon, or persistent storage.
+without depending on clap, terminal behavior, MCP, a daemon, or persistence.
 
 ## What's here
 
-- **`run` / `provider`** -- provider-neutral specifications, events, outcomes,
-  typed failures, sessions, capabilities, and the one-turn provider contract.
-- **`lifecycle` / `runtime`** -- suspended creation, exact-once start,
-  boundary-safe follow-ups, bounded replayable events, cancellation, waiting,
-  and an explicit provider registry.
-- **`providers`** -- Claude and Codex adapters that normalize provider-native
-  results without inventing missing usage or cost.
-- **`engine`** -- the legacy Claude `Config -> QueryResult` seam retained while
-  the established CLI remains compatible.
-- **`session`** -- `apply_session`, the single legacy `Config -> QueryCommand`
-  mapper consumed by that engine.
+- `run` and `provider` define specifications, events, outcomes, typed failures,
+  sessions, capabilities, transient launch context, and the provider boundary.
+- `lifecycle` and `runtime` implement suspended creation, exact-once start,
+  safe follow-up boundaries, bounded replay, cancellation, waiting, and an
+  explicit provider registry.
+- `providers` contains Claude and Codex adapters that normalize only telemetry
+  the provider actually reports.
 
-The provider-neutral API has no stdout/stderr, `process::exit`, TTY, clap,
-database, queue, or global session pool. Provider adapters spawn the selected
-provider CLI only after a run starts. A promptless suspended run spawns
-nothing.
+Provider-specific command construction is private adapter machinery. It is not
+a second public configuration model.
 
 ## Run control
 
-`Roba` owns an explicit process-local provider registry. `create_run` captures
-an immutable `RunSpec` and returns a `Run`; cloning `Run::handle()` produces a
-`RunHandle` with the public control surface:
+`Roba` owns a process-local provider registry. `create_run` captures an
+immutable `RunSpec` and returns a `Run`; `Run::handle()` produces a cloneable
+`RunHandle` with this control surface:
 
 - `start` supplies the first prompt to a suspended run; `begin` starts a spec
   that already contains one.
 - `status` returns the latest in-memory `RunSnapshot`.
-- `subscribe` and `subscribe_after` replay retained events before waiting for
-  new events.
-- `event_page` and `wait_for_events` support explicit cursors and bounded
-  long-lived observation.
-- `follow_up` queues another prompt for the next provider-turn boundary when
-  the provider supports resume. `steer` remains a source-compatible alias.
-- `cancel` drops active provider work before publishing terminal cancellation.
-- `wait` resolves to the terminal snapshot.
+- `subscribe`, `event_page`, and `wait_for_events` expose bounded replay.
+- `follow_up` queues another prompt at a resumable provider-turn boundary.
+- `cancel` drops active provider work before terminal cancellation is visible.
+- `wait` resolves only after terminal settlement.
 
-Each event record carries a monotonically increasing sequence. The in-memory
-journal retains 256 records and reports truncation when a caller's cursor has
-fallen behind. Cursors ahead of the journal are refused.
+Every event has a monotonically increasing sequence. The bounded journal makes
+history loss explicit and rejects future cursors.
 
-`RunFailure` carries a portable failure category and optional
-`RunFailureDetails`. Providers preserve honestly reported terminal recovery
-and accounting fields such as a resumable session, usage, cost, duration, and
-provider turn count. The same failure is retained by the handle and emitted as
-a `RunEvent::Failed`; missing telemetry remains absent.
+`RunFailure` carries a portable category and optional `RunFailureDetails`.
+Providers preserve honestly observed session, usage, cost, duration, and turn
+evidence; missing telemetry stays absent.
 
-## Deliberate boundary
+## Boundary
 
-The current crate owns one root run only. The prior worker tree, mission
-projection, process-capability registry, and GitHub-specific workflow/process
-pack are parked and are not part of this API. The former run-scoped
-`roba-mcp` and custom `roba-repl` implementations remain removed.
-
-The new workspace `roba-mcp` crate implements the first above-core slice: one
-hot, single-agent host that creates a fresh finite `Run` for each prompt,
-retains provider session continuity, and exposes a typed process-local MCP
-contract. That layer owns MCP schemas and application lifetime. Later phases
-add controls, router composition, transport lifetime, and operator/provider
-projections. The root `roba run` command now calls that process-local contract
-and maps its typed terminal result back to the established CLI snapshot. None
-of this makes `roba-core` stateful, transport-aware, or multi-agent. An
-external client such as `mcp-repl` supplies the interactive interface, so core
-does not require a custom REPL.
-
-Steward in `ok-v` is separate workflow-layer prior art. It may consume or
-drive Roba in another project, but it is not part of `roba-core`.
+The crate owns one finite root run. It does not own MCP schemas or transports,
+hot-agent lifetime, queues, schedules, Git/GitHub policy, worker trees, or
+multi-agent routing. `roba-mcp` composes those application concerns above the
+core without making `roba-core` stateful or transport-aware.
 
 ## Stability
 
-The provider-neutral API is under active development and may change before the
-next stable Roba release. The legacy engine remains available for
-compatibility.
+The provider-neutral API is under active development and may change between
+minor releases while it is hardened.
 
 ## License
 

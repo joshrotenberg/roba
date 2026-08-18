@@ -1,89 +1,32 @@
 use clap::Parser;
-use roba::cli::{Cli, ConfigCmd, SubCommand, WorktreeCmd};
-use roba::render::Style;
+use roba::cli::{Cli, ConfigCmd, SubCommand};
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    // Snapshot whether the user asked for plain BEFORE dispatch
-    // consumes the AskArgs -- error styling needs to honor it too.
-    let plain = cli.ask.plain;
     let json = wants_json(&cli);
-    // A detached child records that it started, so `roba show` can tell
-    // "still running" from "never started" (#441). No-op without the
-    // ROBA_RECEIPT the detaching parent sets, i.e. for every ordinary run.
-    roba::receipt::start();
-    if let Err(err) = roba::dispatch(cli).await {
-        if let Some(unusable) = err.downcast_ref::<roba::UnusableResultError>() {
-            use std::io::Write;
-            let _ = std::io::stdout().flush();
+
+    if let Err(error) = roba::dispatch(cli).await {
+        if let Some(unusable) = error.downcast_ref::<roba::UnusableResultError>() {
             eprintln!("roba: {} (exit {})", unusable.note(), unusable.code());
-            roba::receipt::finish(unusable.code());
             std::process::exit(unusable.code());
         }
-        let exit_code = roba::classify_exit_code(&err);
+
+        let exit_code = roba::classify_exit_code(&error);
         if json {
-            eprintln!("{}", roba::error::render_json(&err, exit_code));
+            eprintln!("{}", roba::error::render_json(&error, exit_code));
         } else {
-            let style = if plain {
-                Style::plain()
-            } else {
-                Style::detect_for_error()
-            };
-            roba::render::print_error(&roba::error::render_human_error(&err), &style);
-            // Additive: an actionable hint for the detectable
-            // first-run failures (claude missing / unauthenticated).
-            // Printed after the primary error, never instead of it.
-            if let Some(hint) = roba::error::hint_for_error(&err) {
-                roba::render::print_meta(&hint, &style);
-            }
+            eprintln!("error: {}", roba::error::render_human_error(&error));
         }
-        // The error seam: record the typed code before exiting so an
-        // observer sees the real outcome, not a reconstructed success. A
-        // cap-hit error carries the run's observed spend; note it so the
-        // terminal receipt reports what the capped run cost (#449).
-        if let Some(cost) = roba::error_cost_usd(&err) {
-            roba::receipt::note_cost(cost);
-        }
-        roba::receipt::finish(exit_code);
         std::process::exit(exit_code);
     }
-    // The success seam. A typed unusable-result error (code 6) is handled
-    // above after `dispatch` has unwound and dropped run-owned resources.
-    roba::receipt::finish(0);
 }
 
-/// True when any explicit `--json` flag on the invocation asked for
-/// structured output. Drives whether the error path emits a JSON
-/// envelope on stderr instead of plain anyhow text. We snapshot from
-/// the parsed CLI before dispatch so the decision survives error
-/// bubble-up without plumbing args back from each runner.
 fn wants_json(cli: &Cli) -> bool {
-    if cli.ask.json {
-        return true;
-    }
     match &cli.command {
-        Some(SubCommand::History(args)) => args.json,
-        Some(SubCommand::Last(args)) => args.json,
-        Some(SubCommand::Cost(args)) => args.json,
-        Some(SubCommand::Jobs(args)) => args.json,
-        Some(SubCommand::Doctor(args)) => args.json,
-        Some(SubCommand::Worktree {
-            cmd: WorktreeCmd::List(args),
-        }) => args.json,
-        Some(SubCommand::Show(args)) => args.json,
-        Some(SubCommand::Config {
-            cmd: ConfigCmd::Lint(args),
-        }) => args.json,
-        Some(SubCommand::Config {
-            cmd: ConfigCmd::Show(args),
-        }) => args.json,
+        Some(SubCommand::Run(args)) => args.json,
         Some(SubCommand::Config {
             cmd: ConfigCmd::Effective(args),
-        }) => args.json,
-        Some(SubCommand::Run(args)) => args.json,
-        Some(SubCommand::Bundle {
-            cmd: roba::cli::BundleCmd::Inspect(args),
         }) => args.json,
         _ => false,
     }

@@ -1,6 +1,5 @@
 # Provider-neutral startup configuration for `roba run` and `roba serve`.
-# The version marker distinguishes this contract from the legacy one-shot
-# `roba.toml` format during migration.
+# The version marker makes schema selection explicit and fail-closed.
 version = 1
 
 [agent]

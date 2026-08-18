@@ -15,10 +15,6 @@ Roba is not a workflow engine, hidden daemon, or persistent session pool. One
 process owns one agent. Higher-level clients may compose several Roba processes
 without adding multi-agent routing to the base harness.
 
-The original single-prompt Claude CLI remains supported as a compatibility
-surface. Its profiles, aliases, sealed bundles, scripting ABI, and detached-run
-guidance live in the [legacy CLI guide](docs/legacy-cli.md).
-
 ## Install
 
 | Source | Command |
@@ -27,9 +23,8 @@ guidance live in the [legacy CLI guide](docs/legacy-cli.md).
 | Homebrew | `brew install joshrotenberg/brew/roba` |
 | Prebuilt binary | [Latest release](https://github.com/joshrotenberg/roba/releases/latest) for macOS, Linux, or Windows |
 
-Install and authenticate the provider binaries you intend to use. The legacy
-command and `--provider claude` require `claude`; `--provider codex` requires
-`codex`.
+Install and authenticate the provider binaries you intend to use.
+`--provider claude` requires `claude`; `--provider codex` requires `codex`.
 
 ## Choose an interface
 
@@ -39,7 +34,6 @@ command and `--provider claude` require `claude`; `--provider codex` requires
 | One hot agent addressable over MCP | `roba serve` |
 | A Rust-owned finite lifecycle | `roba-core` |
 | A Rust-owned hot MCP agent | `roba-mcp` |
-| Existing Claude-only profiles and scripting ABI | bare `roba PROMPT` |
 
 The full command reference is generated from the binary. Start with
 `roba --help`, `roba run --help`, or `roba serve --help`.
@@ -91,8 +85,8 @@ enabled = true
 Roba discovers versioned `roba.toml`, `.roba.toml`, or `.roba/roba.toml`
 files from the effective cwd to the Git root, layered over
 `~/.config/roba/roba.toml`. Use `roba config effective` to inspect the safe
-resolved values and per-field provenance without starting a provider. The
-unversioned legacy profile and alias format remains separate during migration.
+resolved values and per-field provenance without starting a provider.
+Unversioned files are rejected rather than guessed or silently migrated.
 
 ## Hot MCP agents
 
@@ -206,32 +200,15 @@ authority.
   role-scoped projections, Tasks, replay, and bindings.
 - [`roba-git`](crates/roba-git) -- one fixed Git workspace exposed as typed,
   authority-scoped MCP fragments.
-- [`roba-types`](crates/roba-types) -- dependency-light machine envelopes,
-  exit-code constants, and receipt types.
-- `roba` -- `run`, `serve`, and the original Claude compatibility command.
+- [`roba-types`](crates/roba-types) -- dependency-light machine envelopes and
+  exit-code constants.
+- `roba` -- the command-first `run`, `serve`, `config`, and `completions`
+  interface.
 
 The retained core types are intentionally small: `RunSpec`, `Roba`, `Run`,
 `RunHandle`, and `Provider`. Events are bounded and cursor-addressed; history
 loss is reported explicitly. Providers return only telemetry they can observe,
 so absent cost, duration, or usage never becomes an invented zero.
-
-## Legacy Claude compatibility
-
-The bare command remains a pipe-clean, re-enterable wrapper around
-`claude -p`:
-
-```bash
-roba "summarize the Rust ownership model in three bullets"
-cat err.log | roba "what is wrong here?"
-roba --readonly --git-diff "is this safe to merge?"
-```
-
-It retains profiles, aliases, personas, input composition, sealed bundles,
-session helpers, receipts, history, costs, a versioned JSON envelope, and typed
-exit codes. See the [legacy CLI guide](docs/legacy-cli.md) for the complete
-compatibility overview and unattended scripting contract. The annotated
-[`roba-config.sample.toml`](roba-config.sample.toml) and every tracked example
-configuration are parsed and semantically linted in CI.
 
 ## Documentation
 
@@ -239,13 +216,12 @@ configuration are parsed and semantically linted in CI.
 - [Finite-core architecture](docs/architecture/core.md)
 - [MCP harness architecture](docs/architecture/mcp-harness.md)
 - [Agent control semantics](docs/architecture/agent-control.md)
-- [Legacy Claude CLI guide](docs/legacy-cli.md)
-- [Annotated legacy configuration](roba-config.sample.toml)
+- [Running Roba](docs/running-roba.md)
+- [Startup configuration](docs/architecture/startup-config.md)
 
 ## Status
 
-Published on crates.io. The legacy CLI scripting surface is intended to remain
-stable across `0.x`. The provider-neutral APIs and MCP contract may still
+Published on crates.io. The provider-neutral APIs and MCP contract may still
 change between minor versions while they are hardened.
 
 ## License

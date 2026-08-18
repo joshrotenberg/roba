@@ -1,74 +1,35 @@
-# Show available recipes
+# Show available recipes.
 default:
     @just --list
 
-# One-time per clone: enable the repo's git hooks (rustfmt pre-commit).
+# One-time per clone: enable the repository's formatting hook.
 setup:
     git config core.hooksPath .githooks
-    @echo "git hooks enabled: .githooks/pre-commit (rustfmt on commit)"
+    @echo "git hooks enabled: .githooks/pre-commit"
 
-# Unit + mechanical CLI tests. Fast, no claude calls. Run often.
+# Fast deterministic tests.
 test:
-    cargo test --lib --all-features
+    cargo test --workspace --lib --all-features
     cargo test --test cli --all-features
 
-# Pre-commit gates. Run before pushing.
+# Full deterministic workspace coverage.
+test-all:
+    cargo test --workspace --all-features
+
+# Pre-commit gates.
 check:
     cargo fmt --all -- --check
-    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo build --workspace --all-features
 
-# Pre-flight: confirm claude is on PATH (live tests need this).
-preflight:
-    @claude --version > /dev/null 2>&1 && echo "claude: ok" || (echo "claude not found or not authenticated" && exit 1)
+# All paid provider smoke tests. Requires authenticated provider binaries.
+live:
+    cargo test --test live -- --ignored --nocapture --test-threads=1
 
-# Full live test suite. Calls real claude; haiku default keeps cost low.
-live: preflight
-    cargo test --test live -- --ignored --nocapture --test-threads=2
+# One real Claude boundary smoke test.
+live-claude:
+    cargo test --test live -- --ignored --nocapture live_claude
 
-# Scenario suite: end-to-end autonomous-work journeys. Calls real claude
-# (haiku); the pre-release regression gate. Single-threaded -- scenarios
-# thread output between dispatches and run their own detached children.
-scenario: preflight
-    cargo test --test scenarios -- --ignored --nocapture --test-threads=1
-
-# Smoke: the minimum to know roba's main paths still work. A few tests, fast and cheap.
-live-smoke: preflight
-    cargo test --test live -- --ignored --nocapture --test-threads=2 \
-        live_smoke live_session_continue live_output_json
-
-# Category runners. The filter is a substring match on the test name.
-live-output: preflight
-    cargo test --test live -- --ignored --nocapture --test-threads=2 live_output
-
-live-session: preflight
-    cargo test --test live -- --ignored --nocapture --test-threads=2 live_session
-
-live-stream: preflight
-    cargo test --test live -- --ignored --nocapture --test-threads=2 live_stream
-
-live-compose: preflight
-    cargo test --test live -- --ignored --nocapture --test-threads=2 live_compose
-
-# Categories for future tests filed under #22. Placeholders today.
-live-perms: preflight
-    cargo test --test live -- --ignored --nocapture --test-threads=2 live_perms
-
-live-profile: preflight
-    cargo test --test live -- --ignored --nocapture --test-threads=2 live_profile
-
-live-env: preflight
-    cargo test --test live -- --ignored --nocapture --test-threads=2 live_env
-
-live-subcmd: preflight
-    cargo test --test live -- --ignored --nocapture --test-threads=2 live_subcmd
-
-# Run any single category by prefix without a dedicated target.
-# Example: just live-category perms  ->  filters on `live_perms`.
-live-category category: preflight
-    cargo test --test live -- --ignored --nocapture --test-threads=2 live_{{category}}
-
-# Spend rollup. #11 (cost in dollars) is merged, so `roba cost` reports
-# token + USD totals across history directly. Run after a live sweep to
-# see what it cost.
-live-cost:
-    cargo run --quiet --all-features -- cost
+# One real Codex boundary smoke test.
+live-codex:
+    cargo test --test live -- --ignored --nocapture live_codex
