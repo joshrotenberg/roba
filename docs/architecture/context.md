@@ -300,7 +300,8 @@ contract; prose cannot grant it.
 
 1. Load the typed `roba-context` catalog through startup configuration and
    project its selected metadata, material, and reusable prompts through MCP.
-   Add explicit activation modes as that integration is defined.
+   Add explicit activation modes as that integration is defined in
+   [GitHub issue #514](https://github.com/joshrotenberg/roba/issues/514).
 2. Move the reserved base surface through the same internal contribution
    compiler without making it replaceable.
 3. Stop reinjecting unchanged stable context into resumed sessions where the
