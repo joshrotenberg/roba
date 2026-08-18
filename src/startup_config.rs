@@ -338,7 +338,21 @@ fn user_config_path() -> Option<PathBuf> {
     {
         return Some(PathBuf::from(xdg).join("roba").join("roba.toml"));
     }
-    crate::profile::home_dir().map(|home| home.join(".config/roba/roba.toml"))
+    home_dir().map(|home| home.join(".config/roba/roba.toml"))
+}
+
+fn home_dir() -> Option<PathBuf> {
+    if let Ok(home) = std::env::var("HOME")
+        && !home.is_empty()
+    {
+        return Some(PathBuf::from(home));
+    }
+    if let Ok(home) = std::env::var("USERPROFILE")
+        && !home.is_empty()
+    {
+        return Some(PathBuf::from(home));
+    }
+    None
 }
 
 fn load_required_layer(path: &Path, kind: ConfigSourceKind) -> Result<Layer> {
@@ -639,9 +653,9 @@ mod tests {
     }
 
     #[test]
-    fn unversioned_legacy_files_are_ignored_and_explicit_files_require_version() {
+    fn unversioned_files_are_ignored_and_explicit_files_require_version() {
         let temp = TempDir::new().unwrap();
-        write(&temp.path().join("roba.toml"), "model = 'legacy'\n");
+        write(&temp.path().join("roba.toml"), "model = 'unversioned'\n");
         let resolved = resolve_from(&args(&[]), temp.path(), None).unwrap();
         assert_eq!(resolved.template.agent.provider, ProviderId::claude());
         assert!(resolved.effective.sources.is_empty());
@@ -714,6 +728,19 @@ mod tests {
             .expect("tracked provider-neutral startup sample must parse");
         assert_eq!(config.version, CONFIG_VERSION);
         assert_eq!(config.agent.provider, Some(RunProvider::Codex));
+        assert_eq!(config.extensions.git.enabled, Some(true));
+    }
+
+    #[test]
+    fn repository_self_config_is_a_valid_conservative_startup_config() {
+        let config: StartupFile = toml::from_str(include_str!("../roba.toml"))
+            .expect("Roba's checked-in self configuration must parse");
+        assert_eq!(config.version, CONFIG_VERSION);
+        assert_eq!(config.agent.provider, Some(RunProvider::Codex));
+        assert_eq!(
+            config.execution.permissions,
+            Some(PermissionPolicy::ReadOnly)
+        );
         assert_eq!(config.extensions.git.enabled, Some(true));
     }
 }

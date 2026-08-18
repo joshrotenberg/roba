@@ -368,6 +368,7 @@ mod tests {
     #[test]
     fn cli_flags_resolve_directly_and_resume_is_fenced_to_the_provider() {
         let args = parse_run_args(&[
+            "--no-config",
             "--provider",
             "codex",
             "--model",
@@ -417,7 +418,7 @@ mod tests {
 
     #[test]
     fn defaults_are_read_only_fresh_claude() {
-        let resolved = resolve_spec(&parse_run_args(&["hello"])).unwrap();
+        let resolved = resolve_spec(&parse_run_args(&["--no-config", "hello"])).unwrap();
         assert_eq!(resolved.prompt, "hello");
         let spec = resolved.template;
         assert_eq!(spec.agent.provider, ProviderId::claude());

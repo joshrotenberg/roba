@@ -21,7 +21,7 @@ use tower_mcp::{
 };
 
 const FINAL_PROTOCOL: &str = "2026-07-28";
-const LEGACY_PROTOCOL: &str = "2025-11-25";
+const STABLE_PROTOCOL: &str = "2025-11-25";
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 const TASK_OPERATION_META_KEY: &str = "com.github.joshrotenberg.roba/operation";
 const FIVE_MINUTES_MS: u64 = 300_000;
@@ -207,14 +207,14 @@ async fn connect_final(agent: roba_mcp::AgentInstance, tasks: bool) -> Arc<McpCl
     Arc::new(client)
 }
 
-async fn connect_legacy(agent: roba_mcp::AgentInstance) -> Arc<McpClient> {
+async fn connect_stable(agent: roba_mcp::AgentInstance) -> Arc<McpClient> {
     let client = bounded(McpClient::connect(ChannelTransport::new(router(agent))))
         .await
-        .expect("legacy ChannelTransport connects");
-    let initialized = bounded(client.initialize("roba-legacy-task-test", "0"))
+        .expect("stable ChannelTransport connects");
+    let initialized = bounded(client.initialize("roba-stable-task-test", "0"))
         .await
-        .expect("legacy initialize succeeds");
-    assert_eq!(initialized.protocol_version, LEGACY_PROTOCOL);
+        .expect("stable initialize succeeds");
+    assert_eq!(initialized.protocol_version, STABLE_PROTOCOL);
     Arc::new(client)
 }
 
@@ -375,18 +375,18 @@ async fn synchronous_and_task_paths_have_success_and_typed_failure_parity() {
 }
 
 #[tokio::test]
-async fn legacy_task_path_completes_cancels_drains_and_reuses_the_agent() {
+async fn stable_task_path_completes_cancels_drains_and_reuses_the_agent() {
     let (agent, state) = test_agent();
-    let client = connect_legacy(agent.clone()).await;
+    let client = connect_stable(agent.clone()).await;
 
     let tools = bounded(client.list_tools())
         .await
-        .expect("legacy client lists tools");
+        .expect("stable client lists tools");
     let turn = tools
         .tools
         .iter()
         .find(|tool| tool.name == AGENT_TURN_TOOL)
-        .expect("legacy client discovers agent.turn");
+        .expect("stable client discovers agent.turn");
     assert_eq!(
         turn.execution
             .as_ref()
@@ -394,7 +394,7 @@ async fn legacy_task_path_completes_cancels_drains_and_reuses_the_agent() {
         Some(TaskSupportMode::Optional)
     );
 
-    let completed_created = create_task(&client, "legacy-complete").await;
+    let completed_created = create_task(&client, "stable-complete").await;
     let completed = terminal_task(&client, &completed_created.task_id).await;
     assert_eq!(completed.status, TaskStatus::Completed);
     assert_eq!(
@@ -406,13 +406,13 @@ async fn legacy_task_path_completes_cancels_drains_and_reuses_the_agent() {
             completed
                 .result
                 .as_ref()
-                .expect("legacy completed task carries a result")
+                .expect("stable completed task carries a result")
         ),
         AgentTurnResult::Completed { operation_id, .. }
             if operation_id == completed_created.operation_id
     ));
 
-    let cancelled_created = create_task(&client, "hold-legacy-cancel").await;
+    let cancelled_created = create_task(&client, "hold-stable-cancel").await;
     take_started(&state).await;
     assert_eq!(
         agent.snapshot().await.current_operation_id,
@@ -420,10 +420,10 @@ async fn legacy_task_path_completes_cancels_drains_and_reuses_the_agent() {
     );
     bounded(client.task_cancel(
         &cancelled_created.task_id,
-        Some("legacy cancellation".to_owned()),
+        Some("stable cancellation".to_owned()),
     ))
     .await
-    .expect("legacy tasks/cancel is acknowledged");
+    .expect("stable tasks/cancel is acknowledged");
     let cancelled = terminal_task(&client, &cancelled_created.task_id).await;
     assert_eq!(cancelled.status, TaskStatus::Cancelled);
     assert_eq!(
@@ -433,7 +433,7 @@ async fn legacy_task_path_completes_cancels_drains_and_reuses_the_agent() {
     wait_for_cancelled_executions(&state, 1).await;
     assert_eq!(agent.snapshot().await.state, AgentState::Idle);
 
-    let reused_created = create_task(&client, "legacy-after-cancel").await;
+    let reused_created = create_task(&client, "stable-after-cancel").await;
     let reused = terminal_task(&client, &reused_created.task_id).await;
     assert_eq!(reused.status, TaskStatus::Completed);
     assert!(matches!(
@@ -441,7 +441,7 @@ async fn legacy_task_path_completes_cancels_drains_and_reuses_the_agent() {
             reused
                 .result
                 .as_ref()
-                .expect("reused legacy task carries a result")
+                .expect("reused stable task carries a result")
         ),
         AgentTurnResult::Completed { operation_id, .. }
             if operation_id == reused_created.operation_id

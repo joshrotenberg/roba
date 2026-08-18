@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::provider::{ProviderActivityKind, ProviderActivityStatus};
 
-/// Stable provider identity used in resolved specifications and receipts.
+/// Stable provider identity used in resolved specifications and outcomes.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ProviderId(String);
@@ -523,14 +523,14 @@ mod tests {
 
     #[test]
     fn failure_details_are_additive_and_omit_unreported_fields() {
-        let legacy: RunFailure = serde_json::from_value(serde_json::json!({
+        let minimal: RunFailure = serde_json::from_value(serde_json::json!({
             "kind": "provider",
             "message": "failed"
         }))
         .unwrap();
-        assert!(legacy.details.is_empty());
+        assert!(minimal.details.is_empty());
         assert_eq!(
-            serde_json::to_value(&legacy).unwrap(),
+            serde_json::to_value(&minimal).unwrap(),
             serde_json::json!({"kind": "provider", "message": "failed"})
         );
 

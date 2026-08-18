@@ -57,16 +57,14 @@ an ambiguity error. `--config PATH` uses only one explicit file; `--no-config`
 uses built-in defaults. Explicit CLI values override files, while repeated
 `--instruction` and `--context` values append to the declared stack.
 
-An unversioned `roba.toml` remains owned by the legacy Claude one-shot loader
-during migration and is ignored by `run` and `serve`. The old user path
-`~/.config/roba.toml` is likewise legacy-only; Roba never guesses which schema
-an unversioned file intended.
+Unversioned files are not accepted. Roba never guesses whether a file intended
+an older schema or silently translates keys with different semantics. The old
+user path `~/.config/roba.toml` is not searched.
 
-Named profiles, shell-expanding aliases, named provider sessions,
-`ROBA_*` overrides, and bundle configuration are not migrated into version 1.
-They remain confined to the bare Claude compatibility command until the
-legacy sweep tracked with GitHub issue #501. Provider-private resume ids stay
-an explicit CLI input rather than shareable project configuration.
+The removed Claude-only profiles, shell-expanding aliases, named sessions,
+`ROBA_*` overrides, and bundle configuration were deliberately not migrated.
+Provider-private resume ids remain an explicit CLI input rather than shareable
+project configuration.
 
 ## Inspection and provenance
 

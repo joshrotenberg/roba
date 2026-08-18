@@ -51,11 +51,7 @@ path = "src/main.rs"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
-claude-wrapper = "0.14"
-dialoguer = { version = "0.12", default-features = false, features = ["fuzzy-select"] }
-glob = "0.3"
-indicatif = "0.18"
-# The clap-free compatibility engine and provider-neutral finite-run core.
+# Provider-neutral finite-run core.
 roba-core.workspace = true
 # Optional Layer-3 Git workspace service selected explicitly by `--git`.
 roba-git.workspace = true
@@ -66,23 +62,13 @@ roba-mcp.workspace = true
 roba-types.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tempfile = "3"
-termimad = "0.34"
 toml = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
-# v4 UUID minting for `--detach` (client-side session handle). Minimal
-# features: just the v4 generator, no serde / no formatting extras.
-uuid = { version = "1", default-features = false, features = ["v4"] }
-
-# Unix-only: `--detach` classifies this process's stdin (fstat/poll/read) to
-# block input that the detached child -- whose stdin is /dev/null -- would
-# silently lose. See `stdin_would_lose_data` in src/detach.rs.
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
+tempfile = "3"
 
 # The profile that 'dist' will build with
 [profile.dist]

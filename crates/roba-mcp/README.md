@@ -48,7 +48,7 @@ The operator contract has process-local and foreground stdio bindings:
 - `call_turn` is the typed client seam. It requires valid
   `structuredContent`, checks that MCP `isError` agrees with the typed status,
   and never treats display text as machine data.
-- `StdioBinding` serves the same control router over stdin/stdout with legacy
+- `StdioBinding` serves the same control router over stdin/stdout with stable
   and final MCP lifecycle support. Requests dispatch concurrently, so status,
   event reads, follow-up, and interruption can overtake a long synchronous
   turn.
