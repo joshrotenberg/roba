@@ -5,8 +5,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::lifecycle::{Run, RunControlError};
-use crate::provider::{Provider, ProviderLaunchContext};
-use crate::run::{ProviderId, RunSpec};
+use crate::provider::{Provider, ProviderError, ProviderLaunchContext};
+use crate::run::{Prompt, ProviderId, RunSpec, TurnRequest};
 
 /// Process-local Roba runtime. It owns provider adapters but no daemon,
 /// database, queue, or global session pool.
@@ -48,6 +48,24 @@ impl Roba {
     /// Provider ids in deterministic order.
     pub fn provider_ids(&self) -> impl Iterator<Item = &ProviderId> {
         self.providers.keys()
+    }
+
+    /// Validate a suspended run specification against its selected provider
+    /// without starting provider work.
+    pub fn validate_spec(&self, spec: &RunSpec) -> Result<(), SpecValidationError> {
+        let provider = self
+            .providers
+            .get(&spec.agent.provider)
+            .ok_or_else(|| SpecValidationError::ProviderUnavailable(spec.agent.provider.clone()))?;
+        let prompt = Prompt::new("provider-neutral configuration preflight")
+            .expect("static validation prompt is nonempty");
+        let request = TurnRequest {
+            spec: spec.clone().with_prompt(prompt.clone()),
+            prompt,
+        };
+        provider
+            .validate(&request)
+            .map_err(SpecValidationError::Provider)
     }
 
     /// Construct one bounded run without starting provider work.
@@ -98,6 +116,31 @@ impl std::error::Error for RuntimeError {
     }
 }
 
+/// Provider validation failure found without starting provider work.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpecValidationError {
+    ProviderUnavailable(ProviderId),
+    Provider(ProviderError),
+}
+
+impl fmt::Display for SpecValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ProviderUnavailable(id) => write!(formatter, "provider {id} is not registered"),
+            Self::Provider(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for SpecValidationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Provider(error) => Some(error),
+            Self::ProviderUnavailable(_) => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,7 +158,10 @@ mod tests {
             ProviderCapabilities::default()
         }
 
-        fn validate(&self, _request: &TurnRequest) -> Result<(), ProviderError> {
+        fn validate(&self, request: &TurnRequest) -> Result<(), ProviderError> {
+            if request.spec.agent.model.as_deref() == Some("unsupported") {
+                return Err(ProviderError::unsupported("model is unsupported"));
+            }
             Ok(())
         }
 
@@ -169,6 +215,19 @@ mod tests {
                 .err()
                 .unwrap(),
             RuntimeError::ProviderUnavailable(ProviderId::codex())
+        );
+    }
+
+    #[test]
+    fn validation_runs_without_starting_provider_work() {
+        let mut roba = Roba::new();
+        roba.register(FakeProvider).unwrap();
+        let mut agent = AgentSpec::new(ProviderId::new("fake").unwrap());
+        agent.model = Some("unsupported".to_string());
+        let error = roba.validate_spec(&RunSpec::suspended(agent)).unwrap_err();
+        assert_eq!(
+            error,
+            SpecValidationError::Provider(ProviderError::unsupported("model is unsupported"))
         );
     }
 }

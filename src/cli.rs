@@ -105,14 +105,21 @@ Legacy one-shot configuration (roba.toml):
   NAME = \"uuid\" handles for --session NAME. roba-config.sample.toml
   (written by `roba profile init`) lists every valid key. See the
   `roba profile` and `roba alias` subcommands. Profiles remain the legacy
-  Claude one-shot configuration surface; `roba run` uses explicit flags.";
+  Claude one-shot configuration surface. Versioned provider-neutral startup
+  config for `run` and `serve` lives at ~/.config/roba/roba.toml or in a
+  versioned project candidate; inspect it with `roba config effective`.";
 
 const RUN_AFTER_HELP: &str = "\
 Examples:
   roba run --provider codex \"inspect this repository\"
   roba run --writable --git \"fix the failing tests\"
+  roba run --no-config \"ignore discovered startup config\"
   roba run --instruction \"work methodically\" --context \"issue #489\" \"propose a plan\"
   roba run --json \"summarize current risks\" | jq '.result'
+
+Versioned startup config is discovered from the cwd to the Git root and from
+~/.config/roba/roba.toml. CLI values override file values. Inspect the exact
+effective values and provenance with `roba config effective`.
 
 Each invocation admits one finite operation and waits for terminal settlement.";
 
@@ -120,6 +127,9 @@ const SERVE_AFTER_HELP: &str = "\
 Examples:
   mcp-repl -- roba serve --provider codex
   mcp-repl --protocol final -- roba serve --provider claude --git --writable
+
+The same versioned startup config and override rules as `roba run` apply.
+The resolved config is pinned for the lifetime of this process.
 
 The process hosts one persistent logical agent with at most one active operation.
 Each agent.turn is finite; agent.interrupt keeps the host available, while
@@ -305,7 +315,7 @@ pub enum SubCommand {
     /// with an OSC-9 terminal notification on stderr TTYs. Exits 0 when
     /// every watched run succeeded, 1 when any failed, 4 on timeout.
     Watch(WatchArgs),
-    /// Inspect or author legacy one-shot roba.toml configuration.
+    /// Inspect provider-neutral startup config or legacy one-shot config.
     ///
     /// The per-project half of the config-draft verbs: `init` looks at
     /// the current project and drafts a whole starter roba.toml fitted
@@ -357,7 +367,8 @@ pub enum SubCommand {
     External(Vec<String>),
 }
 
-#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RunProvider {
     Claude,
     Codex,
@@ -377,6 +388,17 @@ pub enum PersonaAction {
 /// Fixed configuration shared by finite and hot provider-neutral agents.
 #[derive(ClapArgs, Debug)]
 pub struct AgentArgs {
+    /// Use only this provider-neutral versioned config file.
+    ///
+    /// Without this flag, Roba loads the user config and versioned project
+    /// configs discovered from the effective cwd to the Git root.
+    #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
+    pub config: Option<PathBuf>,
+
+    /// Ignore all provider-neutral startup config files.
+    #[arg(long, conflicts_with = "config")]
+    pub no_config: bool,
+
     /// Provider for this agent. Defaults to Claude.
     #[arg(long, value_enum)]
     pub provider: Option<RunProvider>,
@@ -406,12 +428,20 @@ pub struct AgentArgs {
     #[arg(long)]
     pub git: bool,
 
+    /// Disable the Git MCP service even when startup config enables it.
+    #[arg(long, conflicts_with = "git")]
+    pub no_git: bool,
+
+    /// Force read-only authority even when startup config grants writes.
+    #[arg(long, conflicts_with_all = ["writable", "full_auto"])]
+    pub read_only: bool,
+
     /// Permit edits in the current workspace.
-    #[arg(long, conflicts_with = "full_auto")]
+    #[arg(long, conflicts_with_all = ["read_only", "full_auto"])]
     pub writable: bool,
 
     /// Run unattended inside a workspace-write sandbox.
-    #[arg(long, conflicts_with = "writable")]
+    #[arg(long, conflicts_with_all = ["read_only", "writable"])]
     pub full_auto: bool,
 
     /// Per-run provider turn ceiling. Unsupported providers refuse before launch.
@@ -732,6 +762,11 @@ pub struct ProfileDraftArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ConfigCmd {
+    /// Show the effective provider-neutral startup config and provenance.
+    ///
+    /// This resolves the same versioned config stack and CLI overrides as
+    /// `roba run` and `roba serve`, but never starts a provider.
+    Effective(ConfigEffectiveArgs),
     /// Draft a starter legacy one-shot roba.toml from the current project.
     ///
     /// Makes ONE claude call with a read-only (Read/Glob/Grep) view of
@@ -802,6 +837,16 @@ pub enum ConfigCmd {
     /// stdout) renders it uncolored. This is a human view only -- it is
     /// never what a script parses; `show` and `--json` own that.
     Explain(ConfigExplainArgs),
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct ConfigEffectiveArgs {
+    #[command(flatten)]
+    pub agent: AgentArgs,
+
+    /// Emit a versioned JSON envelope instead of TOML.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -1686,7 +1731,7 @@ pub struct AskArgs {
     // ----- Legacy profiles --------------------------------------------------
     /// Apply a legacy one-shot profile (user, project, or env source).
     ///
-    /// `roba run` is a separate provider-neutral surface with explicit flags.
+    /// `roba run` is a separate versioned provider-neutral config surface.
     #[arg(long, value_name = "NAME", help_heading = "Profiles")]
     pub profile: Option<String>,
 
@@ -1797,6 +1842,39 @@ mod tests {
     #[test]
     fn serve_permission_modes_are_mutually_exclusive() {
         assert!(Cli::try_parse_from(["roba", "serve", "--writable", "--full-auto"]).is_err());
+        assert!(Cli::try_parse_from(["roba", "serve", "--read-only", "--writable"]).is_err());
+    }
+
+    #[test]
+    fn startup_config_controls_and_effective_inspection_parse() {
+        let cli = Cli::try_parse_from([
+            "roba",
+            "config",
+            "effective",
+            "--no-config",
+            "--provider",
+            "codex",
+            "--read-only",
+            "--no-git",
+            "--json",
+        ])
+        .unwrap();
+        let Some(SubCommand::Config {
+            cmd: ConfigCmd::Effective(args),
+        }) = cli.command
+        else {
+            panic!("expected config effective");
+        };
+        assert!(args.agent.no_config);
+        assert_eq!(args.agent.provider, Some(RunProvider::Codex));
+        assert!(args.agent.read_only);
+        assert!(args.agent.no_git);
+        assert!(args.json);
+
+        assert!(
+            Cli::try_parse_from(["roba", "serve", "--config", "agent.toml", "--no-config"])
+                .is_err()
+        );
     }
 
     #[test]

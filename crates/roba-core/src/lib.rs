@@ -48,4 +48,4 @@ pub use run::{
     RunOutcome, RunSpec, RunSpecError, RunState, SessionHandle, SessionSpec, TokenUsage,
     ToolPolicy, TurnRequest,
 };
-pub use runtime::{Roba, RuntimeError};
+pub use runtime::{Roba, RuntimeError, SpecValidationError};

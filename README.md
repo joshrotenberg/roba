@@ -69,7 +69,30 @@ roba run --provider codex --git "inspect the current Git workspace"
 
 Run flags explicitly select the provider, model, effort, instructions,
 context, permissions, limits, timeout, resume identity, and optional services.
-The legacy `roba.toml` profile and alias pool does not apply to this path.
+They override the shared, versioned startup contract used by both `run` and
+`serve`:
+
+```toml
+version = 1
+
+[agent]
+provider = "codex"
+effort = "high"
+instructions = ["Work in small, reviewable steps."]
+
+[execution]
+permissions = "read_only"
+timeout_secs = 900
+
+[extensions.git]
+enabled = true
+```
+
+Roba discovers versioned `roba.toml`, `.roba.toml`, or `.roba/roba.toml`
+files from the effective cwd to the Git root, layered over
+`~/.config/roba/roba.toml`. Use `roba config effective` to inspect the safe
+resolved values and per-field provenance without starting a provider. The
+unversioned legacy profile and alias format remains separate during migration.
 
 ## Hot MCP agents
 

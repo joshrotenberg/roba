@@ -1,0 +1,26 @@
+# Provider-neutral startup configuration for `roba run` and `roba serve`.
+# The version marker distinguishes this contract from the legacy one-shot
+# `roba.toml` format during migration.
+version = 1
+
+[agent]
+provider = "codex"
+# model = "provider-model-id"
+effort = "high"
+instructions = [
+  "Work in small, reviewable steps.",
+  "Treat tests as the acceptance boundary.",
+]
+
+[execution]
+permissions = "read_only" # read_only | workspace_write | full_auto
+# max_turns = 20           # Claude only
+# max_cost_usd = 5.0       # Claude only
+timeout_secs = 900
+
+[context]
+project = ["This repository's public API is its compatibility boundary."]
+# run = ["Context added to every operation admitted by this host."]
+
+[extensions.git]
+enabled = true
