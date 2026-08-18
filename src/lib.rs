@@ -34,6 +34,7 @@ pub mod receipt;
 pub mod render;
 pub mod serve;
 pub mod show;
+pub mod startup_config;
 pub mod stdin_probe;
 pub mod stream;
 pub mod style;
@@ -112,6 +113,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         // `config init` makes one claude call (with a read-only window
         // onto the project), so it is async like the draft verbs.
         Some(SubCommand::Config { cmd }) => match cmd {
+            crate::cli::ConfigCmd::Effective(args) => startup_config::run_effective(args),
             crate::cli::ConfigCmd::Init(args) => config::run_init(args).await,
             // Static config checks: print findings (or a `--json`
             // envelope), exit 0/1. Read-only, no claude call.

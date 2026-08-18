@@ -66,7 +66,9 @@ the provider-neutral API stabilizes.
 - `crates/roba-git` -- optional fixed-workspace Git MCP fragments; observation
   in control/provider projections and staging only in writable control views
 - `src/main.rs` entry point; `src/lib.rs` dispatch plus bounded and legacy paths
-- `src/bounded.rs` -- explicit `roba run` flags to a suspended `RunSpec`, the
+- `src/startup_config.rs` -- strict versioned `run`/`serve` config discovery,
+  layering, CLI precedence, safe inspection, and provenance
+- `src/bounded.rs` -- resolved startup config to a suspended `RunSpec`, the
   in-process MCP call, and compatibility result projection
 - `src/serve.rs` -- foreground stdio host, signal policy, and graceful binding
   shutdown for `roba serve`
@@ -81,7 +83,7 @@ the provider-neutral API stabilizes.
   `docs/architecture/` (implemented architectural decisions), `--help`
   (reference generated from `cli.rs`), crate READMEs (public Rust surfaces),
   `docs/legacy-cli.md` (Claude compatibility and scripting), and parse-tested
-  legacy config examples
+  provider-neutral plus legacy config examples
 
 ## Build and test (all must pass before a PR)
 
@@ -115,12 +117,12 @@ codes), never model compliance.
 
 ## Adding a CLI flag
 
-For an explicit provider-neutral `roba run` or `roba serve` template flag: add
-the shared clap field in `cli.rs` (terse first doc line plus detail), map it to
-`RunSpec` in `bounded.rs`, add parse-level conflict tests, add a mechanical test
-in `tests/cli.rs` when it touches exit codes or stream routing, and document it
-in the README if it is part of the agent ABI. Do not add it to legacy
-environment, profile, or config layering.
+For a provider-neutral `roba run` or `roba serve` template setting: add the
+shared clap field in `cli.rs` (terse first doc line plus detail), add the strict
+versioned file field and precedence rule in `startup_config.rs`, map it into
+`RunSpec`, update the safe effective/provenance view, add parse and mechanical
+tests, update `roba-startup.sample.toml`, and document it when it is part of
+the agent ABI. Do not add it to legacy environment or profile layering.
 
 Host-only service selection such as `--git` belongs beside the shared agent
 flags but not inside serialized `RunSpec`. Compose its role-specific routers

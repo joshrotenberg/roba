@@ -4,9 +4,9 @@ use std::fmt;
 
 use anyhow::{Result, bail};
 use roba_core::{
-    AgentSpec, ClaudeProvider, CodexProvider, ContextSpec, Effort, ExecutionSpec, FailureKind,
-    LimitSpec, PermissionPolicy, Prompt, ProviderId, Roba, RunFailure, RunFailureDetails,
-    RunOutcome, RunSnapshot, RunSpec, RunState, SessionHandle, SessionSpec, TokenUsage, ToolPolicy,
+    ClaudeProvider, CodexProvider, FailureKind, PermissionPolicy, Prompt, ProviderId, Roba,
+    RunFailure, RunFailureDetails, RunOutcome, RunSnapshot, RunSpec, RunState, SessionHandle,
+    TokenUsage,
 };
 use roba_git::{GitAuthority, GitWorkspace};
 use roba_mcp::{
@@ -14,7 +14,7 @@ use roba_mcp::{
 };
 
 use crate::VersionedResult;
-use crate::cli::{AgentArgs, EffortLevel, RunArgs, RunProvider};
+use crate::cli::{AgentArgs, RunArgs};
 
 /// A terminal provider-neutral run failure retained for exit-code and JSON
 /// classification by the binary boundary.
@@ -45,7 +45,7 @@ impl std::error::Error for BoundedRunError {}
 pub async fn run(args: RunArgs) -> Result<()> {
     let resolved = resolve_spec(&args)?;
 
-    let agent = build_agent_from_template(resolved.template, args.agent.git)?;
+    let agent = build_agent_from_template(resolved.template, resolved.git_enabled)?;
     let client = connect_in_process(agent).await?;
     let turn = call_turn(
         &client,
@@ -236,72 +236,37 @@ fn terminal_json(snapshot: &roba_core::RunSnapshot) -> serde_json::Value {
 #[derive(Debug)]
 struct ResolvedRun {
     template: RunSpec,
+    git_enabled: bool,
     prompt: String,
 }
 
 fn resolve_spec(args: &RunArgs) -> Result<ResolvedRun> {
+    let resolved = crate::startup_config::resolve(&args.agent)?;
     Ok(ResolvedRun {
-        template: resolve_template(&args.agent)?,
+        template: resolved.template,
+        git_enabled: resolved.git_enabled,
         prompt: Prompt::new(args.prompt.clone())?.into_inner(),
     })
 }
 
 /// Resolve the fixed suspended template shared by one-shot and hot agents.
+#[cfg(test)]
 pub(crate) fn resolve_template(args: &AgentArgs) -> Result<RunSpec> {
-    let provider = args
-        .provider
-        .map(map_provider)
-        .unwrap_or_else(ProviderId::claude);
-    let permissions = if args.full_auto {
-        PermissionPolicy::FullAuto
-    } else if args.writable {
-        PermissionPolicy::WorkspaceWrite
-    } else {
-        PermissionPolicy::ReadOnly
-    };
-    let session = match &args.resume {
-        Some(id) => SessionSpec::Resume {
-            session: SessionHandle {
-                provider: provider.clone(),
-                id: id.clone(),
-            },
-        },
-        None => SessionSpec::Fresh,
-    };
-    let mut agent = AgentSpec::new(provider);
-    agent.model.clone_from(&args.model);
-    agent.effort = args.effort.map(map_effort);
-    agent.instructions.clone_from(&args.instructions);
-
-    Ok(RunSpec {
-        agent,
-        context: ContextSpec {
-            project: Vec::new(),
-            run: args.context.clone(),
-        },
-        execution: ExecutionSpec {
-            permissions,
-            tools: ToolPolicy::default(),
-            limits: LimitSpec {
-                max_turns: args.max_turns,
-                max_cost_usd: args.max_cost_usd,
-                timeout_secs: args.timeout,
-            },
-            session,
-        },
-        initial_prompt: None,
-    })
+    Ok(crate::startup_config::resolve(args)?.template)
 }
 
 /// Construct one configured hot agent with both built-in providers available.
 pub(crate) fn build_agent(args: &AgentArgs) -> Result<AgentInstance> {
-    build_agent_from_template(resolve_template(args)?, args.git)
+    let resolved = crate::startup_config::resolve(args)?;
+    build_agent_from_template(resolved.template, resolved.git_enabled)
 }
 
-fn build_agent_from_template(template: RunSpec, git_enabled: bool) -> Result<AgentInstance> {
-    let mut roba = Roba::new();
-    roba.register(ClaudeProvider)?;
-    roba.register(CodexProvider::default())?;
+pub(crate) fn build_agent_from_template(
+    template: RunSpec,
+    git_enabled: bool,
+) -> Result<AgentInstance> {
+    let roba = built_in_runtime()?;
+    roba.validate_spec(&template)?;
 
     let extensions = if git_enabled {
         let cwd = std::env::current_dir()?;
@@ -322,26 +287,17 @@ fn build_agent_from_template(template: RunSpec, git_enabled: bool) -> Result<Age
     )?)
 }
 
-fn map_provider(provider: RunProvider) -> ProviderId {
-    match provider {
-        RunProvider::Claude => ProviderId::claude(),
-        RunProvider::Codex => ProviderId::codex(),
-    }
-}
-
-fn map_effort(effort: EffortLevel) -> Effort {
-    match effort {
-        EffortLevel::Low => Effort::Low,
-        EffortLevel::Medium => Effort::Medium,
-        EffortLevel::High => Effort::High,
-        EffortLevel::Xhigh => Effort::XHigh,
-        EffortLevel::Max => Effort::Max,
-    }
+fn built_in_runtime() -> Result<Roba> {
+    let mut roba = Roba::new();
+    roba.register(ClaudeProvider)?;
+    roba.register(CodexProvider::default())?;
+    Ok(roba)
 }
 
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use roba_core::{Effort, SessionSpec};
 
     use super::*;
     use crate::cli::{Cli, SubCommand};

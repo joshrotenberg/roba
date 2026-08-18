@@ -105,7 +105,11 @@ fn bounded_run_help_exposes_the_finite_provider_surface() {
         "--effort",
         "--instruction",
         "--context",
+        "--config",
+        "--no-config",
         "--git",
+        "--no-git",
+        "--read-only",
         "--writable",
         "--full-auto",
         "--resume",
@@ -117,7 +121,6 @@ fn bounded_run_help_exposes_the_finite_provider_surface() {
         );
     }
     for parked in [
-        "--config",
         "--agent",
         "--repl",
         "--mcp",
@@ -395,7 +398,6 @@ fn bounded_run_rejects_legacy_options_before_the_subcommand() {
 #[test]
 fn bounded_run_rejects_parked_and_removed_options() {
     for args in [
-        &["run", "--config", "run.toml", "hello"][..],
         &["run", "--agent", "builder", "hello"][..],
         &["run", "--repl", "hello"][..],
         &["run", "--mcp", "hello"][..],
@@ -428,11 +430,11 @@ fn bounded_run_invalid_host_configuration_fails_before_a_turn() {
     for (args, expected) in [
         (
             vec!["run", "--max-cost-usd=-1", "--json", "hello"],
-            "maximum cost must be a finite non-negative number",
+            "execution.max_cost_usd must be finite and greater than zero",
         ),
         (
             vec!["run", "--resume", "", "--json", "hello"],
-            "seeded session id must not be empty",
+            "--resume must not be empty",
         ),
     ] {
         let output = roba()
@@ -453,6 +455,82 @@ fn bounded_run_invalid_host_configuration_fails_before_a_turn() {
 }
 
 #[test]
+fn provider_neutral_config_effective_is_safe_versioned_and_attributed() {
+    let repo = tempfile::tempdir().expect("repo");
+    let config_home = tempfile::tempdir().expect("config home");
+    std::fs::create_dir(repo.path().join(".git")).unwrap();
+    std::fs::create_dir(repo.path().join(".roba")).unwrap();
+    std::fs::write(
+        repo.path().join(".roba/roba.toml"),
+        "version = 1\n[agent]\nprovider = 'claude'\nmodel = 'file-model'\ninstructions = ['from file']\n[execution]\npermissions = 'workspace_write'\ntimeout_secs = 30\n[extensions.git]\nenabled = true\n",
+    )
+    .unwrap();
+
+    let output = roba()
+        .env("XDG_CONFIG_HOME", config_home.path())
+        .env("PATH", "")
+        .args([
+            "-C",
+            repo.path().to_str().unwrap(),
+            "config",
+            "effective",
+            "--model",
+            "cli-model",
+            "--read-only",
+            "--no-git",
+            "--resume",
+            "private-session-id",
+            "--json",
+        ])
+        .output()
+        .expect("inspect provider-neutral config");
+    assert!(
+        output.status.success(),
+        "inspection failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["version"], roba_types::VERSION);
+    let effective = &envelope["result"];
+    assert_eq!(effective["version"], 1);
+    assert_eq!(effective["agent"]["model"], "cli-model");
+    assert_eq!(effective["agent"]["instructions"][0], "from file");
+    assert_eq!(effective["execution"]["permissions"], "read_only");
+    assert_eq!(effective["execution"]["resume_seeded"], true);
+    assert_eq!(effective["extensions"]["git"]["enabled"], false);
+    assert_eq!(effective["provenance"]["agent.model"][0], "cli");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("private-session-id"));
+}
+
+#[test]
+fn provider_neutral_config_errors_fail_closed_in_the_requested_envelope() {
+    let dir = tempfile::tempdir().expect("config dir");
+    let config = dir.path().join("roba.toml");
+    std::fs::write(&config, "version = 1\n[execution]\ntimeout_secondz = 30\n").unwrap();
+    let output = roba()
+        .args([
+            "config",
+            "effective",
+            "--config",
+            config.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("reject invalid provider-neutral config");
+    assert_eq!(output.status.code(), Some(roba_types::EXIT_FAILURE));
+    assert!(output.stdout.is_empty());
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["exit_code"], roba_types::EXIT_FAILURE);
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown field `timeout_secondz`")
+    );
+}
+
+#[test]
 fn serve_help_exposes_only_the_promptless_provider_neutral_surface() {
     let output = roba()
         .args(["serve", "--help"])
@@ -463,11 +541,15 @@ fn serve_help_exposes_only_the_promptless_provider_neutral_surface() {
 
     let stdout = String::from_utf8(output.stdout).expect("serve help is UTF-8");
     for expected in [
+        "--config",
+        "--no-config",
         "--provider",
         "--model",
         "--effort",
         "--instruction",
         "--context",
+        "--no-git",
+        "--read-only",
         "--writable",
         "--full-auto",
         "--max-turns",
@@ -483,7 +565,6 @@ fn serve_help_exposes_only_the_promptless_provider_neutral_surface() {
     for absent in [
         "<PROMPT>",
         "--json",
-        "--config",
         "--agent",
         "--repl",
         "--mcp",
@@ -505,7 +586,6 @@ fn serve_help_exposes_only_the_promptless_provider_neutral_surface() {
 fn serve_rejects_run_only_legacy_and_parked_options() {
     for args in [
         &["serve", "--json"][..],
-        &["serve", "--config", "run.toml"][..],
         &["serve", "--agent", "builder"][..],
         &["serve", "--repl"][..],
         &["serve", "--mcp"][..],
@@ -4067,6 +4147,7 @@ fn fake_claude_streaming_terminal(result_event: &str, exit_code: i32) -> tempfil
 case "$*" in
   *--version*) echo '1.0.0 (fake)'; exit 0;;
 esac
+[ -z "${{ROBA_CAPTURE_ARGS:-}}" ] || printf '%s\n' "$@" > "$ROBA_CAPTURE_ARGS"
 cat >/dev/null 2>&1
 printf '%s\n' '{result_event}'
 exit {exit_code}
@@ -4527,6 +4608,42 @@ fn bounded_run_json_emits_the_complete_terminal_snapshot() {
         .assert()
         .success()
         .stdout("bounded answer\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_run_consumes_versioned_startup_config_with_cli_precedence() {
+    let bin = fake_claude_streaming_result(
+        r#"{"type":"result","subtype":"success","result":"configured answer","session_id":"session-1","is_error":false}"#,
+    );
+    let repo = tempfile::tempdir().expect("repo");
+    let cfg = tempfile::tempdir().expect("cfg");
+    std::fs::create_dir(repo.path().join(".git")).unwrap();
+    std::fs::write(
+        repo.path().join(".roba.toml"),
+        "version = 1\n[agent]\nprovider = 'claude'\nmodel = 'file-model'\ninstructions = ['configured instruction']\n[execution]\npermissions = 'read_only'\n",
+    )
+    .unwrap();
+    let capture = repo.path().join("args.txt");
+
+    let output = roba_with_fake_claude(bin.path(), repo.path(), cfg.path())
+        .env("ROBA_CAPTURE_ARGS", &capture)
+        .args(["run", "--model", "cli-model", "hello"])
+        .output()
+        .expect("run with provider-neutral startup config");
+    assert!(
+        output.status.success(),
+        "configured run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "configured answer\n"
+    );
+    let argv = std::fs::read_to_string(capture).unwrap();
+    assert!(argv.lines().any(|line| line == "cli-model"));
+    assert!(!argv.lines().any(|line| line == "file-model"));
+    assert!(argv.contains("configured instruction"));
 }
 
 #[cfg(unix)]

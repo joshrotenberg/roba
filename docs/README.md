@@ -40,5 +40,8 @@ decision and its rationale here, not a phase ledger or working-session log.
   turn, follow-up, override, interruption, and configuration lifetimes.
 - [`architecture/context.md`](architecture/context.md) -- the typed context
   plan, current provider inventory, and isolation boundaries.
+- [`architecture/startup-config.md`](architecture/startup-config.md) -- the
+  versioned `run`/`serve` startup schema, discovery, precedence, and
+  provenance contract.
 - [`legacy-cli.md`](legacy-cli.md) -- the Claude-only compatibility command,
   configuration model, and scripting ABI.

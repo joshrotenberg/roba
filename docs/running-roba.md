@@ -12,6 +12,31 @@ Both use the same provider adapters, finite-run core, permission postures,
 session handles, optional services, and typed failures. The difference is who
 drives the agent after construction.
 
+## Configure both interfaces once
+
+A versioned `roba.toml` can pin the provider-neutral startup template shared
+by `run` and `serve`:
+
+```toml
+version = 1
+
+[agent]
+provider = "codex"
+instructions = ["Work in small, reviewable steps."]
+
+[execution]
+permissions = "read_only"
+timeout_secs = 900
+
+[extensions.git]
+enabled = true
+```
+
+With that file in the repository, the smallest commands become `roba run
+"Summarize this repository"` and `mcp-repl -- roba serve`. CLI flags override
+file scalars and append explicit instruction or context entries. Inspect the
+resolved values and their sources with `roba config effective`.
+
 ## 1. One read-only CLI run
 
 The smallest useful Roba invocation is one finite turn:
