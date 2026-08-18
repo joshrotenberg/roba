@@ -18,13 +18,14 @@ use crate::context::{
 use crate::contract::{
     ActiveActivity, AgentConfiguration, AgentControlRefusalKind, AgentFollowUpResult,
     AgentInterruptResult, AgentObservation, AgentRefusalKind, AgentShutdownResult, AgentSnapshot,
-    AgentState, AgentTurnResult, ObservationHealth, ObservationState, OperationId,
-    OperationSettlement, ProviderSelfSnapshot, TurnOverrides,
+    AgentState, AgentTerminalState, AgentTurnResult, ObservationHealth, ObservationState,
+    OperationId, OperationSettlement, ProviderSelfSnapshot, TurnOverrides,
 };
 use crate::events::{
     AGENT_EVENT_CAPACITY, AgentEvent, AgentEventError, AgentEventJournal, AgentEventPage,
     AgentEventRecord,
 };
+use crate::extension_lifecycle::{ExtensionOperationSupervisor, shutdown_extensions};
 use crate::extensions::{AgentExtensionError, AgentExtensions};
 use crate::provider_endpoint::ProviderEndpoint;
 
@@ -74,6 +75,7 @@ struct ActiveOperation {
     observation: StdMutex<OperationObservation>,
     started_at: Instant,
     timeout: Option<Duration>,
+    admitted_at_unix_ms: Option<u64>,
 }
 
 #[derive(Default)]
@@ -411,14 +413,8 @@ impl AgentInstance {
             observation: StdMutex::new(OperationObservation::default()),
             started_at: Instant::now(),
             timeout,
+            admitted_at_unix_ms: unix_time_ms(),
         });
-        if let Err(error) = active.handle.start(prompt).await {
-            return TurnAdmission::Refused(AgentTurnResult::refused(
-                AgentRefusalKind::Runtime,
-                error.to_string(),
-                None,
-            ));
-        }
         active
             .provider_endpoint
             .close_when_run_settles(active.handle.clone());
@@ -426,13 +422,14 @@ impl AgentInstance {
         control.active = Some(active.clone());
         drop(control);
 
-        self.spawn_operation(active.clone(), subscription, settlement_tx);
+        self.spawn_operation(active.clone(), prompt, subscription, settlement_tx);
         TurnAdmission::Admitted(AdmittedTurn { active })
     }
 
     fn spawn_operation(
         &self,
         active: Arc<ActiveOperation>,
+        prompt: Prompt,
         subscription: RunEventSubscription,
         settlement_tx: watch::Sender<Option<AgentTurnResult>>,
     ) {
@@ -445,7 +442,28 @@ impl AgentInstance {
             let event_pump =
                 tokio::spawn(pump_events(subscription, event_journal, event_tx, observed));
 
+            let operation = crate::extensions::AgentExtensionOperation {
+                operation_id,
+                configuration: active.configuration.clone(),
+                admitted_at_unix_ms: active.admitted_at_unix_ms,
+            };
+            let mut extensions = ExtensionOperationSupervisor::admitted(
+                coordinator.inner.extensions.lifecycle_registrations(),
+                operation,
+                coordinator.inner.events.clone(),
+                coordinator.inner.event_tx.clone(),
+            )
+            .await;
+
             let handle = active.handle.clone();
+            if !handle.status().await.is_terminal() {
+                match handle.start(prompt).await {
+                    Ok(()) => extensions.started().await,
+                    Err(_) => {
+                        let _ = handle.cancel().await;
+                    }
+                }
+            }
             let worker_handle = handle.clone();
             let worker = tokio::spawn(async move { worker_handle.wait().await });
             let snapshot = match worker.await {
@@ -463,6 +481,7 @@ impl AgentInstance {
                 }
             }
             active.provider_endpoint.shutdown().await;
+            extensions.settle(terminal_state(&snapshot)).await;
             let result = coordinator
                 .settle(operation_id, snapshot, active.configuration.clone())
                 .await;
@@ -643,19 +662,25 @@ impl AgentInstance {
     pub async fn stop(&self) -> Result<(), AgentStopError> {
         let mut control = self.inner.control.lock().await;
         match control.lifetime {
+            AgentLifetime::Stopped => return Ok(()),
             AgentLifetime::Stopping => {
                 drop(control);
-                let _ = self.shutdown().await;
+                let _ = self.wait_stopped().await;
                 return Ok(());
             }
-            AgentLifetime::Stopped => return Ok(()),
             AgentLifetime::Open => {}
         }
         if let Some(active) = control.active.as_ref() {
             return Err(AgentStopError::Busy(active.id));
         }
-        control.lifetime = AgentLifetime::Stopped;
+        control.lifetime = AgentLifetime::Stopping;
+        drop(control);
+
+        shutdown_extensions(self.inner.extensions.lifecycle_registrations()).await;
         let result = AgentShutdownResult::Stopped { drained: None };
+        let mut control = self.inner.control.lock().await;
+        control.lifetime = AgentLifetime::Stopped;
+        drop(control);
         self.inner.shutdown_tx.send_replace(Some(result));
         Ok(())
     }
@@ -740,11 +765,19 @@ impl AgentInstance {
             Err(RunControlError::NotRunning | RunControlError::Terminal) => {
                 let current = self.current_operation_id().await;
                 if current == Some(operation_id) {
-                    AgentFollowUpResult::refused(
-                        AgentControlRefusalKind::OperationFinishing,
-                        format!("operation {} is finishing", operation_id.get()),
-                        Some(operation_id),
-                    )
+                    if handle.status().await.state == roba_core::RunState::Suspended {
+                        AgentFollowUpResult::refused(
+                            AgentControlRefusalKind::OperationStarting,
+                            format!("operation {} is starting", operation_id.get()),
+                            Some(operation_id),
+                        )
+                    } else {
+                        AgentFollowUpResult::refused(
+                            AgentControlRefusalKind::OperationFinishing,
+                            format!("operation {} is finishing", operation_id.get()),
+                            Some(operation_id),
+                        )
+                    }
                 } else {
                     AgentFollowUpResult::refused(
                         AgentControlRefusalKind::OperationSettled,
@@ -874,6 +907,7 @@ impl AgentInstance {
                     None => None,
                 };
                 let result = AgentShutdownResult::Stopped { drained };
+                shutdown_extensions(coordinator.inner.extensions.lifecycle_registrations()).await;
                 let mut control = coordinator.inner.control.lock().await;
                 control.lifetime = AgentLifetime::Stopped;
                 drop(control);
@@ -1030,6 +1064,8 @@ impl ActiveOperation {
             | AgentEvent::FollowUpApplied
             | AgentEvent::TurnCompleted { .. }
             | AgentEvent::Failed { .. }
+            | AgentEvent::ExtensionChanged { .. }
+            | AgentEvent::ExtensionFailed { .. }
             | AgentEvent::OperationSettled { .. } => None,
         };
         if let Some(kind) = provider_kind {
@@ -1185,6 +1221,18 @@ fn reported_session(snapshot: &RunSnapshot) -> Option<CoreSessionHandle> {
                 .as_ref()
                 .and_then(|outcome| outcome.session.clone())
         })
+}
+
+fn terminal_state(snapshot: &RunSnapshot) -> AgentTerminalState {
+    match snapshot.state {
+        roba_core::RunState::Completed => AgentTerminalState::Completed,
+        roba_core::RunState::Cancelled => AgentTerminalState::Cancelled,
+        roba_core::RunState::Failed
+        | roba_core::RunState::Suspended
+        | roba_core::RunState::Ready
+        | roba_core::RunState::Running
+        | roba_core::RunState::Finishing => AgentTerminalState::Failed,
+    }
 }
 
 fn invalid_terminal_evidence(snapshot: &RunSnapshot, expected: &ProviderId) -> Option<String> {

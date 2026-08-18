@@ -11,6 +11,7 @@ use crate::contract::{
     ActivityKind, ActivityStatus, AgentTerminalState, Cost, FailureKind, OperationId,
     OperationSettlement, TokenUsage,
 };
+use crate::extensions::AgentExtensionHookPhase;
 
 /// Maximum number of agent-wide events retained in memory and returned in one page.
 pub const AGENT_EVENT_CAPACITY: usize = 256;
@@ -97,6 +98,18 @@ pub enum AgentEvent {
         /// Oldest source run sequence still available, when known.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         oldest_run_sequence: Option<u64>,
+    },
+    /// An extension observed a compact operation-scoped state change.
+    ExtensionChanged {
+        extension: String,
+        phase: AgentExtensionHookPhase,
+        fingerprint: String,
+        summary: String,
+    },
+    /// An extension callback panicked or exceeded its host-enforced timeout.
+    ExtensionFailed {
+        extension: String,
+        phase: AgentExtensionHookPhase,
     },
     /// Agent bookkeeping for this operation has committed after core termination.
     OperationSettled { state: AgentTerminalState },
@@ -409,6 +422,41 @@ impl AgentEventJournal {
             AgentEvent::OperationSettled {
                 state: settlement.state,
             },
+        )
+    }
+
+    pub(crate) fn append_extension_changed(
+        &self,
+        operation_id: OperationId,
+        extension: String,
+        phase: AgentExtensionHookPhase,
+        fingerprint: String,
+        summary: String,
+    ) -> Result<AgentEventRecord, AgentEventError> {
+        self.append(
+            operation_id,
+            None,
+            None,
+            AgentEvent::ExtensionChanged {
+                extension,
+                phase,
+                fingerprint,
+                summary,
+            },
+        )
+    }
+
+    pub(crate) fn append_extension_failed(
+        &self,
+        operation_id: OperationId,
+        extension: String,
+        phase: AgentExtensionHookPhase,
+    ) -> Result<AgentEventRecord, AgentEventError> {
+        self.append(
+            operation_id,
+            None,
+            None,
+            AgentEvent::ExtensionFailed { extension, phase },
         )
     }
 

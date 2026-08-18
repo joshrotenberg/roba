@@ -325,6 +325,7 @@ pub enum AgentControlRefusalKind {
     Stopping,
     Stopped,
     OperationMismatch,
+    OperationStarting,
     OperationFinishing,
     OperationSettled,
     QueueFull,
