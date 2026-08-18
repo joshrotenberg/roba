@@ -716,4 +716,17 @@ mod tests {
         assert_eq!(config.agent.provider, Some(RunProvider::Codex));
         assert_eq!(config.extensions.git.enabled, Some(true));
     }
+
+    #[test]
+    fn repository_self_config_is_a_valid_conservative_startup_config() {
+        let config: StartupFile = toml::from_str(include_str!("../roba.toml"))
+            .expect("Roba's checked-in self configuration must parse");
+        assert_eq!(config.version, CONFIG_VERSION);
+        assert_eq!(config.agent.provider, Some(RunProvider::Codex));
+        assert_eq!(
+            config.execution.permissions,
+            Some(PermissionPolicy::ReadOnly)
+        );
+        assert_eq!(config.extensions.git.enabled, Some(true));
+    }
 }

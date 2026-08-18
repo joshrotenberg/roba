@@ -450,9 +450,9 @@ mod tests {
     }
 
     #[test]
-    fn every_shipped_user_config_is_semantically_clean() {
+    fn every_shipped_legacy_config_is_semantically_clean() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut paths = vec![root.join("roba.toml"), root.join("roba-config.sample.toml")];
+        let mut paths = vec![root.join("roba-config.sample.toml")];
 
         let examples = root.join("examples");
         for entry in std::fs::read_dir(&examples).expect("examples directory exists") {
@@ -469,7 +469,7 @@ mod tests {
 
         assert_eq!(
             paths.len(),
-            6,
+            5,
             "update this gate when shipped configs change"
         );
         for path in paths {

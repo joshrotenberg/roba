@@ -70,6 +70,30 @@ fn load_file(path: &Path) -> Result<ConfigFile> {
     parse_config_str(&content).with_context(|| format!("parsing config at {}", path.display()))
 }
 
+/// Load one ambient legacy config layer.
+///
+/// Project `roba.toml` is shared with the provider-neutral startup contract
+/// during the compatibility window. A top-level `version` marker belongs to
+/// that strict contract, so the legacy profile loader must ignore the file
+/// instead of trying to reinterpret `[agent]`, `[execution]`, and `[context]`
+/// as legacy profile keys. Explicit legacy bundle/config validation continues
+/// to use [`load_file`] and therefore still fails loudly on the wrong schema.
+fn load_ambient_legacy_file(path: &Path) -> Result<Option<ConfigFile>> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("reading config at {}", path.display()))?;
+    let value: toml::Value = toml::from_str(&content)
+        .with_context(|| format!("parsing config TOML at {}", path.display()))?;
+    if value
+        .as_table()
+        .is_some_and(|table| table.contains_key("version"))
+    {
+        return Ok(None);
+    }
+    parse_config_str(&content)
+        .with_context(|| format!("parsing config at {}", path.display()))
+        .map(Some)
+}
+
 /// Parse a `roba.toml`'s text into a [`ConfigFile`], the same way
 /// `load_file` does but from a string rather than a path. Splits
 /// top-level keys (the defaults profile) from `[profile.NAME]` /
@@ -174,8 +198,9 @@ pub(crate) fn load_pool_with_preparsed_bundle(
         layers.extend(discover_project_configs(cwd));
     }
     for path in layers {
-        let cfg = load_file(&path)?;
-        merge_config_file(&mut pool, path, cfg);
+        if let Some(cfg) = load_ambient_legacy_file(&path)? {
+            merge_config_file(&mut pool, path, cfg);
+        }
     }
     if let Some(bundle) = bundle {
         merge_pool(&mut pool, bundle);
@@ -256,8 +281,9 @@ pub(crate) fn load_layers_from(cwd: &Path) -> Result<Vec<(PathBuf, ConfigFile)>>
 
     let mut out = Vec::with_capacity(paths.len());
     for path in paths {
-        let cfg = load_file(&path)?;
-        out.push((path, cfg));
+        if let Some(cfg) = load_ambient_legacy_file(&path)? {
+            out.push((path, cfg));
+        }
     }
     Ok(out)
 }
@@ -472,6 +498,27 @@ git_diff = true
         let err = load_file(f.path()).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("parsing top-level keys"));
+    }
+
+    #[test]
+    fn ambient_legacy_pool_ignores_versioned_startup_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_file(tmp.path(), ".git/HEAD", "");
+        write_file(
+            tmp.path(),
+            "roba.toml",
+            "version = 1\n[agent]\nprovider = 'codex'\n",
+        );
+
+        let pool = load_pool_from(tmp.path()).unwrap();
+        assert!(
+            !pool.sources.contains(&tmp.path().join("roba.toml")),
+            "versioned startup config must not enter the legacy pool: {:?}",
+            pool.sources
+        );
+
+        let explicit = load_file(&tmp.path().join("roba.toml")).unwrap_err();
+        assert!(format!("{explicit:#}").contains("parsing top-level keys"));
     }
 
     // -- Pool walk-up merge ------------------------------------------------

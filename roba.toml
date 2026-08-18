@@ -1,91 +1,36 @@
-# roba's own project config. The top level stays safe-by-default: no
-# full_auto, no anonymous worktree. A top-level worktree auto-applies to
-# every run and silently defeats `-c`/`--resume`, and a top-level
-# full_auto bypasses every permission check; both are task-scoped knobs
-# that belong in a named profile. See `roba config lint`.
-model = "opus"
-stream = true
-show_thinking = true
+# Roba's own provider-neutral startup configuration.
+#
+# This file is intentionally conservative: inspection works by default, while
+# implementation requires an explicit `--writable` or `--full-auto` override.
+# Inspect the resolved values and provenance with:
+#
+#   roba config effective
+#
+# Start a finite worker or a hot MCP agent with:
+#
+#   roba run --writable --git "implement issue #..."
+#   mcp-repl -- roba serve --writable --git
 
-# ---------------------------------------------------------------------------
-# Single-issue lifecycle as one profile per phase. Each phase is a DISTINCT
-# roba run with its own permission posture (plan and review are read-only;
-# implement is the one that mutates). The sequencing -- plan, implement,
-# review, then watch/merge -- is composition you drive, not a chain baked
-# into config: roba is the per-phase worker, the orchestration lives a layer
-# up (a script, a skill, or you at the prompt). The watch/merge tail spans
-# turns (CI is wall-clock minutes), so it stays in `gh`, never an alias.
-# ---------------------------------------------------------------------------
+version = 1
 
-# PLAN -- read-only orientation against recent history. Produce an approach,
-# touch nothing.  ->  roba --profile plan "how should I approach X?"
-[profile.plan]
-readonly = true
-git_log = 10
+[agent]
+provider = "codex"
+effort = "high"
+instructions = [
+  "Read AGENTS.md and the relevant current documentation before modifying this repository.",
+  "Work in small reviewable steps and use the repository's required validation commands as the acceptance boundary.",
+  "Preserve Roba's provider-neutral single-agent boundaries, explicit authority, typed evidence, and byte-clean stdout contracts.",
+]
 
-# IMPLEMENT -- task-scoped dispatch posture: bypass tool checks, run in a
-# fresh git worktree, capped so an unattended run self-arrests (the
-# cascade-needs-runway lesson). Opt in per run with `roba --profile worker`.
-[profile.worker]
-full_auto = true
-worktree = true
-max_turns = 80
-max_budget_usd = 10.0
+[execution]
+permissions = "read_only"
+timeout_secs = 1800
 
-# REVIEW -- read-only against the working-tree diff.
-#   roba --profile review "is this safe to merge?"
-[profile.review]
-readonly = true
-git_diff = true
+[context]
+project = [
+  "Roba is an MCP-native harness for one logical Claude or Codex agent, built on a finite provider-neutral core.",
+  "The checked-in source, tests, AGENTS.md, and docs/architecture describe the current contract; legacy compatibility material is not architectural guidance.",
+]
 
-# ---------------------------------------------------------------------------
-# Lifecycle verbs. Each is ONE rich roba run (width), never a multi-step
-# chain (depth). `issue` and `review` are read-only and bring their own gh
-# context, so they take the bare `--readonly` posture rather than a
-# context-embedding profile; `fix` is the full_auto implement shot and
-# inherits the worker caps. Watch/merge stays in gh:
-#   roba fix 357 && gh pr checks <pr> --watch && gh pr merge <pr> --squash
-# ---------------------------------------------------------------------------
-
-# PLAN by issue number: summarize + propose an approach, write no code.
-#   roba issue 357
-[alias.issue]
-description = "Summarize a roba issue and propose an approach (read-only)"
-args = ["n"]
-flags = ["--readonly"]
-template = """
-Summarize roba issue #${n} and propose an implementation approach.
-Cite the files involved. Do not write code.
-
-$(gh issue view ${n})
-"""
-
-# IMPLEMENT an issue end-to-end in a worktree, then open a draft PR.
-# full_auto via the worker profile -- an explicit, named unsafe setting.
-#   roba fix 357
-[alias.fix]
-description = "Implement a roba issue in a worktree, open a draft PR (full_auto)"
-args = ["n"]
-flags = ["--profile", "worker"]
-template = """
-Implement roba issue #${n}. Follow AGENTS.md: branch, implement, run the gates
-(cargo fmt --check, clippy -D warnings, test --lib, test --test cli, cargo doc),
-commit with a conventional-commit subject, and open a draft PR with the plan as
-the body. Surface anything that does not fit rather than forcing it.
-
-$(gh issue view ${n})
-"""
-
-# REVIEW a PR by number against its own diff (read-only).
-#   roba review 356
-[alias.review]
-description = "Review a roba PR by number (read-only)"
-args = ["pr"]
-flags = ["--readonly"]
-template = """
-Review PR #${pr} in roba for correctness and regressions. Cite file:line.
-Check it against AGENTS.md conventions. No style nits.
-
-Title: $(gh pr view ${pr} --json title -q '.title')
-$(gh pr diff ${pr})
-"""
+[extensions.git]
+enabled = true
