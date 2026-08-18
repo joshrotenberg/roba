@@ -1,0 +1,22 @@
+[package]
+name = "roba-context"
+version.workspace = true
+edition = "2024"
+authors = ["Josh Rotenberg <joshrotenberg@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/joshrotenberg/roba"
+homepage = "https://github.com/joshrotenberg/roba"
+documentation = "https://docs.rs/roba-context"
+readme = "README.md"
+description = "Typed managed-context catalogs for the Roba agent harness."
+keywords = ["agent", "context", "mcp", "roba"]
+categories = ["development-tools"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

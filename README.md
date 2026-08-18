@@ -200,6 +200,9 @@ authority.
 
 ## Rust workspace
 
+- [`roba-context`](crates/roba-context) -- bounded agent, skill, and prompt
+  catalog data with provenance and deterministic selection. Startup and MCP
+  projection remain follow-up integration work.
 - [`roba-core`](crates/roba-core) -- provider-neutral specifications,
   registry, finite lifecycle, outcomes, failures, and events.
 - [`roba-mcp`](crates/roba-mcp) -- one hot logical agent, typed MCP contract,

@@ -46,3 +46,7 @@ decision and its rationale here, not a phase ledger or working-session log.
 - [`architecture/startup-config.md`](architecture/startup-config.md) -- the
   versioned `run`/`serve` startup schema, discovery, precedence, and
   provenance contract.
+
+The [`roba-context` crate README](../crates/roba-context/README.md) documents
+the bounded managed-catalog data layer. The catalog exists independently of
+startup and MCP delivery while issue #514 tracks that integration.
