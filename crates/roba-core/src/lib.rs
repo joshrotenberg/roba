@@ -7,7 +7,7 @@
 //!   events, and the provider-turn boundary. A prompt-less [`RunSpec`] is
 //!   explicitly suspended and causes no provider work.
 //! - [`lifecycle`] -- one process-local root run with observation, bounded
-//!   event replay, steering at resumable turn boundaries, cancellation, and
+//!   event replay, follow-ups at resumable turn boundaries, cancellation, and
 //!   terminal settlement.
 //! - [`providers`] -- built-in Claude and Codex adapters behind the same run
 //!   model. Claude also remains the compatibility provider for the legacy CLI.
@@ -31,8 +31,8 @@ pub mod runtime;
 pub mod session;
 
 pub use lifecycle::{
-    RUN_EVENT_CAPACITY, Run, RunControlError, RunEventPage, RunEventRecord, RunEventSubscription,
-    RunEventSubscriptionItem, RunHandle, RunSnapshot,
+    MAX_PENDING_FOLLOW_UPS, RUN_EVENT_CAPACITY, Run, RunControlError, RunEventPage, RunEventRecord,
+    RunEventSubscription, RunEventSubscriptionItem, RunHandle, RunSnapshot,
 };
 pub use provider::{
     EventSink, NoopEventSink, Provider, ProviderCapabilities, ProviderError, ProviderEvent,

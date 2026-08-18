@@ -366,7 +366,7 @@ pub struct RunOutcome {
 
 /// Normalized run event.
 ///
-/// The lifecycle owns turn boundaries, state changes, steering, and terminal
+/// The lifecycle owns turn boundaries, state changes, follow-ups, and terminal
 /// failure. Provider adapters can contribute only output, usage, and warning
 /// observations through [`crate::provider::ProviderEvent`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -377,7 +377,8 @@ pub enum RunEvent {
     OutputDelta { text: String },
     Usage { usage: TokenUsage },
     Warning { message: String },
-    SteeringQueued,
+    FollowUpQueued,
+    FollowUpApplied,
     TurnCompleted { outcome: RunOutcome },
     Failed { failure: RunFailure },
 }

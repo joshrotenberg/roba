@@ -638,6 +638,32 @@ fi
     }
 
     #[test]
+    fn operation_configuration_is_reapplied_to_fresh_and_resumed_turns() {
+        let mut fresh = request(ProviderId::claude());
+        fresh.spec.agent.model = Some("claude-operation-model".to_string());
+        fresh.spec.agent.effort = Some(Effort::High);
+        fresh.spec.execution.limits.max_turns = Some(7);
+        fresh.spec.execution.limits.max_cost_usd = Some(2.5);
+        fresh.spec.execution.limits.timeout_secs = Some(45);
+        let mut resumed = fresh.clone();
+        resumed.spec.execution.session = SessionSpec::Resume {
+            session: SessionHandle {
+                provider: ProviderId::claude(),
+                id: "session-1".to_string(),
+            },
+        };
+
+        for turn in [&fresh, &resumed] {
+            let config = ClaudeProvider::config(turn).unwrap();
+            assert_eq!(config.model.as_deref(), Some("claude-operation-model"));
+            assert_eq!(config.effort, Some(map_effort(Effort::High)));
+            assert_eq!(config.max_turns, Some(7));
+            assert_eq!(config.max_budget_usd, Some(2.5));
+            assert_eq!(config.timeout_secs, Some(45));
+        }
+    }
+
+    #[test]
     fn launch_bootstrap_precedes_explicit_context_for_fresh_and_resumed_turns() {
         let mut fresh = request(ProviderId::claude());
         fresh.spec.agent.instructions = vec!["agent instruction".to_owned()];

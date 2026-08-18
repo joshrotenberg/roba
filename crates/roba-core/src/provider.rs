@@ -267,7 +267,7 @@ impl std::error::Error for ProviderError {}
 
 /// Incremental observation owned by a provider adapter.
 ///
-/// Lifecycle events such as turn boundaries, state changes, steering, and
+/// Lifecycle events such as turn boundaries, state changes, follow-ups, and
 /// terminal failure are deliberately absent. The run driver emits those from
 /// authoritative control state instead of trusting an adapter to do so.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

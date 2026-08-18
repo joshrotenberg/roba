@@ -9,12 +9,12 @@ about contributing.
 
 A library-first, provider-neutral runtime for one finite, single-root agent run
 (Rust, edition 2024). Claude Code and Codex are provider adapters. Rust hosts
-can retain a public `RunHandle` for status, replayable events, steering,
+can retain a public `RunHandle` for status, replayable events, follow-ups,
 cancellation, and waiting; `roba run` is the current thin blocking CLI.
 
 The v0.12 work adds an MCP-native layer above that finite core. The current
 `roba-mcp` crate supplies one hot `AgentInstance`, typed `agent.turn`,
-operation-scoped steering/interruption, logical shutdown, agent-wide replay,
+operation-scoped follow-up/interruption, logical shutdown, agent-wide replay,
 `roba://agent`, optional live Tasks for `agent.turn`, an in-process MCP client,
 and a foreground stdio binding. `roba run` crosses that contract and projects
 the typed result back onto its compatibility ABI; `roba serve` keeps one
@@ -31,7 +31,7 @@ the provider-neutral API stabilizes.
 ## Scope line (read before adding any feature)
 
 - IN: provider-neutral finite root runs, explicit execution authority,
-  lifecycle and event observation, boundary-safe steering, cancellation, and
+  lifecycle and event observation, boundary-safe follow-ups, cancellation, and
   thin library/CLI adapters.
 - IN: the phase-gated, single-agent `roba-mcp` harness above core: one hot
   logical agent, one active finite run, one canonical MCP contract, and

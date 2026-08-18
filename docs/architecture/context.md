@@ -237,7 +237,7 @@ contract; prose cannot grant it.
 2. Add context linting for duplicate fingerprints, precedence conflicts,
    conflicting instructions, unsafe locators, and excessive prompt weight.
 3. Mechanically inventory clean-home, ambient, controlled, fresh, resume, and
-   steering behavior for both built-in providers.
+   follow-up behavior for both built-in providers.
 4. Add explicit acknowledgement and gate provider-facing mutation on the
    required evidence policy.
 5. Apply the same manifest to parent-spawned Robas without inheriting the

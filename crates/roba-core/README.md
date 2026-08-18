@@ -4,7 +4,7 @@ Provider-neutral contracts and a process-local lifecycle for one finite,
 single-root Roba run.
 
 [roba](https://github.com/joshrotenberg/roba) is library-first. This crate lets
-a Rust host construct, execute, observe, steer, cancel, and await one run
+a Rust host construct, execute, observe, follow up, cancel, and await one run
 without depending on clap, terminal behavior, a daemon, or persistent storage.
 
 ## What's here
@@ -12,7 +12,7 @@ without depending on clap, terminal behavior, a daemon, or persistent storage.
 - **`run` / `provider`** -- provider-neutral specifications, events, outcomes,
   typed failures, sessions, capabilities, and the one-turn provider contract.
 - **`lifecycle` / `runtime`** -- suspended creation, exact-once start,
-  boundary-safe steering, bounded replayable events, cancellation, waiting,
+  boundary-safe follow-ups, bounded replayable events, cancellation, waiting,
   and an explicit provider registry.
 - **`providers`** -- Claude and Codex adapters that normalize provider-native
   results without inventing missing usage or cost.
@@ -39,8 +39,8 @@ an immutable `RunSpec` and returns a `Run`; cloning `Run::handle()` produces a
   new events.
 - `event_page` and `wait_for_events` support explicit cursors and bounded
   long-lived observation.
-- `steer` queues guidance for the next safe provider-turn boundary when the
-  provider supports resume.
+- `follow_up` queues another prompt for the next provider-turn boundary when
+  the provider supports resume. `steer` remains a source-compatible alias.
 - `cancel` drops active provider work before publishing terminal cancellation.
 - `wait` resolves to the terminal snapshot.
 

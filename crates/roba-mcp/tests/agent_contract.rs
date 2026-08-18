@@ -228,6 +228,8 @@ async fn schema_idle_construction_and_sequential_resume_cross_the_real_mcp_clien
     assert_eq!(turn.input_schema["properties"]["text"]["type"], "string");
     assert_eq!(turn.input_schema["properties"]["text"]["pattern"], "\\S");
     assert_eq!(turn.input_schema["required"][0], "text");
+    assert!(turn.input_schema["properties"]["overrides"].is_object());
+    assert_eq!(turn.input_schema["additionalProperties"], false);
     let output_schema = turn
         .output_schema
         .as_ref()
@@ -376,6 +378,135 @@ async fn agent_resource_publishes_the_complete_safe_template_policy() {
     assert_eq!(snapshot.configuration.limits.max_turns, Some(7));
     assert_eq!(snapshot.configuration.limits.max_cost_usd, Some(1.5));
     assert_eq!(snapshot.configuration.limits.timeout_secs, Some(30));
+    assert_eq!(state.calls.load(Ordering::SeqCst), 0);
+    client.shutdown().await.expect("client shuts down cleanly");
+}
+
+#[tokio::test]
+async fn turn_overrides_are_operation_local_visible_and_evidenced() {
+    let state = Arc::new(FakeState::default());
+    let mut runtime = Roba::new();
+    runtime
+        .register(FakeProvider {
+            state: Arc::clone(&state),
+        })
+        .expect("fake provider registration succeeds");
+    let mut template = RunSpec::suspended(AgentSpec::new(fake_provider_id()));
+    template.agent.model = Some("default-model".to_string());
+    template.agent.effort = Some(CoreEffort::Low);
+    template.execution.limits.timeout_secs = Some(30);
+    let agent = AgentInstance::new(runtime, template).expect("valid configured agent");
+    let client = Arc::new(
+        connect_in_process(agent)
+            .await
+            .expect("in-process client connects"),
+    );
+
+    let turn_client = Arc::clone(&client);
+    let turn = tokio::spawn(async move {
+        turn_client
+            .call_tool(
+                AGENT_TURN_TOOL,
+                json!({
+                    "text": "hold",
+                    "overrides": {
+                        "model": "operation-model",
+                        "effort": "high",
+                        "limits": {
+                            "max_turns": 4,
+                            "max_cost_usd": 1.25,
+                            "timeout_secs": 5
+                        }
+                    }
+                }),
+            )
+            .await
+            .expect("overridden turn completes")
+    });
+    tokio::time::timeout(Duration::from_secs(1), state.started.acquire())
+        .await
+        .expect("provider started before timeout")
+        .expect("start semaphore remains open")
+        .forget();
+
+    let running = read_agent(&client).await;
+    assert_eq!(
+        running.configuration.model.as_deref(),
+        Some("default-model")
+    );
+    let active = running
+        .active_configuration
+        .expect("active operation publishes its effective configuration");
+    assert_eq!(active.model.as_deref(), Some("operation-model"));
+    assert_eq!(active.effort, Some(Effort::High));
+    assert_eq!(active.limits.max_turns, Some(4));
+    assert_eq!(active.limits.max_cost_usd, Some(1.25));
+    assert_eq!(active.limits.timeout_secs, Some(5));
+
+    state.release.add_permits(1);
+    let result = typed(&turn.await.expect("turn task joins"));
+    match result {
+        AgentTurnResult::Completed { run, .. } => {
+            assert_eq!(run.metadata.configuration, active);
+        }
+        other => panic!("unexpected overridden result: {other:?}"),
+    }
+    assert!(read_agent(&client).await.active_configuration.is_none());
+
+    client
+        .call_tool(AGENT_TURN_TOOL, json!({"text": "default"}))
+        .await
+        .expect("default turn completes");
+    {
+        let requests = state
+            .requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            requests[0].spec.agent.model.as_deref(),
+            Some("operation-model")
+        );
+        assert_eq!(requests[0].spec.agent.effort, Some(CoreEffort::High));
+        assert_eq!(requests[0].spec.execution.limits.max_turns, Some(4));
+        assert_eq!(
+            requests[1].spec.agent.model.as_deref(),
+            Some("default-model")
+        );
+        assert_eq!(requests[1].spec.agent.effort, Some(CoreEffort::Low));
+        assert_eq!(requests[1].spec.execution.limits.max_turns, None);
+    }
+
+    let client = Arc::into_inner(client).expect("all client task clones were dropped");
+    client.shutdown().await.expect("client shuts down cleanly");
+}
+
+#[tokio::test]
+async fn invalid_turn_overrides_refuse_before_provider_work() {
+    let (agent, state) = agent_with_session(None);
+    let client = connect_in_process(agent)
+        .await
+        .expect("in-process client connects");
+    for overrides in [
+        json!({"model": "  ", "limits": {}}),
+        json!({"limits": {"max_turns": 0}}),
+        json!({"limits": {"max_cost_usd": 0.0}}),
+        json!({"limits": {"timeout_secs": 0}}),
+    ] {
+        let result = client
+            .call_tool(
+                AGENT_TURN_TOOL,
+                json!({"text": "never starts", "overrides": overrides}),
+            )
+            .await
+            .expect("invalid override is a typed result");
+        assert!(result.is_error);
+        match typed(&result) {
+            AgentTurnResult::Refused { refusal } => {
+                assert_eq!(refusal.kind, AgentRefusalKind::InvalidConfiguration)
+            }
+            other => panic!("unexpected invalid override result: {other:?}"),
+        }
+    }
     assert_eq!(state.calls.load(Ordering::SeqCst), 0);
     client.shutdown().await.expect("client shuts down cleanly");
 }

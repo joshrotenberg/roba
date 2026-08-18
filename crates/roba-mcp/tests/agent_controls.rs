@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use roba_core::{
-    AgentSpec, EventSink, Provider, ProviderCapabilities, ProviderError, ProviderEvent,
-    ProviderFuture, ProviderId, Roba, RunOutcome, RunSpec, SessionHandle as CoreSessionHandle,
-    SessionSpec, TurnRequest,
+    AgentSpec, EventSink, MAX_PENDING_FOLLOW_UPS, Provider, ProviderCapabilities, ProviderError,
+    ProviderEvent, ProviderFuture, ProviderId, Roba, RunOutcome, RunSpec,
+    SessionHandle as CoreSessionHandle, SessionSpec, TurnRequest,
 };
 use roba_mcp::{
     AGENT_CONTEXT_ENTRY_TEMPLATE, AGENT_CONTEXT_URI, AGENT_EVENT_CAPACITY, AGENT_EVENTS_TEMPLATE,
@@ -296,9 +296,9 @@ async fn controls_and_event_resources_publish_complete_schemas() {
     assert_eq!(
         names,
         [
+            AGENT_STEER_TOOL,
             AGENT_INTERRUPT_TOOL,
             AGENT_SHUTDOWN_TOOL,
-            AGENT_STEER_TOOL,
             AGENT_TURN_TOOL,
         ]
     );
@@ -478,7 +478,15 @@ async fn steer_is_targeted_validated_and_runs_a_resumed_second_provider_turn() {
     let client = connect(agent.clone()).await;
     let turn_client = Arc::clone(&client);
     let turn = tokio::spawn(async move {
-        call(&turn_client, AGENT_TURN_TOOL, json!({"text": "hold-steer"})).await
+        call(
+            &turn_client,
+            AGENT_TURN_TOOL,
+            json!({
+                "text": "hold-steer",
+                "overrides": {"model": "operation-model", "limits": {"timeout_secs": 9}}
+            }),
+        )
+        .await
     });
     take_started(&state).await;
     let operation = read_agent(&client)
@@ -542,6 +550,15 @@ async fn steer_is_targeted_validated_and_runs_a_resumed_second_provider_turn() {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(requests[1].prompt.as_str(), "guidance");
         assert_eq!(
+            requests[0].spec.agent.model.as_deref(),
+            Some("operation-model")
+        );
+        assert_eq!(
+            requests[1].spec.agent.model.as_deref(),
+            Some("operation-model")
+        );
+        assert_eq!(requests[1].spec.execution.limits.timeout_secs, Some(9));
+        assert_eq!(
             requests[1].spec.execution.session,
             SessionSpec::Resume {
                 session: core_session("session-1")
@@ -549,6 +566,66 @@ async fn steer_is_targeted_validated_and_runs_a_resumed_second_provider_turn() {
         );
     }
     assert_eq!(read_agent(&client).await.state, AgentState::Idle);
+    close(client).await;
+}
+
+#[tokio::test]
+async fn follow_up_queue_refuses_overflow_without_losing_the_operation() {
+    let (agent, state) = test_agent(None);
+    let client = connect(agent).await;
+    let turn_client = Arc::clone(&client);
+    let turn = tokio::spawn(async move {
+        call(
+            &turn_client,
+            AGENT_TURN_TOOL,
+            json!({"text": "hold-follow-ups"}),
+        )
+        .await
+    });
+    take_started(&state).await;
+    let operation = read_agent(&client)
+        .await
+        .current_operation_id
+        .expect("held operation is published");
+
+    for index in 0..MAX_PENDING_FOLLOW_UPS {
+        let queued = call(
+            &client,
+            AGENT_STEER_TOOL,
+            json!({"operation_id": operation.get(), "text": format!("next-{index}")}),
+        )
+        .await;
+        assert!(matches!(typed(&queued), AgentSteerResult::Queued { .. }));
+    }
+    let overflow = call(
+        &client,
+        AGENT_STEER_TOOL,
+        json!({"operation_id": operation.get(), "text": "overflow"}),
+    )
+    .await;
+    assert!(overflow.is_error);
+    match typed::<AgentSteerResult>(&overflow) {
+        AgentSteerResult::Refused { refusal } => {
+            assert_eq!(refusal.kind, AgentControlRefusalKind::QueueFull)
+        }
+        other => panic!("unexpected overflow result: {other:?}"),
+    }
+
+    state.release.add_permits(1);
+    wait_for_calls(&state, MAX_PENDING_FOLLOW_UPS + 1).await;
+    match typed::<AgentTurnResult>(&bounded(turn).await.expect("turn task joins")) {
+        AgentTurnResult::Completed { run, .. } => {
+            assert_eq!(
+                run.metadata.turns_completed,
+                MAX_PENDING_FOLLOW_UPS as u32 + 1
+            );
+            assert_eq!(
+                run.outcome.output,
+                format!("answer:next-{}", MAX_PENDING_FOLLOW_UPS - 1)
+            );
+        }
+        other => panic!("unexpected bounded follow-up result: {other:?}"),
+    }
     close(client).await;
 }
 

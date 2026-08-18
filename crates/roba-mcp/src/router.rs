@@ -19,14 +19,16 @@ use crate::agent::TurnAdmission;
 use crate::context::ContextReadError;
 use crate::provider_endpoint::PROVIDER_MCP_SERVER_NAME;
 use crate::{
-    AGENT_EVENT_CAPACITY, AgentInstance, AgentInterruptResult, AgentShutdownResult,
-    AgentSteerResult, AgentTurnResult, OperationId, ProviderSelfSnapshot,
+    AGENT_EVENT_CAPACITY, AgentFollowUpResult, AgentInstance, AgentInterruptResult,
+    AgentShutdownResult, AgentTurnResult, OperationId, ProviderSelfSnapshot, TurnOverrides,
 };
 
 /// Base tool for one finite turn through the logical agent.
 pub const AGENT_TURN_TOOL: &str = "agent.turn";
-/// Control tool for queueing guidance on one active operation.
-pub const AGENT_STEER_TOOL: &str = "agent.steer";
+/// Control tool for queueing a prompt at the next provider-turn boundary.
+pub const AGENT_FOLLOW_UP_TOOL: &str = "agent.follow_up";
+/// Source-compatible constant for the renamed follow-up tool.
+pub const AGENT_STEER_TOOL: &str = AGENT_FOLLOW_UP_TOOL;
 /// Control tool for cancelling one active operation and awaiting settlement.
 pub const AGENT_INTERRUPT_TOOL: &str = "agent.interrupt";
 /// Control tool for permanently stopping the logical agent.
@@ -63,7 +65,8 @@ This endpoint controls one persistent logical Roba agent. Start work with \
 agent.turn; use MCP Tasks for long-running turns. Only one operation may run \
 at a time. Read roba://agent for current state and operation identity, \
 roba://context for supplied context and provenance, and roba://events for \
-observation. Use agent.steer to guide active work, agent.interrupt to cancel \
+observation. Use agent.follow_up to queue another provider turn after the \
+current one, agent.interrupt to cancel \
 work while keeping the agent available, and agent.shutdown only when the host \
 should terminate. Additional capabilities may be exposed as MCP extensions; \
 inspect discovery rather than assuming they exist.";
@@ -83,21 +86,26 @@ struct PreparedTurn {
 }
 
 /// Input contract for [`AGENT_TURN_TOOL`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TurnInput {
     #[schemars(regex(pattern = r"\S"))]
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overrides: Option<TurnOverrides>,
 }
 
-/// Input contract for [`AGENT_STEER_TOOL`].
+/// Input contract for [`AGENT_FOLLOW_UP_TOOL`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct SteerInput {
+pub struct FollowUpInput {
     pub operation_id: OperationId,
     #[schemars(regex(pattern = r"\S"))]
     pub text: String,
 }
+
+/// Source-compatible name for [`FollowUpInput`].
+pub type SteerInput = FollowUpInput;
 
 /// Input contract for [`AGENT_INTERRUPT_TOOL`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -226,7 +234,9 @@ pub(crate) fn base_control_router(agent: AgentInstance) -> McpRouter {
         .fallback_handler(move |input: TurnInput| {
             let agent = fallback_agent.clone();
             async move {
-                let result = agent.turn(input.text).await;
+                let result = agent
+                    .turn_with_overrides(input.text, input.overrides.unwrap_or_default())
+                    .await;
                 encode_turn(&result)
             }
         })
@@ -253,7 +263,9 @@ pub(crate) fn base_control_router(agent: AgentInstance) -> McpRouter {
                         "live agent.turn task disappeared during preparation",
                     ));
                 }
-                let admission = agent.admit_turn(input.text).await;
+                let admission = agent
+                    .admit_turn_with_overrides(input.text, input.overrides.unwrap_or_default())
+                    .await;
                 let mut preparation = TaskPreparation::new().with_extension(PreparedTurn {
                     admission: admission.clone(),
                     prepared_at,
@@ -268,17 +280,17 @@ pub(crate) fn base_control_router(agent: AgentInstance) -> McpRouter {
             }
         });
 
-    let steer_output_schema = serde_json::to_value(schema_for!(AgentSteerResult))
-        .expect("static agent steer schema must serialize");
-    let steer_agent = agent.clone();
-    let steer = ToolBuilder::new(AGENT_STEER_TOOL)
-        .description("Queue guidance for one exact active Roba operation.")
-        .output_schema(steer_output_schema)
-        .handler(move |input: SteerInput| {
-            let agent = steer_agent.clone();
+    let follow_up_output_schema = serde_json::to_value(schema_for!(AgentFollowUpResult))
+        .expect("static agent follow-up schema must serialize");
+    let follow_up_agent = agent.clone();
+    let follow_up = ToolBuilder::new(AGENT_FOLLOW_UP_TOOL)
+        .description("Queue a prompt for the next turn of one exact active operation.")
+        .output_schema(follow_up_output_schema)
+        .handler(move |input: FollowUpInput| {
+            let agent = follow_up_agent.clone();
             async move {
-                let result = agent.steer(input.operation_id, input.text).await;
-                encode_steer(&result)
+                let result = agent.follow_up(input.operation_id, input.text).await;
+                encode_follow_up(&result)
             }
         })
         .build();
@@ -410,7 +422,7 @@ pub(crate) fn base_control_router(agent: AgentInstance) -> McpRouter {
         .instructions(CONTROL_INSTRUCTIONS)
         .task_store(task_store)
         .tool(turn)
-        .tool(steer)
+        .tool(follow_up)
         .tool(interrupt)
         .tool(shutdown)
         .resource(state)
@@ -426,7 +438,7 @@ pub(crate) fn base_control_router(agent: AgentInstance) -> McpRouter {
 ///
 /// This is an explicit allowlist, not a filtered control router. It contains
 /// only operation identity, generation-fenced context resources, and explicit
-/// provider extension capabilities. It contains no turn admission, steering,
+/// provider extension capabilities. It contains no turn admission, follow-up,
 /// interruption, shutdown, Tasks, event history, configuration, or retained
 /// provider-session state.
 pub fn agent_router(agent: AgentInstance, operation_id: OperationId) -> McpRouter {
@@ -695,7 +707,7 @@ async fn retain_settled_task(
     Ok(())
 }
 
-fn encode_steer(value: &AgentSteerResult) -> tower_mcp::Result<CallToolResult> {
+fn encode_follow_up(value: &AgentFollowUpResult) -> tower_mcp::Result<CallToolResult> {
     let mut result = CallToolResult::from_serialize(value)?;
     result.content = vec![Content::text(value.display_text())];
     result.is_error = value.is_error();
@@ -889,6 +901,7 @@ mod tests {
             &client,
             TurnInput {
                 text: "do the thing".to_owned(),
+                overrides: None,
             },
         )
         .await;
