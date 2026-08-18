@@ -20,6 +20,23 @@ timeout_secs = 900
 [context]
 project = ["This repository's public API is its compatibility boundary."]
 # run = ["Context added to every operation admitted by this host."]
+# Selecting managed context is optional. With no agent selection, provider
+# behavior remains ambient even though built-in catalog metadata is available.
+agent = "roba.repo-worker"
+skills = []
+prompts = ["roba.issue-worker"]
+
+[context.builtins]
+enabled = true
+# disable = ["roba.issue-worker"]
+
+# Project definitions use exactly one bounded inline body or a Markdown path
+# relative to this file. Bodies never appear in `roba config effective`.
+# [[context.definitions]]
+# kind = "skill"
+# id = "local.project-conventions"
+# description = "Repository-specific engineering conventions."
+# path = ".roba/skills/project-conventions.md"
 
 [extensions.git]
 enabled = true

@@ -88,6 +88,11 @@ files from the effective cwd to the Git root, layered over
 `~/.config/roba/roba.toml`. Use `roba config effective` to inspect the safe
 resolved values and per-field provenance without starting a provider.
 Unversioned files are rejected rather than guessed or silently migrated.
+Startup configuration can also select a managed agent role, skills, and MCP
+prompts from the built-in catalog or bounded repository-local definitions.
+`roba config effective` reports their content-free origins and fingerprints;
+selected bodies are not yet delivered to providers while #514's MCP projection
+slice remains open.
 
 ## Hot MCP agents
 

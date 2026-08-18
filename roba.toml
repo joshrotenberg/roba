@@ -27,6 +27,8 @@ permissions = "read_only"
 timeout_secs = 1800
 
 [context]
+agent = "roba.repo-worker"
+prompts = ["roba.issue-worker"]
 project = [
   "Roba is an MCP-native harness for one logical Claude or Codex agent, built on a finite provider-neutral core.",
   "The checked-in source, tests, AGENTS.md, and docs/architecture describe the current contract; historical designs live only in Git history.",

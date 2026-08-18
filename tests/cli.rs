@@ -167,6 +167,61 @@ fn config_effective_reports_safe_values_sources_and_provenance() {
 }
 
 #[test]
+fn config_effective_reports_managed_catalog_metadata_without_bodies() {
+    let project = project_config(
+        "version = 1\n\
+         [context]\nagent = 'local.worker'\n\
+         [context.builtins]\nenabled = false\n\
+         [[context.definitions]]\nkind = 'agent'\nid = 'local.worker'\ndescription = 'Local worker.'\ninline = 'PRIVATE AGENT BODY'\ndefault_skills = ['local.review']\n\
+         [[context.definitions]]\nkind = 'skill'\nid = 'local.review'\ndescription = 'Local review skill.'\npath = '.roba/review.md'\n",
+    );
+    std::fs::create_dir_all(project.path().join(".roba")).unwrap();
+    std::fs::write(project.path().join(".roba/review.md"), "PRIVATE SKILL BODY").unwrap();
+
+    let output = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "config",
+            "effective",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let context = &value["result"]["context"];
+    assert_eq!(context["agent"], "local.worker");
+    assert_eq!(context["builtins"]["enabled"], false);
+    assert_eq!(context["selection"]["agent"], "local.worker");
+    assert_eq!(context["selection"]["skills"][0], "local.review");
+    assert_eq!(context["catalog"]["entries"].as_array().unwrap().len(), 2);
+    assert!(
+        context["catalog"]["fingerprint"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    let review = context["catalog"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == "local.review")
+        .unwrap();
+    assert_eq!(review["origin"]["kind"], "project");
+    assert_eq!(review["source"]["kind"], "markdown_path");
+    assert_eq!(review["source"]["path"], ".roba/review.md");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(!stdout.contains("PRIVATE AGENT BODY"));
+    assert!(!stdout.contains("PRIVATE SKILL BODY"));
+}
+
+#[test]
 fn config_errors_fail_closed_in_the_requested_envelope() {
     let project = project_config("version = 1\n[agent]\nproivder = 'codex'\n");
     let output = roba()
