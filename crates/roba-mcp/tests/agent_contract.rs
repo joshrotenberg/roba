@@ -9,9 +9,10 @@ use roba_core::{
     RunOutcome, RunSpec, SessionHandle as CoreSessionHandle, SessionSpec, TurnRequest,
 };
 use roba_mcp::{
-    AGENT_RESOURCE_URI, AGENT_TURN_TOOL, AgentBuildError, AgentInstance, AgentRefusalKind,
-    AgentSnapshot, AgentState, AgentStopError, AgentTurnResult, Effort, FailureKind,
-    PermissionPolicy, connect_in_process,
+    AGENT_CONTEXT_ENTRY_TEMPLATE, AGENT_CONTEXT_URI, AGENT_RESOURCE_URI, AGENT_TURN_TOOL,
+    AgentBuildError, AgentInstance, AgentRefusalKind, AgentSnapshot, AgentState, AgentStopError,
+    AgentTurnResult, ContextContent, ContextSnapshot, Effort, FailureKind, PermissionPolicy,
+    connect_in_process,
 };
 use serde_json::json;
 use tokio::sync::Semaphore;
@@ -797,8 +798,8 @@ fn construction_rejects_invalid_templates_without_provider_work() {
     assert_eq!(state.calls.load(Ordering::SeqCst), 0);
 }
 
-#[test]
-fn construction_retains_a_content_free_inventory_of_explicit_template_context() {
+#[tokio::test]
+async fn construction_retains_a_content_free_inventory_of_explicit_template_context() {
     let state = Arc::new(FakeState::default());
     let mut runtime = Roba::new();
     runtime
@@ -825,4 +826,45 @@ fn construction_retains_a_content_free_inventory_of_explicit_template_context() 
     assert!(!serialized.contains("private project context"));
     assert!(!serialized.contains("private run context"));
     assert_eq!(state.calls.load(Ordering::SeqCst), 0);
+
+    let client = connect_in_process(agent)
+        .await
+        .expect("context control client connects");
+    let resources = client.list_resources().await.unwrap().resources;
+    assert!(
+        resources
+            .iter()
+            .any(|resource| resource.uri == AGENT_CONTEXT_URI)
+    );
+    let templates = client
+        .list_resource_templates()
+        .await
+        .unwrap()
+        .resource_templates;
+    assert!(
+        templates
+            .iter()
+            .any(|template| template.uri_template == AGENT_CONTEXT_ENTRY_TEMPLATE)
+    );
+    let snapshot = client.read_resource(AGENT_CONTEXT_URI).await.unwrap();
+    let snapshot_text = snapshot.first_text().unwrap();
+    assert!(!snapshot_text.contains("private instruction"));
+    let snapshot: ContextSnapshot = serde_json::from_str(snapshot_text).unwrap();
+    assert_eq!(snapshot.operation_id, None);
+    assert_eq!(snapshot.read_evidence, None);
+    let uri = format!(
+        "roba://context/entry?id=agent.instruction.1&generation={}",
+        snapshot.manifest.generation
+    );
+    let content = client.read_resource(&uri).await.unwrap();
+    let content: ContextContent = serde_json::from_str(content.first_text().unwrap()).unwrap();
+    assert_eq!(content.operation_id, None);
+    assert_eq!(content.content, "private instruction");
+    assert!(
+        client
+            .read_resource("roba://context/entry?id=agent.instruction.1&generation=2")
+            .await
+            .is_err()
+    );
+    client.shutdown().await.unwrap();
 }

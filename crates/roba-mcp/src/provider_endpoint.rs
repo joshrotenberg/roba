@@ -51,6 +51,8 @@ impl ProviderEndpoint {
 
         let mut tool_names = agent.extensions().provider_tool_names().to_vec();
         tool_names.push(crate::ROBA_SELF_TOOL.to_owned());
+        tool_names.push(crate::ROBA_CONTEXT_MANIFEST_TOOL.to_owned());
+        tool_names.push(crate::ROBA_CONTEXT_READ_TOOL.to_owned());
         tool_names.sort_unstable();
         tool_names.dedup();
         let app = HttpTransport::new(crate::router::agent_router(agent, operation_id))

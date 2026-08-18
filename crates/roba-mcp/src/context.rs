@@ -8,12 +8,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use roba_core::RunSpec;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tower_mcp::schemars::{self, JsonSchema};
+
+use crate::OperationId;
 
 /// Schema version of the public context manifest.
 pub const CONTEXT_MANIFEST_SCHEMA_VERSION: u32 = 1;
@@ -101,9 +104,11 @@ pub enum ContextFreshness {
 pub enum ContextSensitivity {
     /// Material may be displayed by an explicitly content-bearing surface.
     Public,
-    /// Material is hidden, but its SHA-256 fingerprint may be displayed.
+    /// Material is hidden from manifests and diagnostics, but may be read
+    /// through an explicitly content-bearing, role-scoped surface.
     Redacted,
-    /// Neither material nor a content-derived fingerprint may be displayed.
+    /// Neither material nor a content-derived fingerprint may be exposed by
+    /// the generic context contract.
     Secret,
 }
 
@@ -238,6 +243,83 @@ pub struct ContextManifest {
     pub fingerprint: ContextFingerprint,
 }
 
+/// Aggregate timestamps and count for one mechanically observed MCP read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContextReadStats {
+    pub first_read_at_unix_ms: Option<u64>,
+    pub last_read_at_unix_ms: Option<u64>,
+    pub read_count: u64,
+}
+
+impl ContextReadStats {
+    fn record(&mut self, observed_at_unix_ms: Option<u64>) {
+        if self.read_count == 0 {
+            self.first_read_at_unix_ms = observed_at_unix_ms;
+        }
+        self.last_read_at_unix_ms = observed_at_unix_ms;
+        self.read_count = self.read_count.saturating_add(1);
+    }
+}
+
+/// Mechanical read evidence for one context entry in one operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContextEntryRead {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<ContextFingerprint>,
+    pub stats: ContextReadStats,
+}
+
+/// Generation-fenced context reads observed for one exact provider operation.
+///
+/// A read proves that the provider-side MCP client requested the resource. It
+/// does not prove that the model understood, acknowledged, or followed it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContextReadEvidence {
+    pub operation_id: OperationId,
+    pub generation: u64,
+    pub manifest_fingerprint: ContextFingerprint,
+    pub manifest: ContextReadStats,
+    pub entries: Vec<ContextEntryRead>,
+}
+
+/// Content-free Roba-declared context plus current or latest read evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContextSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<OperationId>,
+    pub manifest: ContextManifest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_evidence: Option<ContextReadEvidence>,
+}
+
+/// Explicitly content-bearing response for one context entry.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContextContent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<OperationId>,
+    pub generation: u64,
+    pub entry: ContextEntry,
+    pub content: String,
+}
+
+impl fmt::Debug for ContextContent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ContextContent")
+            .field("operation_id", &self.operation_id)
+            .field("generation", &self.generation)
+            .field("entry", &self.entry)
+            .field("content", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// Host-owned plan retaining material separately from its public manifest.
 #[derive(Clone)]
 pub struct ContextPlan {
@@ -310,6 +392,40 @@ impl ContextPlan {
     pub fn material(&self, id: &str) -> Option<&str> {
         self.material.get(id).map(AsRef::as_ref)
     }
+
+    pub(crate) fn content(
+        &self,
+        operation_id: Option<OperationId>,
+        id: &str,
+        generation: u64,
+    ) -> Result<ContextContent, ContextReadError> {
+        if generation != self.manifest.generation {
+            return Err(ContextReadError::GenerationMismatch {
+                requested: generation,
+                current: self.manifest.generation,
+            });
+        }
+        let entry = self
+            .manifest
+            .entries
+            .iter()
+            .find(|entry| entry.id == id)
+            .cloned()
+            .ok_or_else(|| ContextReadError::EntryNotFound(id.to_owned()))?;
+        if entry.sensitivity == ContextSensitivity::Secret || !entry.material_available {
+            return Err(ContextReadError::ContentUnavailable(id.to_owned()));
+        }
+        let content = self
+            .material(id)
+            .ok_or_else(|| ContextReadError::ContentUnavailable(id.to_owned()))?
+            .to_owned();
+        Ok(ContextContent {
+            operation_id,
+            generation,
+            entry,
+            content,
+        })
+    }
 }
 
 impl fmt::Debug for ContextPlan {
@@ -373,13 +489,14 @@ impl ContextPlanBuilder {
         material: impl AsRef<str>,
     ) -> Result<(), ContextPlanError> {
         let material = material.as_ref();
+        let material_available = spec.sensitivity != ContextSensitivity::Secret;
         let fingerprint = match spec.sensitivity {
             ContextSensitivity::Public | ContextSensitivity::Redacted => {
                 Some(fingerprint([material.as_bytes()]))
             }
             ContextSensitivity::Secret => None,
         };
-        let id = self.add_entry(spec, fingerprint, true)?;
+        let id = self.add_entry(spec, fingerprint, material_available)?;
         self.material.insert(id, Arc::from(material));
         Ok(())
     }
@@ -457,6 +574,110 @@ impl fmt::Display for ContextPlanError {
 
 impl std::error::Error for ContextPlanError {}
 
+/// Failure to resolve one generation-fenced context content resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ContextReadError {
+    OperationUnavailable(OperationId),
+    GenerationMismatch { requested: u64, current: u64 },
+    EntryNotFound(String),
+    ContentUnavailable(String),
+}
+
+impl fmt::Display for ContextReadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OperationUnavailable(operation_id) => write!(
+                formatter,
+                "context for operation {} is unavailable or has expired",
+                operation_id.get()
+            ),
+            Self::GenerationMismatch { requested, current } => write!(
+                formatter,
+                "context generation {requested} is stale or unknown; current generation is {current}"
+            ),
+            Self::EntryNotFound(id) => write!(formatter, "context entry `{id}` does not exist"),
+            Self::ContentUnavailable(id) => {
+                write!(formatter, "context entry `{id}` has no readable content")
+            }
+        }
+    }
+}
+
+/// Mutable read evidence for one exact provider operation.
+pub(crate) struct OperationContext {
+    plan: ContextPlan,
+    evidence: Mutex<ContextReadEvidence>,
+}
+
+impl OperationContext {
+    pub(crate) fn new(operation_id: OperationId, plan: ContextPlan) -> Self {
+        Self {
+            evidence: Mutex::new(ContextReadEvidence {
+                operation_id,
+                generation: plan.manifest.generation,
+                manifest_fingerprint: plan.manifest.fingerprint.clone(),
+                manifest: ContextReadStats {
+                    first_read_at_unix_ms: None,
+                    last_read_at_unix_ms: None,
+                    read_count: 0,
+                },
+                entries: Vec::new(),
+            }),
+            plan,
+        }
+    }
+
+    pub(crate) fn manifest_read(&self) -> ContextSnapshot {
+        let mut evidence = self
+            .evidence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        evidence.manifest.record(unix_time_ms());
+        ContextSnapshot {
+            operation_id: Some(evidence.operation_id),
+            manifest: self.plan.manifest.clone(),
+            read_evidence: Some(evidence.clone()),
+        }
+    }
+
+    pub(crate) fn content_read(
+        &self,
+        id: &str,
+        generation: u64,
+    ) -> Result<ContextContent, ContextReadError> {
+        let operation_id = self.evidence().operation_id;
+        let content = self.plan.content(Some(operation_id), id, generation)?;
+        let mut evidence = self
+            .evidence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let observed_at = unix_time_ms();
+        if let Some(existing) = evidence.entries.iter_mut().find(|entry| entry.id == id) {
+            existing.stats.record(observed_at);
+        } else {
+            let mut stats = ContextReadStats {
+                first_read_at_unix_ms: None,
+                last_read_at_unix_ms: None,
+                read_count: 0,
+            };
+            stats.record(observed_at);
+            evidence.entries.push(ContextEntryRead {
+                id: id.to_owned(),
+                fingerprint: content.entry.fingerprint.clone(),
+                stats,
+            });
+        }
+        Ok(content)
+    }
+
+    pub(crate) fn evidence(&self) -> ContextReadEvidence {
+        self.evidence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
 fn valid_context_id(value: &str) -> bool {
     let mut chars = value.chars();
     chars
@@ -481,6 +702,13 @@ fn fingerprint<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> ContextFingerpr
         write!(encoded, "{byte:02x}").expect("writing to String cannot fail");
     }
     ContextFingerprint(encoded)
+}
+
+fn unix_time_ms() -> Option<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
 }
 
 #[cfg(test)]
@@ -533,6 +761,8 @@ mod tests {
         );
         assert!(plan.manifest().entries[0].fingerprint.is_some());
         assert!(plan.manifest().entries[1].fingerprint.is_none());
+        assert!(plan.manifest().entries[0].material_available);
+        assert!(!plan.manifest().entries[1].material_available);
     }
 
     #[test]
@@ -648,6 +878,71 @@ mod tests {
                 "kind": "run_spec",
                 "label": "agent.instructions[0]"
             })
+        );
+    }
+
+    #[test]
+    fn operation_reads_are_generation_fenced_counted_and_content_safe_in_debug() {
+        let mut builder = ContextPlan::builder(AmbientContextPolicy::Controlled).generation(4);
+        builder
+            .add_inline(
+                entry("worker.instructions", ContextSensitivity::Redacted),
+                "read this once",
+            )
+            .unwrap();
+        let operation = OperationContext::new(OperationId::new(9), builder.build());
+
+        let first_manifest = operation.manifest_read();
+        assert_eq!(first_manifest.operation_id, Some(OperationId::new(9)));
+        assert_eq!(
+            first_manifest
+                .read_evidence
+                .as_ref()
+                .unwrap()
+                .manifest
+                .read_count,
+            1
+        );
+        let content = operation.content_read("worker.instructions", 4).unwrap();
+        assert_eq!(content.content, "read this once");
+        assert!(!format!("{content:?}").contains("read this once"));
+        operation.content_read("worker.instructions", 4).unwrap();
+        let evidence = operation.manifest_read().read_evidence.unwrap();
+        assert_eq!(evidence.manifest.read_count, 2);
+        assert_eq!(evidence.entries.len(), 1);
+        assert_eq!(evidence.entries[0].stats.read_count, 2);
+
+        assert_eq!(
+            operation
+                .content_read("worker.instructions", 3)
+                .unwrap_err(),
+            ContextReadError::GenerationMismatch {
+                requested: 3,
+                current: 4
+            }
+        );
+        assert_eq!(operation.evidence().entries[0].stats.read_count, 2);
+    }
+
+    #[test]
+    fn generic_context_resources_never_expose_secret_material() {
+        let mut builder = ContextPlan::builder(AmbientContextPolicy::Hermetic);
+        builder
+            .add_inline(
+                entry("provider.secret", ContextSensitivity::Secret),
+                "do not expose",
+            )
+            .unwrap();
+        let plan = builder.build();
+
+        assert_eq!(
+            plan.content(None, "provider.secret", 1).unwrap_err(),
+            ContextReadError::ContentUnavailable("provider.secret".to_owned())
+        );
+        assert!(
+            !serde_json::to_string(plan.manifest())
+                .unwrap()
+                .contains("do not expose")
         );
     }
 }

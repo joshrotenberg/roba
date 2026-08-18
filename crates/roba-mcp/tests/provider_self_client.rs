@@ -16,10 +16,11 @@ use roba_core::{
     RunOutcome, RunSpec, SessionHandle as CoreSessionHandle, SessionSpec, TurnRequest,
 };
 use roba_mcp::{
-    AGENT_EVENTS_URI, AGENT_INTERRUPT_TOOL, AGENT_RESOURCE_URI, AGENT_SHUTDOWN_TOOL,
-    AGENT_STEER_TOOL, AGENT_TURN_TOOL, AgentInstance, AgentInterruptResult, AgentState,
-    AgentTerminalState, AgentTurnResult, OperationId, PROVIDER_MCP_SERVER_NAME,
-    ProviderSelfSnapshot, ROBA_SELF_TOOL, agent_router, connect_in_process,
+    AGENT_CONTEXT_URI, AGENT_EVENTS_URI, AGENT_INTERRUPT_TOOL, AGENT_RESOURCE_URI,
+    AGENT_SHUTDOWN_TOOL, AGENT_STEER_TOOL, AGENT_TURN_TOOL, AgentInstance, AgentInterruptResult,
+    AgentState, AgentTerminalState, AgentTurnResult, ContextContent, ContextSnapshot, OperationId,
+    PROVIDER_MCP_SERVER_NAME, ProviderSelfSnapshot, ROBA_CONTEXT_MANIFEST_TOOL,
+    ROBA_CONTEXT_READ_TOOL, ROBA_SELF_TOOL, agent_router, connect_in_process,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -31,8 +32,10 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone)]
 struct CallbackObservation {
     tools: Vec<String>,
-    resource_count: usize,
+    resources: Vec<String>,
     snapshot: ProviderSelfSnapshot,
+    context: ContextSnapshot,
+    content: ContextContent,
     result_json: String,
 }
 
@@ -169,6 +172,69 @@ impl Provider for CallbackProvider {
                 .list_resources()
                 .await
                 .map_err(|error| callback_error("list resources", error))?;
+            let initial_context = client
+                .call_tool(ROBA_CONTEXT_MANIFEST_TOOL, json!({}))
+                .await
+                .map_err(|error| callback_error("call context.manifest", error))?;
+            if initial_context.is_error {
+                return Err(callback_error(
+                    "call context.manifest",
+                    "returned isError=true",
+                ));
+            }
+            let initial_context = typed::<ContextSnapshot>(&initial_context);
+            let entry = initial_context.manifest.entries.first().ok_or_else(|| {
+                ProviderError::new(
+                    CoreFailureKind::Provider,
+                    "provider context manifest had no test entry",
+                )
+            })?;
+            let content = client
+                .call_tool(
+                    ROBA_CONTEXT_READ_TOOL,
+                    json!({
+                        "id": entry.id,
+                        "generation": initial_context.manifest.generation,
+                    }),
+                )
+                .await
+                .map_err(|error| callback_error("call context.read", error))?;
+            if content.is_error {
+                return Err(callback_error("call context.read", "returned isError=true"));
+            }
+            let content = typed::<ContextContent>(&content);
+            for rejected_arguments in [
+                json!({
+                    "id": entry.id,
+                    "generation": initial_context.manifest.generation.saturating_add(1),
+                }),
+                json!({
+                    "id": "missing.entry",
+                    "generation": initial_context.manifest.generation,
+                }),
+            ] {
+                let rejected = client
+                    .call_tool(ROBA_CONTEXT_READ_TOOL, rejected_arguments.clone())
+                    .await
+                    .map_err(|error| callback_error("call rejected context.read", error))?;
+                if !rejected.is_error {
+                    return Err(ProviderError::new(
+                        CoreFailureKind::Provider,
+                        format!("provider context unexpectedly accepted {rejected_arguments}"),
+                    ));
+                }
+            }
+            let context = client
+                .call_tool(ROBA_CONTEXT_MANIFEST_TOOL, json!({}))
+                .await
+                .map_err(|error| callback_error("reread context evidence", error))?;
+            if context.is_error {
+                return Err(callback_error(
+                    "reread context evidence",
+                    "returned isError=true",
+                ));
+            }
+            let context = typed::<ContextSnapshot>(&context);
             let result = client
                 .call_tool(ROBA_SELF_TOOL, json!({}))
                 .await
@@ -186,8 +252,10 @@ impl Provider for CallbackProvider {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(CallbackObservation {
                     tools,
-                    resource_count: resources,
+                    resources,
                     snapshot,
+                    context,
+                    content,
                     result_json: serde_json::to_string(&result)
                         .expect("callback result serializes"),
                 });
@@ -239,6 +307,14 @@ fn fake_provider_id() -> ProviderId {
     ProviderId::new("provider-self-fake").expect("static provider id is valid")
 }
 
+fn expected_provider_tools() -> Vec<String> {
+    vec![
+        ROBA_CONTEXT_MANIFEST_TOOL.to_owned(),
+        ROBA_CONTEXT_READ_TOOL.to_owned(),
+        ROBA_SELF_TOOL.to_owned(),
+    ]
+}
+
 fn test_agent() -> (AgentInstance, Arc<FakeState>) {
     let state = Arc::new(FakeState::default());
     let mut runtime = Roba::new();
@@ -247,7 +323,8 @@ fn test_agent() -> (AgentInstance, Arc<FakeState>) {
             state: Arc::clone(&state),
         })
         .expect("fake provider registration succeeds");
-    let template = RunSpec::suspended(AgentSpec::new(fake_provider_id()));
+    let mut template = RunSpec::suspended(AgentSpec::new(fake_provider_id()));
+    template.agent.instructions = vec!["private provider instruction".to_owned()];
     let agent = AgentInstance::new(runtime, template).expect("test agent is valid");
     (agent, state)
 }
@@ -405,12 +482,18 @@ impl TestHttpMcpClient {
             .collect()
     }
 
-    async fn list_resources(&mut self) -> Result<usize, String> {
+    async fn list_resources(&mut self) -> Result<Vec<String>, String> {
         let result = self.request("resources/list", json!({})).await?;
         result["resources"]
             .as_array()
-            .map(Vec::len)
-            .ok_or_else(|| format!("resources/list returned malformed result: {result}"))
+            .ok_or_else(|| format!("resources/list returned malformed result: {result}"))?
+            .iter()
+            .map(|resource| {
+                resource["uri"].as_str().map(str::to_owned).ok_or_else(|| {
+                    format!("resources/list returned malformed resource: {resource}")
+                })
+            })
+            .collect()
     }
 
     async fn call_tool(&mut self, name: &str, arguments: Value) -> Result<CallToolResult, String> {
@@ -588,19 +671,38 @@ async fn control_and_provider_discovery_are_exact_role_projections() {
         .list_tools()
         .await
         .expect("provider tools are discoverable")
-        .tools
+        .tools;
+    let manifest_tool = provider_tools
+        .iter()
+        .find(|tool| tool.name == ROBA_CONTEXT_MANIFEST_TOOL)
+        .expect("provider manifest tool is discoverable");
+    assert_eq!(manifest_tool.input_schema["additionalProperties"], false);
+    assert!(manifest_tool.output_schema.is_some());
+    let read_tool = provider_tools
+        .iter()
+        .find(|tool| tool.name == ROBA_CONTEXT_READ_TOOL)
+        .expect("provider context read tool is discoverable");
+    assert_eq!(read_tool.input_schema["additionalProperties"], false);
+    assert_eq!(read_tool.input_schema["properties"]["id"]["pattern"], "\\S");
+    assert_eq!(
+        read_tool.input_schema["required"],
+        json!(["id", "generation"])
+    );
+    assert!(read_tool.output_schema.is_some());
+    let provider_tools = provider_tools
         .into_iter()
         .map(|tool| tool.name)
         .collect::<Vec<_>>();
-    assert_eq!(provider_tools, [ROBA_SELF_TOOL]);
-    assert!(
-        provider_client
-            .list_resources()
-            .await
-            .expect("provider resources are discoverable")
-            .resources
-            .is_empty()
-    );
+    let mut provider_tools = provider_tools;
+    provider_tools.sort_unstable();
+    assert_eq!(provider_tools, expected_provider_tools());
+    let provider_resources = provider_client
+        .list_resources()
+        .await
+        .expect("provider resources are discoverable")
+        .resources;
+    assert_eq!(provider_resources.len(), 1);
+    assert_eq!(provider_resources[0].uri, AGENT_CONTEXT_URI);
     assert!(
         provider_client
             .list_prompts()
@@ -728,10 +830,34 @@ async fn authenticated_callback_rotates_credentials_expires_and_stays_out_of_ser
     let callbacks = snapshot_callbacks(&state);
     assert_eq!(callbacks.len(), 2);
     for (index, callback) in callbacks.iter().enumerate() {
-        assert_eq!(callback.tools, [ROBA_SELF_TOOL]);
-        assert_eq!(callback.resource_count, 0);
+        let mut tools = callback.tools.clone();
+        tools.sort_unstable();
+        assert_eq!(tools, expected_provider_tools());
+        assert_eq!(callback.resources, [AGENT_CONTEXT_URI]);
         assert_eq!(callback.snapshot.state, AgentState::Running);
         assert_eq!(callback.snapshot.operation_id.get(), index as u64 + 1);
+        assert_eq!(
+            callback.context.operation_id,
+            Some(callback.snapshot.operation_id)
+        );
+        let evidence = callback
+            .context
+            .read_evidence
+            .as_ref()
+            .expect("provider context read evidence is present");
+        assert_eq!(evidence.operation_id, callback.snapshot.operation_id);
+        assert_eq!(evidence.generation, callback.context.manifest.generation);
+        assert_eq!(evidence.manifest.read_count, 2);
+        assert_eq!(evidence.entries.len(), 1);
+        assert_eq!(evidence.entries[0].id, "agent.instruction.1");
+        assert_eq!(evidence.entries[0].stats.read_count, 1);
+        assert_eq!(
+            callback.content.operation_id,
+            Some(callback.snapshot.operation_id)
+        );
+        assert_eq!(callback.content.entry.id, "agent.instruction.1");
+        assert_eq!(callback.content.content, "private provider instruction");
+        assert!(!format!("{:?}", callback.content).contains("private provider instruction"));
         assert_launch_material_absent(&callback.result_json, &endpoints);
     }
     let launch_debug = state
@@ -769,6 +895,23 @@ async fn authenticated_callback_rotates_credentials_expires_and_stays_out_of_ser
             .first_text()
             .expect("events resource is JSON text"),
         &endpoints,
+    );
+    let public_context = bounded(client.read_resource(AGENT_CONTEXT_URI))
+        .await
+        .expect("public context resource remains readable");
+    let public_context_text = public_context
+        .first_text()
+        .expect("context resource is JSON text");
+    assert!(!public_context_text.contains("private provider instruction"));
+    let public_context: ContextSnapshot = serde_json::from_str(public_context_text)
+        .expect("public context resource matches ContextSnapshot");
+    assert_eq!(public_context.operation_id.map(OperationId::get), Some(2));
+    assert_eq!(
+        public_context
+            .read_evidence
+            .as_ref()
+            .map(|evidence| evidence.entries[0].stats.read_count),
+        Some(1)
     );
     assert_launch_material_absent(
         &serde_json::to_string(&first_result).expect("first MCP result serializes"),

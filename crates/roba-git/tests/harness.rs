@@ -23,8 +23,9 @@ use roba_git::{
     GIT_SNAPSHOT_TOOL, GIT_STAGE_ALL_TOOL, GIT_WORKSPACE_RESOURCE_URI, GitAuthority, GitWorkspace,
 };
 use roba_mcp::{
-    AGENT_TURN_TOOL, AgentExtensions, AgentInstance, OperationId, PROVIDER_MCP_SERVER_NAME,
-    ROBA_SELF_TOOL, agent_router, connect_in_process,
+    AGENT_CONTEXT_URI, AGENT_TURN_TOOL, AgentExtensions, AgentInstance, OperationId,
+    PROVIDER_MCP_SERVER_NAME, ROBA_CONTEXT_MANIFEST_TOOL, ROBA_CONTEXT_READ_TOOL, ROBA_SELF_TOOL,
+    agent_router, connect_in_process,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -36,6 +37,22 @@ const SESSION_ID: &str = "phase-6-sticky-session";
 const INSTRUCTION: &str = "  preserve instruction whitespace\nsecond line: αβ  ";
 const PROJECT_CONTEXT: &str = "project context\n  stays byte-for-byte\t";
 const RUN_CONTEXT: &str = "\trun context has leading and trailing space ";
+
+fn expected_provider_tools() -> Vec<String> {
+    vec![
+        ROBA_CONTEXT_MANIFEST_TOOL.to_owned(),
+        ROBA_CONTEXT_READ_TOOL.to_owned(),
+        GIT_SNAPSHOT_TOOL.to_owned(),
+        ROBA_SELF_TOOL.to_owned(),
+    ]
+}
+
+fn expected_provider_resources() -> Vec<String> {
+    vec![
+        AGENT_CONTEXT_URI.to_owned(),
+        GIT_WORKSPACE_RESOURCE_URI.to_owned(),
+    ]
+}
 
 #[derive(Clone)]
 struct ProviderObservation {
@@ -129,7 +146,7 @@ impl Provider for CallbackProvider {
 
         Box::pin(async move {
             if endpoint.name() != PROVIDER_MCP_SERVER_NAME
-                || endpoint.tool_names() != [GIT_SNAPSHOT_TOOL, ROBA_SELF_TOOL]
+                || endpoint.tool_names() != expected_provider_tools()
             {
                 return Err(callback_error(
                     "validate launch manifest",
@@ -148,17 +165,18 @@ impl Provider for CallbackProvider {
                 .await
                 .map_err(|error| callback_error("list tools", error))?;
             tools.sort_unstable();
-            if tools != [GIT_SNAPSHOT_TOOL, ROBA_SELF_TOOL] {
+            if tools != expected_provider_tools() {
                 return Err(callback_error(
                     "validate provider discovery",
                     format!("unexpected tools: {tools:?}"),
                 ));
             }
-            let resources = client
+            let mut resources = client
                 .list_resources()
                 .await
                 .map_err(|error| callback_error("list resources", error))?;
-            if resources != [GIT_WORKSPACE_RESOURCE_URI] {
+            resources.sort_unstable();
+            if resources != expected_provider_resources() {
                 return Err(callback_error(
                     "validate provider resources",
                     format!("unexpected resources: {resources:?}"),
@@ -661,7 +679,7 @@ async fn read_only_and_writable_agents_keep_stage_all_control_only() {
             .map(|tool| tool.name)
             .collect::<Vec<_>>();
         provider_tools.sort_unstable();
-        assert_eq!(provider_tools, [GIT_SNAPSHOT_TOOL, ROBA_SELF_TOOL]);
+        assert_eq!(provider_tools, expected_provider_tools());
         assert!(
             provider
                 .call_tool(GIT_STAGE_ALL_TOOL, json!({}))
@@ -681,8 +699,12 @@ async fn read_only_and_writable_agents_keep_stage_all_control_only() {
             .await
             .expect("provider resource discovery succeeds")
             .resources;
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].uri, GIT_WORKSPACE_RESOURCE_URI);
+        let mut resources = resources
+            .into_iter()
+            .map(|resource| resource.uri)
+            .collect::<Vec<_>>();
+        resources.sort_unstable();
+        assert_eq!(resources, expected_provider_resources());
         assert_eq!(state.calls.load(Ordering::SeqCst), 0);
         provider
             .shutdown()
@@ -713,27 +735,30 @@ async fn active_provider_and_operator_share_git_state_without_changing_turn_cont
     for (index, prompt) in prompts.iter().enumerate() {
         let turn_client = Arc::clone(&control);
         let prompt = (*prompt).to_owned();
-        let turn = tokio::spawn(async move {
+        let mut turn = tokio::spawn(async move {
             turn_client
                 .call_tool(AGENT_TURN_TOOL, json!({"text": prompt}))
                 .await
         });
-        take(&state.callback_ready).await;
+        tokio::select! {
+            () = take(&state.callback_ready) => {}
+            result = &mut turn => panic!("turn settled before provider callback: {result:?}"),
+        }
 
         let endpoint = lock(&state.endpoints)
             .get(index)
             .expect("provider captured the active endpoint")
             .clone();
         assert_eq!(endpoint.name(), PROVIDER_MCP_SERVER_NAME);
-        assert_eq!(endpoint.tool_names(), [GIT_SNAPSHOT_TOOL, ROBA_SELF_TOOL]);
+        assert_eq!(endpoint.tool_names(), expected_provider_tools());
         assert!(endpoint.url().starts_with("http://127.0.0.1:"));
         assert!(endpoint.url().ends_with("/mcp"));
         let provider = lock(&state.observations)
             .get(index)
             .expect("provider completed its active callback")
             .clone();
-        assert_eq!(provider.tools, [GIT_SNAPSHOT_TOOL, ROBA_SELF_TOOL]);
-        assert_eq!(provider.resources, [GIT_WORKSPACE_RESOURCE_URI]);
+        assert_eq!(provider.tools, expected_provider_tools());
+        assert_eq!(provider.resources, expected_provider_resources());
 
         let operator_tool = control
             .call_tool(GIT_SNAPSHOT_TOOL, json!({}))

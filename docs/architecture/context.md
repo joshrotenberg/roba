@@ -1,7 +1,8 @@
 # Inspectable context planning
 
-> Status: context-plan foundation implemented; MCP delivery and isolation
-> controls remain incremental work tracked by GitHub issue #489.
+> Status: typed planning and MCP read evidence implemented; bootstrap,
+> acknowledgement, gating, and isolation controls remain incremental work
+> tracked by GitHub issue #489.
 
 ## Decision
 
@@ -73,6 +74,49 @@ characterization of current behavior, not the desired final freshness model.
 `AgentInstance::context_plan` retains this inventory without spawning a
 provider or changing `RunSpec` serialization.
 
+## MCP context contract
+
+Both projections publish two resource capabilities:
+
+- `roba://context` returns `ContextSnapshot`, containing the content-free
+  Roba-declared manifest and current or latest provider read evidence;
+- `roba://context/entry{?id,generation}` returns one explicitly requested
+  `ContextContent` value.
+
+The provider projection additionally publishes equivalent read-only
+`context.manifest` and `context.read` tools. Claude Code can expose MCP
+resources to the model, while the provider-neutral portable contract cannot
+assume every adapter does so. The tools are therefore included in the exact
+native provider allowlist and preserve the same generation fencing, typed
+structured content, redaction, and evidence semantics as the resources.
+
+The control projection can inspect the fixed plan before any turn. During a
+turn it reports that active operation's evidence; after settlement it retains
+the latest operation's final evidence. Control-side reads do not masquerade as
+provider acquisition.
+
+The provider projection is bound to one exact operation. Its manifest read and
+every successful entry read, through either MCP form, record the operation id,
+context generation, manifest or entry fingerprint, first and last observed
+timestamps, and a saturating count. The private endpoint stops accepting and
+drains requests before operation settlement, so retained evidence cannot miss
+a late successful read. A stale generation, unknown entry, expired operation,
+or unavailable body fails closed.
+
+The generation identifies a content revision, not a turn counter. The fixed
+plan currently stays at generation 1 across repeated operations; the separate
+operation id prevents evidence from one run satisfying a later run. Future
+live context changes will advance the generation without redefining operation
+identity.
+
+Public and redacted entries may be returned by the explicitly content-bearing
+entry resource. Their bodies remain absent from manifests, snapshots, and
+debug formatting. Secret entries receive no body-derived fingerprint and are
+unavailable through the generic content resource. Existing `RunSpec` entries
+retain `provider_adapter` as their primary delivery because the adapters still
+inject them every turn; MCP currently provides an inspectable second path, not
+a silent change in provider prompt behavior.
+
 ## Current effective context inventory
 
 The following table distinguishes Roba-controlled input from context that the
@@ -114,11 +158,11 @@ rather than claiming to reproduce their contents.
 
 ## Evidence states
 
-Future MCP delivery must distinguish these states instead of collapsing them:
+The contract distinguishes these states instead of collapsing them:
 
 1. **planned**: the host selected an entry;
 2. **available**: the entry exists in the provider's MCP projection;
-3. **delivered/read**: the provider requested or received it;
+3. **delivered/read**: the provider requested it; this state is implemented;
 4. **acknowledged**: the provider explicitly reported acquisition;
 5. **followed**: an inference from behavior, never a mechanical guarantee.
 
@@ -129,17 +173,18 @@ contract; prose cannot grant it.
 
 ## Next slices
 
-1. Add an MCP context manifest and content resources to both projections.
-2. Add operation-scoped context generations and read evidence.
-3. Compile the minimal launch bootstrap from required manifest entries.
-4. Stop reinjecting unchanged stable context into resumed sessions where the
+1. Add an explicit host construction path for additional MCP-native context,
+   including role/audience and precedence metadata.
+2. Compile the minimal launch bootstrap from required manifest entries.
+3. Stop reinjecting unchanged stable context into resumed sessions where the
    provider mechanics prove that omission is safe.
-5. Add context linting for duplicate fingerprints, explicit precedence,
+4. Add context linting for duplicate fingerprints, explicit precedence,
    conflicting instructions, unsafe locators, and excessive prompt weight.
-6. Mechanically inventory clean-home, ambient, controlled, fresh, resume, and
+5. Mechanically inventory clean-home, ambient, controlled, fresh, resume, and
    steering behavior for both built-in providers.
-7. Gate provider-facing mutation on required context acquisition.
-8. Apply the same manifest to parent-spawned Robas without inheriting the
+6. Add explicit acknowledgement and gate provider-facing mutation on the
+   required evidence policy.
+7. Apply the same manifest to parent-spawned Robas without inheriting the
    parent's transcript or ambient environment by accident.
 
 ## Sources
@@ -148,15 +193,18 @@ contract; prose cannot grant it.
 - [Claude Code settings and precedence](https://code.claude.com/docs/en/settings)
 - [Claude Code context diagnostics](https://code.claude.com/docs/en/debug-your-config)
 - [Claude Code memory](https://code.claude.com/docs/en/memory)
+- [Claude Code MCP](https://code.claude.com/docs/en/mcp)
 - [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
 - [Codex `AGENTS.md` discovery](https://learn.chatgpt.com/docs/agent-configuration/agents-md)
+- [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp)
 - [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode)
 
-## Non-goals of the foundation
+## Current non-goals
 
 - no universal system prompt;
-- no claim that MCP availability means the model read or followed context;
+- no claim that MCP availability means the provider requested context;
 - no serialization of prompt bodies, secrets, or provider-private sessions;
 - no provider-independent claim of hermetic behavior;
 - no workflow, issue, repository, or parent-child policy in `roba-core`;
-- no operator CLI or MCP context resource yet.
+- no claim that an MCP read means the model acknowledged or followed content;
+- no mutation gating or context update API yet.

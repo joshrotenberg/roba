@@ -16,6 +16,7 @@ use tower_mcp::{
 };
 
 use crate::agent::TurnAdmission;
+use crate::context::ContextReadError;
 use crate::provider_endpoint::PROVIDER_MCP_SERVER_NAME;
 use crate::{
     AGENT_EVENT_CAPACITY, AgentInstance, AgentInterruptResult, AgentShutdownResult,
@@ -35,12 +36,20 @@ pub const AGENT_SHUTDOWN_TOOL: &str = "agent.shutdown";
 /// Provider clients see the fully qualified name `roba.self` because the
 /// private MCP server itself is named `roba`.
 pub const ROBA_SELF_TOOL: &str = "self";
+/// Read the content-free context manifest and current operation evidence.
+pub const ROBA_CONTEXT_MANIFEST_TOOL: &str = "context.manifest";
+/// Read one generation-fenced context entry and record provider acquisition.
+pub const ROBA_CONTEXT_READ_TOOL: &str = "context.read";
 /// Dynamic state resource for the logical agent.
 pub const AGENT_RESOURCE_URI: &str = "roba://agent";
 /// Default agent-wide event resource.
 pub const AGENT_EVENTS_URI: &str = "roba://events";
 /// Cursor-paged agent-wide event resource template.
 pub const AGENT_EVENTS_TEMPLATE: &str = "roba://events{?after,limit}";
+/// Content-free effective context and provider read evidence.
+pub const AGENT_CONTEXT_URI: &str = "roba://context";
+/// Generation-fenced content for one context entry.
+pub const AGENT_CONTEXT_ENTRY_TEMPLATE: &str = "roba://context/entry{?id,generation}";
 /// Task metadata key carrying the exact admitted Roba operation identity.
 pub const AGENT_TASK_OPERATION_META_KEY: &str = "com.github.joshrotenberg.roba/operation";
 
@@ -91,6 +100,20 @@ pub struct ShutdownInput {}
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SelfInput {}
+
+/// Empty input contract for [`ROBA_CONTEXT_MANIFEST_TOOL`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContextManifestInput {}
+
+/// Input contract for [`ROBA_CONTEXT_READ_TOOL`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContextReadInput {
+    #[schemars(regex(pattern = r"\S"))]
+    pub id: String,
+    pub generation: u64,
+}
 
 /// Failure to call or decode the typed [`AGENT_TURN_TOOL`] contract.
 #[derive(Debug)]
@@ -315,7 +338,7 @@ pub(crate) fn base_control_router(agent: AgentInstance) -> McpRouter {
         })
         .build();
 
-    let template_events_agent = agent;
+    let template_events_agent = agent.clone();
     let events_template = ResourceTemplateBuilder::new(AGENT_EVENTS_TEMPLATE)
         .name("Roba agent event page")
         .description("Read agent-wide events after an optional sequence cursor.")
@@ -334,6 +357,39 @@ pub(crate) fn base_control_router(agent: AgentInstance) -> McpRouter {
             }
         });
 
+    let context_manifest_agent = agent.clone();
+    let context_manifest = ResourceBuilder::new(AGENT_CONTEXT_URI)
+        .name("Roba context manifest")
+        .description("Roba-declared context provenance and provider read evidence.")
+        .mime_type("application/json")
+        .handler(move || {
+            let agent = context_manifest_agent.clone();
+            async move {
+                let snapshot = agent.context_snapshot().await;
+                serialize_resource(AGENT_CONTEXT_URI, &snapshot, "context snapshot")
+            }
+        })
+        .build();
+
+    let context_entry_agent = agent;
+    let context_entry = ResourceTemplateBuilder::new(AGENT_CONTEXT_ENTRY_TEMPLATE)
+        .name("Roba context entry")
+        .description("Read one explicit context entry from an exact context generation.")
+        .mime_type("application/json")
+        .argument("id", Some("Stable context entry ID."), true)
+        .argument("generation", Some("Exact context generation."), true)
+        .handler(move |uri: String, variables: HashMap<String, String>| {
+            let agent = context_entry_agent.clone();
+            async move {
+                let (id, generation) = parse_context_query(&variables)?;
+                let content = agent
+                    .context_content(&id, generation)
+                    .await
+                    .map_err(context_read_error)?;
+                serialize_resource(&uri, &content, "context entry")
+            }
+        });
+
     McpRouter::new()
         .server_info("roba-agent", env!("CARGO_PKG_VERSION"))
         .task_store(task_store)
@@ -343,7 +399,9 @@ pub(crate) fn base_control_router(agent: AgentInstance) -> McpRouter {
         .tool(shutdown)
         .resource(state)
         .resource(events)
+        .resource(context_manifest)
         .resource_template(events_template)
+        .resource_template(context_entry)
         .with_tasks()
         .catch_panics()
 }
@@ -351,8 +409,10 @@ pub(crate) fn base_control_router(agent: AgentInstance) -> McpRouter {
 /// Build the least-authority projection injected into one provider operation.
 ///
 /// This is an explicit allowlist, not a filtered control router. It contains
-/// no turn admission, steering, interruption, shutdown, Tasks, event history,
-/// configuration, or retained provider-session state.
+/// only operation identity, generation-fenced context resources, and explicit
+/// provider extension capabilities. It contains no turn admission, steering,
+/// interruption, shutdown, Tasks, event history, configuration, or retained
+/// provider-session state.
 pub fn agent_router(agent: AgentInstance, operation_id: OperationId) -> McpRouter {
     let extensions = agent.extensions().clone();
     extensions.merge_provider(base_agent_router(agent, operation_id))
@@ -385,9 +445,116 @@ pub(crate) fn base_agent_router(agent: AgentInstance, operation_id: OperationId)
         })
         .build();
 
+    let manifest_agent = agent.downgrade();
+    let context_manifest = ResourceBuilder::new(AGENT_CONTEXT_URI)
+        .name("Roba context manifest")
+        .description("Context available to this exact provider operation.")
+        .mime_type("application/json")
+        .handler(move || {
+            let agent = manifest_agent.clone();
+            async move {
+                let snapshot = agent
+                    .provider_context_manifest(operation_id)
+                    .await
+                    .ok_or_else(|| {
+                        McpError::invalid_params(format!(
+                            "context for operation {} is unavailable or has expired",
+                            operation_id.get()
+                        ))
+                    })?;
+                serialize_resource(AGENT_CONTEXT_URI, &snapshot, "provider context snapshot")
+            }
+        })
+        .build();
+
+    let manifest_tool_agent = agent.downgrade();
+    let manifest_output_schema = serde_json::to_value(schema_for!(crate::ContextSnapshot))
+        .expect("static context manifest schema must serialize");
+    let context_manifest_tool = ToolBuilder::new(ROBA_CONTEXT_MANIFEST_TOOL)
+        .description(
+            "Inspect Roba-declared context and read evidence for this exact operation before deciding which context entries to read.",
+        )
+        .output_schema(manifest_output_schema)
+        .read_only_safe()
+        .handler(move |_input: ContextManifestInput| {
+            let agent = manifest_tool_agent.clone();
+            async move {
+                let snapshot = agent
+                    .provider_context_manifest(operation_id)
+                    .await
+                    .ok_or_else(|| {
+                        McpError::tool_with_name(
+                            ROBA_CONTEXT_MANIFEST_TOOL,
+                            format!(
+                                "context for operation {} is unavailable or has expired",
+                                operation_id.get()
+                            ),
+                        )
+                    })?;
+                let mut result = CallToolResult::from_serialize(&snapshot)?;
+                result.content = vec![Content::text(
+                    serde_json::to_string_pretty(&snapshot).map_err(|error| {
+                        McpError::internal(format!(
+                            "failed to serialize provider context snapshot: {error}"
+                        ))
+                    })?,
+                )];
+                Ok(result)
+            }
+        })
+        .build();
+
+    let content_tool_agent = agent.downgrade();
+    let content_output_schema = serde_json::to_value(schema_for!(crate::ContextContent))
+        .expect("static context content schema must serialize");
+    let context_read_tool = ToolBuilder::new(ROBA_CONTEXT_READ_TOOL)
+        .description(
+            "Read one Roba context entry using the exact id and generation from context.manifest.",
+        )
+        .output_schema(content_output_schema)
+        .read_only_safe()
+        .handler(move |input: ContextReadInput| {
+            let agent = content_tool_agent.clone();
+            async move {
+                let content = agent
+                    .provider_context_content(operation_id, &input.id, input.generation)
+                    .await
+                    .map_err(|error| {
+                        McpError::tool_with_name(ROBA_CONTEXT_READ_TOOL, error.to_string())
+                    })?;
+                let mut result = CallToolResult::from_serialize(&content)?;
+                result.content = vec![Content::text(content.content.clone())];
+                Ok(result)
+            }
+        })
+        .build();
+
+    let content_agent = agent.downgrade();
+    let context_entry = ResourceTemplateBuilder::new(AGENT_CONTEXT_ENTRY_TEMPLATE)
+        .name("Roba context entry")
+        .description("Read one context entry for this exact provider operation and generation.")
+        .mime_type("application/json")
+        .argument("id", Some("Stable context entry ID."), true)
+        .argument("generation", Some("Exact context generation."), true)
+        .handler(move |uri: String, variables: HashMap<String, String>| {
+            let agent = content_agent.clone();
+            async move {
+                let (id, generation) = parse_context_query(&variables)?;
+                let content = agent
+                    .provider_context_content(operation_id, &id, generation)
+                    .await
+                    .map_err(context_read_error)?;
+                serialize_resource(&uri, &content, "provider context entry")
+            }
+        });
+
     McpRouter::new()
         .server_info(PROVIDER_MCP_SERVER_NAME, env!("CARGO_PKG_VERSION"))
         .tool(self_tool)
+        .tool(context_manifest_tool)
+        .tool(context_read_tool)
+        .resource(context_manifest)
+        .resource_template(context_entry)
         .catch_panics()
 }
 
@@ -540,6 +707,20 @@ fn parse_event_query(variables: &HashMap<String, String>) -> tower_mcp::Result<(
     Ok((after, limit))
 }
 
+fn parse_context_query(variables: &HashMap<String, String>) -> tower_mcp::Result<(String, u64)> {
+    let id = variables
+        .get("id")
+        .filter(|id| !id.trim().is_empty())
+        .cloned()
+        .ok_or_else(|| McpError::invalid_params("context entry id is required"))?;
+    let generation = variables
+        .get("generation")
+        .ok_or_else(|| McpError::invalid_params("context generation is required"))?
+        .parse::<u64>()
+        .map_err(|_| McpError::invalid_params("context generation must be an unsigned integer"))?;
+    Ok((id, generation))
+}
+
 fn parse_query_value<T>(
     variables: &HashMap<String, String>,
     name: &str,
@@ -579,6 +760,24 @@ async fn read_events_resource(
     ))
 }
 
+fn context_read_error(error: ContextReadError) -> McpError {
+    McpError::invalid_params(error.to_string())
+}
+
+fn serialize_resource<T: Serialize>(
+    uri: &str,
+    value: &T,
+    label: &str,
+) -> tower_mcp::Result<ReadResourceResult> {
+    let json = serde_json::to_string_pretty(value)
+        .map_err(|error| McpError::internal(format!("failed to serialize {label}: {error}")))?;
+    Ok(ReadResourceResult::text_with_mime(
+        uri,
+        json,
+        "application/json",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -608,6 +807,32 @@ mod tests {
             let error = parse_event_query(&HashMap::from([(name.to_owned(), value.to_owned())]))
                 .expect_err("malformed query value must fail");
             assert!(error.to_string().contains(name), "{error}");
+        }
+    }
+
+    #[test]
+    fn context_query_requires_an_entry_and_exact_unsigned_generation() {
+        assert_eq!(
+            parse_context_query(&HashMap::from([
+                ("id".to_owned(), "agent.instruction.1".to_owned()),
+                ("generation".to_owned(), "7".to_owned()),
+            ]))
+            .unwrap(),
+            ("agent.instruction.1".to_owned(), 7)
+        );
+        for variables in [
+            HashMap::new(),
+            HashMap::from([("id".to_owned(), "entry".to_owned())]),
+            HashMap::from([
+                ("id".to_owned(), " ".to_owned()),
+                ("generation".to_owned(), "1".to_owned()),
+            ]),
+            HashMap::from([
+                ("id".to_owned(), "entry".to_owned()),
+                ("generation".to_owned(), "not-a-number".to_owned()),
+            ]),
+        ] {
+            assert!(parse_context_query(&variables).is_err());
         }
     }
 

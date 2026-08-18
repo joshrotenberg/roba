@@ -10,7 +10,10 @@ use roba_core::{
 };
 use tokio::sync::{Mutex, watch};
 
-use crate::context::ContextPlan;
+use crate::context::{
+    ContextContent, ContextPlan, ContextReadError, ContextReadEvidence, ContextSnapshot,
+    OperationContext,
+};
 use crate::contract::{
     AgentConfiguration, AgentControlRefusalKind, AgentInterruptResult, AgentRefusalKind,
     AgentShutdownResult, AgentSnapshot, AgentState, AgentSteerResult, AgentTurnResult, OperationId,
@@ -44,6 +47,7 @@ struct Control {
     session: Option<CoreSessionHandle>,
     active: Option<Arc<ActiveOperation>>,
     latest_turn: Option<AgentTurnResult>,
+    latest_context_evidence: Option<ContextReadEvidence>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +62,7 @@ struct ActiveOperation {
     handle: RunHandle,
     settlement: watch::Receiver<Option<AgentTurnResult>>,
     provider_endpoint: ProviderEndpoint,
+    context: OperationContext,
 }
 
 /// Weak reference used by provider callback routers to avoid retaining their
@@ -76,6 +81,33 @@ impl WeakAgentInstance {
             inner: self.inner.upgrade()?,
         };
         agent.provider_self(operation_id).await
+    }
+
+    pub(crate) async fn provider_context_manifest(
+        &self,
+        operation_id: OperationId,
+    ) -> Option<ContextSnapshot> {
+        let agent = AgentInstance {
+            inner: self.inner.upgrade()?,
+        };
+        agent.provider_context_manifest(operation_id).await
+    }
+
+    pub(crate) async fn provider_context_content(
+        &self,
+        operation_id: OperationId,
+        id: &str,
+        generation: u64,
+    ) -> Result<ContextContent, ContextReadError> {
+        let agent = AgentInstance {
+            inner: self
+                .inner
+                .upgrade()
+                .ok_or(ContextReadError::OperationUnavailable(operation_id))?,
+        };
+        agent
+            .provider_context_content(operation_id, id, generation)
+            .await
     }
 }
 
@@ -196,6 +228,7 @@ impl AgentInstance {
                     session,
                     active: None,
                     latest_turn: None,
+                    latest_context_evidence: None,
                 }),
                 shutdown_tx,
             }),
@@ -305,6 +338,7 @@ impl AgentInstance {
             handle,
             settlement,
             provider_endpoint,
+            context: OperationContext::new(operation_id, self.inner.context_plan.clone()),
         });
         if let Err(error) = active.handle.start(prompt).await {
             return TurnAdmission::Refused(AgentTurnResult::refused(
@@ -416,6 +450,80 @@ impl AgentInstance {
             operation_id,
             state: AgentState::Running,
         })
+    }
+
+    /// Content-free context and provider read evidence for the active or most
+    /// recently settled operation. Reading this control view does not count as
+    /// provider acquisition.
+    pub async fn context_snapshot(&self) -> ContextSnapshot {
+        let control = self.inner.control.lock().await;
+        let (operation_id, evidence) = match &control.active {
+            Some(active) => (Some(active.id), Some(active.context.evidence())),
+            None => (
+                control
+                    .latest_context_evidence
+                    .as_ref()
+                    .map(|evidence| evidence.operation_id),
+                control.latest_context_evidence.clone(),
+            ),
+        };
+        ContextSnapshot {
+            operation_id,
+            manifest: self.inner.context_plan.manifest().clone(),
+            read_evidence: evidence,
+        }
+    }
+
+    pub(crate) async fn context_content(
+        &self,
+        id: &str,
+        generation: u64,
+    ) -> Result<ContextContent, ContextReadError> {
+        let operation_id = {
+            let control = self.inner.control.lock().await;
+            control.active.as_ref().map(|active| active.id).or_else(|| {
+                control
+                    .latest_context_evidence
+                    .as_ref()
+                    .map(|evidence| evidence.operation_id)
+            })
+        };
+        self.inner
+            .context_plan
+            .content(operation_id, id, generation)
+    }
+
+    async fn provider_context_manifest(
+        &self,
+        operation_id: OperationId,
+    ) -> Option<ContextSnapshot> {
+        let context = {
+            let control = self.inner.control.lock().await;
+            (control.lifetime == AgentLifetime::Open)
+                .then(|| control.active.as_ref())
+                .flatten()
+                .filter(|active| active.id == operation_id)
+                .cloned()
+        }?;
+        Some(context.context.manifest_read())
+    }
+
+    async fn provider_context_content(
+        &self,
+        operation_id: OperationId,
+        id: &str,
+        generation: u64,
+    ) -> Result<ContextContent, ContextReadError> {
+        let context = {
+            let control = self.inner.control.lock().await;
+            (control.lifetime == AgentLifetime::Open)
+                .then(|| control.active.as_ref())
+                .flatten()
+                .filter(|active| active.id == operation_id)
+                .cloned()
+                .ok_or(ContextReadError::OperationUnavailable(operation_id))?
+        };
+        context.context.content_read(id, generation)
     }
 
     /// Permanently stop an idle agent.
@@ -727,7 +835,12 @@ impl AgentInstance {
         if !invalid_evidence && let Some(session) = reported_session {
             control.session = Some(session);
         }
+        let context_evidence = control
+            .active
+            .as_ref()
+            .map(|active| active.context.evidence());
         control.latest_turn = Some(result.clone());
+        control.latest_context_evidence = context_evidence;
         control.active = None;
         if let Some(settlement) = OperationSettlement::from_turn(&result) {
             let _ = self.inner.events.append_settled(settlement);

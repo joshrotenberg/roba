@@ -28,6 +28,9 @@ The control projection exposes:
 - `roba://agent` -- redacted configuration and current agent state;
 - `roba://events` and `roba://events{?after,limit}` -- bounded,
   cursor-addressed event history across finite runs.
+- `roba://context` and `roba://context/entry{?id,generation}` -- a
+  content-free context manifest, provider read evidence, and explicit
+  generation-fenced content reads.
 
 Admission is single-flight. A concurrent turn receives a typed `busy` refusal;
 the base contract does not hide a queue. Operation identifiers fence delayed
@@ -57,8 +60,11 @@ state is never published ahead of the operation's final event records.
 ## Role-scoped provider projection
 
 For each admitted operation the harness binds an ephemeral authenticated
-loopback MCP endpoint for the provider process. Its base surface contains only
-the read-only `self` tool. It structurally excludes turn admission, steering,
+loopback MCP endpoint for the provider process. Its base surface contains the
+read-only `self`, `context.manifest`, and `context.read` tools plus role-scoped
+context resources. The tools and resources expose the same generation-fenced
+contract; tools are the portable provider path when native MCP resource access
+is unavailable. The projection structurally excludes turn admission, steering,
 interrupt, shutdown, prior results, configuration, and operator event history.
 
 Each operation receives a new listener and credential. The credential is
@@ -110,13 +116,13 @@ session pool, agent registry, or multi-agent routing. Higher layers may call
 one or more Roba agents through the same MCP contract, but federation policy
 does not belong in this base instance.
 
-Explicit context management is the next architectural seam. The intended
-direction is MCP-native, inspectable context availability with a minimal launch
-bootstrap, source and precedence metadata, freshness rules, and evidence of
-what an agent read. It must distinguish Roba-controlled context from ambient
-provider instructions instead of pretending the latter do not exist. This work
-is tracked in GitHub issue #489; the adopted foundation and current inventory
-are recorded in [`context.md`](context.md).
+Explicit context management is an active architectural seam. The current MCP
+surface publishes the typed manifest and operation-scoped read evidence while
+keeping bodies behind explicit generation-fenced reads. Minimal launch
+bootstrap, ambient-provider controls, acknowledgement, and capability gating
+remain incremental work. This work is tracked in GitHub issue #489; the
+adopted contract and current inventory are recorded in
+[`context.md`](context.md).
 
 Scheduling, GitHub workflows, richer Git mutations, context rotation, and
 Roba-to-Roba coordination should arrive as optional MCP services or external
