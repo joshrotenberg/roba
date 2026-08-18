@@ -98,11 +98,24 @@ fragments plus an exact provider-tool manifest. `AgentExtensions` preflights
 both projections with fail-closed `try_merge` semantics before an agent starts.
 Extensions cannot replace base tools, resources, templates, or prompts.
 
+An extension may also attach one operation lifecycle observer. The host calls
+it at admission before provider work, after start, on a serialized periodic
+tick, during settlement after the provider endpoint is drained, after final
+state capture, and during host shutdown. Every callback is exact-operation
+scoped, runs outside the agent control lock, has a host-enforced timeout, and
+is drained before terminal settlement becomes visible. Panics, timeouts, and
+typed hook failures produce compact extension failure events rather than
+wedging the agent. Extension changes publish only bounded fingerprint and
+summary evidence; full state remains in extension-owned MCP resources.
+
 The first extension is `roba-git`. When enabled, both projections receive
-bounded read-only Git snapshot access for one fixed workspace. Its mutating
-`git.stage_all` operation is control-only and requires writable authority;
-provider workspace-write does not imply authority to execute host-side Git
-filters.
+bounded read-only Git snapshot access for one fixed workspace plus cached
+`roba://git/progress`. The cache records an operation baseline, current state,
+commits, diff/path summaries, timestamps, fingerprint, and sampler health.
+Sampling occurs only while an operation is active and a final synchronous
+refresh precedes settlement. Its mutating `git.stage_all` operation is
+control-only and requires writable authority; provider workspace-write does
+not imply authority to execute host-side Git filters.
 
 Extensions are MCP capabilities, not prompt injection. A resumed provider
 session discovers and calls current state on demand without accumulating a

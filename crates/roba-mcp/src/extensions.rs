@@ -19,6 +19,35 @@ pub const MAX_EXTENSION_HOOK_TIMEOUT: Duration = Duration::from_secs(30);
 /// Boxed asynchronous extension callback.
 pub type AgentExtensionFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
+/// Opaque failure from extension-owned lifecycle work.
+///
+/// The host journals only the extension name and hook phase. Extensions may
+/// expose a separately redacted diagnostic through their own MCP resources.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentExtensionHookError {
+    message: String,
+}
+
+impl fmt::Display for AgentExtensionHookError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for AgentExtensionHookError {}
+
+impl AgentExtensionHookError {
+    /// Construct an extension-owned lifecycle failure.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+/// Result returned by an operation-scoped extension lifecycle hook.
+pub type AgentExtensionHookResult = Result<Option<AgentExtensionChange>, AgentExtensionHookError>;
+
 /// Exact, immutable identity and policy of one admitted operation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentExtensionOperation {
@@ -78,24 +107,24 @@ pub trait AgentExtensionLifecycle: Send + Sync + 'static {
     fn operation_admitted(
         &self,
         _operation: AgentExtensionOperation,
-    ) -> AgentExtensionFuture<Option<AgentExtensionChange>> {
-        Box::pin(async { None })
+    ) -> AgentExtensionFuture<AgentExtensionHookResult> {
+        Box::pin(async { Ok(None) })
     }
 
     /// Observe that the finite provider run has started.
     fn operation_started(
         &self,
         _operation: AgentExtensionOperation,
-    ) -> AgentExtensionFuture<Option<AgentExtensionChange>> {
-        Box::pin(async { None })
+    ) -> AgentExtensionFuture<AgentExtensionHookResult> {
+        Box::pin(async { Ok(None) })
     }
 
     /// Perform one non-overlapping periodic observation.
     fn observation_tick(
         &self,
         _operation: AgentExtensionOperation,
-    ) -> AgentExtensionFuture<Option<AgentExtensionChange>> {
-        Box::pin(async { None })
+    ) -> AgentExtensionFuture<AgentExtensionHookResult> {
+        Box::pin(async { Ok(None) })
     }
 
     /// Perform final work after the core run and periodic observer have drained.
@@ -103,8 +132,8 @@ pub trait AgentExtensionLifecycle: Send + Sync + 'static {
         &self,
         _operation: AgentExtensionOperation,
         _terminal: AgentTerminalState,
-    ) -> AgentExtensionFuture<Option<AgentExtensionChange>> {
-        Box::pin(async { None })
+    ) -> AgentExtensionFuture<AgentExtensionHookResult> {
+        Box::pin(async { Ok(None) })
     }
 
     /// Record the terminal disposition before agent settlement is published.
@@ -112,8 +141,8 @@ pub trait AgentExtensionLifecycle: Send + Sync + 'static {
         &self,
         _operation: AgentExtensionOperation,
         _terminal: AgentTerminalState,
-    ) -> AgentExtensionFuture<Option<AgentExtensionChange>> {
-        Box::pin(async { None })
+    ) -> AgentExtensionFuture<AgentExtensionHookResult> {
+        Box::pin(async { Ok(None) })
     }
 
     /// Release host-lifetime state after active operation work has drained.

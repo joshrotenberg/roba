@@ -39,8 +39,9 @@ pub use events::{
 };
 pub use extensions::{
     AgentExtension, AgentExtensionChange, AgentExtensionError, AgentExtensionFuture,
-    AgentExtensionHookPhase, AgentExtensionLifecycle, AgentExtensionManifestError,
-    AgentExtensionOperation, AgentExtensionProjection, AgentExtensions, MAX_EXTENSION_HOOK_TIMEOUT,
+    AgentExtensionHookError, AgentExtensionHookPhase, AgentExtensionHookResult,
+    AgentExtensionLifecycle, AgentExtensionManifestError, AgentExtensionOperation,
+    AgentExtensionProjection, AgentExtensions, MAX_EXTENSION_HOOK_TIMEOUT,
 };
 pub use provider_endpoint::PROVIDER_MCP_SERVER_NAME;
 pub use router::{

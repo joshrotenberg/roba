@@ -98,6 +98,13 @@ and keeps `git.stage_all` in writable control projections only. It adds no
 pre-turn prompt context. The provider sees exact native approvals for only
 the tools present in its fragment.
 
+Extensions may attach an operation lifecycle observer for baseline, started,
+periodic, settling, settled, and host-shutdown work. Hooks are
+exact-operation-scoped, serialized per extension, bounded by a host timeout,
+run outside the agent control lock, and fully drained before settlement.
+Panics, timeouts, and typed failures become compact globally sequenced events;
+full extension state belongs in extension-owned MCP resources.
+
 Launch URLs and credentials are absent from `RunSpec`, `TurnRequest`, run and
 MCP result schemas, and event projections. Launch-context diagnostics may show
 the loopback URL but redact the bearer credential. A provider process

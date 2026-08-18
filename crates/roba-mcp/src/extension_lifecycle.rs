@@ -167,8 +167,8 @@ async fn invoke_and_publish(
     });
 
     let result = match tokio::time::timeout(timeout, &mut task).await {
-        Ok(Ok(change)) => Ok(change),
-        Ok(Err(_)) => Err(()),
+        Ok(Ok(Ok(change))) => Ok(change),
+        Ok(Ok(Err(_)) | Err(_)) => Err(()),
         Err(_) => {
             task.abort();
             let _ = task.await;

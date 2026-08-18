@@ -8,7 +8,7 @@ use roba_core::{
     RunFailure, RunFailureDetails, RunOutcome, RunSnapshot, RunSpec, RunState, SessionHandle,
     TokenUsage,
 };
-use roba_git::{GitAuthority, GitWorkspace};
+use roba_git::{GitAuthority, GitProgressConfig, GitWorkspace};
 use roba_mcp::{
     AgentExtensions, AgentInstance, AgentTurnResult, TurnInput, call_turn, connect_in_process,
 };
@@ -45,7 +45,11 @@ impl std::error::Error for BoundedRunError {}
 pub async fn run(args: RunArgs) -> Result<()> {
     let resolved = resolve_spec(&args)?;
 
-    let agent = build_agent_from_template(resolved.template, resolved.git_enabled)?;
+    let agent = build_agent_from_template(
+        resolved.template,
+        resolved.git_enabled,
+        resolved.git_progress_interval_secs,
+    )?;
     let client = connect_in_process(agent).await?;
     let turn = call_turn(
         &client,
@@ -237,6 +241,7 @@ fn terminal_json(snapshot: &roba_core::RunSnapshot) -> serde_json::Value {
 struct ResolvedRun {
     template: RunSpec,
     git_enabled: bool,
+    git_progress_interval_secs: u64,
     prompt: String,
 }
 
@@ -245,6 +250,7 @@ fn resolve_spec(args: &RunArgs) -> Result<ResolvedRun> {
     Ok(ResolvedRun {
         template: resolved.template,
         git_enabled: resolved.git_enabled,
+        git_progress_interval_secs: resolved.git_progress_interval_secs,
         prompt: Prompt::new(args.prompt.clone())?.into_inner(),
     })
 }
@@ -258,12 +264,17 @@ pub(crate) fn resolve_template(args: &AgentArgs) -> Result<RunSpec> {
 /// Construct one configured hot agent with both built-in providers available.
 pub(crate) fn build_agent(args: &AgentArgs) -> Result<AgentInstance> {
     let resolved = crate::startup_config::resolve(args)?;
-    build_agent_from_template(resolved.template, resolved.git_enabled)
+    build_agent_from_template(
+        resolved.template,
+        resolved.git_enabled,
+        resolved.git_progress_interval_secs,
+    )
 }
 
 pub(crate) fn build_agent_from_template(
     template: RunSpec,
     git_enabled: bool,
+    git_progress_interval_secs: u64,
 ) -> Result<AgentInstance> {
     let roba = built_in_runtime()?;
     roba.validate_spec(&template)?;
@@ -277,7 +288,10 @@ pub(crate) fn build_agent_from_template(
                 GitAuthority::WorkspaceWrite
             }
         };
-        AgentExtensions::default().try_with(workspace.extension(authority))?
+        AgentExtensions::default().try_with(workspace.extension_with_progress(
+            authority,
+            GitProgressConfig::from_interval_secs(git_progress_interval_secs),
+        ))?
     } else {
         AgentExtensions::default()
     };

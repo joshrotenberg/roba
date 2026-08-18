@@ -9,9 +9,9 @@ use roba_core::{
 };
 use roba_mcp::{
     AgentControlRefusalKind, AgentEvent, AgentExtension, AgentExtensionChange,
-    AgentExtensionFuture, AgentExtensionHookPhase, AgentExtensionLifecycle,
-    AgentExtensionOperation, AgentExtensions, AgentFollowUpResult, AgentInstance,
-    AgentInterruptResult, AgentTerminalState, AgentTurnResult,
+    AgentExtensionFuture, AgentExtensionHookError, AgentExtensionHookPhase,
+    AgentExtensionHookResult, AgentExtensionLifecycle, AgentExtensionOperation, AgentExtensions,
+    AgentFollowUpResult, AgentInstance, AgentInterruptResult, AgentTerminalState, AgentTurnResult,
 };
 use tokio::sync::Semaphore;
 use tower_mcp::McpRouter;
@@ -125,7 +125,7 @@ impl AgentExtensionLifecycle for BlockingAdmissionLifecycle {
     fn operation_admitted(
         &self,
         _operation: AgentExtensionOperation,
-    ) -> AgentExtensionFuture<Option<AgentExtensionChange>> {
+    ) -> AgentExtensionFuture<AgentExtensionHookResult> {
         let entered = Arc::clone(&self.entered);
         let release = Arc::clone(&self.release);
         Box::pin(async move {
@@ -135,7 +135,7 @@ impl AgentExtensionLifecycle for BlockingAdmissionLifecycle {
                 .await
                 .expect("admission release remains open")
                 .forget();
-            None
+            Ok(None)
         })
     }
 
@@ -143,11 +143,11 @@ impl AgentExtensionLifecycle for BlockingAdmissionLifecycle {
         &self,
         _operation: AgentExtensionOperation,
         terminal: AgentTerminalState,
-    ) -> AgentExtensionFuture<Option<AgentExtensionChange>> {
+    ) -> AgentExtensionFuture<AgentExtensionHookResult> {
         let phases = Arc::clone(&self.phases);
         Box::pin(async move {
             lock(&phases).push((AgentExtensionHookPhase::Settling, terminal));
-            None
+            Ok(None)
         })
     }
 
@@ -155,11 +155,11 @@ impl AgentExtensionLifecycle for BlockingAdmissionLifecycle {
         &self,
         _operation: AgentExtensionOperation,
         terminal: AgentTerminalState,
-    ) -> AgentExtensionFuture<Option<AgentExtensionChange>> {
+    ) -> AgentExtensionFuture<AgentExtensionHookResult> {
         let phases = Arc::clone(&self.phases);
         Box::pin(async move {
             lock(&phases).push((AgentExtensionHookPhase::Settled, terminal));
-            None
+            Ok(None)
         })
     }
 
@@ -265,18 +265,18 @@ impl AgentExtensionLifecycle for TickLifecycle {
     fn operation_started(
         &self,
         _operation: AgentExtensionOperation,
-    ) -> AgentExtensionFuture<Option<AgentExtensionChange>> {
+    ) -> AgentExtensionFuture<AgentExtensionHookResult> {
         let started = Arc::clone(&self.started);
         Box::pin(async move {
             started.add_permits(1);
-            None
+            Ok(None)
         })
     }
 
     fn observation_tick(
         &self,
         _operation: AgentExtensionOperation,
-    ) -> AgentExtensionFuture<Option<AgentExtensionChange>> {
+    ) -> AgentExtensionFuture<AgentExtensionHookResult> {
         let entered = Arc::clone(&self.tick_entered);
         let release = Arc::clone(&self.tick_release);
         let calls = Arc::clone(&self.tick_calls);
@@ -293,10 +293,10 @@ impl AgentExtensionLifecycle for TickLifecycle {
                 .expect("tick release remains open")
                 .forget();
             active.fetch_sub(1, Ordering::SeqCst);
-            Some(AgentExtensionChange::new(
+            Ok(Some(AgentExtensionChange::new(
                 "git:unsafe!fingerprint",
                 "  one\n compact\tchange  ",
-            ))
+            )))
         })
     }
 }
@@ -374,6 +374,7 @@ async fn periodic_ticks_do_not_overlap_and_change_events_precede_settlement() {
 }
 
 enum BrokenKind {
+    Error,
     Panic,
     Timeout,
 }
@@ -388,8 +389,11 @@ impl AgentExtensionLifecycle for BrokenLifecycle {
     fn operation_admitted(
         &self,
         _operation: AgentExtensionOperation,
-    ) -> AgentExtensionFuture<Option<AgentExtensionChange>> {
+    ) -> AgentExtensionFuture<AgentExtensionHookResult> {
         match self.0 {
+            BrokenKind::Error => Box::pin(async {
+                Err(AgentExtensionHookError::new("private extension diagnostic"))
+            }),
             BrokenKind::Panic => Box::pin(async { panic!("extension panic") }),
             BrokenKind::Timeout => Box::pin(pending()),
         }
@@ -400,6 +404,11 @@ impl AgentExtensionLifecycle for BrokenLifecycle {
 async fn panicked_and_timed_out_hooks_fail_loudly_without_wedging_the_agent() {
     let provider = Arc::new(ProviderState::default());
     let extensions = AgentExtensions::default()
+        .try_with(
+            AgentExtension::new("error", McpRouter::new(), McpRouter::new())
+                .with_lifecycle(Arc::new(BrokenLifecycle(BrokenKind::Error))),
+        )
+        .unwrap()
         .try_with(
             AgentExtension::new("panic", McpRouter::new(), McpRouter::new())
                 .with_lifecycle(Arc::new(BrokenLifecycle(BrokenKind::Panic))),
@@ -434,5 +443,10 @@ async fn panicked_and_timed_out_hooks_fail_loudly_without_wedging_the_agent() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(failures, ["panic", "timeout"]);
+    assert_eq!(failures, ["error", "panic", "timeout"]);
+    assert!(
+        !serde_json::to_string(&page)
+            .unwrap()
+            .contains("private extension diagnostic")
+    );
 }

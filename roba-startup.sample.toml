@@ -23,3 +23,5 @@ project = ["This repository's public API is its compatibility boundary."]
 
 [extensions.git]
 enabled = true
+# Set to 0 to keep admission/final snapshots but disable active polling.
+progress_interval_secs = 5

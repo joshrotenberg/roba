@@ -22,6 +22,7 @@ const PROJECT_CANDIDATES: [&str; 3] = ["roba.toml", ".roba.toml", ".roba/roba.to
 pub(crate) struct ResolvedStartup {
     pub template: RunSpec,
     pub git_enabled: bool,
+    pub git_progress_interval_secs: u64,
     pub effective: EffectiveStartupConfig,
 }
 
@@ -95,10 +96,20 @@ pub struct EffectiveExtensionsConfig {
     pub git: EffectiveGitConfig,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EffectiveGitConfig {
     pub enabled: bool,
+    pub progress_interval_secs: u64,
+}
+
+impl Default for EffectiveGitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            progress_interval_secs: 5,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -154,6 +165,7 @@ struct FileExtensionsConfig {
 #[serde(deny_unknown_fields)]
 struct FileGitConfig {
     enabled: Option<bool>,
+    progress_interval_secs: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -171,8 +183,11 @@ pub(crate) fn resolve(args: &AgentArgs) -> Result<ResolvedStartup> {
 /// Print the provider-neutral effective config without starting a provider.
 pub fn run_effective(args: ConfigEffectiveArgs) -> Result<()> {
     let resolved = resolve(&args.agent)?;
-    let _validated_host =
-        crate::bounded::build_agent_from_template(resolved.template.clone(), resolved.git_enabled)?;
+    let _validated_host = crate::bounded::build_agent_from_template(
+        resolved.template.clone(),
+        resolved.git_enabled,
+        resolved.git_progress_interval_secs,
+    )?;
     let effective = resolved.effective;
     if args.json {
         println!(
@@ -226,9 +241,12 @@ fn resolve_from(
                 "extensions.git.enabled".to_string(),
                 vec!["default".to_string()],
             ),
+            (
+                "extensions.git.progress_interval_secs".to_string(),
+                vec!["default".to_string()],
+            ),
         ]),
     };
-
     for layer in layers {
         merge_layer(&mut effective, layer);
     }
@@ -272,10 +290,12 @@ fn resolve_from(
         initial_prompt: None,
     };
     let git_enabled = effective.extensions.git.enabled;
+    let git_progress_interval_secs = effective.extensions.git.progress_interval_secs;
 
     Ok(ResolvedStartup {
         template,
         git_enabled,
+        git_progress_interval_secs,
         effective,
     })
 }
@@ -454,6 +474,10 @@ fn merge_layer(effective: &mut EffectiveStartupConfig, layer: Layer) {
         effective.extensions.git.enabled = value;
         replace_source(effective, "extensions.git.enabled", &label);
     }
+    if let Some(value) = config.extensions.git.progress_interval_secs {
+        effective.extensions.git.progress_interval_secs = value;
+        replace_source(effective, "extensions.git.progress_interval_secs", &label);
+    }
 }
 
 fn merge_cli(effective: &mut EffectiveStartupConfig, args: &AgentArgs) {
@@ -619,7 +643,7 @@ mod tests {
         );
         write(
             &repo.join(".roba.toml"),
-            "version = 1\n[agent]\nmodel = 'repo'\ninstructions = ['repo']\n[execution]\npermissions = 'workspace_write'\n[context]\nproject = ['project']\n[extensions.git]\nenabled = true\n",
+            "version = 1\n[agent]\nmodel = 'repo'\ninstructions = ['repo']\n[execution]\npermissions = 'workspace_write'\n[context]\nproject = ['project']\n[extensions.git]\nenabled = true\nprogress_interval_secs = 9\n",
         );
         write(
             &nested.join(".roba/roba.toml"),
@@ -645,6 +669,7 @@ mod tests {
             PermissionPolicy::ReadOnly
         );
         assert!(!resolved.git_enabled);
+        assert_eq!(resolved.git_progress_interval_secs, 9);
         assert_eq!(resolved.effective.sources.len(), 3);
         assert_eq!(
             resolved.effective.provenance["agent.model"],
@@ -729,6 +754,7 @@ mod tests {
         assert_eq!(config.version, CONFIG_VERSION);
         assert_eq!(config.agent.provider, Some(RunProvider::Codex));
         assert_eq!(config.extensions.git.enabled, Some(true));
+        assert_eq!(config.extensions.git.progress_interval_secs, Some(5));
     }
 
     #[test]
@@ -742,5 +768,6 @@ mod tests {
             Some(PermissionPolicy::ReadOnly)
         );
         assert_eq!(config.extensions.git.enabled, Some(true));
+        assert_eq!(config.extensions.git.progress_interval_secs, Some(5));
     }
 }

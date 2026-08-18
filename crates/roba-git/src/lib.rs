@@ -4,6 +4,8 @@
 //! control and provider projection created from it observes that same state;
 //! MCP callers cannot redirect an operation to another path.
 
+mod progress;
+
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,6 +23,12 @@ use tower_mcp::{
     ToolBuilder,
 };
 
+pub use progress::{
+    GIT_PROGRESS_RESOURCE_URI, GitCommitSummary, GitDiffStatistics, GitPathSummary,
+    GitProgressConfig, GitProgressHealth, GitProgressPoint, GitProgressSnapshot, GitProgressState,
+    GitRenameSummary,
+};
+
 /// Read the current repository snapshot.
 pub const GIT_SNAPSHOT_TOOL: &str = "git.snapshot";
 /// Stage every tracked, deleted, and untracked change in the fixed workspace.
@@ -30,7 +38,7 @@ pub const GIT_WORKSPACE_RESOURCE_URI: &str = "roba://git/workspace";
 
 const EXTENSION_NAME: &str = "roba-git";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
-const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(12);
+pub(crate) const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(12);
 const STAGE_MUTATION_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Authority granted to the operator/control projection.
@@ -119,13 +127,28 @@ impl GitWorkspace {
 
     /// Build the role-scoped Roba extension around this shared workspace.
     pub fn extension(&self, authority: GitAuthority) -> AgentExtension {
-        AgentExtension::new(
-            EXTENSION_NAME,
-            self.control_router(authority),
-            self.provider_router(),
-        )
-        .try_provider_tool(GIT_SNAPSHOT_TOOL)
-        .expect("static Git provider tool name must be valid")
+        self.extension_with_progress(authority, GitProgressConfig::default())
+    }
+
+    /// Build the role-scoped extension with cached operation progress.
+    pub fn extension_with_progress(
+        &self,
+        authority: GitAuthority,
+        config: GitProgressConfig,
+    ) -> AgentExtension {
+        let lifecycle = progress::GitProgressLifecycle::new(self.clone(), config);
+        let control = self
+            .control_router(authority)
+            .try_merge(lifecycle.router())
+            .expect("static Git control progress resource must not collide");
+        let provider = self
+            .provider_router()
+            .try_merge(lifecycle.router())
+            .expect("static Git provider progress resource must not collide");
+        AgentExtension::new(EXTENSION_NAME, control, provider)
+            .try_provider_tool(GIT_SNAPSHOT_TOOL)
+            .expect("static Git provider tool name must be valid")
+            .with_lifecycle(lifecycle)
     }
 
     /// Build a fresh operator/control router fragment.

@@ -30,6 +30,7 @@ timeout_secs = 900
 
 [extensions.git]
 enabled = true
+progress_interval_secs = 5
 ```
 
 With that file in the repository, the smallest commands become `roba run
@@ -82,6 +83,10 @@ roba -C /path/to/repo run \
 
 The Git service exposes repository observation to the provider and operator.
 Its mutating `git.stage_all` operation remains operator-only.
+While a turn is active, `roba://git/progress` caches an operation baseline,
+periodic observations, and a final settled snapshot. Set
+`progress_interval_secs = 0` to disable periodic polling for a large repository
+without losing the baseline and final evidence.
 
 ## 4. Consume a typed CLI result
 
