@@ -94,9 +94,13 @@ authority and makes role differences discoverable.
 ## Extensions
 
 `AgentExtension` contributes independently scoped control and provider router
-fragments plus an exact provider-tool manifest. `AgentExtensions` preflights
-both projections with fail-closed `try_merge` semantics before an agent starts.
-Extensions cannot replace base tools, resources, templates, or prompts.
+fragments, an exact provider-tool manifest, and optional typed context entries.
+`AgentExtensions` preflights both MCP projections with fail-closed `try_merge`
+semantics, then compiles context entries into the existing immutable
+`ContextPlan` before an agent starts. Extensions cannot replace base tools,
+resources, templates, prompts, or context IDs. Retained extension context is
+available through the role-scoped context plane and is not appended to
+`RunSpec` or provider prompts.
 
 An extension may also attach one operation lifecycle observer. The host calls
 it at admission before provider work, after start, on a serialized periodic
@@ -117,7 +121,7 @@ refresh precedes settlement. Its mutating `git.stage_all` operation is
 control-only and requires writable authority; provider workspace-write does
 not imply authority to execute host-side Git filters.
 
-Extensions are MCP capabilities, not prompt injection. A resumed provider
+Extensions are contributions, not prompt injection. A resumed provider
 session discovers and calls current state on demand without accumulating a
 duplicate context block on every turn.
 

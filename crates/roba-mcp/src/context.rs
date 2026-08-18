@@ -559,6 +559,18 @@ impl ContextPlan {
         builder
     }
 
+    pub(crate) fn into_builder(self) -> ContextPlanBuilder {
+        let entries = self.manifest.entries;
+        let ids = entries.iter().map(|entry| entry.id.clone()).collect();
+        ContextPlanBuilder {
+            generation: self.manifest.generation,
+            ambient_policy: self.manifest.ambient_policy,
+            entries,
+            material: self.material.as_ref().clone(),
+            ids,
+        }
+    }
+
     pub fn manifest(&self) -> &ContextManifest {
         &self.manifest
     }

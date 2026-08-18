@@ -76,13 +76,19 @@ recursion or operator authority.
 
 ## Extension composition
 
-`AgentExtension` contains named control and provider `McpRouter` fragments
-plus an explicit manifest of provider-callable tools. `AgentExtensions` is an
-immutable aggregate installed through `AgentInstance::new_with_extensions`.
-Construction preflights each projection against Roba's real base router and
-fails closed on exact tool, resource, resource-template, or prompt conflicts.
+`AgentExtension` contains named control and provider `McpRouter` fragments,
+an explicit manifest of provider-callable tools, and optional retained or
+externally available context entries. `AgentExtensions` is an immutable
+aggregate installed through `AgentInstance::new_with_extensions`. Construction
+preflights each projection against Roba's real base router and fails closed on
+exact tool, resource, resource-template, prompt, or context-ID conflicts.
 Actual control and per-operation provider routers repeat that validated merge;
 last-writer-wins replacement is never used.
+
+Extension context compiles into the host's existing immutable `ContextPlan` at
+that same construction boundary. Audience restrictions are structural, and
+retained bodies remain outside `RunSpec`, provider prompt text, snapshots, and
+extension debug output.
 
 Fragments are capability bags. Their router identity, session state, task
 store, auth, and middleware are not imported when Tower merges them into a
@@ -94,8 +100,9 @@ from the provider fragment, not merely omitted from the manifest.
 
 The first consumer is `roba-git`. It shares one fixed repository service
 between projections, contributes bounded `git.snapshot` observation to both,
-and keeps `git.stage_all` in writable control projections only. It adds no
-pre-turn prompt context. The provider sees exact native approvals for only
+and keeps `git.stage_all` in writable control projections only. Its small
+activation entry is lazy context-plane material, not pre-turn prompt context.
+The provider sees exact native approvals for only
 the tools present in its fragment.
 
 Extensions may attach an operation lifecycle observer for baseline, started,
