@@ -15,6 +15,7 @@ git-spawn = "0.3"
 roba-mcp.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.11"
 thiserror = "2"
 tokio = { version = "1", features = ["sync", "time"] }
 tower-mcp = { version = "0.22", default-features = false, features = ["protocol-2026-07-28"] }

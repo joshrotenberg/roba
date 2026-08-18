@@ -24,6 +24,7 @@ project = ["Tests are the acceptance boundary."]
 
 [extensions.git]
 enabled = true
+progress_interval_secs = 5
 ```
 
 The complete commented example is
@@ -32,10 +33,11 @@ unsupported versions, invalid limits, and provider controls that the selected
 adapter cannot enforce fail before provider work begins. Provider-private
 session ids are CLI-only and are never accepted from or printed in this file.
 
-The schema contains only behavior Roba can enforce today. In particular, a
-context isolation `mode` and Git progress polling interval are not accepted
-until those capabilities ship. Strict unknown-field rejection prevents a
-plausible-looking future key from being silently ignored.
+The schema contains only behavior Roba can enforce today. A Git progress
+interval of `0` disables periodic active-operation sampling while retaining
+the admission baseline and final refresh. A context isolation `mode` is not
+accepted until that capability ships. Strict unknown-field rejection prevents
+a plausible-looking future key from being silently ignored.
 
 ## Discovery and precedence
 

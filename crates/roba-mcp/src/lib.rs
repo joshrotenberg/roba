@@ -9,6 +9,7 @@ mod agent;
 mod context;
 mod contract;
 mod events;
+mod extension_lifecycle;
 mod extensions;
 mod provider_endpoint;
 mod router;
@@ -37,8 +38,10 @@ pub use events::{
     AgentRunState, EventFailureDetails, EventTurnFailure, EventTurnOutcome,
 };
 pub use extensions::{
-    AgentExtension, AgentExtensionError, AgentExtensionManifestError, AgentExtensionProjection,
-    AgentExtensions,
+    AgentExtension, AgentExtensionChange, AgentExtensionError, AgentExtensionFuture,
+    AgentExtensionHookError, AgentExtensionHookPhase, AgentExtensionHookResult,
+    AgentExtensionLifecycle, AgentExtensionManifestError, AgentExtensionOperation,
+    AgentExtensionProjection, AgentExtensions, MAX_EXTENSION_HOOK_TIMEOUT,
 };
 pub use provider_endpoint::PROVIDER_MCP_SERVER_NAME;
 pub use router::{

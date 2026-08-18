@@ -120,7 +120,7 @@ fn config_effective_reports_safe_values_sources_and_provenance() {
          [agent]\nprovider = 'codex'\neffort = 'medium'\ninstructions = ['project']\n\
          [execution]\npermissions = 'read_only'\ntimeout_secs = 30\n\
          [context]\nproject = ['fixture']\n\
-         [extensions.git]\nenabled = false\n",
+         [extensions.git]\nenabled = false\nprogress_interval_secs = 0\n",
     );
 
     let output = roba()
@@ -143,6 +143,10 @@ fn config_effective_reports_safe_values_sources_and_provenance() {
     assert_eq!(value["version"], 1);
     assert_eq!(value["result"]["agent"]["provider"], "codex");
     assert_eq!(value["result"]["execution"]["permissions"], "read_only");
+    assert_eq!(
+        value["result"]["extensions"]["git"]["progress_interval_secs"],
+        0
+    );
     assert_eq!(value["result"]["sources"][0]["kind"], "project");
     let reported_path = value["result"]["sources"][0]["path"]
         .as_str()
@@ -150,6 +154,10 @@ fn config_effective_reports_safe_values_sources_and_provenance() {
     assert_eq!(
         value["result"]["provenance"]["agent.provider"][0], reported_path,
         "source and field provenance should name the same config"
+    );
+    assert_eq!(
+        value["result"]["provenance"]["extensions.git.progress_interval_secs"][0],
+        reported_path
     );
     assert_eq!(
         std::fs::canonicalize(reported_path).unwrap(),

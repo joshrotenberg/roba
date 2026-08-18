@@ -34,3 +34,4 @@ project = [
 
 [extensions.git]
 enabled = true
+progress_interval_secs = 5

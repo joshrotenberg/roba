@@ -80,6 +80,7 @@ timeout_secs = 900
 
 [extensions.git]
 enabled = true
+progress_interval_secs = 5
 ```
 
 Roba discovers versioned `roba.toml`, `.roba.toml`, or `.roba/roba.toml`
@@ -182,8 +183,13 @@ repository containing the effective cwd once and never accepts a
 caller-selected path.
 
 `git.snapshot` and `roba://git/workspace` expose the same deterministic typed
-state to the operator and active provider. Reads disable Git optional locks and
-configured filesystem monitors and are bounded by a timeout.
+state to the operator and active provider. `roba://git/progress` is a cheap
+cached operation view with baseline/current state, commits since baseline,
+diff statistics, path summaries, timestamps, fingerprint, and sampler health.
+Admission and settlement refresh it synchronously; periodic polling occurs
+only while an operation is active. Set `progress_interval_secs = 0` to disable
+periodic sampling. Reads disable Git optional locks and configured filesystem
+monitors and are bounded by a timeout.
 
 With writable or full-auto control authority, `git.stage_all` stages tracked,
 deleted, and untracked changes and returns a typed before/after receipt plus the

@@ -20,7 +20,8 @@ use roba_core::{
     RunOutcome, RunSpec, SessionHandle, SessionSpec, TurnRequest,
 };
 use roba_git::{
-    GIT_SNAPSHOT_TOOL, GIT_STAGE_ALL_TOOL, GIT_WORKSPACE_RESOURCE_URI, GitAuthority, GitWorkspace,
+    GIT_PROGRESS_RESOURCE_URI, GIT_SNAPSHOT_TOOL, GIT_STAGE_ALL_TOOL, GIT_WORKSPACE_RESOURCE_URI,
+    GitAuthority, GitWorkspace,
 };
 use roba_mcp::{
     AGENT_CONTEXT_URI, AGENT_TURN_TOOL, AgentExtensions, AgentInstance, OperationId,
@@ -50,6 +51,7 @@ fn expected_provider_tools() -> Vec<String> {
 fn expected_provider_resources() -> Vec<String> {
     vec![
         AGENT_CONTEXT_URI.to_owned(),
+        GIT_PROGRESS_RESOURCE_URI.to_owned(),
         GIT_WORKSPACE_RESOURCE_URI.to_owned(),
     ]
 }
