@@ -17,22 +17,29 @@ const STYLES: Styles = Styles::styled()
     .literal(AnsiColor::Cyan.on_default())
     .placeholder(AnsiColor::BrightBlack.on_default());
 
-/// Shown under `-h`: a few worked examples plus a pointer to `--help`
-/// for the full reference. Kept short so `-h` stays scannable.
+/// Shown under `-h`: modern provider-neutral entry points first, followed by
+/// one explicit compatibility example while the legacy surface still ships.
 const AFTER_HELP: &str = "\
 Examples:
-  roba \"explain the borrow checker in 3 bullets\"       one-shot question
-  cat err.log | roba \"what's wrong here?\"              pipe a log + ask about it
-  roba --attach 'src/**/*.rs' \"audit error handling\"   attach files
-  roba -c -p \"now add a test for that\"                 continue the last session
-  roba --writable \"rename foo to bar in src/\"          let claude edit files
+  roba run --provider codex \"inspect this repository\"  one finite operation
+  roba run --writable --git \"fix the failing tests\"     add workspace authority + Git MCP
+  mcp-repl -- roba serve --provider codex --git          host one hot logical agent
+  roba \"legacy Claude one-shot prompt\"                  compatibility surface
 
-Full flag detail, env vars, and roba.toml config: roba --help";
+Start with `roba run --help` or `roba serve --help`. Legacy flag detail: `roba --help`.";
 
 /// Shown under `--help`: examples plus a self-contained reference for the
 /// env-var and roba.toml config layers, so the binary documents itself
 /// for humans and agents without depending on an external docs site.
 const AFTER_LONG_HELP: &str = "\
+Provider-neutral Roba:
+  roba run --provider codex \"inspect this repository\"  one finite operation
+  roba run --writable --git \"implement the change\"      grant workspace + Git MCP access
+  roba run --json \"summarize current risks\"             versioned terminal result
+  mcp-repl -- roba serve --provider codex --git          persistent logical agent over MCP
+  See `roba run --help` and `roba serve --help` for the current harness.
+
+Legacy Claude one-shot compatibility:
 Examples -- for humans (interactive, rich TTY):
   roba \"explain the borrow checker in 3 bullets\"      one-shot question
   cat err.log | roba \"what's wrong here?\"             pipe a log + ask about it
@@ -99,6 +106,24 @@ Legacy one-shot configuration (roba.toml):
   (written by `roba profile init`) lists every valid key. See the
   `roba profile` and `roba alias` subcommands. Profiles remain the legacy
   Claude one-shot configuration surface; `roba run` uses explicit flags.";
+
+const RUN_AFTER_HELP: &str = "\
+Examples:
+  roba run --provider codex \"inspect this repository\"
+  roba run --writable --git \"fix the failing tests\"
+  roba run --instruction \"work methodically\" --context \"issue #489\" \"propose a plan\"
+  roba run --json \"summarize current risks\" | jq '.result'
+
+Each invocation admits one finite operation and waits for terminal settlement.";
+
+const SERVE_AFTER_HELP: &str = "\
+Examples:
+  mcp-repl -- roba serve --provider codex
+  mcp-repl --protocol final -- roba serve --provider claude --git --writable
+
+The process hosts one persistent logical agent with at most one active operation.
+Each agent.turn is finite; agent.interrupt keeps the host available, while
+agent.shutdown drains active work and terminates it. stdout is MCP wire data.";
 
 /// The blurb shown when `roba` is run with no resolvable prompt on a TTY.
 ///
@@ -197,11 +222,10 @@ pub struct Cli {
     #[command(flatten)]
     pub ask: AskArgs,
 
-    /// Run as if invoked from PATH (`git -C` style).
+    /// Use PATH as the effective workspace (`git -C` style).
     ///
-    /// Changes the working directory before any other resolution:
-    /// session scoping, config walk-up, `--attach` globs, `--prepend` /
-    /// `--append` relative paths, `--git-*` context.
+    /// Applied before command resolution, repository discovery, provider
+    /// launch, and relative command-specific paths.
     #[arg(short = 'C', long, value_name = "PATH", global = true)]
     pub cwd: Option<PathBuf>,
 }
@@ -350,7 +374,7 @@ pub enum PersonaAction {
     },
 }
 
-/// Fixed configuration shared by one-shot and hot provider-neutral agents.
+/// Fixed configuration shared by finite and hot provider-neutral agents.
 #[derive(ClapArgs, Debug)]
 pub struct AgentArgs {
     /// Provider for this agent. Defaults to Claude.
@@ -365,11 +389,12 @@ pub struct AgentArgs {
     #[arg(long, value_enum)]
     pub effort: Option<EffortLevel>,
 
-    /// Root-agent instruction. Repeat to compose in order.
+    /// Provider instruction delivered on every finite turn. Repeat to compose in order.
     #[arg(long = "instruction")]
     pub instructions: Vec<String>,
 
-    /// Agent context. Repeat to compose in order.
+    /// Explicit context delivered to the provider and recorded in the context manifest.
+    /// Repeat to compose in order.
     #[arg(long = "context")]
     pub context: Vec<String>,
 
@@ -407,6 +432,7 @@ pub struct AgentArgs {
 }
 
 #[derive(ClapArgs, Debug)]
+#[command(after_help = RUN_AFTER_HELP)]
 pub struct RunArgs {
     #[command(flatten)]
     pub agent: AgentArgs,
@@ -428,6 +454,7 @@ impl std::ops::Deref for RunArgs {
 }
 
 #[derive(ClapArgs, Debug)]
+#[command(after_help = SERVE_AFTER_HELP)]
 pub struct ServeArgs {
     #[command(flatten)]
     pub agent: AgentArgs,

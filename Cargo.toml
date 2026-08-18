@@ -12,7 +12,7 @@ repository = "https://github.com/joshrotenberg/roba"
 homepage = "https://github.com/joshrotenberg/roba"
 documentation = "https://docs.rs/roba"
 readme = "README.md"
-description = "A library-first finite agent runner with Claude and Codex adapters."
+description = "An MCP-native harness for one logical Claude or Codex agent."
 keywords = ["agent", "claude", "codex", "cli", "llm"]
 categories = ["command-line-utilities"]
 

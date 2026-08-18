@@ -30,6 +30,19 @@ fn help_prints_usage_and_exits_zero() {
 }
 
 #[test]
+fn help_leads_with_the_provider_neutral_harness() {
+    let output = roba().arg("-h").output().expect("render short help");
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+
+    let stdout = String::from_utf8(output.stdout).expect("short help is UTF-8");
+    assert!(stdout.contains("An MCP-native harness for one logical Claude or Codex agent."));
+    assert!(stdout.contains("roba run --provider codex"));
+    assert!(stdout.contains("mcp-repl -- roba serve"));
+    assert!(stdout.contains("Legacy flag detail: `roba --help`"));
+}
+
+#[test]
 fn help_long_trailer_is_byte_clean_off_tty() {
     // The `--help` long trailer is styled (green-bold headers, cyan command
     // columns), but the styling MUST route through clap's color pipeline so
@@ -116,6 +129,8 @@ fn bounded_run_help_exposes_the_finite_provider_surface() {
             "run help still advertises parked option {parked:?}:\n{stdout}"
         );
     }
+    assert!(stdout.contains("Each invocation admits one finite operation"));
+    assert!(stdout.contains("roba run --instruction"));
 }
 
 fn inspectable_bundle_fixture() -> tempfile::TempDir {
@@ -480,6 +495,10 @@ fn serve_help_exposes_only_the_promptless_provider_neutral_surface() {
             "serve help advertised out-of-scope option {absent:?}:\n{stdout}"
         );
     }
+    assert!(stdout.contains("mcp-repl --protocol final -- roba serve"));
+    assert!(stdout.contains("at most one active operation"));
+    assert!(stdout.contains("agent.interrupt keeps the host available"));
+    assert!(stdout.contains("stdout is MCP wire data"));
 }
 
 #[test]

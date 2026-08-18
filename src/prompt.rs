@@ -780,7 +780,7 @@ mod tests {
         let blurb = crate::cli::no_prompt_blurb();
         // An example line from AFTER_HELP survives the single-sourcing.
         assert!(
-            blurb.contains("one-shot question"),
+            blurb.contains("one finite operation"),
             "expected an example line, got:\n{blurb}"
         );
         // The pointer to the full reference is present.

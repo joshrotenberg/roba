@@ -7,6 +7,11 @@ between provider processes.
 
 The operator contract has process-local and foreground stdio bindings:
 
+- Stable `initialize` and final `server/discover` publish concise operator
+  instructions describing the single-flight lifecycle and pointing clients at
+  the authoritative state, context, and event resources. Capability discovery
+  remains the canonical API reference; clients decide how to render the
+  guidance.
 - `AgentInstance` owns a suspended `RunSpec`, one optional provider session,
   and at most one active `RunHandle`.
 - `agent.turn { "text": ... }` waits for one finite run. Success returns the
