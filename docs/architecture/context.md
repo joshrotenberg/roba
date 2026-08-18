@@ -1,8 +1,8 @@
 # Inspectable context planning
 
-> Status: typed planning, explicit host inputs, and MCP read evidence
-> implemented; bootstrap, acknowledgement, gating, and isolation controls
-> remain incremental work tracked by GitHub issue #489.
+> Status: typed planning, explicit host inputs, a minimal launch bootstrap, and
+> MCP read evidence implemented; acknowledgement, gating, deduplication, and
+> isolation controls remain incremental work tracked by GitHub issue #489.
 
 ## Decision
 
@@ -99,6 +99,38 @@ their own precedence that Roba cannot override or fully observe. The current
 slice records ordering and makes it inspectable; automatic replacement,
 conflict inference, and linting remain separate work.
 
+## Minimal provider-launch bootstrap
+
+Every admitted operation compiles one typed `ContextBootstrap` from the fixed
+agent configuration and the provider-visible manifest. It records:
+
+- provider identity and exact operation id;
+- read-only, workspace-write, or full-auto authority;
+- that the current finite turn prompt is the current goal;
+- the context manifest URI and portable manifest/read tool names;
+- the context generation and provider-manifest fingerprint;
+- exact mandatory acquisitions for required MCP resource or tool entries;
+- a fingerprint over the complete content-free bootstrap contract.
+
+The rendered instruction identifies the Roba MCP server, requires a manifest
+read before substantive work, and names any mandatory live acquisitions. It
+does not copy context bodies, turn prompts, credentials, workflow policy, or
+operator-only entries. Required entries already delivered by a provider
+adapter are not listed for redundant MCP acquisition.
+
+Claude receives the bootstrap before explicit appended system context. Codex
+receives it before explicit context and the current turn prompt. Both fresh and
+resumed provider commands receive the current operation's bootstrap because
+the private endpoint and evidence fence rotate per finite operation. The
+transient rendered instruction is non-serializable and redacted from launch
+debugging; `ContextSnapshot.bootstrap` exposes the typed artifact during the
+operation and for the latest settled operation.
+
+This is a deliberately fixed harness contract, not a universal workflow
+prompt. It tells the provider where it exists and what it must acquire; only
+the separate read evidence proves that the provider MCP client made those
+requests.
+
 ## MCP context contract
 
 Both projections publish two resource capabilities:
@@ -154,6 +186,7 @@ provider may load independently.
 | `ContextSpec.project` | Joined into the same appended system prompt. | Prepended after agent instructions. | Exact ordered values and provenance field are known. |
 | `ContextSpec.run` | Joined into the same appended system prompt. | Prepended after project context. | Exact ordered values and provenance field are known. |
 | Current prompt | Sent as the Claude print-mode prompt. | Fresh prompt uses stdin; resume currently uses argv through `codex-wrapper`. | Exact turn prompt is known, but is not yet a context-manifest entry. |
+| Roba bootstrap | Prepended to appended system context. | Prepended before explicit context and the current prompt. | Typed operation, authority, manifest, required-acquisition list, and fingerprint are retained in `ContextSnapshot`. |
 | Steering | Becomes another provider-native resumed turn. | Becomes another provider-native resumed turn. | Core events record the queued turn boundary. |
 | Provider session | Claude session ID and transcript are provider-owned. | Codex thread ID and transcript are provider-owned. | Roba retains only the opaque handle and reported terminal evidence. |
 | Private Roba MCP endpoint | Reattached through an owner-private temporary MCP config for every finite operation. | Reattached through command overrides and a child-only bearer environment variable. | Endpoint metadata is non-serializable; credentials are redacted. |
@@ -199,16 +232,15 @@ contract; prose cannot grant it.
 
 ## Next slices
 
-1. Compile the minimal launch bootstrap from required manifest entries.
-2. Stop reinjecting unchanged stable context into resumed sessions where the
+1. Stop reinjecting unchanged stable context into resumed sessions where the
    provider mechanics prove that omission is safe.
-3. Add context linting for duplicate fingerprints, precedence conflicts,
+2. Add context linting for duplicate fingerprints, precedence conflicts,
    conflicting instructions, unsafe locators, and excessive prompt weight.
-4. Mechanically inventory clean-home, ambient, controlled, fresh, resume, and
+3. Mechanically inventory clean-home, ambient, controlled, fresh, resume, and
    steering behavior for both built-in providers.
-5. Add explicit acknowledgement and gate provider-facing mutation on the
+4. Add explicit acknowledgement and gate provider-facing mutation on the
    required evidence policy.
-6. Apply the same manifest to parent-spawned Robas without inheriting the
+5. Apply the same manifest to parent-spawned Robas without inheriting the
    parent's transcript or ambient environment by accident.
 
 ## Sources
@@ -225,7 +257,8 @@ contract; prose cannot grant it.
 
 ## Current non-goals
 
-- no universal system prompt;
+- no universal workflow or task-specific system prompt beyond the fixed,
+  minimal Roba bootstrap contract;
 - no claim that MCP availability means the provider requested context;
 - no serialization of prompt bodies, secrets, or provider-private sessions;
 - no provider-independent claim of hermetic behavior;

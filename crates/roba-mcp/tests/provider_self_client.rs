@@ -18,8 +18,8 @@ use roba_core::{
 use roba_mcp::{
     AGENT_CONTEXT_URI, AGENT_EVENTS_URI, AGENT_INTERRUPT_TOOL, AGENT_RESOURCE_URI,
     AGENT_SHUTDOWN_TOOL, AGENT_STEER_TOOL, AGENT_TURN_TOOL, AgentInstance, AgentInterruptResult,
-    AgentState, AgentTerminalState, AgentTurnResult, AmbientContextPolicy, ContextAudience,
-    ContextContent, ContextDelivery, ContextEntrySpec, ContextKind, ContextOrigin,
+    AgentState, AgentTerminalState, AgentTurnResult, AmbientContextPolicy, ContextAcquisition,
+    ContextAudience, ContextContent, ContextDelivery, ContextEntrySpec, ContextKind, ContextOrigin,
     ContextOriginKind, ContextPhase, ContextPlan, ContextPrecedence, ContextScope, ContextSnapshot,
     OperationId, PROVIDER_MCP_SERVER_NAME, ProviderSelfSnapshot, ROBA_CONTEXT_MANIFEST_TOOL,
     ROBA_CONTEXT_READ_TOOL, ROBA_SELF_TOOL, agent_router, connect_in_process,
@@ -44,6 +44,7 @@ struct CallbackObservation {
 struct FakeState {
     calls: AtomicUsize,
     endpoints: Mutex<Vec<ProviderMcpEndpoint>>,
+    launch_bootstraps: Mutex<Vec<String>>,
     launch_debug: Mutex<Vec<String>>,
     request_json: Mutex<Vec<String>>,
     callbacks: Mutex<Vec<CallbackObservation>>,
@@ -58,6 +59,7 @@ impl Default for FakeState {
         Self {
             calls: AtomicUsize::new(0),
             endpoints: Mutex::new(Vec::new()),
+            launch_bootstraps: Mutex::new(Vec::new()),
             launch_debug: Mutex::new(Vec::new()),
             request_json: Mutex::new(Vec::new()),
             callbacks: Mutex::new(Vec::new()),
@@ -141,6 +143,16 @@ impl Provider for CallbackProvider {
             }
         };
 
+        state
+            .launch_bootstraps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(
+                launch_context
+                    .bootstrap_instruction()
+                    .expect("provider launch has a Roba bootstrap")
+                    .to_owned(),
+            );
         state
             .launch_debug
             .lock()
@@ -357,7 +369,8 @@ fn test_agent() -> (AgentInstance, Arc<FakeState>) {
                 },
             )
             .audience(ContextAudience::Provider)
-            .precedence(ContextPrecedence::Operation),
+            .precedence(ContextPrecedence::Operation)
+            .required(true),
             "provider-visible issue summary",
         )
         .unwrap();
@@ -887,7 +900,13 @@ async fn authenticated_callback_rotates_credentials_expires_and_stays_out_of_ser
     assert_expired(&second_endpoint).await;
 
     let callbacks = snapshot_callbacks(&state);
+    let launch_bootstraps = state
+        .launch_bootstraps
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     assert_eq!(callbacks.len(), 2);
+    assert_eq!(launch_bootstraps.len(), 2);
     for (index, callback) in callbacks.iter().enumerate() {
         let mut tools = callback.tools.clone();
         tools.sort_unstable();
@@ -907,6 +926,30 @@ async fn authenticated_callback_rotates_credentials_expires_and_stays_out_of_ser
                 .entries
                 .iter()
                 .all(|entry| entry.id != "operator.notes")
+        );
+        let bootstrap = callback
+            .context
+            .bootstrap
+            .as_ref()
+            .expect("provider context exposes its launch bootstrap contract");
+        assert_eq!(bootstrap.operation_id, callback.snapshot.operation_id);
+        assert_eq!(bootstrap.provider, fake_provider_id().as_str());
+        assert_eq!(bootstrap.authority, roba_mcp::PermissionPolicy::ReadOnly);
+        assert_eq!(
+            bootstrap.manifest_fingerprint,
+            callback.context.manifest.fingerprint
+        );
+        assert_eq!(bootstrap.required_acquisitions.len(), 1);
+        assert_eq!(bootstrap.required_acquisitions[0].id, "issue.summary");
+        assert_eq!(
+            bootstrap.required_acquisitions[0].acquisition,
+            ContextAcquisition::ContextRead
+        );
+        assert_eq!(bootstrap.render(), launch_bootstraps[index]);
+        assert!(
+            !bootstrap
+                .render()
+                .contains("provider-visible issue summary")
         );
         let evidence = callback
             .context
@@ -938,9 +981,12 @@ async fn authenticated_callback_rotates_credentials_expires_and_stays_out_of_ser
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     assert_eq!(launch_debug.len(), 2);
-    for (debug, endpoint) in launch_debug.iter().zip(&endpoints) {
+    for ((debug, endpoint), bootstrap) in
+        launch_debug.iter().zip(&endpoints).zip(&launch_bootstraps)
+    {
         assert!(debug.contains("[REDACTED]"));
         assert!(!debug.contains(endpoint.bearer_token()));
+        assert!(!debug.contains(bootstrap));
     }
     let requests = state
         .request_json
@@ -949,6 +995,11 @@ async fn authenticated_callback_rotates_credentials_expires_and_stays_out_of_ser
         .clone();
     for request in requests {
         assert_launch_material_absent(&request, &endpoints);
+        assert!(
+            launch_bootstraps
+                .iter()
+                .all(|bootstrap| !request.contains(bootstrap))
+        );
     }
     let public_snapshot = bounded(client.read_resource(AGENT_RESOURCE_URI))
         .await
@@ -969,6 +1020,14 @@ async fn authenticated_callback_rotates_credentials_expires_and_stays_out_of_ser
     )
     .expect("control context decodes");
     assert_eq!(control_context.manifest.entries.len(), 3);
+    assert_eq!(
+        control_context
+            .bootstrap
+            .as_ref()
+            .expect("settled control context retains the bootstrap")
+            .operation_id,
+        OperationId::new(2)
+    );
     assert_ne!(
         control_context.manifest.fingerprint,
         callbacks[0].context.manifest.fingerprint

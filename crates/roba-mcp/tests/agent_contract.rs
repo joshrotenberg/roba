@@ -896,7 +896,8 @@ async fn explicit_host_context_is_validated_inspectable_and_not_prompt_injected(
                 },
             )
             .audience(ContextAudience::Provider)
-            .precedence(ContextPrecedence::Operation),
+            .precedence(ContextPrecedence::Operation)
+            .required(true),
             "Fix issue 42 without expanding scope.",
         )
         .unwrap();
@@ -938,6 +939,7 @@ async fn explicit_host_context_is_validated_inspectable_and_not_prompt_injected(
     let manifest = client.read_resource(AGENT_CONTEXT_URI).await.unwrap();
     let snapshot: ContextSnapshot = serde_json::from_str(manifest.first_text().unwrap()).unwrap();
     assert_eq!(snapshot.manifest.entries.len(), 3);
+    assert!(snapshot.bootstrap.is_none());
     let operator = client
         .read_resource("roba://context/entry?id=operator.notes&generation=1")
         .await
@@ -963,6 +965,14 @@ async fn explicit_host_context_is_validated_inspectable_and_not_prompt_injected(
         assert!(requests[0].spec.context.project.is_empty());
         assert!(requests[0].spec.context.run.is_empty());
     }
+    let settled = client.read_resource(AGENT_CONTEXT_URI).await.unwrap();
+    let settled: ContextSnapshot = serde_json::from_str(settled.first_text().unwrap()).unwrap();
+    let bootstrap = settled
+        .bootstrap
+        .expect("settled operation retains its inspectable bootstrap");
+    assert_eq!(bootstrap.required_acquisitions.len(), 1);
+    assert_eq!(bootstrap.required_acquisitions[0].id, "issue.summary");
+    assert!(!bootstrap.render().contains("Fix issue 42"));
     client.shutdown().await.unwrap();
 }
 

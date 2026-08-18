@@ -151,12 +151,29 @@ impl fmt::Debug for ProviderMcpEndpoint {
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct ProviderLaunchContext {
     mcp_endpoints: Vec<ProviderMcpEndpoint>,
+    bootstrap_instruction: Option<String>,
 }
 
 impl ProviderLaunchContext {
     /// Ephemeral MCP endpoints an adapter must attach to this provider run.
     pub fn mcp_endpoints(&self) -> &[ProviderMcpEndpoint] {
         &self.mcp_endpoints
+    }
+
+    /// Minimal host instruction needed before the provider can use transient
+    /// launch capabilities.
+    ///
+    /// This material is deliberately non-serializable and redacted from
+    /// [`fmt::Debug`]. Higher layers should keep it small and put substantive
+    /// context behind the attached MCP contract.
+    pub fn bootstrap_instruction(&self) -> Option<&str> {
+        self.bootstrap_instruction.as_deref()
+    }
+
+    /// Attach one minimal provider-launch bootstrap instruction.
+    pub fn with_bootstrap_instruction(mut self, instruction: impl Into<String>) -> Self {
+        self.bootstrap_instruction = Some(instruction.into());
+        self
     }
 
     /// Add an already-running endpoint without changing serializable run
@@ -182,6 +199,10 @@ impl fmt::Debug for ProviderLaunchContext {
         formatter
             .debug_struct("ProviderLaunchContext")
             .field("mcp_endpoints", &self.mcp_endpoints)
+            .field(
+                "bootstrap_instruction",
+                &self.bootstrap_instruction.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -456,7 +477,8 @@ mod tests {
                 .try_with_tool_names(["self", "git.snapshot", "self"])
                 .unwrap(),
             )
-            .unwrap();
+            .unwrap()
+            .with_bootstrap_instruction("private bootstrap contract");
 
         let outcome =
             execute_turn_with_launch_context(&provider, request, context.clone(), &NoopEventSink)
@@ -473,6 +495,11 @@ mod tests {
             std::slice::from_ref(&context)
         );
         assert!(!format!("{context:?}").contains("secret-provider-token"));
+        assert!(!format!("{context:?}").contains("private bootstrap contract"));
+        assert_eq!(
+            context.bootstrap_instruction(),
+            Some("private bootstrap contract")
+        );
         assert_eq!(context.mcp_endpoints()[0].name(), "roba");
         assert_eq!(
             context.mcp_endpoints()[0].url(),
@@ -491,6 +518,7 @@ mod tests {
             "http://127.0.0.1:4123/mcp",
             "secret-provider-token",
             "git.snapshot",
+            "private bootstrap contract",
         ] {
             assert!(!serialized_request.contains(private_value));
         }

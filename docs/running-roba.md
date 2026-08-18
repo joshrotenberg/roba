@@ -170,6 +170,19 @@ recorded against the exact operation id and context generation. That evidence
 proves the MCP request occurred; it does not prove the model understood or
 followed the material.
 
+During an active or latest settled operation, the same snapshot includes the
+typed launch bootstrap. It shows the exact operation, provider, authority,
+manifest fingerprint, and mandatory MCP acquisitions without exposing context
+bodies:
+
+```text
+read roba://context
+```
+
+The provider receives a compact rendering of that contract before its current
+goal. The bootstrap points to MCP; it does not concatenate the referenced
+material into every turn.
+
 ## 10. Combine CLI construction with MCP operation
 
 This is the most complete currently shipped composition:
