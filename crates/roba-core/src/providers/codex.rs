@@ -435,19 +435,32 @@ fn mcp_configuration(launch_context: &ProviderLaunchContext) -> CodexMcpConfigur
                 )
                 .config_overrides(),
         );
-        for tool_name in endpoint.tool_names() {
+        if !endpoint.tool_names().is_empty() {
+            // Keep tool policy on the MCP server table. Codex 0.145 accepts
+            // per-tool tables in config.toml, but applying one through a
+            // separate `-c` dotted override replaces enough of the untagged
+            // server value that its transport can no longer be recognized.
+            let tools = endpoint
+                .tool_names()
+                .iter()
+                .map(|tool_name| toml_string(tool_name))
+                .collect::<Vec<_>>()
+                .join(",");
             configuration.overrides.push(format!(
-                "mcp_servers.{}.tools.{}.approval_mode=\"approve\"",
-                toml_key_segment(endpoint.name()),
-                toml_key_segment(tool_name),
+                "mcp_servers.{}.enabled_tools=[{tools}]",
+                endpoint.name(),
+            ));
+            configuration.overrides.push(format!(
+                "mcp_servers.{}.default_tools_approval_mode=\"approve\"",
+                endpoint.name(),
             ));
         }
     }
     configuration
 }
 
-fn toml_key_segment(value: &str) -> String {
-    serde_json::to_string(value).expect("a string must serialize as a TOML-compatible key")
+fn toml_string(value: &str) -> String {
+    serde_json::to_string(value).expect("a string must serialize as a TOML-compatible value")
 }
 
 fn render_prompt(request: &TurnRequest, launch_context: &ProviderLaunchContext) -> String {
@@ -504,10 +517,8 @@ mod tests {
     use crate::run::{AgentSpec, Prompt, RunSpec};
 
     const TEST_MCP_SERVER: &str = "roba";
-    const TEST_GIT_TOOL_APPROVAL: &str =
-        r#"mcp_servers."roba".tools."git.snapshot".approval_mode="approve""#;
-    const TEST_SELF_TOOL_APPROVAL: &str =
-        r#"mcp_servers."roba".tools."self".approval_mode="approve""#;
+    const TEST_ENABLED_TOOLS: &str = r#"mcp_servers.roba.enabled_tools=["git.snapshot","self"]"#;
+    const TEST_TOOL_APPROVAL: &str = r#"mcp_servers.roba.default_tools_approval_mode="approve""#;
     const TEST_BOOTSTRAP: &str = "minimal Roba bootstrap";
 
     #[cfg(unix)]
@@ -795,8 +806,8 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
                 "mcp_servers.roba.url=\"http://127.0.0.1:4123/mcp\"",
                 "mcp_servers.roba.bearer_token_env_var=\"ROBA_INTERNAL_MCP_TOKEN_0\"",
                 "mcp_servers.roba.required=true",
-                TEST_GIT_TOOL_APPROVAL,
-                TEST_SELF_TOOL_APPROVAL,
+                TEST_ENABLED_TOOLS,
+                TEST_TOOL_APPROVAL,
             ]
         );
         assert_eq!(
@@ -853,10 +864,8 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
     }
 
     #[test]
-    fn codex_approval_key_segments_are_always_toml_quoted_and_escaped() {
-        assert_eq!(toml_key_segment("roba"), r#""roba""#);
-        assert_eq!(toml_key_segment("git.snapshot"), r#""git.snapshot""#);
-        assert_eq!(toml_key_segment("quote\"tool"), r#""quote\"tool""#);
+    fn codex_mcp_config_values_are_always_toml_quoted_and_escaped() {
+        assert_eq!(toml_string("quote\"tool"), r#""quote\"tool""#);
     }
 
     #[cfg(unix)]
@@ -881,8 +890,8 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
             "mcp_servers.roba.url=\"http://127.0.0.1:4123/mcp\"",
             "mcp_servers.roba.bearer_token_env_var=\"ROBA_INTERNAL_MCP_TOKEN_0\"",
             "mcp_servers.roba.required=true",
-            TEST_GIT_TOOL_APPROVAL,
-            TEST_SELF_TOOL_APPROVAL,
+            TEST_ENABLED_TOOLS,
+            TEST_TOOL_APPROVAL,
         ] {
             assert!(
                 args.lines().any(|arg| arg == expected),

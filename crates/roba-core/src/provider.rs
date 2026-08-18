@@ -56,13 +56,16 @@ impl std::error::Error for ProviderMcpEndpointError {}
 /// Whether a name is safe for MCP discovery and provider-native allowlists.
 ///
 /// MCP capability names are one to 128 ASCII letters, digits, underscores,
-/// hyphens, or dots. Enforcing the same grammar for the server segment keeps
-/// wrapper-specific list and configuration encodings injection-safe.
+/// hyphens, or dots.
 pub fn is_valid_provider_mcp_name(value: &str) -> bool {
     (1..=128).contains(&value.len())
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
+fn is_valid_provider_mcp_server_name(value: &str) -> bool {
+    is_valid_provider_mcp_name(value) && !value.contains('.')
 }
 
 impl ProviderMcpEndpoint {
@@ -74,7 +77,10 @@ impl ProviderMcpEndpoint {
         bearer_token: impl Into<String>,
     ) -> Result<Self, ProviderMcpEndpointError> {
         let name = name.into();
-        if !is_valid_provider_mcp_name(&name) {
+        // Provider CLIs address transient servers through dotted config paths.
+        // Keep this segment representable as a bare key; tool names retain
+        // the wider MCP grammar and may contain dots.
+        if !is_valid_provider_mcp_server_name(&name) {
             return Err(ProviderMcpEndpointError::InvalidServerName(name));
         }
         Ok(Self {
@@ -536,6 +542,14 @@ mod tests {
 
     #[test]
     fn endpoint_names_reject_provider_allowlist_injection() {
+        assert!(matches!(
+            ProviderMcpEndpoint::new(
+                "roba.internal",
+                "http://127.0.0.1:4123/mcp",
+                "secret-provider-token"
+            ),
+            Err(ProviderMcpEndpointError::InvalidServerName(name)) if name == "roba.internal"
+        ));
         assert!(matches!(
             ProviderMcpEndpoint::new(
                 "roba,Bash",
