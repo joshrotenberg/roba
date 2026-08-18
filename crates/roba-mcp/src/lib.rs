@@ -24,12 +24,13 @@ pub use context::{
     ContextRequirement, ContextScope, ContextSensitivity, ContextSnapshot,
 };
 pub use contract::{
-    AgentConfiguration, AgentControlRefusal, AgentControlRefusalKind, AgentFollowUpResult,
-    AgentInterruptResult, AgentRefusal, AgentRefusalKind, AgentShutdownResult, AgentSnapshot,
-    AgentState, AgentSteerResult, AgentTerminalState, AgentTurnResult, CancelledTurn,
-    CompletedTurn, Cost, Effort, FailedTurn, FailureDetails, FailureKind, LimitPolicy, OperationId,
-    OperationSettlement, PermissionPolicy, ProviderSelfSnapshot, SessionHandle, TokenUsage,
-    ToolPolicy, TurnFailure, TurnMetadata, TurnOutcome, TurnOverrides,
+    ActiveActivity, ActivityKind, ActivityStatus, AgentConfiguration, AgentControlRefusal,
+    AgentControlRefusalKind, AgentFollowUpResult, AgentInterruptResult, AgentObservation,
+    AgentRefusal, AgentRefusalKind, AgentShutdownResult, AgentSnapshot, AgentState,
+    AgentSteerResult, AgentTerminalState, AgentTurnResult, CancelledTurn, CompletedTurn, Cost,
+    Effort, FailedTurn, FailureDetails, FailureKind, LimitPolicy, ObservationHealth,
+    ObservationState, OperationId, OperationSettlement, PermissionPolicy, ProviderSelfSnapshot,
+    SessionHandle, TokenUsage, ToolPolicy, TurnFailure, TurnMetadata, TurnOutcome, TurnOverrides,
 };
 pub use events::{
     AGENT_EVENT_CAPACITY, AgentEvent, AgentEventError, AgentEventPage, AgentEventRecord,

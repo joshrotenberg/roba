@@ -9,8 +9,8 @@ use codex_wrapper::{
 };
 
 use crate::provider::{
-    EventSink, Provider, ProviderCapabilities, ProviderError, ProviderEvent, ProviderFuture,
-    ProviderLaunchContext,
+    EventSink, Provider, ProviderActivityKind, ProviderActivityStatus, ProviderCapabilities,
+    ProviderError, ProviderEvent, ProviderFuture, ProviderLaunchContext,
 };
 use crate::run::{
     Effort, FailureKind, PermissionPolicy, ProviderId, RunFailureDetails, RunOutcome,
@@ -408,6 +408,75 @@ fn emit_stream_event(event: &codex_wrapper::types::JsonLineEvent, sink: &dyn Eve
             usage: normalize_token_usage(usage),
         });
     }
+    emit_activity_event(event, sink);
+}
+
+fn emit_activity_event(event: &JsonLineEvent, sink: &dyn EventSink) {
+    let started = event.event_type == "item.started";
+    let completed = event.event_type == "item.completed";
+    if !started && !completed {
+        return;
+    }
+    let Some(item_type) = event.item_type() else {
+        return;
+    };
+    if matches!(item_type, "agent_message" | "reasoning") {
+        return;
+    }
+    let Some(item) = event.extra.get("item") else {
+        return;
+    };
+    let Some(id) = item.get("id").and_then(serde_json::Value::as_str) else {
+        sink.emit(ProviderEvent::Warning {
+            message: "Codex activity omitted because its item id was missing".to_owned(),
+        });
+        return;
+    };
+    let activity = match item_type {
+        "command_execution" => ProviderActivityKind::Command,
+        "file_change" => ProviderActivityKind::FileChange,
+        "mcp_tool_call" => ProviderActivityKind::McpCall,
+        "web_search" => ProviderActivityKind::WebSearch,
+        "todo_list" | "plan" => ProviderActivityKind::PlanUpdate,
+        "status_update" => ProviderActivityKind::StatusUpdate,
+        _ => ProviderActivityKind::Unknown,
+    };
+    let summary = match activity {
+        ProviderActivityKind::Command => "running a command",
+        ProviderActivityKind::FileChange => "changing files",
+        ProviderActivityKind::McpCall => "calling an MCP tool",
+        ProviderActivityKind::WebSearch => "searching the web",
+        ProviderActivityKind::PlanUpdate => "updating the plan",
+        ProviderActivityKind::StatusUpdate => "updating status",
+        ProviderActivityKind::ToolCall => "calling a tool",
+        ProviderActivityKind::Unknown => "provider activity",
+    }
+    .to_owned();
+    if started {
+        sink.emit(ProviderEvent::ActivityStarted {
+            id: id.to_owned(),
+            activity,
+            summary,
+        });
+        return;
+    }
+    let status = match (
+        item.get("status").and_then(serde_json::Value::as_str),
+        item.get("exit_code").and_then(serde_json::Value::as_i64),
+    ) {
+        (Some("cancelled"), _) => ProviderActivityStatus::Cancelled,
+        (_, Some(code)) if code != 0 => ProviderActivityStatus::Failed,
+        (Some("failed"), _) => ProviderActivityStatus::Failed,
+        (Some("completed" | "succeeded"), _) | (_, Some(0)) => ProviderActivityStatus::Succeeded,
+        _ => ProviderActivityStatus::Unknown,
+    };
+    sink.emit(ProviderEvent::ActivityCompleted {
+        id: id.to_owned(),
+        activity,
+        status,
+        duration_ms: None,
+        summary,
+    });
 }
 
 struct CodexMcpConfiguration {
@@ -505,7 +574,6 @@ fn map_error(error: codex_wrapper::Error) -> ProviderError {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
     use std::sync::Mutex;
 
     use codex_wrapper::CodexCommand;
@@ -521,17 +589,82 @@ mod tests {
     const TEST_TOOL_APPROVAL: &str = r#"mcp_servers.roba.default_tools_approval_mode="approve""#;
     const TEST_BOOTSTRAP: &str = "minimal Roba bootstrap";
 
-    #[cfg(unix)]
     #[derive(Default)]
     struct RecordingSink {
         events: Mutex<Vec<ProviderEvent>>,
     }
 
-    #[cfg(unix)]
     impl EventSink for RecordingSink {
         fn emit(&self, event: ProviderEvent) {
             self.events.lock().unwrap().push(event);
         }
+    }
+
+    #[test]
+    fn native_items_become_bounded_redacted_activity() {
+        let sink = RecordingSink::default();
+        let secret = "SUPER_SECRET_COMMAND";
+        for value in [
+            serde_json::json!({
+                "type": "item.started",
+                "item": {"id": "cmd-1", "type": "command_execution", "command": secret}
+            }),
+            serde_json::json!({
+                "type": "item.completed",
+                "item": {"id": "cmd-1", "type": "command_execution", "command": secret, "exit_code": 0, "aggregated_output": secret}
+            }),
+            serde_json::json!({
+                "type": "item.started",
+                "item": {"id": "web-1", "type": "web_search", "query": secret}
+            }),
+        ] {
+            let event: JsonLineEvent = serde_json::from_value(value).unwrap();
+            emit_stream_event(&event, &sink);
+        }
+        let events = sink.events.lock().unwrap();
+        assert_eq!(
+            events[0],
+            ProviderEvent::ActivityStarted {
+                id: "cmd-1".to_owned(),
+                activity: ProviderActivityKind::Command,
+                summary: "running a command".to_owned(),
+            }
+        );
+        assert_eq!(
+            events[1],
+            ProviderEvent::ActivityCompleted {
+                id: "cmd-1".to_owned(),
+                activity: ProviderActivityKind::Command,
+                status: ProviderActivityStatus::Succeeded,
+                duration_ms: None,
+                summary: "running a command".to_owned(),
+            }
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ProviderEvent::ActivityStarted {
+                activity: ProviderActivityKind::WebSearch,
+                ..
+            }
+        )));
+        assert!(!format!("{events:?}").contains(secret));
+    }
+
+    #[test]
+    fn malformed_native_item_is_warning_not_false_activity() {
+        let sink = RecordingSink::default();
+        let event: JsonLineEvent = serde_json::from_value(serde_json::json!({
+            "type": "item.started",
+            "item": {"type": "file_change", "changes": [{"path": "secret.txt"}]}
+        }))
+        .unwrap();
+        emit_stream_event(&event, &sink);
+        assert_eq!(
+            *sink.events.lock().unwrap(),
+            vec![ProviderEvent::Warning {
+                message: "Codex activity omitted because its item id was missing".to_owned(),
+            }]
+        );
     }
 
     #[cfg(unix)]

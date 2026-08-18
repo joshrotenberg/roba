@@ -35,9 +35,10 @@ pub use lifecycle::{
     RunEventSubscription, RunEventSubscriptionItem, RunHandle, RunSnapshot,
 };
 pub use provider::{
-    EventSink, NoopEventSink, Provider, ProviderCapabilities, ProviderError, ProviderEvent,
-    ProviderFuture, ProviderLaunchContext, ProviderMcpEndpoint, ProviderMcpEndpointError,
-    execute_turn, execute_turn_with_launch_context, is_valid_provider_mcp_name,
+    EventSink, NoopEventSink, Provider, ProviderActivityKind, ProviderActivityStatus,
+    ProviderCapabilities, ProviderError, ProviderEvent, ProviderFuture, ProviderLaunchContext,
+    ProviderMcpEndpoint, ProviderMcpEndpointError, execute_turn, execute_turn_with_launch_context,
+    is_valid_provider_mcp_name,
 };
 pub use providers::claude::ClaudeProvider;
 pub use providers::codex::CodexProvider;

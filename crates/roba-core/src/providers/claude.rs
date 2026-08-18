@@ -1,5 +1,6 @@
 //! Claude Code provider adapter.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -12,8 +13,8 @@ use claude_wrapper::{
 
 use crate::engine::{self, Config, Permissions, Session};
 use crate::provider::{
-    EventSink, Provider, ProviderCapabilities, ProviderError, ProviderEvent, ProviderFuture,
-    ProviderLaunchContext,
+    EventSink, Provider, ProviderActivityKind, ProviderActivityStatus, ProviderCapabilities,
+    ProviderError, ProviderEvent, ProviderFuture, ProviderLaunchContext,
 };
 use crate::run::{
     Cost, Effort, FailureKind, PermissionPolicy, ProviderId, RunFailureDetails, RunOutcome,
@@ -272,8 +273,9 @@ impl Provider for ClaudeProvider {
             })?;
             let mut terminal = None;
             let mut terminal_error = None;
+            let mut activities = HashMap::new();
             let stream_result = stream_query(&claude, &Self::bounded_command(&config), |event| {
-                emit_stream_event(&event, events);
+                emit_stream_event(&event, events, &mut activities);
                 if event.is_result() {
                     match serde_json::from_value::<QueryResult>(event.data) {
                         Ok(result) => {
@@ -374,13 +376,110 @@ fn terminal_details(result: &QueryResult) -> RunFailureDetails {
     }
 }
 
-fn emit_stream_event(event: &StreamEvent, sink: &dyn EventSink) {
+fn emit_stream_event(
+    event: &StreamEvent,
+    sink: &dyn EventSink,
+    activities: &mut HashMap<String, ProviderActivityKind>,
+) {
     if let Some(PartialMessageEvent::BlockDelta {
         delta: BlockDelta::Text(text),
         ..
     }) = event.partial_message()
     {
         sink.emit(ProviderEvent::OutputDelta { text });
+    }
+    let Some(content) = event
+        .data
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return;
+    };
+    match event.event_type() {
+        Some("assistant") => {
+            for block in content {
+                if block.get("type").and_then(serde_json::Value::as_str) != Some("tool_use") {
+                    continue;
+                }
+                let Some(id) = block.get("id").and_then(serde_json::Value::as_str) else {
+                    sink.emit(ProviderEvent::Warning {
+                        message: "Claude activity omitted because its tool id was missing"
+                            .to_owned(),
+                    });
+                    continue;
+                };
+                let name = block
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown");
+                let activity = claude_activity_kind(name);
+                activities.insert(id.to_owned(), activity);
+                sink.emit(ProviderEvent::ActivityStarted {
+                    id: id.to_owned(),
+                    activity,
+                    summary: claude_activity_summary(activity).to_owned(),
+                });
+            }
+        }
+        Some("user") => {
+            for block in content {
+                if block.get("type").and_then(serde_json::Value::as_str) != Some("tool_result") {
+                    continue;
+                }
+                let Some(id) = block.get("tool_use_id").and_then(serde_json::Value::as_str) else {
+                    sink.emit(ProviderEvent::Warning {
+                        message: "Claude activity result omitted because its tool id was missing"
+                            .to_owned(),
+                    });
+                    continue;
+                };
+                let activity = activities
+                    .remove(id)
+                    .unwrap_or(ProviderActivityKind::Unknown);
+                let status = if block
+                    .get("is_error")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    ProviderActivityStatus::Failed
+                } else {
+                    ProviderActivityStatus::Succeeded
+                };
+                sink.emit(ProviderEvent::ActivityCompleted {
+                    id: id.to_owned(),
+                    activity,
+                    status,
+                    duration_ms: None,
+                    summary: claude_activity_summary(activity).to_owned(),
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+fn claude_activity_kind(name: &str) -> ProviderActivityKind {
+    match name {
+        "Bash" => ProviderActivityKind::Command,
+        "Edit" | "Write" | "NotebookEdit" => ProviderActivityKind::FileChange,
+        "WebSearch" | "WebFetch" => ProviderActivityKind::WebSearch,
+        "TodoWrite" | "EnterPlanMode" | "ExitPlanMode" => ProviderActivityKind::PlanUpdate,
+        name if name.starts_with("mcp__") => ProviderActivityKind::McpCall,
+        _ => ProviderActivityKind::ToolCall,
+    }
+}
+
+fn claude_activity_summary(activity: ProviderActivityKind) -> &'static str {
+    match activity {
+        ProviderActivityKind::Command => "running a command",
+        ProviderActivityKind::FileChange => "changing files",
+        ProviderActivityKind::McpCall => "calling an MCP tool",
+        ProviderActivityKind::WebSearch => "searching the web",
+        ProviderActivityKind::PlanUpdate => "updating the plan",
+        ProviderActivityKind::StatusUpdate => "updating status",
+        ProviderActivityKind::ToolCall => "calling a tool",
+        ProviderActivityKind::Unknown => "provider activity",
     }
 }
 
@@ -411,7 +510,6 @@ fn map_effort(effort: Effort) -> ClaudeEffort {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
     use std::sync::Mutex;
 
     use claude_wrapper::ClaudeCommand;
@@ -427,17 +525,78 @@ mod tests {
     const TEST_SELF_TOOL: &str = "mcp__roba__self";
     const TEST_BOOTSTRAP: &str = "minimal Roba bootstrap";
 
-    #[cfg(unix)]
     #[derive(Default)]
     struct RecordingSink {
         events: Mutex<Vec<ProviderEvent>>,
     }
 
-    #[cfg(unix)]
     impl EventSink for RecordingSink {
         fn emit(&self, event: ProviderEvent) {
             self.events.lock().unwrap().push(event);
         }
+    }
+
+    #[test]
+    fn native_tool_events_become_bounded_redacted_activity() {
+        let sink = RecordingSink::default();
+        let secret = "SUPER_SECRET_INPUT";
+        let mut activities = HashMap::new();
+        for value in [
+            json!({
+                "type": "assistant",
+                "message": {"content": [{
+                    "type": "tool_use", "id": "tool-1", "name": "Bash",
+                    "input": {"command": secret}
+                }]}
+            }),
+            json!({
+                "type": "user",
+                "message": {"content": [{
+                    "type": "tool_result", "tool_use_id": "tool-1",
+                    "content": secret, "is_error": false
+                }]}
+            }),
+        ] {
+            let event: StreamEvent = serde_json::from_value(value).unwrap();
+            emit_stream_event(&event, &sink, &mut activities);
+        }
+        let events = sink.events.lock().unwrap();
+        assert_eq!(
+            events.as_slice(),
+            [
+                ProviderEvent::ActivityStarted {
+                    id: "tool-1".to_owned(),
+                    activity: ProviderActivityKind::Command,
+                    summary: "running a command".to_owned(),
+                },
+                ProviderEvent::ActivityCompleted {
+                    id: "tool-1".to_owned(),
+                    activity: ProviderActivityKind::Command,
+                    status: ProviderActivityStatus::Succeeded,
+                    duration_ms: None,
+                    summary: "running a command".to_owned(),
+                },
+            ]
+        );
+        assert!(!format!("{events:?}").contains(secret));
+    }
+
+    #[test]
+    fn malformed_native_tool_event_is_warning_not_false_activity() {
+        let sink = RecordingSink::default();
+        let mut activities = HashMap::new();
+        let event: StreamEvent = serde_json::from_value(json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "name": "Write"}]}
+        }))
+        .unwrap();
+        emit_stream_event(&event, &sink, &mut activities);
+        assert_eq!(
+            *sink.events.lock().unwrap(),
+            vec![ProviderEvent::Warning {
+                message: "Claude activity omitted because its tool id was missing".to_owned(),
+            }]
+        );
     }
 
     #[cfg(unix)]

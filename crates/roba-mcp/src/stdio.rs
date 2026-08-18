@@ -32,7 +32,7 @@ pub struct StdioBindingHandle {
 impl StdioBinding {
     /// Bind the operator/control MCP projection for one configured agent.
     pub fn new(agent: AgentInstance) -> Self {
-        let transport = StdioTransport::without_server_notifications(control_router(agent.clone()))
+        let transport = StdioTransport::new(control_router(agent.clone()))
             .protocol_support(ProtocolSupport::compiled())
             .max_concurrent_requests(MAX_CONCURRENT_REQUESTS);
         Self { agent, transport }

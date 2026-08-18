@@ -1,25 +1,30 @@
 //! Hot single-agent application state above finite core runs.
 
+use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::{Arc, Weak};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex as StdMutex, Weak};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use roba_core::{
     Prompt, ProviderId, Roba, RunControlError, RunEventSubscription, RunEventSubscriptionItem,
     RunHandle, RunSnapshot, RunSpec, SessionHandle as CoreSessionHandle, SessionSpec,
 };
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, broadcast, watch};
 
 use crate::context::{
     ContextContent, ContextPlan, ContextPlanError, ContextReadError, ContextReadEvidence,
     ContextSnapshot, OperationContext,
 };
 use crate::contract::{
-    AgentConfiguration, AgentControlRefusalKind, AgentFollowUpResult, AgentInterruptResult,
-    AgentRefusalKind, AgentShutdownResult, AgentSnapshot, AgentState, AgentTurnResult, OperationId,
+    ActiveActivity, AgentConfiguration, AgentControlRefusalKind, AgentFollowUpResult,
+    AgentInterruptResult, AgentObservation, AgentRefusalKind, AgentShutdownResult, AgentSnapshot,
+    AgentState, AgentTurnResult, ObservationHealth, ObservationState, OperationId,
     OperationSettlement, ProviderSelfSnapshot, TurnOverrides,
 };
-use crate::events::{AgentEventError, AgentEventJournal, AgentEventPage};
+use crate::events::{
+    AGENT_EVENT_CAPACITY, AgentEvent, AgentEventError, AgentEventJournal, AgentEventPage,
+    AgentEventRecord,
+};
 use crate::extensions::{AgentExtensionError, AgentExtensions};
 use crate::provider_endpoint::ProviderEndpoint;
 
@@ -37,6 +42,7 @@ struct Inner {
     extensions: AgentExtensions,
     created_at_unix_ms: Option<u64>,
     events: AgentEventJournal,
+    event_tx: broadcast::Sender<AgentEventRecord>,
     control: Mutex<Control>,
     shutdown_tx: watch::Sender<Option<AgentShutdownResult>>,
 }
@@ -48,6 +54,7 @@ struct Control {
     active: Option<Arc<ActiveOperation>>,
     latest_turn: Option<AgentTurnResult>,
     latest_context_evidence: Option<ContextReadEvidence>,
+    latest_observation: Option<AgentObservation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +71,18 @@ struct ActiveOperation {
     provider_endpoint: ProviderEndpoint,
     context: OperationContext,
     configuration: AgentConfiguration,
+    observation: StdMutex<OperationObservation>,
+    started_at: Instant,
+    timeout: Option<Duration>,
+}
+
+#[derive(Default)]
+struct OperationObservation {
+    active: BTreeMap<String, ActiveActivity>,
+    last_provider_event_kind: Option<String>,
+    last_provider_event_at_unix_ms: Option<u64>,
+    last_activity_at_unix_ms: Option<u64>,
+    degraded: bool,
 }
 
 /// Weak reference used by provider callback routers to avoid retaining their
@@ -225,6 +244,7 @@ impl AgentInstance {
         let configuration = AgentConfiguration::from_run_spec(&template);
 
         let (shutdown_tx, _) = watch::channel(None);
+        let (event_tx, _) = broadcast::channel(AGENT_EVENT_CAPACITY);
         let agent = Self {
             inner: Arc::new(Inner {
                 runtime,
@@ -234,6 +254,7 @@ impl AgentInstance {
                 extensions,
                 created_at_unix_ms: unix_time_ms(),
                 events: AgentEventJournal::new(),
+                event_tx,
                 control: Mutex::new(Control {
                     lifetime: AgentLifetime::Open,
                     next_operation_id: 1,
@@ -241,6 +262,7 @@ impl AgentInstance {
                     active: None,
                     latest_turn: None,
                     latest_context_evidence: None,
+                    latest_observation: None,
                 }),
                 shutdown_tx,
             }),
@@ -378,6 +400,7 @@ impl AgentInstance {
         let handle = run.handle();
         let subscription = handle.subscribe();
         let (settlement_tx, settlement) = watch::channel(None);
+        let timeout = configuration.limits.timeout_secs.map(Duration::from_secs);
         let active = Arc::new(ActiveOperation {
             id: operation_id,
             handle,
@@ -385,6 +408,9 @@ impl AgentInstance {
             provider_endpoint,
             context: operation_context,
             configuration,
+            observation: StdMutex::new(OperationObservation::default()),
+            started_at: Instant::now(),
+            timeout,
         });
         if let Err(error) = active.handle.start(prompt).await {
             return TurnAdmission::Refused(AgentTurnResult::refused(
@@ -413,8 +439,11 @@ impl AgentInstance {
         let coordinator = self.clone();
         tokio::spawn(async move {
             let event_journal = coordinator.inner.events.clone();
+            let event_tx = coordinator.inner.event_tx.clone();
             let operation_id = active.id;
-            let event_pump = tokio::spawn(pump_events(subscription, event_journal, operation_id));
+            let observed = active.clone();
+            let event_pump =
+                tokio::spawn(pump_events(subscription, event_journal, event_tx, observed));
 
             let handle = active.handle.clone();
             let worker_handle = handle.clone();
@@ -424,10 +453,14 @@ impl AgentInstance {
                 Err(_) => recover_run(&handle).await,
             };
             if event_pump.await.is_err() {
-                let _ = coordinator
+                active.mark_degraded();
+                if let Ok(record) = coordinator
                     .inner
                     .events
-                    .append_history_gap(operation_id, None);
+                    .append_history_gap(operation_id, None)
+                {
+                    let _ = coordinator.inner.event_tx.send(record);
+                }
             }
             active.provider_endpoint.shutdown().await;
             let result = coordinator
@@ -471,12 +504,19 @@ impl AgentInstance {
     /// Return the latest inspectable agent state without starting work.
     pub async fn snapshot(&self) -> AgentSnapshot {
         let control = self.inner.control.lock().await;
+        let observation = control
+            .active
+            .as_ref()
+            .map(|active| active.observation(false))
+            .or_else(|| control.latest_observation.clone())
+            .unwrap_or_else(AgentObservation::unknown);
         AgentSnapshot {
             configuration: self.inner.configuration.clone(),
             active_configuration: control
                 .active
                 .as_ref()
                 .map(|active| active.configuration.clone()),
+            observation,
             state: match control.lifetime {
                 AgentLifetime::Stopping => AgentState::Stopping,
                 AgentLifetime::Stopped => AgentState::Stopped,
@@ -929,11 +969,124 @@ impl AgentInstance {
             .map(|active| active.context.evidence());
         control.latest_turn = Some(result.clone());
         control.latest_context_evidence = context_evidence;
+        control.latest_observation = control
+            .active
+            .as_ref()
+            .map(|active| active.observation(true));
         control.active = None;
-        if let Some(settlement) = OperationSettlement::from_turn(&result) {
-            let _ = self.inner.events.append_settled(settlement);
+        if let Some(settlement) = OperationSettlement::from_turn(&result)
+            && let Ok(record) = self.inner.events.append_settled(settlement)
+        {
+            let _ = self.inner.event_tx.send(record);
         }
         result
+    }
+
+    pub(crate) fn subscribe_live_events(&self) -> broadcast::Receiver<AgentEventRecord> {
+        self.inner.event_tx.subscribe()
+    }
+}
+
+impl ActiveOperation {
+    fn observe(&self, record: &AgentEventRecord) {
+        let mut observation = self
+            .observation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let occurred_at = record.occurred_at_unix_ms.or_else(unix_time_ms);
+        let provider_kind = match &record.event {
+            AgentEvent::ActivityStarted {
+                id,
+                activity,
+                summary,
+            } => {
+                observation.active.insert(
+                    id.clone(),
+                    ActiveActivity {
+                        id: id.clone(),
+                        activity: *activity,
+                        summary: summary.clone(),
+                        started_at_unix_ms: occurred_at,
+                    },
+                );
+                observation.last_activity_at_unix_ms = occurred_at;
+                Some("activity_started")
+            }
+            AgentEvent::ActivityCompleted { id, .. } => {
+                observation.active.remove(id);
+                observation.last_activity_at_unix_ms = occurred_at;
+                Some("activity_completed")
+            }
+            AgentEvent::OutputDelta { .. } => Some("output_delta"),
+            AgentEvent::Usage { .. } => Some("usage"),
+            AgentEvent::Warning { .. } => Some("warning"),
+            AgentEvent::RunHistoryTruncated { .. } => {
+                observation.degraded = true;
+                None
+            }
+            AgentEvent::StateChanged { .. }
+            | AgentEvent::TurnStarted { .. }
+            | AgentEvent::FollowUpQueued
+            | AgentEvent::FollowUpApplied
+            | AgentEvent::TurnCompleted { .. }
+            | AgentEvent::Failed { .. }
+            | AgentEvent::OperationSettled { .. } => None,
+        };
+        if let Some(kind) = provider_kind {
+            observation.last_provider_event_kind = Some(kind.to_owned());
+            observation.last_provider_event_at_unix_ms = occurred_at;
+        }
+    }
+
+    fn mark_degraded(&self) {
+        self.observation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .degraded = true;
+    }
+
+    fn observation(&self, terminal: bool) -> AgentObservation {
+        let observation = self
+            .observation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let elapsed = self.started_at.elapsed();
+        let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        let active_activities = if terminal {
+            Vec::new()
+        } else {
+            observation.active.values().cloned().collect()
+        };
+        let state = if terminal {
+            ObservationState::Terminal
+        } else if !active_activities.is_empty() {
+            ObservationState::Active
+        } else if observation.last_activity_at_unix_ms.is_some() {
+            ObservationState::RecentlyActive
+        } else {
+            ObservationState::Unknown
+        };
+        let health = if terminal {
+            ObservationHealth::Terminal
+        } else if observation.degraded {
+            ObservationHealth::Degraded
+        } else if observation.last_provider_event_kind.is_some() {
+            ObservationHealth::Healthy
+        } else {
+            ObservationHealth::Unknown
+        };
+        AgentObservation {
+            state,
+            health,
+            active_activities,
+            last_provider_event_kind: observation.last_provider_event_kind.clone(),
+            last_provider_event_at_unix_ms: observation.last_provider_event_at_unix_ms,
+            last_activity_at_unix_ms: observation.last_activity_at_unix_ms,
+            elapsed_ms: Some(elapsed_ms),
+            timeout_remaining_ms: self.timeout.map(|timeout| {
+                u64::try_from(timeout.saturating_sub(elapsed).as_millis()).unwrap_or(u64::MAX)
+            }),
+        }
     }
 }
 
@@ -949,19 +1102,32 @@ async fn recover_run(handle: &RunHandle) -> RunSnapshot {
 async fn pump_events(
     mut subscription: RunEventSubscription,
     events: AgentEventJournal,
-    operation_id: OperationId,
+    event_tx: broadcast::Sender<AgentEventRecord>,
+    active: Arc<ActiveOperation>,
 ) {
+    let operation_id = active.id;
     loop {
         match subscription.next().await {
             Ok(Some(RunEventSubscriptionItem::Event(record))) => {
-                let _ = events.append_core(operation_id, *record);
+                if let Ok(record) = events.append_core(operation_id, *record) {
+                    active.observe(&record);
+                    let _ = event_tx.send(record);
+                }
             }
             Ok(Some(RunEventSubscriptionItem::HistoryTruncated { oldest_sequence })) => {
-                let _ = events.append_history_gap(operation_id, oldest_sequence);
+                active.mark_degraded();
+                if let Ok(record) = events.append_history_gap(operation_id, oldest_sequence) {
+                    active.observe(&record);
+                    let _ = event_tx.send(record);
+                }
             }
             Ok(None) => return,
             Err(_) => {
-                let _ = events.append_history_gap(operation_id, None);
+                active.mark_degraded();
+                if let Ok(record) = events.append_history_gap(operation_id, None) {
+                    active.observe(&record);
+                    let _ = event_tx.send(record);
+                }
                 return;
             }
         }

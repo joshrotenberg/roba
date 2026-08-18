@@ -3,6 +3,119 @@
 use serde::{Deserialize, Serialize};
 use tower_mcp::schemars::{self, JsonSchema};
 
+/// Provider-neutral category for mechanically observed activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityKind {
+    Command,
+    FileChange,
+    McpCall,
+    WebSearch,
+    PlanUpdate,
+    StatusUpdate,
+    ToolCall,
+    Unknown,
+}
+
+impl From<roba_core::ProviderActivityKind> for ActivityKind {
+    fn from(value: roba_core::ProviderActivityKind) -> Self {
+        match value {
+            roba_core::ProviderActivityKind::Command => Self::Command,
+            roba_core::ProviderActivityKind::FileChange => Self::FileChange,
+            roba_core::ProviderActivityKind::McpCall => Self::McpCall,
+            roba_core::ProviderActivityKind::WebSearch => Self::WebSearch,
+            roba_core::ProviderActivityKind::PlanUpdate => Self::PlanUpdate,
+            roba_core::ProviderActivityKind::StatusUpdate => Self::StatusUpdate,
+            roba_core::ProviderActivityKind::ToolCall => Self::ToolCall,
+            roba_core::ProviderActivityKind::Unknown => Self::Unknown,
+        }
+    }
+}
+
+/// Provider-reported terminal disposition for one activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityStatus {
+    Succeeded,
+    Failed,
+    Cancelled,
+    Unknown,
+}
+
+impl From<roba_core::ProviderActivityStatus> for ActivityStatus {
+    fn from(value: roba_core::ProviderActivityStatus) -> Self {
+        match value {
+            roba_core::ProviderActivityStatus::Succeeded => Self::Succeeded,
+            roba_core::ProviderActivityStatus::Failed => Self::Failed,
+            roba_core::ProviderActivityStatus::Cancelled => Self::Cancelled,
+            roba_core::ProviderActivityStatus::Unknown => Self::Unknown,
+        }
+    }
+}
+
+/// One provider activity still active according to native stream evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ActiveActivity {
+    pub id: String,
+    pub activity: ActivityKind,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_unix_ms: Option<u64>,
+}
+
+/// Coarse truthfulness state of provider-native observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationState {
+    Unknown,
+    Active,
+    RecentlyActive,
+    Terminal,
+}
+
+/// Whether Roba has a complete, mechanically sourced observation stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationHealth {
+    Unknown,
+    Healthy,
+    Degraded,
+    Terminal,
+}
+
+/// Live provider-native evidence for the current or latest operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentObservation {
+    pub state: ObservationState,
+    pub health: ObservationHealth,
+    pub active_activities: Vec<ActiveActivity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_provider_event_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_provider_event_at_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_remaining_ms: Option<u64>,
+}
+
+impl AgentObservation {
+    pub(crate) fn unknown() -> Self {
+        Self {
+            state: ObservationState::Unknown,
+            health: ObservationHealth::Unknown,
+            active_activities: Vec::new(),
+            last_provider_event_kind: None,
+            last_provider_event_at_unix_ms: None,
+            last_activity_at_unix_ms: None,
+            elapsed_ms: None,
+            timeout_remaining_ms: None,
+        }
+    }
+}
+
 /// Monotonic identity for one submitted agent turn.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
@@ -171,6 +284,7 @@ pub struct AgentSnapshot {
     /// Effective configuration for the active operation, including one-turn overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_configuration: Option<AgentConfiguration>,
+    pub observation: AgentObservation,
     pub state: AgentState,
     pub session_available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
