@@ -16,6 +16,10 @@ Documentation has five authoritative homes:
 - `legacy-cli.md` records the supported Claude compatibility workflows and
   stable scripting contract.
 
+The practical guide [`running-roba.md`](running-roba.md) builds from one finite
+CLI run to a hot, observable MCP agent using only shipped behavior. It also
+marks future compositions explicitly instead of presenting them as available.
+
 The annotated `roba-config.sample.toml` is the reference for the legacy
 one-shot configuration format. It and every tracked example configuration are
 parsed and semantically linted by the test suite.
@@ -24,6 +28,9 @@ Plans belong in GitHub issues until adopted. Once implemented, retain the
 decision and its rationale here, not a phase ledger or working-session log.
 
 ## Current architecture
+
+- [`running-roba.md`](running-roba.md) -- progressively richer CLI, MCP, and
+  combined examples.
 
 - [`architecture/core.md`](architecture/core.md) -- the finite,
   provider-neutral execution core.

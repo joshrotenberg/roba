@@ -11,7 +11,9 @@ use roba_core::{
 use roba_mcp::{
     AGENT_CONTEXT_ENTRY_TEMPLATE, AGENT_CONTEXT_URI, AGENT_RESOURCE_URI, AGENT_TURN_TOOL,
     AgentBuildError, AgentInstance, AgentRefusalKind, AgentSnapshot, AgentState, AgentStopError,
-    AgentTurnResult, ContextContent, ContextSnapshot, Effort, FailureKind, PermissionPolicy,
+    AgentTurnResult, AmbientContextPolicy, ContextAudience, ContextContent, ContextDelivery,
+    ContextEntrySpec, ContextKind, ContextOrigin, ContextOriginKind, ContextPhase, ContextPlan,
+    ContextPrecedence, ContextScope, ContextSnapshot, Effort, FailureKind, PermissionPolicy,
     connect_in_process,
 };
 use serde_json::json;
@@ -867,4 +869,121 @@ async fn construction_retains_a_content_free_inventory_of_explicit_template_cont
             .is_err()
     );
     client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn explicit_host_context_is_validated_inspectable_and_not_prompt_injected() {
+    let state = Arc::new(FakeState::default());
+    let mut runtime = Roba::new();
+    runtime
+        .register(FakeProvider {
+            state: Arc::clone(&state),
+        })
+        .expect("fake provider registration succeeds");
+    let mut template = RunSpec::suspended(AgentSpec::new(fake_provider_id()));
+    template.agent.instructions = vec!["base instruction".to_owned()];
+    let mut builder = ContextPlan::builder_from_run_spec(&template, AmbientContextPolicy::Ambient);
+    builder
+        .add_inline(
+            ContextEntrySpec::new(
+                "issue.summary",
+                ContextKind::Reference,
+                ContextOrigin::new(ContextOriginKind::External, "issue tracker"),
+                ContextPhase::Live,
+                ContextScope::Operation,
+                ContextDelivery::McpResource {
+                    uri: "roba://context/entry?id=issue.summary&generation=1".to_owned(),
+                },
+            )
+            .audience(ContextAudience::Provider)
+            .precedence(ContextPrecedence::Operation),
+            "Fix issue 42 without expanding scope.",
+        )
+        .unwrap();
+    builder
+        .add_inline(
+            ContextEntrySpec::new(
+                "operator.notes",
+                ContextKind::Reference,
+                ContextOrigin::new(ContextOriginKind::Cli, "operator note"),
+                ContextPhase::Live,
+                ContextScope::Agent,
+                ContextDelivery::McpResource {
+                    uri: "roba://context/entry?id=operator.notes&generation=1".to_owned(),
+                },
+            )
+            .audience(ContextAudience::Operator)
+            .precedence(ContextPrecedence::Operation),
+            "Never visible to the provider projection.",
+        )
+        .unwrap();
+    let plan = builder.build();
+    let agent = AgentInstance::new_with_context_plan(runtime, template, Default::default(), plan)
+        .expect("explicit context plan matches the suspended template");
+
+    assert_eq!(agent.context_plan().manifest().entries.len(), 3);
+    assert_eq!(agent.context_plan().provider_manifest().entries.len(), 2);
+    assert!(
+        agent
+            .context_plan()
+            .provider_manifest()
+            .entries
+            .iter()
+            .all(|entry| entry.id != "operator.notes")
+    );
+
+    let client = connect_in_process(agent)
+        .await
+        .expect("control projection connects");
+    let manifest = client.read_resource(AGENT_CONTEXT_URI).await.unwrap();
+    let snapshot: ContextSnapshot = serde_json::from_str(manifest.first_text().unwrap()).unwrap();
+    assert_eq!(snapshot.manifest.entries.len(), 3);
+    let operator = client
+        .read_resource("roba://context/entry?id=operator.notes&generation=1")
+        .await
+        .expect("administrative control projection can inspect operator context");
+    let operator: ContextContent = serde_json::from_str(operator.first_text().unwrap()).unwrap();
+    assert_eq!(
+        operator.content,
+        "Never visible to the provider projection."
+    );
+
+    let turn = client
+        .call_tool(AGENT_TURN_TOOL, json!({"text": "run"}))
+        .await
+        .expect("turn completes");
+    assert!(!turn.is_error);
+    {
+        let requests = state
+            .requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].spec.agent.instructions, ["base instruction"]);
+        assert!(requests[0].spec.context.project.is_empty());
+        assert!(requests[0].spec.context.run.is_empty());
+    }
+    client.shutdown().await.unwrap();
+}
+
+#[test]
+fn explicit_context_plan_cannot_hide_or_replace_run_spec_context() {
+    let state = Arc::new(FakeState::default());
+    let mut runtime = Roba::new();
+    runtime
+        .register(FakeProvider {
+            state: Arc::clone(&state),
+        })
+        .expect("fake provider registration succeeds");
+    let mut template = RunSpec::suspended(AgentSpec::new(fake_provider_id()));
+    template.agent.instructions = vec!["must remain represented".to_owned()];
+    let incomplete = ContextPlan::builder(AmbientContextPolicy::Ambient).build();
+
+    let error =
+        AgentInstance::new_with_context_plan(runtime, template, Default::default(), incomplete)
+            .err()
+            .expect("context plan mismatch must fail before admission");
+    assert!(matches!(error, AgentBuildError::ContextPlan(_)));
+    assert!(error.to_string().contains("agent.instruction.1"));
+    assert_eq!(state.calls.load(Ordering::SeqCst), 0);
 }

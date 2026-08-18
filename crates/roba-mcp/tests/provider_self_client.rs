@@ -18,8 +18,10 @@ use roba_core::{
 use roba_mcp::{
     AGENT_CONTEXT_URI, AGENT_EVENTS_URI, AGENT_INTERRUPT_TOOL, AGENT_RESOURCE_URI,
     AGENT_SHUTDOWN_TOOL, AGENT_STEER_TOOL, AGENT_TURN_TOOL, AgentInstance, AgentInterruptResult,
-    AgentState, AgentTerminalState, AgentTurnResult, ContextContent, ContextSnapshot, OperationId,
-    PROVIDER_MCP_SERVER_NAME, ProviderSelfSnapshot, ROBA_CONTEXT_MANIFEST_TOOL,
+    AgentState, AgentTerminalState, AgentTurnResult, AmbientContextPolicy, ContextAudience,
+    ContextContent, ContextDelivery, ContextEntrySpec, ContextKind, ContextOrigin,
+    ContextOriginKind, ContextPhase, ContextPlan, ContextPrecedence, ContextScope, ContextSnapshot,
+    OperationId, PROVIDER_MCP_SERVER_NAME, ProviderSelfSnapshot, ROBA_CONTEXT_MANIFEST_TOOL,
     ROBA_CONTEXT_READ_TOOL, ROBA_SELF_TOOL, agent_router, connect_in_process,
 };
 use serde::de::DeserializeOwned;
@@ -183,12 +185,28 @@ impl Provider for CallbackProvider {
                 ));
             }
             let initial_context = typed::<ContextSnapshot>(&initial_context);
-            let entry = initial_context.manifest.entries.first().ok_or_else(|| {
-                ProviderError::new(
+            let entry = initial_context
+                .manifest
+                .entries
+                .iter()
+                .find(|entry| entry.id == "issue.summary")
+                .ok_or_else(|| {
+                    ProviderError::new(
+                        CoreFailureKind::Provider,
+                        "provider context manifest had no test entry",
+                    )
+                })?;
+            if initial_context
+                .manifest
+                .entries
+                .iter()
+                .any(|entry| entry.id == "operator.notes")
+            {
+                return Err(ProviderError::new(
                     CoreFailureKind::Provider,
-                    "provider context manifest had no test entry",
-                )
-            })?;
+                    "provider context manifest exposed operator-only context",
+                ));
+            }
             let content = client
                 .call_tool(
                     ROBA_CONTEXT_READ_TOOL,
@@ -325,7 +343,48 @@ fn test_agent() -> (AgentInstance, Arc<FakeState>) {
         .expect("fake provider registration succeeds");
     let mut template = RunSpec::suspended(AgentSpec::new(fake_provider_id()));
     template.agent.instructions = vec!["private provider instruction".to_owned()];
-    let agent = AgentInstance::new(runtime, template).expect("test agent is valid");
+    let mut context = ContextPlan::builder_from_run_spec(&template, AmbientContextPolicy::Ambient);
+    context
+        .add_inline(
+            ContextEntrySpec::new(
+                "issue.summary",
+                ContextKind::Reference,
+                ContextOrigin::new(ContextOriginKind::External, "test issue"),
+                ContextPhase::Live,
+                ContextScope::Operation,
+                ContextDelivery::McpResource {
+                    uri: "roba://context/entry?id=issue.summary&generation=1".to_owned(),
+                },
+            )
+            .audience(ContextAudience::Provider)
+            .precedence(ContextPrecedence::Operation),
+            "provider-visible issue summary",
+        )
+        .unwrap();
+    context
+        .add_inline(
+            ContextEntrySpec::new(
+                "operator.notes",
+                ContextKind::Reference,
+                ContextOrigin::new(ContextOriginKind::Cli, "test operator"),
+                ContextPhase::Live,
+                ContextScope::Agent,
+                ContextDelivery::McpResource {
+                    uri: "roba://context/entry?id=operator.notes&generation=1".to_owned(),
+                },
+            )
+            .audience(ContextAudience::Operator)
+            .precedence(ContextPrecedence::Operation),
+            "operator-only context",
+        )
+        .unwrap();
+    let agent = AgentInstance::new_with_context_plan(
+        runtime,
+        template,
+        Default::default(),
+        context.build(),
+    )
+    .expect("test agent is valid");
     (agent, state)
 }
 
@@ -840,6 +899,15 @@ async fn authenticated_callback_rotates_credentials_expires_and_stays_out_of_ser
             callback.context.operation_id,
             Some(callback.snapshot.operation_id)
         );
+        assert_eq!(callback.context.manifest.entries.len(), 2);
+        assert!(
+            callback
+                .context
+                .manifest
+                .entries
+                .iter()
+                .all(|entry| entry.id != "operator.notes")
+        );
         let evidence = callback
             .context
             .read_evidence
@@ -847,17 +915,21 @@ async fn authenticated_callback_rotates_credentials_expires_and_stays_out_of_ser
             .expect("provider context read evidence is present");
         assert_eq!(evidence.operation_id, callback.snapshot.operation_id);
         assert_eq!(evidence.generation, callback.context.manifest.generation);
+        assert_eq!(
+            evidence.manifest_fingerprint,
+            callback.context.manifest.fingerprint
+        );
         assert_eq!(evidence.manifest.read_count, 2);
         assert_eq!(evidence.entries.len(), 1);
-        assert_eq!(evidence.entries[0].id, "agent.instruction.1");
+        assert_eq!(evidence.entries[0].id, "issue.summary");
         assert_eq!(evidence.entries[0].stats.read_count, 1);
         assert_eq!(
             callback.content.operation_id,
             Some(callback.snapshot.operation_id)
         );
-        assert_eq!(callback.content.entry.id, "agent.instruction.1");
-        assert_eq!(callback.content.content, "private provider instruction");
-        assert!(!format!("{:?}", callback.content).contains("private provider instruction"));
+        assert_eq!(callback.content.entry.id, "issue.summary");
+        assert_eq!(callback.content.content, "provider-visible issue summary");
+        assert!(!format!("{:?}", callback.content).contains("provider-visible issue summary"));
         assert_launch_material_absent(&callback.result_json, &endpoints);
     }
     let launch_debug = state
@@ -886,6 +958,27 @@ async fn authenticated_callback_rotates_credentials_expires_and_stays_out_of_ser
             .first_text()
             .expect("agent resource is JSON text"),
         &endpoints,
+    );
+    let control_context = bounded(client.read_resource(AGENT_CONTEXT_URI))
+        .await
+        .expect("control context remains readable");
+    let control_context: ContextSnapshot = serde_json::from_str(
+        control_context
+            .first_text()
+            .expect("control context is JSON text"),
+    )
+    .expect("control context decodes");
+    assert_eq!(control_context.manifest.entries.len(), 3);
+    assert_ne!(
+        control_context.manifest.fingerprint,
+        callbacks[0].context.manifest.fingerprint
+    );
+    assert!(
+        control_context
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.id == "operator.notes")
     );
     let public_events = bounded(client.read_resource(AGENT_EVENTS_URI))
         .await

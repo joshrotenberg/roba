@@ -16,11 +16,11 @@ mod stdio;
 
 pub use agent::{AgentBuildError, AgentInstance, AgentStopError};
 pub use context::{
-    AmbientContextPolicy, CONTEXT_MANIFEST_SCHEMA_VERSION, ContextContent, ContextDelivery,
-    ContextEntry, ContextEntryRead, ContextEntrySpec, ContextFingerprint, ContextFreshness,
-    ContextKind, ContextManifest, ContextOrigin, ContextOriginKind, ContextPhase, ContextPlan,
-    ContextPlanBuilder, ContextPlanError, ContextReadEvidence, ContextReadStats, ContextScope,
-    ContextSensitivity, ContextSnapshot,
+    AmbientContextPolicy, CONTEXT_MANIFEST_SCHEMA_VERSION, ContextAudience, ContextContent,
+    ContextDelivery, ContextEntry, ContextEntryRead, ContextEntrySpec, ContextFingerprint,
+    ContextFreshness, ContextKind, ContextManifest, ContextOrigin, ContextOriginKind, ContextPhase,
+    ContextPlan, ContextPlanBuilder, ContextPlanError, ContextPrecedence, ContextReadEvidence,
+    ContextReadStats, ContextScope, ContextSensitivity, ContextSnapshot,
 };
 pub use contract::{
     AgentConfiguration, AgentControlRefusal, AgentControlRefusalKind, AgentInterruptResult,

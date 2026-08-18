@@ -1,8 +1,8 @@
 # Inspectable context planning
 
-> Status: typed planning and MCP read evidence implemented; bootstrap,
-> acknowledgement, gating, and isolation controls remain incremental work
-> tracked by GitHub issue #489.
+> Status: typed planning, explicit host inputs, and MCP read evidence
+> implemented; bootstrap, acknowledgement, gating, and isolation controls
+> remain incremental work tracked by GitHub issue #489.
 
 ## Decision
 
@@ -49,6 +49,8 @@ content-free `ContextManifest`. Each entry records:
 - origin kind, label, and optional safe locator;
 - provider-baseline, provider-ambient, bootstrap, session, turn, or live phase;
 - user, workspace, agent, operation, or turn scope;
+- operator, provider, or shared audience;
+- provider-baseline through turn-level declared precedence;
 - ambient, adapter, bootstrap, session, MCP resource, or MCP tool delivery;
 - fresh-session, every-turn, generation, or dynamic freshness;
 - required versus optional status;
@@ -74,6 +76,29 @@ characterization of current behavior, not the desired final freshness model.
 `AgentInstance::context_plan` retains this inventory without spawning a
 provider or changing `RunSpec` serialization.
 
+## Host-supplied MCP context
+
+`ContextPlan::builder_from_run_spec` begins with that exact executable
+inventory. A host may then add inline or externally available entries with
+explicit audience, precedence, origin, lifecycle, delivery, freshness, and
+sensitivity metadata. `AgentInstance::new_with_context_plan` accepts the
+resulting immutable plan only when every provider-adapter entry still matches
+the suspended `RunSpec` metadata and material. Missing or replaced executable
+context therefore fails before admission, provider launch, or private endpoint
+binding.
+
+The operator projection is the administrative superset and can inspect the
+complete plan. The provider projection contains only entries whose audience is
+`provider` or `both`; an operator-only ID resolves as absent over the private
+provider endpoint. Entries are stably ordered from lower to higher declared
+precedence while retaining insertion order inside one layer.
+
+This precedence is Roba's declared composition order, not a claim about hidden
+provider policy. Managed or provider-native ambient instructions may have
+their own precedence that Roba cannot override or fully observe. The current
+slice records ordering and makes it inspectable; automatic replacement,
+conflict inference, and linting remain separate work.
+
 ## MCP context contract
 
 Both projections publish two resource capabilities:
@@ -95,7 +120,8 @@ turn it reports that active operation's evidence; after settlement it retains
 the latest operation's final evidence. Control-side reads do not masquerade as
 provider acquisition.
 
-The provider projection is bound to one exact operation. Its manifest read and
+The provider projection is bound to one exact operation. Its manifest and
+manifest fingerprint cover only provider-visible entries. Its manifest read and
 every successful entry read, through either MCP form, record the operation id,
 context generation, manifest or entry fingerprint, first and last observed
 timestamps, and a saturating count. The private endpoint stops accepting and
@@ -173,18 +199,16 @@ contract; prose cannot grant it.
 
 ## Next slices
 
-1. Add an explicit host construction path for additional MCP-native context,
-   including role/audience and precedence metadata.
-2. Compile the minimal launch bootstrap from required manifest entries.
-3. Stop reinjecting unchanged stable context into resumed sessions where the
+1. Compile the minimal launch bootstrap from required manifest entries.
+2. Stop reinjecting unchanged stable context into resumed sessions where the
    provider mechanics prove that omission is safe.
-4. Add context linting for duplicate fingerprints, explicit precedence,
+3. Add context linting for duplicate fingerprints, precedence conflicts,
    conflicting instructions, unsafe locators, and excessive prompt weight.
-5. Mechanically inventory clean-home, ambient, controlled, fresh, resume, and
+4. Mechanically inventory clean-home, ambient, controlled, fresh, resume, and
    steering behavior for both built-in providers.
-6. Add explicit acknowledgement and gate provider-facing mutation on the
+5. Add explicit acknowledgement and gate provider-facing mutation on the
    required evidence policy.
-7. Apply the same manifest to parent-spawned Robas without inheriting the
+6. Apply the same manifest to parent-spawned Robas without inheriting the
    parent's transcript or ambient environment by accident.
 
 ## Sources

@@ -19,7 +19,7 @@ use tower_mcp::schemars::{self, JsonSchema};
 use crate::OperationId;
 
 /// Schema version of the public context manifest.
-pub const CONTEXT_MANIFEST_SCHEMA_VERSION: u32 = 1;
+pub const CONTEXT_MANIFEST_SCHEMA_VERSION: u32 = 2;
 
 /// How much provider-native ambient discovery the host intends to retain.
 ///
@@ -66,6 +66,47 @@ pub enum ContextScope {
     User,
     Workspace,
     Agent,
+    Operation,
+    Turn,
+}
+
+/// Intended consumer of one context entry.
+///
+/// The control projection is the administrative superset and can inspect the
+/// complete plan. This field controls whether an entry is present in the
+/// least-authority provider projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextAudience {
+    /// Operator-side context that must not be exposed to the provider.
+    Operator,
+    /// Context intended for the provider; the operator may still inspect it.
+    Provider,
+    /// Context intentionally consumed by both roles.
+    Both,
+}
+
+impl ContextAudience {
+    fn includes_provider(self) -> bool {
+        matches!(self, Self::Provider | Self::Both)
+    }
+}
+
+/// Declared ordering of context selected by Roba.
+///
+/// Entries sort from lower to higher precedence while preserving insertion
+/// order within one layer. This describes Roba's plan; it does not claim that
+/// provider-managed policy follows or can be overridden by this ordering.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextPrecedence {
+    ProviderBaseline,
+    ProviderAmbient,
+    Workspace,
+    Host,
+    Parent,
     Operation,
     Turn,
 }
@@ -170,6 +211,8 @@ pub struct ContextEntrySpec {
     pub origin: ContextOrigin,
     pub phase: ContextPhase,
     pub scope: ContextScope,
+    pub audience: ContextAudience,
+    pub precedence: ContextPrecedence,
     pub delivery: ContextDelivery,
     pub freshness: ContextFreshness,
     pub sensitivity: ContextSensitivity,
@@ -191,6 +234,8 @@ impl ContextEntrySpec {
             origin,
             phase,
             scope,
+            audience: ContextAudience::Provider,
+            precedence: ContextPrecedence::Host,
             delivery,
             freshness: ContextFreshness::Generation,
             sensitivity: ContextSensitivity::Redacted,
@@ -200,6 +245,16 @@ impl ContextEntrySpec {
 
     pub fn freshness(mut self, freshness: ContextFreshness) -> Self {
         self.freshness = freshness;
+        self
+    }
+
+    pub fn audience(mut self, audience: ContextAudience) -> Self {
+        self.audience = audience;
+        self
+    }
+
+    pub fn precedence(mut self, precedence: ContextPrecedence) -> Self {
+        self.precedence = precedence;
         self
     }
 
@@ -223,6 +278,8 @@ pub struct ContextEntry {
     pub origin: ContextOrigin,
     pub phase: ContextPhase,
     pub scope: ContextScope,
+    pub audience: ContextAudience,
+    pub precedence: ContextPrecedence,
     pub delivery: ContextDelivery,
     pub freshness: ContextFreshness,
     pub sensitivity: ContextSensitivity,
@@ -338,7 +395,19 @@ impl ContextPlan {
     /// vectors are delivered again on every provider turn. It does not add or
     /// remove provider-native ambient context.
     pub fn from_run_spec(spec: &RunSpec) -> Self {
-        let mut builder = Self::builder(AmbientContextPolicy::Ambient);
+        Self::builder_from_run_spec(spec, AmbientContextPolicy::Ambient).build()
+    }
+
+    /// Begin a plan with the exact explicit context already in a run template.
+    ///
+    /// Hosts may add MCP-native entries before building the immutable plan.
+    /// [`crate::AgentInstance::new_with_context_plan`] validates that these
+    /// required base entries still match the executable template.
+    pub fn builder_from_run_spec(
+        spec: &RunSpec,
+        ambient_policy: AmbientContextPolicy,
+    ) -> ContextPlanBuilder {
+        let mut builder = Self::builder(ambient_policy);
         for (index, text) in spec.agent.instructions.iter().enumerate() {
             builder
                 .add_inline(
@@ -381,11 +450,25 @@ impl ContextPlan {
                 )
                 .expect("generated RunSpec context ids are unique and valid");
         }
-        builder.build()
+        builder
     }
 
     pub fn manifest(&self) -> &ContextManifest {
         &self.manifest
+    }
+
+    /// Provider-visible subset of the manifest.
+    pub fn provider_manifest(&self) -> ContextManifest {
+        build_manifest(
+            self.manifest.generation,
+            self.manifest.ambient_policy,
+            self.manifest
+                .entries
+                .iter()
+                .filter(|entry| entry.audience.includes_provider())
+                .cloned()
+                .collect(),
+        )
     }
 
     /// Return retained material to trusted host code.
@@ -425,6 +508,46 @@ impl ContextPlan {
             entry,
             content,
         })
+    }
+
+    pub(crate) fn provider_content(
+        &self,
+        operation_id: OperationId,
+        id: &str,
+        generation: u64,
+    ) -> Result<ContextContent, ContextReadError> {
+        let content = self.content(Some(operation_id), id, generation)?;
+        if !content.entry.audience.includes_provider() {
+            return Err(ContextReadError::EntryNotFound(id.to_owned()));
+        }
+        Ok(content)
+    }
+
+    pub(crate) fn validate_run_spec(&self, spec: &RunSpec) -> Result<(), ContextPlanError> {
+        let expected = Self::from_run_spec(spec);
+        for expected_entry in &expected.manifest.entries {
+            let Some(actual_entry) = self
+                .manifest
+                .entries
+                .iter()
+                .find(|entry| entry.id == expected_entry.id)
+            else {
+                return Err(ContextPlanError::MissingRunSpecEntry(
+                    expected_entry.id.clone(),
+                ));
+            };
+            if actual_entry != expected_entry {
+                return Err(ContextPlanError::MismatchedRunSpecEntry(
+                    expected_entry.id.clone(),
+                ));
+            }
+            if self.material(&expected_entry.id) != expected.material(&expected_entry.id) {
+                return Err(ContextPlanError::MismatchedRunSpecMaterial(
+                    expected_entry.id.clone(),
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -524,6 +647,8 @@ impl ContextPlanBuilder {
             origin: spec.origin,
             phase: spec.phase,
             scope: spec.scope,
+            audience: spec.audience,
+            precedence: spec.precedence,
             delivery: spec.delivery,
             freshness: spec.freshness,
             sensitivity: spec.sensitivity,
@@ -535,20 +660,9 @@ impl ContextPlanBuilder {
     }
 
     pub fn build(self) -> ContextPlan {
-        let encoded = serde_json::to_vec(&(
-            CONTEXT_MANIFEST_SCHEMA_VERSION,
-            self.generation,
-            self.ambient_policy,
-            &self.entries,
-        ))
-        .expect("context manifest fields are serializable");
-        let manifest = ContextManifest {
-            schema_version: CONTEXT_MANIFEST_SCHEMA_VERSION,
-            generation: self.generation,
-            ambient_policy: self.ambient_policy,
-            entries: self.entries,
-            fingerprint: fingerprint([encoded.as_slice()]),
-        };
+        let mut entries = self.entries;
+        entries.sort_by_key(|entry| entry.precedence);
+        let manifest = build_manifest(self.generation, self.ambient_policy, entries);
         ContextPlan {
             manifest,
             material: Arc::new(self.material),
@@ -561,6 +675,9 @@ impl ContextPlanBuilder {
 pub enum ContextPlanError {
     InvalidId(String),
     DuplicateId(String),
+    MissingRunSpecEntry(String),
+    MismatchedRunSpecEntry(String),
+    MismatchedRunSpecMaterial(String),
 }
 
 impl fmt::Display for ContextPlanError {
@@ -568,6 +685,20 @@ impl fmt::Display for ContextPlanError {
         match self {
             Self::InvalidId(id) => write!(formatter, "invalid context entry id `{id}`"),
             Self::DuplicateId(id) => write!(formatter, "duplicate context entry id `{id}`"),
+            Self::MissingRunSpecEntry(id) => {
+                write!(
+                    formatter,
+                    "context plan omits required RunSpec entry `{id}`"
+                )
+            }
+            Self::MismatchedRunSpecEntry(id) => write!(
+                formatter,
+                "context plan metadata for RunSpec entry `{id}` does not match the template"
+            ),
+            Self::MismatchedRunSpecMaterial(id) => write!(
+                formatter,
+                "context plan material for RunSpec entry `{id}` does not match the template"
+            ),
         }
     }
 }
@@ -611,11 +742,12 @@ pub(crate) struct OperationContext {
 
 impl OperationContext {
     pub(crate) fn new(operation_id: OperationId, plan: ContextPlan) -> Self {
+        let manifest = plan.provider_manifest();
         Self {
             evidence: Mutex::new(ContextReadEvidence {
                 operation_id,
-                generation: plan.manifest.generation,
-                manifest_fingerprint: plan.manifest.fingerprint.clone(),
+                generation: manifest.generation,
+                manifest_fingerprint: manifest.fingerprint.clone(),
                 manifest: ContextReadStats {
                     first_read_at_unix_ms: None,
                     last_read_at_unix_ms: None,
@@ -635,7 +767,7 @@ impl OperationContext {
         evidence.manifest.record(unix_time_ms());
         ContextSnapshot {
             operation_id: Some(evidence.operation_id),
-            manifest: self.plan.manifest.clone(),
+            manifest: self.plan.provider_manifest(),
             read_evidence: Some(evidence.clone()),
         }
     }
@@ -646,7 +778,7 @@ impl OperationContext {
         generation: u64,
     ) -> Result<ContextContent, ContextReadError> {
         let operation_id = self.evidence().operation_id;
-        let content = self.plan.content(Some(operation_id), id, generation)?;
+        let content = self.plan.provider_content(operation_id, id, generation)?;
         let mut evidence = self
             .evidence
             .lock()
@@ -702,6 +834,27 @@ fn fingerprint<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> ContextFingerpr
         write!(encoded, "{byte:02x}").expect("writing to String cannot fail");
     }
     ContextFingerprint(encoded)
+}
+
+fn build_manifest(
+    generation: u64,
+    ambient_policy: AmbientContextPolicy,
+    entries: Vec<ContextEntry>,
+) -> ContextManifest {
+    let encoded = serde_json::to_vec(&(
+        CONTEXT_MANIFEST_SCHEMA_VERSION,
+        generation,
+        ambient_policy,
+        &entries,
+    ))
+    .expect("context manifest fields are serializable");
+    ContextManifest {
+        schema_version: CONTEXT_MANIFEST_SCHEMA_VERSION,
+        generation,
+        ambient_policy,
+        entries,
+        fingerprint: fingerprint([encoded.as_slice()]),
+    }
 }
 
 fn unix_time_ms() -> Option<u64> {
@@ -785,9 +938,11 @@ mod tests {
             .unwrap();
         let value = serde_json::to_value(builder.build().manifest()).unwrap();
 
-        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["schema_version"], 2);
         assert_eq!(value["generation"], 7);
         assert_eq!(value["ambient_policy"], "ambient");
+        assert_eq!(value["entries"][0]["audience"], "provider");
+        assert_eq!(value["entries"][0]["precedence"], "host");
         assert_eq!(value["entries"][0]["delivery"]["kind"], "mcp_resource");
         assert_eq!(
             value["entries"][0]["delivery"]["uri"],
@@ -865,6 +1020,8 @@ mod tests {
         assert!(plan.manifest().entries.iter().all(|entry| {
             entry.delivery == ContextDelivery::ProviderAdapter
                 && entry.freshness == ContextFreshness::EveryTurn
+                && entry.audience == ContextAudience::Provider
+                && entry.precedence == ContextPrecedence::Host
                 && entry.required
                 && entry.sensitivity == ContextSensitivity::Redacted
         }));
@@ -878,6 +1035,92 @@ mod tests {
                 "kind": "run_spec",
                 "label": "agent.instructions[0]"
             })
+        );
+    }
+
+    #[test]
+    fn host_entries_are_precedence_ordered_and_provider_projection_is_filtered() {
+        let mut spec = RunSpec::suspended(AgentSpec::new(ProviderId::codex()));
+        spec.agent.instructions = vec!["base instruction".to_owned()];
+        let mut builder = ContextPlan::builder_from_run_spec(&spec, AmbientContextPolicy::Ambient);
+        builder
+            .add_inline(
+                entry("operator.notes", ContextSensitivity::Redacted)
+                    .audience(ContextAudience::Operator)
+                    .precedence(ContextPrecedence::Operation),
+                "operator only",
+            )
+            .unwrap();
+        builder
+            .add_inline(
+                entry("workspace.rules", ContextSensitivity::Redacted)
+                    .audience(ContextAudience::Both)
+                    .precedence(ContextPrecedence::Workspace),
+                "shared workspace rules",
+            )
+            .unwrap();
+        let plan = builder.build();
+
+        let ids = plan
+            .manifest()
+            .entries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            ["workspace.rules", "agent.instruction.1", "operator.notes"]
+        );
+        let provider = plan.provider_manifest();
+        let provider_ids = provider
+            .entries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(provider_ids, ["workspace.rules", "agent.instruction.1"]);
+        assert_ne!(provider.fingerprint, plan.manifest().fingerprint);
+        assert_eq!(provider.schema_version, CONTEXT_MANIFEST_SCHEMA_VERSION);
+        assert_eq!(provider.schema_version, 2);
+
+        assert_eq!(
+            plan.provider_content(OperationId::new(1), "operator.notes", 1)
+                .unwrap_err(),
+            ContextReadError::EntryNotFound("operator.notes".to_owned())
+        );
+        assert_eq!(
+            plan.content(None, "operator.notes", 1).unwrap().content,
+            "operator only"
+        );
+        plan.validate_run_spec(&spec).unwrap();
+    }
+
+    #[test]
+    fn explicit_plan_must_preserve_the_executable_run_spec_inventory() {
+        let mut spec = RunSpec::suspended(AgentSpec::new(ProviderId::claude()));
+        spec.agent.instructions = vec!["must remain exact".to_owned()];
+
+        let missing = ContextPlan::builder(AmbientContextPolicy::Ambient).build();
+        assert_eq!(
+            missing.validate_run_spec(&spec).unwrap_err(),
+            ContextPlanError::MissingRunSpecEntry("agent.instruction.1".to_owned())
+        );
+
+        let mut mismatched = ContextPlan::builder(AmbientContextPolicy::Ambient);
+        mismatched
+            .add_inline(
+                run_spec_entry(
+                    "agent.instruction.1".to_owned(),
+                    ContextKind::Instruction,
+                    "agent.instructions[0]".to_owned(),
+                    ContextPhase::Bootstrap,
+                    ContextScope::Agent,
+                ),
+                "different material",
+            )
+            .unwrap();
+        assert_eq!(
+            mismatched.build().validate_run_spec(&spec).unwrap_err(),
+            ContextPlanError::MismatchedRunSpecEntry("agent.instruction.1".to_owned())
         );
     }
 
