@@ -88,6 +88,15 @@ necessarily receives the credential and could repeat it in its own output;
 Roba's guarantee is that the host does not structurally copy that launch
 material into public values or log the credential.
 
+`AgentInstance::context_plan` exposes the content-free foundation for explicit
+context provenance. It inventories the instructions and project/run context
+already compiled into the fixed `RunSpec`, including current every-turn
+freshness, stable IDs, origins, delivery intent, and redacted fingerprints.
+Prompt material is retained only in the host-owned `ContextPlan`; its public
+`ContextManifest` and `Debug` output contain no context bodies. MCP resources,
+read evidence, context generations, and capability gating remain follow-on
+work rather than implied behavior.
+
 Loopback binding is a deliberate admission prerequisite. A host that forbids
 an ephemeral IPv4 loopback listener receives a typed runtime refusal before
 provider work starts; the agent does not silently downgrade to a run without

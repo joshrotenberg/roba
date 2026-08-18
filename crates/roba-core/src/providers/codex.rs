@@ -657,6 +657,38 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
     }
 
     #[test]
+    fn explicit_context_is_rendered_again_for_fresh_and_resumed_turns() {
+        let mut fresh = request();
+        fresh.spec.agent.instructions = vec!["agent".to_string()];
+        fresh.spec.context.project = vec!["project".to_string()];
+        fresh.spec.context.run = vec!["run".to_string()];
+        let mut resumed = fresh.clone();
+        resumed.spec.execution.session = SessionSpec::Resume {
+            session: SessionHandle {
+                provider: ProviderId::codex(),
+                id: "thread-1".to_string(),
+            },
+        };
+
+        for turn in [&fresh, &resumed] {
+            assert_eq!(render_prompt(turn), "agent\n\nproject\n\nrun\n\nhello");
+        }
+
+        let fresh_args =
+            CodexProvider::fresh_command(&fresh, &ProviderLaunchContext::default()).args();
+        let resumed_args =
+            CodexProvider::resume_command(&resumed, "thread-1", &ProviderLaunchContext::default())
+                .args();
+        // Roba currently leaves Codex's global/project config, AGENTS.md,
+        // skills, MCP servers, and rules enabled. These assertions characterize
+        // the ambient mode rather than promising isolation.
+        for args in [fresh_args, resumed_args] {
+            assert!(!args.iter().any(|arg| arg == "--ignore-user-config"));
+            assert!(!args.iter().any(|arg| arg == "--ignore-rules"));
+        }
+    }
+
+    #[test]
     fn effort_mapping_is_explicit() {
         assert_eq!(
             reasoning_effort(Effort::Low),

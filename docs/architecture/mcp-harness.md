@@ -115,7 +115,8 @@ direction is MCP-native, inspectable context availability with a minimal launch
 bootstrap, source and precedence metadata, freshness rules, and evidence of
 what an agent read. It must distinguish Roba-controlled context from ambient
 provider instructions instead of pretending the latter do not exist. This work
-is tracked in GitHub issue #489.
+is tracked in GitHub issue #489; the adopted foundation and current inventory
+are recorded in [`context.md`](context.md).
 
 Scheduling, GitHub workflows, richer Git mutations, context rotation, and
 Roba-to-Roba coordination should arrive as optional MCP services or external

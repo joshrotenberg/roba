@@ -3,10 +3,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use roba_core::{
-    AgentSpec, Cost as CoreCost, Effort as CoreEffort, EventSink, FailureKind as CoreFailureKind,
-    PermissionPolicy as CorePermissionPolicy, Provider, ProviderCapabilities, ProviderError,
-    ProviderFuture, ProviderId, Roba, RunFailureDetails, RunOutcome, RunSpec,
-    SessionHandle as CoreSessionHandle, SessionSpec, TurnRequest,
+    AgentSpec, ContextSpec, Cost as CoreCost, Effort as CoreEffort, EventSink,
+    FailureKind as CoreFailureKind, PermissionPolicy as CorePermissionPolicy, Provider,
+    ProviderCapabilities, ProviderError, ProviderFuture, ProviderId, Roba, RunFailureDetails,
+    RunOutcome, RunSpec, SessionHandle as CoreSessionHandle, SessionSpec, TurnRequest,
 };
 use roba_mcp::{
     AGENT_RESOURCE_URI, AGENT_TURN_TOOL, AgentBuildError, AgentInstance, AgentRefusalKind,
@@ -794,5 +794,35 @@ fn construction_rejects_invalid_templates_without_provider_work() {
         AgentInstance::new(runtime, invalid_cost).err().unwrap(),
         AgentBuildError::InvalidMaxCost
     );
+    assert_eq!(state.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn construction_retains_a_content_free_inventory_of_explicit_template_context() {
+    let state = Arc::new(FakeState::default());
+    let mut runtime = Roba::new();
+    runtime
+        .register(FakeProvider {
+            state: Arc::clone(&state),
+        })
+        .expect("fake provider registration succeeds");
+    let mut template = RunSpec::suspended(AgentSpec::new(fake_provider_id()));
+    template.agent.instructions = vec!["private instruction".to_string()];
+    template.context = ContextSpec {
+        project: vec!["private project context".to_string()],
+        run: vec!["private run context".to_string()],
+    };
+
+    let agent = AgentInstance::new(runtime, template).expect("valid test agent");
+    let manifest = agent.context_plan().manifest();
+
+    assert_eq!(manifest.entries.len(), 3);
+    assert_eq!(manifest.entries[0].id, "agent.instruction.1");
+    assert_eq!(manifest.entries[1].id, "project.context.1");
+    assert_eq!(manifest.entries[2].id, "run.context.1");
+    let serialized = serde_json::to_string(manifest).unwrap();
+    assert!(!serialized.contains("private instruction"));
+    assert!(!serialized.contains("private project context"));
+    assert!(!serialized.contains("private run context"));
     assert_eq!(state.calls.load(Ordering::SeqCst), 0);
 }

@@ -596,6 +596,35 @@ fi
     }
 
     #[test]
+    fn explicit_context_is_appended_again_for_fresh_and_resumed_turns() {
+        let mut fresh = request(ProviderId::claude());
+        fresh.spec.agent.instructions = vec!["agent".to_string()];
+        fresh.spec.context.project = vec!["project".to_string()];
+        fresh.spec.context.run = vec!["run".to_string()];
+        let mut resumed = fresh.clone();
+        resumed.spec.execution.session = SessionSpec::Resume {
+            session: SessionHandle {
+                provider: ProviderId::claude(),
+                id: "session-1".to_string(),
+            },
+        };
+
+        for turn in [fresh, resumed] {
+            let config = ClaudeProvider::config(&turn).unwrap();
+            assert_eq!(
+                config.append_system_prompt.as_deref(),
+                Some("agent\n\nproject\n\nrun")
+            );
+            // Provider-native user/project/local settings, CLAUDE.md, skills,
+            // hooks, MCP, and memory remain ambient on the current bounded
+            // path. A future controlled/hermetic mode must opt out explicitly.
+            assert_eq!(config.setting_sources, None);
+            assert!(!config.strict_mcp_config);
+            assert!(!config.exclude_dynamic_system_prompt_sections);
+        }
+    }
+
+    #[test]
     fn launch_context_builds_exact_private_config_and_tool_allowlist() {
         let context = launch_context();
         let mcp_config = ClaudeProvider::mcp_config(&context).unwrap().unwrap();

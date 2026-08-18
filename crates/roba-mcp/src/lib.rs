@@ -6,6 +6,7 @@
 //! contract shared by every interface.
 
 mod agent;
+mod context;
 mod contract;
 mod events;
 mod extensions;
@@ -14,6 +15,12 @@ mod router;
 mod stdio;
 
 pub use agent::{AgentBuildError, AgentInstance, AgentStopError};
+pub use context::{
+    AmbientContextPolicy, CONTEXT_MANIFEST_SCHEMA_VERSION, ContextDelivery, ContextEntry,
+    ContextEntrySpec, ContextFingerprint, ContextFreshness, ContextKind, ContextManifest,
+    ContextOrigin, ContextOriginKind, ContextPhase, ContextPlan, ContextPlanBuilder,
+    ContextPlanError, ContextScope, ContextSensitivity,
+};
 pub use contract::{
     AgentConfiguration, AgentControlRefusal, AgentControlRefusalKind, AgentInterruptResult,
     AgentRefusal, AgentRefusalKind, AgentShutdownResult, AgentSnapshot, AgentState,

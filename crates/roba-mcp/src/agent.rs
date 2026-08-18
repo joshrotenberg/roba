@@ -10,6 +10,7 @@ use roba_core::{
 };
 use tokio::sync::{Mutex, watch};
 
+use crate::context::ContextPlan;
 use crate::contract::{
     AgentConfiguration, AgentControlRefusalKind, AgentInterruptResult, AgentRefusalKind,
     AgentShutdownResult, AgentSnapshot, AgentState, AgentSteerResult, AgentTurnResult, OperationId,
@@ -28,6 +29,7 @@ pub struct AgentInstance {
 struct Inner {
     runtime: Roba,
     template: RunSpec,
+    context_plan: ContextPlan,
     configuration: AgentConfiguration,
     extensions: AgentExtensions,
     created_at_unix_ms: Option<u64>,
@@ -108,6 +110,15 @@ impl AgentInstance {
         &self.inner.extensions
     }
 
+    /// Content-free provenance and delivery inventory for the fixed template.
+    ///
+    /// This foundation describes context already compiled into [`RunSpec`].
+    /// It does not claim that provider-native ambient sources are isolated or
+    /// that the provider has read MCP-available context.
+    pub fn context_plan(&self) -> &ContextPlan {
+        &self.inner.context_plan
+    }
+
     /// Construct an idle host from a suspended run template.
     ///
     /// Construction never starts provider work. A seeded resume handle is
@@ -143,6 +154,8 @@ impl AgentInstance {
             return Err(AgentBuildError::InvalidMaxCost);
         }
 
+        let context_plan = ContextPlan::from_run_spec(&template);
+
         let session = match std::mem::take(&mut template.execution.session) {
             SessionSpec::Fresh => None,
             SessionSpec::Resume { session } => {
@@ -172,6 +185,7 @@ impl AgentInstance {
             inner: Arc::new(Inner {
                 runtime,
                 template,
+                context_plan,
                 configuration,
                 extensions,
                 created_at_unix_ms: unix_time_ms(),

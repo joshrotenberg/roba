@@ -1356,6 +1356,7 @@ dependencies = [
  "roba-core",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tower-mcp",
  "uuid",
