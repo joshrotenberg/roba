@@ -6,9 +6,10 @@ use roba_core::{
     ProviderId, Roba, RunOutcome, RunSpec, TurnRequest,
 };
 use roba_mcp::{
-    AGENT_EVENTS_TEMPLATE, AGENT_EVENTS_URI, AGENT_INTERRUPT_TOOL, AGENT_RESOURCE_URI,
-    AGENT_SHUTDOWN_TOOL, AGENT_STEER_TOOL, AGENT_TURN_TOOL, AgentBuildError, AgentExtension,
-    AgentExtensionProjection, AgentExtensions, AgentInstance, OperationId, ROBA_SELF_TOOL,
+    AGENT_CONTEXT_ENTRY_TEMPLATE, AGENT_CONTEXT_URI, AGENT_EVENTS_TEMPLATE, AGENT_EVENTS_URI,
+    AGENT_INTERRUPT_TOOL, AGENT_RESOURCE_URI, AGENT_SHUTDOWN_TOOL, AGENT_STEER_TOOL,
+    AGENT_TURN_TOOL, AgentBuildError, AgentExtension, AgentExtensionProjection, AgentExtensions,
+    AgentInstance, OperationId, ROBA_CONTEXT_MANIFEST_TOOL, ROBA_CONTEXT_READ_TOOL, ROBA_SELF_TOOL,
     ShutdownInput, agent_router, connect_in_process,
 };
 use tower_mcp::{
@@ -175,6 +176,58 @@ fn built_in_provider_self_collision_fails_before_provider_work() {
 }
 
 #[test]
+fn built_in_control_context_collision_fails_before_provider_work() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let extensions = AgentExtensions::default()
+        .try_with(AgentExtension::new(
+            "replace-control-context",
+            resource_router(AGENT_CONTEXT_URI),
+            McpRouter::new(),
+        ))
+        .expect("the fragment does not collide with another extension");
+
+    let error = extension_error(
+        build_with(extensions, Arc::clone(&calls))
+            .err()
+            .expect("built-in context collision must fail construction"),
+    );
+    assert_eq!(error.projection(), AgentExtensionProjection::Control);
+    assert_eq!(error.extension(), "replace-control-context");
+    assert_eq!(
+        error.conflicts().conflicts()[0].kind,
+        MergeConflictKind::Resource
+    );
+    assert_eq!(error.conflicts().conflicts()[0].name, AGENT_CONTEXT_URI);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn built_in_provider_context_collision_fails_before_provider_work() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let extensions = AgentExtensions::default()
+        .try_with(AgentExtension::new(
+            "replace-provider-context",
+            McpRouter::new(),
+            resource_router(AGENT_CONTEXT_URI),
+        ))
+        .expect("the fragment does not collide with another extension");
+
+    let error = extension_error(
+        build_with(extensions, Arc::clone(&calls))
+            .err()
+            .expect("built-in context collision must fail construction"),
+    );
+    assert_eq!(error.projection(), AgentExtensionProjection::Provider);
+    assert_eq!(error.extension(), "replace-provider-context");
+    assert_eq!(
+        error.conflicts().conflicts()[0].kind,
+        MergeConflictKind::Resource
+    );
+    assert_eq!(error.conflicts().conflicts()[0].name, AGENT_CONTEXT_URI);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn extension_tool_and_static_resource_collisions_fail_closed() {
     let first = AgentExtension::new(
         "first",
@@ -256,7 +309,15 @@ async fn the_same_capability_name_is_independent_across_projections() {
         .map(|tool| tool.name)
         .collect::<Vec<_>>();
     provider_tools.sort_unstable();
-    assert_eq!(provider_tools, ["git.snapshot", ROBA_SELF_TOOL]);
+    assert_eq!(
+        provider_tools,
+        [
+            ROBA_CONTEXT_MANIFEST_TOOL,
+            ROBA_CONTEXT_READ_TOOL,
+            "git.snapshot",
+            ROBA_SELF_TOOL,
+        ]
+    );
     provider
         .shutdown()
         .await
@@ -310,7 +371,11 @@ async fn default_extensions_preserve_exact_base_discovery() {
         .map(|resource| resource.uri)
         .collect::<Vec<_>>();
     resources.sort_unstable();
-    let mut expected_resources = vec![AGENT_EVENTS_URI.to_owned(), AGENT_RESOURCE_URI.to_owned()];
+    let mut expected_resources = vec![
+        AGENT_CONTEXT_URI.to_owned(),
+        AGENT_EVENTS_URI.to_owned(),
+        AGENT_RESOURCE_URI.to_owned(),
+    ];
     expected_resources.sort_unstable();
     assert_eq!(resources, expected_resources);
     let templates = control
@@ -318,8 +383,17 @@ async fn default_extensions_preserve_exact_base_discovery() {
         .await
         .expect("control resource templates list succeeds")
         .resource_templates;
-    assert_eq!(templates.len(), 1);
-    assert_eq!(templates[0].uri_template, AGENT_EVENTS_TEMPLATE);
+    let mut templates = templates
+        .into_iter()
+        .map(|template| template.uri_template)
+        .collect::<Vec<_>>();
+    templates.sort_unstable();
+    let mut expected_templates = vec![
+        AGENT_CONTEXT_ENTRY_TEMPLATE.to_owned(),
+        AGENT_EVENTS_TEMPLATE.to_owned(),
+    ];
+    expected_templates.sort_unstable();
+    assert_eq!(templates, expected_templates);
     assert!(
         control
             .list_prompts()
@@ -340,7 +414,7 @@ async fn default_extensions_preserve_exact_base_discovery() {
         .initialize("base-provider-test", env!("CARGO_PKG_VERSION"))
         .await
         .expect("provider client initializes");
-    let provider_tools = provider
+    let mut provider_tools = provider
         .list_tools()
         .await
         .expect("provider tools list succeeds")
@@ -348,14 +422,31 @@ async fn default_extensions_preserve_exact_base_discovery() {
         .into_iter()
         .map(|tool| tool.name)
         .collect::<Vec<_>>();
-    assert_eq!(provider_tools, [ROBA_SELF_TOOL]);
-    assert!(
-        provider
-            .list_resources()
-            .await
-            .expect("provider resources list succeeds")
-            .resources
-            .is_empty()
+    provider_tools.sort_unstable();
+    assert_eq!(
+        provider_tools,
+        [
+            ROBA_CONTEXT_MANIFEST_TOOL,
+            ROBA_CONTEXT_READ_TOOL,
+            ROBA_SELF_TOOL,
+        ]
+    );
+    let provider_resources = provider
+        .list_resources()
+        .await
+        .expect("provider resources list succeeds")
+        .resources;
+    assert_eq!(provider_resources.len(), 1);
+    assert_eq!(provider_resources[0].uri, AGENT_CONTEXT_URI);
+    let provider_templates = provider
+        .list_resource_templates()
+        .await
+        .expect("provider templates list succeeds")
+        .resource_templates;
+    assert_eq!(provider_templates.len(), 1);
+    assert_eq!(
+        provider_templates[0].uri_template,
+        AGENT_CONTEXT_ENTRY_TEMPLATE
     );
     provider
         .shutdown()

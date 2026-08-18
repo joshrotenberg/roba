@@ -90,7 +90,8 @@ mcp-repl --protocol final -- roba -C /path/to/repo serve --provider codex --git
 
 Inside `mcp-repl`, call `agent.turn text="..."`. Append `&` to create a
 Task, then use `jobs`, `read roba://agent`, `read roba://events`, `wait`, or
-`cancel`.
+`cancel`. `read roba://context` shows the declared context manifest and the
+current or latest provider read evidence.
 
 The base control contract is:
 
@@ -99,7 +100,9 @@ The base control contract is:
 - `agent.interrupt` cancels one operation, drains it, and keeps the agent hot;
 - `agent.shutdown` permanently closes admission and drains active work;
 - `roba://agent` reports redacted configuration and current state;
-- `roba://events{?after,limit}` pages bounded agent-wide history.
+- `roba://events{?after,limit}` pages bounded agent-wide history;
+- `roba://context` inventories declared context without its bodies, while
+  `roba://context/entry{?id,generation}` performs an explicit content read.
 
 The logical agent and validated provider session stay hot. Provider processes
 do not: each accepted turn launches and settles one finite provider run. Limits
@@ -111,10 +114,16 @@ For piped stdio, Roba consumes SIGINT so `mcp-repl` can use Ctrl-C locally. Use
 terminal, Ctrl-C requests graceful shutdown.
 
 Every admitted operation also receives a private authenticated loopback MCP
-endpoint. Its base provider projection contains only the read-only `self` tool
-and structurally excludes turn admission and operator controls. The credential
-rotates and is revoked before the operation settles. Extensions may add
-separately scoped provider capabilities without copying the control router.
+endpoint. Its base provider projection contains the read-only `self` tool and
+operation-scoped context resources plus the equivalent read-only
+`context.manifest` and `context.read` tools. The tool form is the portable
+provider path; the resource form remains available to resource-native clients.
+Turn admission and operator controls are structurally excluded. Successful
+provider context reads through either form are retained against the exact
+operation and generation; they do not prove model acknowledgement or
+compliance. The credential rotates and is revoked before the operation settles.
+Extensions may add separately scoped provider capabilities without copying the
+control router.
 
 ## Permissions and providers
 

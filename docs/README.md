@@ -29,5 +29,7 @@ decision and its rationale here, not a phase ledger or working-session log.
   provider-neutral execution core.
 - [`architecture/mcp-harness.md`](architecture/mcp-harness.md) -- the hot,
   single-agent MCP application layer above the core.
+- [`architecture/context.md`](architecture/context.md) -- the typed context
+  plan, current provider inventory, and isolation boundaries.
 - [`legacy-cli.md`](legacy-cli.md) -- the Claude-only compatibility command,
   configuration model, and scripting ABI.

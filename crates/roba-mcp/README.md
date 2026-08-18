@@ -30,6 +30,10 @@ The operator contract has process-local and foreground stdio bindings:
   agent-wide replay. Global sequences continue across finite runs, source-run
   sequences remain visible, lost history is explicit, and event projections
   redact provider session ids.
+- `roba://context` exposes the content-free effective context manifest and
+  current or latest provider read evidence. Individual bodies are available
+  only through the generation-fenced
+  `roba://context/entry{?id,generation}` template.
 - `connect_in_process` returns an initialized production `McpClient` over
   Tower MCP's concurrent `ChannelTransport`.
 - `call_turn` is the typed client seam. It requires valid
@@ -50,11 +54,15 @@ credential rotates for every finite run and is revoked when that run settles.
 
 The provider router is an explicit allowlist, not the control router with
 runtime denials. Its base publishes one immediate, read-only tool named
-`self` (qualified as `roba.self` by provider clients). Installed extensions
-may contribute separate provider tools or resources, but nothing from their
-control fragment is mirrored automatically. The base publishes no turns,
-steering, interruption, shutdown, Tasks, configuration, event history, or
-retained session evidence. This proves provider re-entry without opening
+`self` (qualified as `roba.self` by provider clients), the content-free
+`roba://context` manifest, and its generation-fenced entry resource template.
+It also publishes equivalent read-only `context.manifest` and `context.read`
+tools so provider adapters do not depend on native resource support. Every
+base tool is included in the exact provider launch allowlist. Installed
+extensions may contribute separate provider tools or resources, but nothing
+from their control fragment is mirrored automatically. The base publishes no
+turns, steering, interruption, shutdown, Tasks, configuration, event history,
+or retained session evidence. This proves provider re-entry without opening
 recursion or operator authority.
 
 ## Extension composition
@@ -87,6 +95,22 @@ the loopback URL but redact the bearer credential. A provider process
 necessarily receives the credential and could repeat it in its own output;
 Roba's guarantee is that the host does not structurally copy that launch
 material into public values or log the credential.
+
+`AgentInstance::context_plan` inventories the instructions and project/run
+context already compiled into the fixed `RunSpec`, including current
+every-turn freshness, stable IDs, origins, delivery intent, and redacted
+fingerprints. Prompt material is retained only in the host-owned
+`ContextPlan`; `ContextManifest`, `ContextSnapshot`, and `Debug` output contain
+no bodies. Public and redacted bodies may be requested through the explicit
+content resource; secret entries are structurally unavailable there.
+
+Each provider-side manifest or entry read through either the resource or tool
+form is recorded against the exact operation id and context generation, with
+first/last timestamps and a saturating count. The private endpoint is drained
+before settlement, so the control projection can retain the final evidence
+without a late-read race. This proves only that the provider MCP client made
+the request. Explicit acknowledgement, provider-native ambient inventory,
+generation updates, and capability gating remain follow-on work.
 
 Loopback binding is a deliberate admission prerequisite. A host that forbids
 an ephemeral IPv4 loopback listener receives a typed runtime refusal before

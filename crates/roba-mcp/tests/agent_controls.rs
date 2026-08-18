@@ -9,11 +9,11 @@ use roba_core::{
     SessionSpec, TurnRequest,
 };
 use roba_mcp::{
-    AGENT_EVENT_CAPACITY, AGENT_EVENTS_TEMPLATE, AGENT_EVENTS_URI, AGENT_INTERRUPT_TOOL,
-    AGENT_RESOURCE_URI, AGENT_SHUTDOWN_TOOL, AGENT_STEER_TOOL, AGENT_TURN_TOOL,
-    AgentControlRefusalKind, AgentEvent, AgentEventPage, AgentInterruptResult, AgentShutdownResult,
-    AgentSnapshot, AgentState, AgentSteerResult, AgentTerminalState, AgentTurnResult,
-    OperationSettlement, connect_in_process,
+    AGENT_CONTEXT_ENTRY_TEMPLATE, AGENT_CONTEXT_URI, AGENT_EVENT_CAPACITY, AGENT_EVENTS_TEMPLATE,
+    AGENT_EVENTS_URI, AGENT_INTERRUPT_TOOL, AGENT_RESOURCE_URI, AGENT_SHUTDOWN_TOOL,
+    AGENT_STEER_TOOL, AGENT_TURN_TOOL, AgentControlRefusalKind, AgentEvent, AgentEventPage,
+    AgentInterruptResult, AgentShutdownResult, AgentSnapshot, AgentState, AgentSteerResult,
+    AgentTerminalState, AgentTurnResult, OperationSettlement, connect_in_process,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -382,6 +382,12 @@ async fn controls_and_event_resources_publish_complete_schemas() {
         .find(|resource| resource.uri == AGENT_EVENTS_URI)
         .expect("exact events resource is advertised");
     assert_eq!(events.mime_type.as_deref(), Some("application/json"));
+    let context = resources
+        .resources
+        .iter()
+        .find(|resource| resource.uri == AGENT_CONTEXT_URI)
+        .expect("context manifest resource is advertised");
+    assert_eq!(context.mime_type.as_deref(), Some("application/json"));
 
     let templates = bounded(client.list_resource_templates())
         .await
@@ -402,6 +408,19 @@ async fn controls_and_event_resources_publish_complete_schemas() {
             .map(|argument| (argument.name.as_str(), argument.required))
             .collect::<Vec<_>>(),
         [("after", false), ("limit", false)]
+    );
+    let context_template = templates
+        .resource_templates
+        .iter()
+        .find(|template| template.uri_template == AGENT_CONTEXT_ENTRY_TEMPLATE)
+        .expect("generation-fenced context entry template is advertised");
+    assert_eq!(
+        context_template
+            .arguments
+            .iter()
+            .map(|argument| (argument.name.as_str(), argument.required))
+            .collect::<Vec<_>>(),
+        [("id", true), ("generation", true)]
     );
 
     let initial = read_events(&client, AGENT_EVENTS_URI).await;
