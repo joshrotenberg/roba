@@ -104,6 +104,25 @@ fingerprints. Prompt material is retained only in the host-owned
 no bodies. Public and redacted bodies may be requested through the explicit
 content resource; secret entries are structurally unavailable there.
 
+Hosts that need additional MCP-native context start with
+`ContextPlan::builder_from_run_spec`, add entries with explicit audience and
+precedence, and construct the agent through
+`AgentInstance::new_with_context_plan`. Construction fails if the supplied plan
+omits or changes context already present in the executable `RunSpec`. The
+operator can inspect the complete plan; the provider manifest and content
+surface structurally exclude operator-only entries. Declared precedence orders
+the plan but does not claim to override hidden provider-managed policy.
+
+For each admitted operation, the host compiles an inspectable
+`ContextBootstrap` containing provider identity, exact operation, authority,
+current-goal delivery, provider-manifest fingerprint, and mandatory MCP
+acquisitions. The rendered bootstrap is passed through the non-serializable
+provider launch context; it contains no entry bodies and is redacted from
+launch `Debug` output. `ContextSnapshot.bootstrap` exposes the typed contract
+while active and for the latest settled operation. Asking for acquisition is
+not evidence that it happened; provider-side reads remain the mechanical
+evidence boundary.
+
 Each provider-side manifest or entry read through either the resource or tool
 form is recorded against the exact operation id and context generation, with
 first/last timestamps and a saturating count. The private endpoint is drained

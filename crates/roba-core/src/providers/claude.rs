@@ -155,6 +155,16 @@ impl ClaudeProvider {
         }
     }
 
+    fn apply_bootstrap(config: &mut Config, launch_context: &ProviderLaunchContext) {
+        let Some(bootstrap) = launch_context.bootstrap_instruction() else {
+            return;
+        };
+        config.append_system_prompt = Some(match config.append_system_prompt.take() {
+            Some(existing) => format!("{bootstrap}\n\n{existing}"),
+            None => bootstrap.to_owned(),
+        });
+    }
+
     /// Normalize Claude's result without converting missing telemetry to zero.
     pub fn normalize(result: QueryResult) -> RunOutcome {
         let structured_output = result.extra.get("structured_output").cloned();
@@ -251,6 +261,7 @@ impl Provider for ClaudeProvider {
         Box::pin(async move {
             self.validate(&request)?;
             let mut config = Self::config(&request)?;
+            Self::apply_bootstrap(&mut config, &launch_context);
             let mcp_config = Self::mcp_config(&launch_context)?;
             if let Some(mcp_config) = &mcp_config {
                 config.mcp_config.push(mcp_config.path().to_string());
@@ -414,6 +425,7 @@ mod tests {
     const TEST_MCP_SERVER: &str = "roba";
     const TEST_GIT_TOOL: &str = "mcp__roba__git.snapshot";
     const TEST_SELF_TOOL: &str = "mcp__roba__self";
+    const TEST_BOOTSTRAP: &str = "minimal Roba bootstrap";
 
     #[cfg(unix)]
     #[derive(Default)]
@@ -527,6 +539,7 @@ fi
                 .unwrap(),
             )
             .unwrap()
+            .with_bootstrap_instruction(TEST_BOOTSTRAP)
     }
 
     #[test]
@@ -622,6 +635,31 @@ fi
             assert!(!config.strict_mcp_config);
             assert!(!config.exclude_dynamic_system_prompt_sections);
         }
+    }
+
+    #[test]
+    fn launch_bootstrap_precedes_explicit_context_for_fresh_and_resumed_turns() {
+        let mut fresh = request(ProviderId::claude());
+        fresh.spec.agent.instructions = vec!["agent instruction".to_owned()];
+        let mut resumed = fresh.clone();
+        resumed.spec.execution.session = SessionSpec::Resume {
+            session: SessionHandle {
+                provider: ProviderId::claude(),
+                id: "session-1".to_owned(),
+            },
+        };
+        let launch =
+            ProviderLaunchContext::default().with_bootstrap_instruction("minimal Roba bootstrap");
+
+        for turn in [fresh, resumed] {
+            let mut config = ClaudeProvider::config(&turn).unwrap();
+            ClaudeProvider::apply_bootstrap(&mut config, &launch);
+            assert_eq!(
+                config.append_system_prompt.as_deref(),
+                Some("minimal Roba bootstrap\n\nagent instruction")
+            );
+        }
+        assert!(!format!("{launch:?}").contains("minimal Roba bootstrap"));
     }
 
     #[test]
@@ -731,6 +769,7 @@ fi
         assert!(args.lines().any(|arg| arg == "--allowed-tools"));
         assert!(args.contains(TEST_GIT_TOOL));
         assert!(args.contains(TEST_SELF_TOOL));
+        assert!(args.contains(TEST_BOOTSTRAP));
         assert!(!args.contains("secret-provider-token"));
         let value: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(temp.path().join("claude.mcp.json")).unwrap(),

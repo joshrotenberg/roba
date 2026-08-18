@@ -4656,7 +4656,13 @@ fn codex_bounded_run_is_stdin_safe_and_normalized_at_the_cli_boundary() {
     assert!(argv.contains("model_reasoning_effort=\"high\""));
     assert!(argv.lines().any(|arg| arg == "workspace-write"));
     assert!(!argv.contains(prompt), "fresh prompt leaked into argv");
-    assert_eq!(std::fs::read_to_string(captured_stdin).unwrap(), prompt);
+    let stdin = std::fs::read_to_string(captured_stdin).unwrap();
+    assert!(
+        stdin.starts_with("You are operating as a Roba-managed agent using provider \"codex\"")
+    );
+    assert!(stdin.contains("execution authority is workspace_write"));
+    assert!(stdin.contains("call `context.manifest`"));
+    assert!(stdin.ends_with(&format!("\n\n{prompt}")));
 }
 
 #[cfg(unix)]

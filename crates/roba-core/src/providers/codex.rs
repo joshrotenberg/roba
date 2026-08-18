@@ -51,7 +51,8 @@ impl CodexProvider {
     }
 
     fn fresh_command(request: &TurnRequest, launch_context: &ProviderLaunchContext) -> ExecCommand {
-        let mut command = ExecCommand::new(render_prompt(request)).prompt_via_stdin();
+        let mut command =
+            ExecCommand::new(render_prompt(request, launch_context)).prompt_via_stdin();
         if let Some(model) = &request.spec.agent.model {
             command = command.model(model.clone());
         }
@@ -88,7 +89,7 @@ impl CodexProvider {
         // ExecResumeCommand therefore still places the resumed prompt in argv.
         let mut command = ExecResumeCommand::new()
             .session_id(session_id)
-            .prompt(render_prompt(request));
+            .prompt(render_prompt(request, launch_context));
         if let Some(model) = &request.spec.agent.model {
             command = command.model(model.clone());
         }
@@ -449,8 +450,13 @@ fn toml_key_segment(value: &str) -> String {
     serde_json::to_string(value).expect("a string must serialize as a TOML-compatible key")
 }
 
-fn render_prompt(request: &TurnRequest) -> String {
+fn render_prompt(request: &TurnRequest, launch_context: &ProviderLaunchContext) -> String {
     let mut sections = Vec::new();
+    sections.extend(
+        launch_context
+            .bootstrap_instruction()
+            .map(ToOwned::to_owned),
+    );
     sections.extend(request.spec.agent.instructions.iter().cloned());
     sections.extend(request.spec.context.project.iter().cloned());
     sections.extend(request.spec.context.run.iter().cloned());
@@ -502,6 +508,7 @@ mod tests {
         r#"mcp_servers."roba".tools."git.snapshot".approval_mode="approve""#;
     const TEST_SELF_TOOL_APPROVAL: &str =
         r#"mcp_servers."roba".tools."self".approval_mode="approve""#;
+    const TEST_BOOTSTRAP: &str = "minimal Roba bootstrap";
 
     #[cfg(unix)]
     #[derive(Default)]
@@ -522,6 +529,7 @@ mod tests {
 
         let marker = temp.path().join("blocked.pid");
         let args_marker = temp.path().join("codex.args");
+        let prompt_marker = temp.path().join("codex.prompt");
         let token_marker = temp.path().join("codex.token");
         let binary = temp.path().join("codex");
         let script = format!(
@@ -529,6 +537,7 @@ mod tests {
 printf '%s\n' "$@" > '{}'
 printf '%s' "${{ROBA_INTERNAL_MCP_TOKEN_0-}}" > '{}'
 prompt=$(cat)
+printf '%s' "$prompt" > '{}'
 if [ "$prompt" = "block" ]; then
   printf '%s' "$$" > '{}'
   exec sleep 30
@@ -579,6 +588,7 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
 "#,
             args_marker.display(),
             token_marker.display(),
+            prompt_marker.display(),
             marker.display()
         );
         std::fs::write(&binary, script).unwrap();
@@ -608,6 +618,7 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
                 .unwrap(),
             )
             .unwrap()
+            .with_bootstrap_instruction(TEST_BOOTSTRAP)
     }
 
     #[test]
@@ -653,7 +664,10 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
         turn.spec.agent.instructions = vec!["agent".to_string()];
         turn.spec.context.project = vec!["project".to_string()];
         turn.spec.context.run = vec!["run".to_string()];
-        assert_eq!(render_prompt(&turn), "agent\n\nproject\n\nrun\n\nhello");
+        assert_eq!(
+            render_prompt(&turn, &ProviderLaunchContext::default()),
+            "agent\n\nproject\n\nrun\n\nhello"
+        );
     }
 
     #[test]
@@ -671,7 +685,10 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
         };
 
         for turn in [&fresh, &resumed] {
-            assert_eq!(render_prompt(turn), "agent\n\nproject\n\nrun\n\nhello");
+            assert_eq!(
+                render_prompt(turn, &ProviderLaunchContext::default()),
+                "agent\n\nproject\n\nrun\n\nhello"
+            );
         }
 
         let fresh_args =
@@ -686,6 +703,29 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
             assert!(!args.iter().any(|arg| arg == "--ignore-user-config"));
             assert!(!args.iter().any(|arg| arg == "--ignore-rules"));
         }
+    }
+
+    #[test]
+    fn launch_bootstrap_precedes_explicit_context_for_fresh_and_resumed_turns() {
+        let mut fresh = request();
+        fresh.spec.agent.instructions = vec!["agent instruction".to_owned()];
+        let mut resumed = fresh.clone();
+        resumed.spec.execution.session = SessionSpec::Resume {
+            session: SessionHandle {
+                provider: ProviderId::codex(),
+                id: "thread-1".to_owned(),
+            },
+        };
+        let launch =
+            ProviderLaunchContext::default().with_bootstrap_instruction("minimal Roba bootstrap");
+
+        for turn in [&fresh, &resumed] {
+            assert_eq!(
+                render_prompt(turn, &launch),
+                "minimal Roba bootstrap\n\nagent instruction\n\nhello"
+            );
+        }
+        assert!(!format!("{launch:?}").contains("minimal Roba bootstrap"));
     }
 
     #[test]
@@ -832,6 +872,10 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
             .unwrap();
 
         assert_eq!(outcome.output, "opened");
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("codex.prompt")).unwrap(),
+            format!("{TEST_BOOTSTRAP}\n\nhello")
+        );
         let args = std::fs::read_to_string(temp.path().join("codex.args")).unwrap();
         for expected in [
             "mcp_servers.roba.url=\"http://127.0.0.1:4123/mcp\"",

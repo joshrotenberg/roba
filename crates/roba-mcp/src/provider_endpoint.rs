@@ -32,6 +32,7 @@ impl ProviderEndpoint {
     pub(crate) async fn start(
         agent: AgentInstance,
         operation_id: OperationId,
+        bootstrap_instruction: String,
     ) -> Result<(Self, ProviderLaunchContext), ProviderEndpointError> {
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
@@ -72,7 +73,8 @@ impl ProviderEndpoint {
             .map_err(ProviderEndpointError::Configuration)?;
         let launch_context = ProviderLaunchContext::default()
             .try_with_mcp_endpoint(endpoint)
-            .map_err(ProviderEndpointError::Configuration)?;
+            .map_err(ProviderEndpointError::Configuration)?
+            .with_bootstrap_instruction(bootstrap_instruction);
 
         Ok((
             Self {

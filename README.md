@@ -121,9 +121,12 @@ provider path; the resource form remains available to resource-native clients.
 Turn admission and operator controls are structurally excluded. Successful
 provider context reads through either form are retained against the exact
 operation and generation; they do not prove model acknowledgement or
-compliance. The credential rotates and is revoked before the operation settles.
-Extensions may add separately scoped provider capabilities without copying the
-control router.
+compliance. A small typed launch bootstrap identifies the operation, summarizes
+authority, points to the manifest, and names mandatory MCP acquisitions without
+copying their bodies into the provider prompt. Its fingerprint remains
+inspectable in `roba://context`. The credential rotates and is revoked before
+the operation settles. Extensions may add separately scoped provider
+capabilities without copying the control router.
 
 ## Permissions and providers
 

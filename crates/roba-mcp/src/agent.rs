@@ -11,8 +11,8 @@ use roba_core::{
 use tokio::sync::{Mutex, watch};
 
 use crate::context::{
-    ContextContent, ContextPlan, ContextReadError, ContextReadEvidence, ContextSnapshot,
-    OperationContext,
+    ContextContent, ContextPlan, ContextPlanError, ContextReadError, ContextReadEvidence,
+    ContextSnapshot, OperationContext,
 };
 use crate::contract::{
     AgentConfiguration, AgentControlRefusalKind, AgentInterruptResult, AgentRefusalKind,
@@ -166,8 +166,24 @@ impl AgentInstance {
     /// private listener starts during this preflight.
     pub fn new_with_extensions(
         runtime: Roba,
+        template: RunSpec,
+        extensions: AgentExtensions,
+    ) -> Result<Self, AgentBuildError> {
+        let context_plan = ContextPlan::from_run_spec(&template);
+        Self::new_with_context_plan(runtime, template, extensions, context_plan)
+    }
+
+    /// Construct an idle host with an explicit immutable context plan.
+    ///
+    /// The plan may add host-owned MCP-native entries, but it must retain the
+    /// exact provider-adapter entries already present in the executable
+    /// [`RunSpec`]. Both MCP projections and extension collisions are
+    /// preflighted before provider work or private listener creation.
+    pub fn new_with_context_plan(
+        runtime: Roba,
         mut template: RunSpec,
         extensions: AgentExtensions,
+        context_plan: ContextPlan,
     ) -> Result<Self, AgentBuildError> {
         if template.initial_prompt.is_some() {
             return Err(AgentBuildError::TemplateNotSuspended);
@@ -186,7 +202,9 @@ impl AgentInstance {
             return Err(AgentBuildError::InvalidMaxCost);
         }
 
-        let context_plan = ContextPlan::from_run_spec(&template);
+        context_plan
+            .validate_run_spec(&template)
+            .map_err(AgentBuildError::ContextPlan)?;
 
         let session = match std::mem::take(&mut template.execution.session) {
             SessionSpec::Fresh => None,
@@ -305,17 +323,28 @@ impl AgentInstance {
             },
             None => SessionSpec::Fresh,
         };
-        let (provider_endpoint, launch_context) =
-            match ProviderEndpoint::start(self.clone(), operation_id).await {
-                Ok(endpoint) => endpoint,
-                Err(error) => {
-                    return TurnAdmission::Refused(AgentTurnResult::refused(
-                        AgentRefusalKind::Runtime,
-                        error.to_string(),
-                        None,
-                    ));
-                }
-            };
+        let bootstrap = self.inner.context_plan.provider_bootstrap(
+            operation_id,
+            &spec.agent.provider,
+            spec.execution.permissions,
+        );
+        let operation_context = OperationContext::new(self.inner.context_plan.clone(), bootstrap);
+        let (provider_endpoint, launch_context) = match ProviderEndpoint::start(
+            self.clone(),
+            operation_id,
+            operation_context.bootstrap().render(),
+        )
+        .await
+        {
+            Ok(endpoint) => endpoint,
+            Err(error) => {
+                return TurnAdmission::Refused(AgentTurnResult::refused(
+                    AgentRefusalKind::Runtime,
+                    error.to_string(),
+                    None,
+                ));
+            }
+        };
         let run = match self
             .inner
             .runtime
@@ -338,7 +367,7 @@ impl AgentInstance {
             handle,
             settlement,
             provider_endpoint,
-            context: OperationContext::new(operation_id, self.inner.context_plan.clone()),
+            context: operation_context,
         });
         if let Err(error) = active.handle.start(prompt).await {
             return TurnAdmission::Refused(AgentTurnResult::refused(
@@ -457,19 +486,35 @@ impl AgentInstance {
     /// provider acquisition.
     pub async fn context_snapshot(&self) -> ContextSnapshot {
         let control = self.inner.control.lock().await;
-        let (operation_id, evidence) = match &control.active {
-            Some(active) => (Some(active.id), Some(active.context.evidence())),
-            None => (
-                control
+        let (operation_id, bootstrap, evidence) = match &control.active {
+            Some(active) => (
+                Some(active.id),
+                Some(active.context.bootstrap().clone()),
+                Some(active.context.evidence()),
+            ),
+            None => {
+                let operation_id = control
                     .latest_context_evidence
                     .as_ref()
-                    .map(|evidence| evidence.operation_id),
-                control.latest_context_evidence.clone(),
-            ),
+                    .map(|evidence| evidence.operation_id);
+                let bootstrap = operation_id.map(|operation_id| {
+                    self.inner.context_plan.provider_bootstrap(
+                        operation_id,
+                        &self.inner.template.agent.provider,
+                        self.inner.template.execution.permissions,
+                    )
+                });
+                (
+                    operation_id,
+                    bootstrap,
+                    control.latest_context_evidence.clone(),
+                )
+            }
         };
         ContextSnapshot {
             operation_id,
             manifest: self.inner.context_plan.manifest().clone(),
+            bootstrap,
             read_evidence: evidence,
         }
     }
@@ -953,6 +998,7 @@ pub enum AgentBuildError {
     },
     EmptySessionId,
     InvalidMaxCost,
+    ContextPlan(ContextPlanError),
     Extension(AgentExtensionError),
 }
 
@@ -973,6 +1019,7 @@ impl fmt::Display for AgentBuildError {
             Self::InvalidMaxCost => {
                 f.write_str("maximum cost must be a finite non-negative number")
             }
+            Self::ContextPlan(error) => write!(f, "invalid context plan: {error}"),
             Self::Extension(error) => write!(f, "invalid agent extension: {error}"),
         }
     }
@@ -981,6 +1028,7 @@ impl fmt::Display for AgentBuildError {
 impl std::error::Error for AgentBuildError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::ContextPlan(error) => Some(error),
             Self::Extension(error) => Some(error),
             Self::TemplateNotSuspended
             | Self::ProviderUnavailable(_)
