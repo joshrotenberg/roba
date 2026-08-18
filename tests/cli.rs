@@ -144,12 +144,17 @@ fn config_effective_reports_safe_values_sources_and_provenance() {
     assert_eq!(value["result"]["agent"]["provider"], "codex");
     assert_eq!(value["result"]["execution"]["permissions"], "read_only");
     assert_eq!(value["result"]["sources"][0]["kind"], "project");
+    let reported_path = value["result"]["sources"][0]["path"]
+        .as_str()
+        .expect("config source path is a string");
     assert_eq!(
-        value["result"]["provenance"]["agent.provider"][0],
-        std::fs::canonicalize(project.path().join("roba.toml"))
-            .unwrap()
-            .display()
-            .to_string()
+        value["result"]["provenance"]["agent.provider"][0], reported_path,
+        "source and field provenance should name the same config"
+    );
+    assert_eq!(
+        std::fs::canonicalize(reported_path).unwrap(),
+        std::fs::canonicalize(project.path().join("roba.toml")).unwrap(),
+        "reported config path should resolve to the fixture config"
     );
 }
 
