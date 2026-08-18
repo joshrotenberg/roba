@@ -60,6 +60,19 @@ git_release_enable = false
 git_tag_enable = false
 changelog_update = false
 
+# The data-only managed-context catalog. It currently has no internal Roba
+# dependencies and publishes before the application-layer crates that will
+# consume it. The root release owns the git tag and GitHub release.
+[[package]]
+name = "roba-context"
+version_group = "roba"
+semver_check = true
+release = true
+publish = true
+git_release_enable = false
+git_tag_enable = false
+changelog_update = false
+
 # The MCP-native hot single-agent host. It depends on roba-core and must be
 # published before roba-git and the root binary. The root release owns the git
 # tag and GitHub release.

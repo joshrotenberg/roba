@@ -14,6 +14,7 @@ crate's Rustdoc.
 Roba is an MCP-native harness for one logical coding agent:
 
 - `roba-core` executes one finite, provider-neutral run.
+- `roba-context` validates the data-oriented managed-context catalog.
 - `roba-mcp` retains one logical agent across finite runs and exposes typed
   MCP projections.
 - the root `roba` package resolves startup policy and supplies the `run`,
@@ -68,6 +69,7 @@ creating a pool or multi-agent server.
 | --- | --- | --- |
 | Command host | root `roba` package | Config, CLI, stdio, and signals |
 | Hot agent | `roba-mcp` | `AgentInstance`, MCP, context, and extensions |
+| Managed catalog | `roba-context` | Agent, skill, and prompt definitions |
 | Finite run | `roba-core` | Runs, providers, outcomes, and events |
 | Provider adapter | `roba-core::providers` | Claude/Codex process mapping |
 | Optional Git | `roba-git` | One fixed-workspace MCP extension |
@@ -261,10 +263,13 @@ ordered stack:
 5. the operation directive;
 6. dynamic MCP resources containing current facts.
 
-The agent-role, skill-catalog, and reusable-prompt layers are planned in
-[#514](https://github.com/joshrotenberg/roba/issues/514); they are not yet
-startup configuration or MCP prompt surfaces. The current operation directive
-is the `agent.turn` prompt and is not yet a manifest entry.
+`roba-context` now owns the strict, bounded data catalog for agent roles,
+skills, and reusable prompts. It resolves inline or repository-local Markdown
+sources, records content-free provenance and fingerprints, and computes a
+deterministic selection. It is not yet consumed by startup configuration or
+projected through MCP; that integration remains in
+[#514](https://github.com/joshrotenberg/roba/issues/514). The current operation
+directive is the `agent.turn` prompt and is not yet a manifest entry.
 
 Today, explicit `AgentSpec.instructions` and `ContextSpec` values are still
 delivered by provider adapters on every provider turn. Extension context joins
@@ -406,6 +411,7 @@ agent. Planned work remains in GitHub issues until its contract ships:
 | [`docs/architecture/startup-config.md`](docs/architecture/startup-config.md) | versioned discovery, precedence, and provenance |
 | [`docs/running-roba.md`](docs/running-roba.md) | progressively richer shipped usage |
 | [`crates/roba-core/README.md`](crates/roba-core/README.md) | finite Rust API |
+| [`crates/roba-context/README.md`](crates/roba-context/README.md) | managed agent, skill, and prompt catalog |
 | [`crates/roba-mcp/README.md`](crates/roba-mcp/README.md) | hot-agent Rust and MCP API |
 | [`crates/roba-git/README.md`](crates/roba-git/README.md) | Git extension behavior and authority |
 | [`crates/roba-types/README.md`](crates/roba-types/README.md) | machine envelope and exit-code contract |

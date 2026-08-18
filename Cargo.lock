@@ -1046,6 +1046,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "roba-context"
+version = "0.12.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "roba-core"
 version = "0.12.0"
 dependencies = [

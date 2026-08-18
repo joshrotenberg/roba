@@ -59,9 +59,11 @@ tools, resources, resource templates, prompts, context entries, an exact
 provider-tool manifest, and lifecycle observation.
 
 The compilation boundary stays in `roba-mcp`. `roba-core` remains Tower-free
-and receives only the finite executable run intent. A future data-oriented
-`roba-context` crate may own catalog definitions, sources, validation,
-rendering, and provenance without owning live routers or agent lifecycle.
+and receives only the finite executable run intent. The data-oriented
+`roba-context` crate owns catalog definitions, bounded inline and Markdown
+sources, validation, rendering, provenance, fingerprints, and deterministic
+selection without owning live routers or agent lifecycle. Startup loading and
+MCP projection of that catalog are not implemented yet.
 
 `AgentExtension` now supplies retained inline context or metadata-only
 available context in addition to its existing MCP and lifecycle surfaces.
@@ -296,8 +298,9 @@ contract; prose cannot grant it.
 
 ## Next slices
 
-1. Add the typed agent, skill, and prompt catalog described by GitHub issue
-   #514, including explicit activation modes and MCP prompt projection.
+1. Load the typed `roba-context` catalog through startup configuration and
+   project its selected metadata, material, and reusable prompts through MCP.
+   Add explicit activation modes as that integration is defined.
 2. Move the reserved base surface through the same internal contribution
    compiler without making it replaceable.
 3. Stop reinjecting unchanged stable context into resumed sessions where the
