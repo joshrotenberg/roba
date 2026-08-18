@@ -9,6 +9,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::provider::{ProviderActivityKind, ProviderActivityStatus};
+
 /// Stable provider identity used in resolved specifications and receipts.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -372,15 +374,42 @@ pub struct RunOutcome {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunEvent {
-    StateChanged { state: RunState },
-    TurnStarted { provider: ProviderId },
-    OutputDelta { text: String },
-    Usage { usage: TokenUsage },
-    Warning { message: String },
+    StateChanged {
+        state: RunState,
+    },
+    TurnStarted {
+        provider: ProviderId,
+    },
+    OutputDelta {
+        text: String,
+    },
+    Usage {
+        usage: TokenUsage,
+    },
+    Warning {
+        message: String,
+    },
+    ActivityStarted {
+        id: String,
+        activity: ProviderActivityKind,
+        summary: String,
+    },
+    ActivityCompleted {
+        id: String,
+        activity: ProviderActivityKind,
+        status: ProviderActivityStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        summary: String,
+    },
     FollowUpQueued,
     FollowUpApplied,
-    TurnCompleted { outcome: RunOutcome },
-    Failed { failure: RunFailure },
+    TurnCompleted {
+        outcome: RunOutcome,
+    },
+    Failed {
+        failure: RunFailure,
+    },
 }
 
 /// Portable failure category. Provider-native details remain in the message.

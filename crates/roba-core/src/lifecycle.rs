@@ -494,9 +494,78 @@ impl EventSink for JournalSink<'_> {
         self.events.emit(match event {
             ProviderEvent::OutputDelta { text } => RunEvent::OutputDelta { text },
             ProviderEvent::Usage { usage } => RunEvent::Usage { usage },
-            ProviderEvent::Warning { message } => RunEvent::Warning { message },
+            ProviderEvent::Warning { message } => RunEvent::Warning {
+                message: bounded_provider_text(&message, 512),
+            },
+            ProviderEvent::ActivityStarted {
+                id,
+                activity,
+                summary,
+            } => RunEvent::ActivityStarted {
+                id: normalized_activity_id(&id),
+                activity,
+                summary: bounded_provider_text(&summary, 160),
+            },
+            ProviderEvent::ActivityCompleted {
+                id,
+                activity,
+                status,
+                duration_ms,
+                summary,
+            } => RunEvent::ActivityCompleted {
+                id: normalized_activity_id(&id),
+                activity,
+                status,
+                duration_ms,
+                summary: bounded_provider_text(&summary, 160),
+            },
         });
     }
+}
+
+fn normalized_activity_id(value: &str) -> String {
+    let normalized = value
+        .chars()
+        .take(128)
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if normalized.is_empty() {
+        "unknown".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn bounded_provider_text(value: &str, maximum: usize) -> String {
+    let mut output = String::new();
+    let mut previous_space = false;
+    for character in value.chars() {
+        let character = if character.is_control() {
+            ' '
+        } else {
+            character
+        };
+        if character.is_whitespace() {
+            if previous_space {
+                continue;
+            }
+            previous_space = true;
+            output.push(' ');
+        } else {
+            previous_space = false;
+            output.push(character);
+        }
+        if output.chars().count() >= maximum {
+            break;
+        }
+    }
+    output.trim().to_string()
 }
 
 fn spawn_driver(inner: Arc<Inner>, prompt: Prompt) {
@@ -753,7 +822,9 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::*;
-    use crate::provider::{ProviderCapabilities, ProviderFuture};
+    use crate::provider::{
+        ProviderActivityKind, ProviderActivityStatus, ProviderCapabilities, ProviderFuture,
+    };
     use crate::run::{AgentSpec, Cost, RunFailureDetails, SessionHandle, TokenUsage, TurnRequest};
 
     struct RecordingProvider {
@@ -868,6 +939,18 @@ mod tests {
                 });
                 events.emit(ProviderEvent::Warning {
                     message: "provider warning".to_string(),
+                });
+                events.emit(ProviderEvent::ActivityStarted {
+                    id: "command id/unsafe".repeat(20),
+                    activity: ProviderActivityKind::Command,
+                    summary: format!("  command\n{} SECRET", "x".repeat(300)),
+                });
+                events.emit(ProviderEvent::ActivityCompleted {
+                    id: "command id/unsafe".repeat(20),
+                    activity: ProviderActivityKind::Command,
+                    status: ProviderActivityStatus::Succeeded,
+                    duration_ms: Some(7),
+                    summary: "  command\nfinished  ".to_owned(),
                 });
                 Ok(RunOutcome {
                     output: request.prompt.into_inner(),
@@ -1225,11 +1308,25 @@ mod tests {
                 RunEvent::TurnStarted { .. },
                 RunEvent::OutputDelta { text },
                 RunEvent::Warning { message },
+                RunEvent::ActivityStarted { id, summary, .. },
+                RunEvent::ActivityCompleted {
+                    id: completed_id,
+                    summary: completed_summary,
+                    ..
+                },
                 RunEvent::TurnCompleted { .. },
                 RunEvent::StateChanged {
                     state: RunState::Completed
                 }
-            ] if text == "chunk" && message == "provider warning"
+            ] if text == "chunk"
+                && message == "provider warning"
+                && id.len() == 128
+                && !id.contains('/')
+                && id == completed_id
+                && summary.chars().count() <= 160
+                && summary.chars().count() > 150
+                && !summary.contains('\n')
+                && completed_summary == "command finished"
         ));
     }
 

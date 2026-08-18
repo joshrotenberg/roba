@@ -31,7 +31,8 @@ The operator contract has process-local and foreground stdio bindings:
   has an outcome and a failed result always has a failure.
 - `roba://agent` dynamically reports configured policy,
   idle/running/stopping/stopped state, session availability, current operation
-  identity, and the latest terminal result. Session identifiers are redacted
+  identity, provider-native observation health, active activity, elapsed and
+  timeout-remaining time, and the latest terminal result. Session identifiers are redacted
   from this resource; the originating `agent.turn` result retains valid
   session evidence.
 - `roba://events` and `roba://events{?after,limit}` expose bounded,
@@ -150,6 +151,14 @@ same synchronous fallback that powers `roba run`. Tower allocates the Task,
 then Roba's preparation step admits exactly one finite run and attaches its
 operation id under the `com.github.joshrotenberg.roba/operation` metadata key.
 No task-id registry is needed.
+
+While a Task is active, normalized activity and warning records are also sent
+as `notifications/message` entries from the `roba.activity` logger. Final
+protocol callers opt in with the per-request MCP log level. Notifications are
+best-effort; `roba://events` remains the bounded replay source and reports
+truncation explicitly. Activity summaries are provider-neutral and redacted:
+raw commands, paths, tool inputs/results, and search queries are not published.
+Silence is represented as unknown observation, never as fabricated progress.
 
 `tasks/cancel` acknowledges the cancellation signal immediately, as required
 by MCP. `tasks/get` or `task_wait` is the settlement barrier: the Task remains

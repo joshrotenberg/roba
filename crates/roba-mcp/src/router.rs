@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use tower_mcp::async_task::{MemoryTaskStore, TaskStore};
 use tower_mcp::schemars::{self, JsonSchema, schema_for};
 use tower_mcp::{
-    CallToolResult, ChannelTransport, Content, Error as McpError, McpClient, McpRouter,
-    ReadResourceResult, RequestContext, ResourceBuilder, ResourceTemplateBuilder, TaskContext,
-    TaskOutcome, TaskPreparation, ToolBuilder,
+    CallToolResult, ChannelTransport, Content, Error as McpError, LogLevel, LoggingMessageParams,
+    McpClient, McpRouter, ReadResourceResult, RequestContext, ResourceBuilder,
+    ResourceTemplateBuilder, TaskContext, TaskOutcome, TaskPreparation, ToolBuilder,
 };
 
 use crate::agent::TurnAdmission;
@@ -65,7 +65,8 @@ This endpoint controls one persistent logical Roba agent. Start work with \
 agent.turn; use MCP Tasks for long-running turns. Only one operation may run \
 at a time. Read roba://agent for current state and operation identity, \
 roba://context for supplied context and provenance, and roba://events for \
-observation. Use agent.follow_up to queue another provider turn after the \
+replayable provider activity. Task-backed turns may also deliver live \
+roba.activity log notifications. Use agent.follow_up to queue another provider turn after the \
 current one, agent.interrupt to cancel \
 work while keeping the agent available, and agent.shutdown only when the host \
 should terminate. Additional capabilities may be exposed as MCP extensions; \
@@ -227,7 +228,7 @@ pub(crate) fn base_control_router(agent: AgentInstance) -> McpRouter {
                                     "agent.turn task started without prepared turn admission",
                                 )
                             })?;
-                    execute_task_turn(agent, task, prepared, store).await
+                    execute_task_turn(agent, context, task, prepared, store).await
                 }
             },
         )
@@ -644,6 +645,7 @@ fn encode_turn(value: &AgentTurnResult) -> tower_mcp::Result<CallToolResult> {
 
 async fn execute_task_turn(
     agent: AgentInstance,
+    context: RequestContext,
     task: TaskContext,
     prepared: PreparedTurn,
     store: Arc<MemoryTaskStore>,
@@ -654,17 +656,138 @@ async fn execute_task_turn(
             settle_cancelled_task(&agent, &turn).await?
         }
         TurnAdmission::Admitted(turn) => {
-            tokio::select! {
-                biased;
-                result = agent.wait_admitted(&turn) => {
-                    TaskOutcome::Completed(encode_turn(&result)?)
-                }
-                () = task.cancelled() => settle_cancelled_task(&agent, &turn).await?,
+            let mut events = agent.subscribe_live_events();
+            let replay = agent
+                .event_page(0, AGENT_EVENT_CAPACITY)
+                .await
+                .map_err(|error| McpError::internal(error.to_string()))?;
+            if replay.truncated {
+                context.send_log(
+                    LoggingMessageParams::new(
+                        LogLevel::Warning,
+                        serde_json::json!({
+                            "kind": "live_activity_truncated",
+                            "operation_id": turn.operation_id(),
+                            "replay_resource": AGENT_EVENTS_URI,
+                        }),
+                    )
+                    .with_logger("roba.activity"),
+                );
             }
+            let mut delivered_through = 0;
+            for record in replay
+                .events
+                .iter()
+                .filter(|record| record.operation_id == turn.operation_id())
+            {
+                send_live_event(&context, record)?;
+                delivered_through = delivered_through.max(record.sequence);
+            }
+            let outcome = loop {
+                tokio::select! {
+                    biased;
+                    result = agent.wait_admitted(&turn) => {
+                        break TaskOutcome::Completed(encode_turn(&result)?);
+                    }
+                    () = task.cancelled() => {
+                        break settle_cancelled_task(&agent, &turn).await?;
+                    }
+                    event = events.recv() => match event {
+                        Ok(record)
+                            if record.operation_id == turn.operation_id()
+                                && record.sequence > delivered_through => {
+                            send_live_event(&context, &record)?;
+                            delivered_through = record.sequence;
+                        }
+                        Ok(_) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            context.send_log(
+                                LoggingMessageParams::new(
+                                    LogLevel::Warning,
+                                    serde_json::json!({
+                                        "kind": "live_activity_truncated",
+                                        "operation_id": turn.operation_id(),
+                                        "skipped": skipped,
+                                        "replay_resource": AGENT_EVENTS_URI,
+                                    }),
+                                )
+                                .with_logger("roba.activity"),
+                            );
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
+                    },
+                }
+            };
+            drain_live_events(
+                &context,
+                &mut events,
+                turn.operation_id(),
+                &mut delivered_through,
+            )?;
+            outcome
         }
     };
     retain_settled_task(&store, &task, prepared.prepared_at).await?;
     Ok(outcome)
+}
+
+fn drain_live_events(
+    context: &RequestContext,
+    events: &mut tokio::sync::broadcast::Receiver<crate::AgentEventRecord>,
+    operation_id: OperationId,
+    delivered_through: &mut u64,
+) -> tower_mcp::Result<()> {
+    loop {
+        match events.try_recv() {
+            Ok(record)
+                if record.operation_id == operation_id && record.sequence > *delivered_through =>
+            {
+                send_live_event(context, &record)?;
+                *delivered_through = record.sequence;
+            }
+            Ok(_) => {}
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                context.send_log(
+                    LoggingMessageParams::new(
+                        LogLevel::Warning,
+                        serde_json::json!({
+                            "kind": "live_activity_truncated",
+                            "operation_id": operation_id,
+                            "skipped": skipped,
+                            "replay_resource": AGENT_EVENTS_URI,
+                        }),
+                    )
+                    .with_logger("roba.activity"),
+                );
+            }
+            Err(
+                tokio::sync::broadcast::error::TryRecvError::Empty
+                | tokio::sync::broadcast::error::TryRecvError::Closed,
+            ) => return Ok(()),
+        }
+    }
+}
+
+fn send_live_event(
+    context: &RequestContext,
+    record: &crate::AgentEventRecord,
+) -> tower_mcp::Result<()> {
+    let level = match &record.event {
+        crate::AgentEvent::Warning { .. } | crate::AgentEvent::RunHistoryTruncated { .. } => {
+            Some(LogLevel::Warning)
+        }
+        crate::AgentEvent::ActivityStarted { .. } | crate::AgentEvent::ActivityCompleted { .. } => {
+            Some(LogLevel::Info)
+        }
+        _ => None,
+    };
+    if let Some(level) = level {
+        context.send_log(
+            LoggingMessageParams::new(level, serde_json::to_value(record)?)
+                .with_logger("roba.activity"),
+        );
+    }
+    Ok(())
 }
 
 async fn settle_cancelled_task(

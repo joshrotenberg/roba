@@ -105,8 +105,10 @@ The base control contract is:
 - `agent.follow_up` queues another prompt for one exact active operation;
 - `agent.interrupt` cancels one operation, drains it, and keeps the agent hot;
 - `agent.shutdown` permanently closes admission and drains active work;
-- `roba://agent` reports redacted configuration and current state;
-- `roba://events{?after,limit}` pages bounded agent-wide history;
+- `roba://agent` reports redacted configuration, current state, elapsed and
+  remaining time, and provider-native activity evidence;
+- `roba://events{?after,limit}` pages bounded agent-wide history, including
+  normalized command, file, MCP, web, plan, status, and unknown activity;
 - `roba://context` inventories declared context without its bodies, while
   `roba://context/entry{?id,generation}` performs an explicit content read.
 
@@ -114,6 +116,10 @@ The logical agent and validated provider session stay hot. Provider processes
 do not: each accepted turn launches and settles one finite provider run. Limits
 and timeout flags are per turn, not aggregate server budgets or idle deadlines.
 Provider failures are typed MCP tool results and do not terminate the server.
+Task-backed turns also deliver normalized activity as `roba.activity` MCP log
+notifications while work is active. These are factual provider events, not
+invented percentages. Clients that cannot display notifications can poll the
+two resources above without losing the bounded replay contract.
 
 For piped stdio, Roba consumes SIGINT so `mcp-repl` can use Ctrl-C locally. Use
 `agent.shutdown`, EOF, or SIGTERM to end the server. When Roba directly owns a

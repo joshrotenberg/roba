@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use tower_mcp::schemars::{self, JsonSchema};
 
 use crate::contract::{
-    AgentTerminalState, Cost, FailureKind, OperationId, OperationSettlement, TokenUsage,
+    ActivityKind, ActivityStatus, AgentTerminalState, Cost, FailureKind, OperationId,
+    OperationSettlement, TokenUsage,
 };
 
 /// Maximum number of agent-wide events retained in memory and returned in one page.
@@ -64,6 +65,21 @@ pub enum AgentEvent {
     Usage { usage: TokenUsage },
     /// A provider or lifecycle warning was emitted.
     Warning { message: String },
+    /// A provider-native activity began.
+    ActivityStarted {
+        id: String,
+        activity: ActivityKind,
+        summary: String,
+    },
+    /// A provider-native activity completed.
+    ActivityCompleted {
+        id: String,
+        activity: ActivityKind,
+        status: ActivityStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        summary: String,
+    },
     /// A follow-up was queued for the next provider-turn boundary.
     FollowUpQueued,
     /// The oldest queued follow-up was applied to a resumed provider turn.
@@ -100,6 +116,28 @@ impl From<roba_core::RunEvent> for AgentEvent {
                 usage: usage.into(),
             },
             roba_core::RunEvent::Warning { message } => Self::Warning { message },
+            roba_core::RunEvent::ActivityStarted {
+                id,
+                activity,
+                summary,
+            } => Self::ActivityStarted {
+                id,
+                activity: activity.into(),
+                summary,
+            },
+            roba_core::RunEvent::ActivityCompleted {
+                id,
+                activity,
+                status,
+                duration_ms,
+                summary,
+            } => Self::ActivityCompleted {
+                id,
+                activity: activity.into(),
+                status: status.into(),
+                duration_ms,
+                summary,
+            },
             roba_core::RunEvent::FollowUpQueued => Self::FollowUpQueued,
             roba_core::RunEvent::FollowUpApplied => Self::FollowUpApplied,
             roba_core::RunEvent::TurnCompleted { outcome } => Self::TurnCompleted {

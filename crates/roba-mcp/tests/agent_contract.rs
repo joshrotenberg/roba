@@ -5,16 +5,17 @@ use std::time::Duration;
 use roba_core::{
     AgentSpec, ContextSpec, Cost as CoreCost, Effort as CoreEffort, EventSink,
     FailureKind as CoreFailureKind, PermissionPolicy as CorePermissionPolicy, Provider,
-    ProviderCapabilities, ProviderError, ProviderFuture, ProviderId, Roba, RunFailureDetails,
-    RunOutcome, RunSpec, SessionHandle as CoreSessionHandle, SessionSpec, TurnRequest,
+    ProviderActivityKind, ProviderActivityStatus, ProviderCapabilities, ProviderError,
+    ProviderEvent, ProviderFuture, ProviderId, Roba, RunFailureDetails, RunOutcome, RunSpec,
+    SessionHandle as CoreSessionHandle, SessionSpec, TurnRequest,
 };
 use roba_mcp::{
-    AGENT_CONTEXT_ENTRY_TEMPLATE, AGENT_CONTEXT_URI, AGENT_RESOURCE_URI, AGENT_TURN_TOOL,
-    AgentBuildError, AgentInstance, AgentRefusalKind, AgentSnapshot, AgentState, AgentStopError,
-    AgentTurnResult, AmbientContextPolicy, ContextAudience, ContextContent, ContextDelivery,
-    ContextEntrySpec, ContextKind, ContextOrigin, ContextOriginKind, ContextPhase, ContextPlan,
-    ContextPrecedence, ContextScope, ContextSnapshot, Effort, FailureKind, PermissionPolicy,
-    connect_in_process,
+    AGENT_CONTEXT_ENTRY_TEMPLATE, AGENT_CONTEXT_URI, AGENT_EVENTS_URI, AGENT_RESOURCE_URI,
+    AGENT_TURN_TOOL, AgentBuildError, AgentEvent, AgentEventPage, AgentInstance, AgentRefusalKind,
+    AgentSnapshot, AgentState, AgentStopError, AgentTurnResult, AmbientContextPolicy,
+    ContextAudience, ContextContent, ContextDelivery, ContextEntrySpec, ContextKind, ContextOrigin,
+    ContextOriginKind, ContextPhase, ContextPlan, ContextPrecedence, ContextScope, ContextSnapshot,
+    Effort, FailureKind, ObservationHealth, ObservationState, PermissionPolicy, connect_in_process,
 };
 use serde_json::json;
 use tokio::sync::Semaphore;
@@ -66,7 +67,7 @@ impl Provider for FakeProvider {
     fn execute<'a>(
         &'a self,
         request: TurnRequest,
-        _events: &'a dyn EventSink,
+        events: &'a dyn EventSink,
     ) -> ProviderFuture<'a> {
         let state = Arc::clone(&self.state);
         state.calls.fetch_add(1, Ordering::SeqCst);
@@ -77,7 +78,14 @@ impl Provider for FakeProvider {
             .push(request.clone());
         Box::pin(async move {
             let text = request.prompt.as_str().to_string();
-            if text == "hold" {
+            if text == "hold" || text == "hold-activity" {
+                if text == "hold-activity" {
+                    events.emit(ProviderEvent::ActivityStarted {
+                        id: "command-1".to_owned(),
+                        activity: ProviderActivityKind::Command,
+                        summary: "running a command".to_owned(),
+                    });
+                }
                 state.started.add_permits(1);
                 state
                     .release
@@ -85,6 +93,15 @@ impl Provider for FakeProvider {
                     .await
                     .expect("test release semaphore remains open")
                     .forget();
+                if text == "hold-activity" {
+                    events.emit(ProviderEvent::ActivityCompleted {
+                        id: "command-1".to_owned(),
+                        activity: ProviderActivityKind::Command,
+                        status: ProviderActivityStatus::Succeeded,
+                        duration_ms: Some(5),
+                        summary: "running a command".to_owned(),
+                    });
+                }
             }
             if text == "wrong-session-success" {
                 return Ok(RunOutcome {
@@ -173,6 +190,7 @@ fn agent_with_session(seed: Option<&str>) -> (AgentInstance, Arc<FakeState>) {
         })
         .expect("fake provider registration succeeds");
     let mut template = RunSpec::suspended(AgentSpec::new(fake_provider_id()));
+    template.execution.limits.timeout_secs = Some(10);
     if let Some(seed) = seed {
         template.execution.session = SessionSpec::Resume {
             session: core_session(seed),
@@ -180,6 +198,67 @@ fn agent_with_session(seed: Option<&str>) -> (AgentInstance, Arc<FakeState>) {
     }
     let agent = AgentInstance::new(runtime, template).expect("valid test agent");
     (agent, state)
+}
+
+#[tokio::test]
+async fn provider_activity_is_live_replayable_and_terminally_truthful() {
+    let (agent, state) = agent_with_session(None);
+    let client = connect_in_process(agent.clone())
+        .await
+        .expect("in-process client connects");
+    let running_agent = agent.clone();
+    let turn = tokio::spawn(async move { running_agent.turn("hold-activity".to_owned()).await });
+    state
+        .started
+        .acquire()
+        .await
+        .expect("started semaphore remains open")
+        .forget();
+
+    let running = read_agent(&client).await;
+    assert_eq!(running.state, AgentState::Running);
+    assert_eq!(running.observation.state, ObservationState::Active);
+    assert_eq!(running.observation.health, ObservationHealth::Healthy);
+    assert_eq!(running.observation.active_activities.len(), 1);
+    assert_eq!(
+        running.observation.last_provider_event_kind.as_deref(),
+        Some("activity_started")
+    );
+    assert!(running.observation.elapsed_ms.is_some());
+    assert!(
+        running
+            .observation
+            .timeout_remaining_ms
+            .is_some_and(|ms| ms <= 10_000)
+    );
+
+    let resource = client
+        .read_resource(AGENT_EVENTS_URI)
+        .await
+        .expect("events resource is readable");
+    let page: AgentEventPage = serde_json::from_str(
+        resource
+            .first_text()
+            .expect("events resource returns JSON text"),
+    )
+    .expect("events resource matches the published schema");
+    assert!(page.events.iter().any(|record| matches!(
+        record.event,
+        AgentEvent::ActivityStarted { ref id, .. } if id == "command-1"
+    )));
+
+    state.release.add_permits(1);
+    let result = turn.await.expect("turn task joins");
+    assert!(matches!(result, AgentTurnResult::Completed { .. }));
+    let terminal = read_agent(&client).await;
+    assert_eq!(terminal.state, AgentState::Idle);
+    assert_eq!(terminal.observation.state, ObservationState::Terminal);
+    assert_eq!(terminal.observation.health, ObservationHealth::Terminal);
+    assert!(terminal.observation.active_activities.is_empty());
+    assert_eq!(
+        terminal.observation.last_provider_event_kind.as_deref(),
+        Some("activity_completed")
+    );
 }
 
 fn typed(result: &CallToolResult) -> AgentTurnResult {
@@ -217,6 +296,8 @@ async fn schema_idle_construction_and_sequential_resume_cross_the_real_mcp_clien
     assert!(!initial.session_available);
     assert!(initial.current_operation_id.is_none());
     assert!(initial.latest_turn.is_none());
+    assert_eq!(initial.observation.state, ObservationState::Unknown);
+    assert_eq!(initial.observation.health, ObservationHealth::Unknown);
     assert_eq!(state.calls.load(Ordering::SeqCst), 0);
 
     let tools = client.list_tools().await.expect("tools/list succeeds");

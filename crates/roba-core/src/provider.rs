@@ -265,6 +265,30 @@ impl fmt::Display for ProviderError {
 
 impl std::error::Error for ProviderError {}
 
+/// Provider-neutral category for mechanically observed activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderActivityKind {
+    Command,
+    FileChange,
+    McpCall,
+    WebSearch,
+    PlanUpdate,
+    StatusUpdate,
+    ToolCall,
+    Unknown,
+}
+
+/// Provider-reported terminal disposition for one activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderActivityStatus {
+    Succeeded,
+    Failed,
+    Cancelled,
+    Unknown,
+}
+
 /// Incremental observation owned by a provider adapter.
 ///
 /// Lifecycle events such as turn boundaries, state changes, follow-ups, and
@@ -273,9 +297,28 @@ impl std::error::Error for ProviderError {}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProviderEvent {
-    OutputDelta { text: String },
-    Usage { usage: TokenUsage },
-    Warning { message: String },
+    OutputDelta {
+        text: String,
+    },
+    Usage {
+        usage: TokenUsage,
+    },
+    Warning {
+        message: String,
+    },
+    ActivityStarted {
+        id: String,
+        activity: ProviderActivityKind,
+        summary: String,
+    },
+    ActivityCompleted {
+        id: String,
+        activity: ProviderActivityKind,
+        status: ProviderActivityStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        summary: String,
+    },
 }
 
 /// Synchronous receiver for provider-owned events while a turn runs.

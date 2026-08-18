@@ -59,6 +59,19 @@ The agent event journal assigns a monotonic sequence across all finite runs,
 records operation identity, and reports truncation explicitly. Terminal agent
 state is never published ahead of the operation's final event records.
 
+Provider adapters normalize mechanically observed command, file-change, MCP,
+web-search, plan, status, and unknown activities into start/completion events.
+The harness bounds identifiers and summaries before they enter the journal.
+`roba://agent` derives active activity, last provider event/activity times,
+elapsed and timeout-remaining duration, and explicit unknown/healthy/degraded/
+terminal observation health from that same stream. It never estimates a
+percentage or treats provider silence as progress.
+
+Task-backed calls receive activity and warning records as best-effort MCP log
+notifications before settlement. The replay journal remains authoritative
+when a client does not negotiate logging, misses a notification, or falls
+behind.
+
 ## Role-scoped provider projection
 
 For each admitted operation the harness binds an ephemeral authenticated

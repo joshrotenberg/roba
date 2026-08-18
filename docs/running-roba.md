@@ -151,6 +151,14 @@ agent.follow_up operation_id=1 text="Focus only on the failing integration test.
 agent.interrupt operation_id=1
 ```
 
+While the operation is active, the agent resource also reports normalized
+provider activity, observation health, elapsed time, and timeout remaining.
+Task-aware clients may render the same command/file/MCP/web/plan activity as
+live `roba.activity` log notifications. If they do not, repeatedly reading
+`roba://agent` and cursor-paging `roba://events` gives the same bounded factual
+evidence. `unknown` means the provider has supplied no usable evidence; Roba
+does not manufacture a progress percentage.
+
 Follow-up queues another prompt for the next resumed-provider boundary; it
 does not mutate the in-flight provider prompt. Interruption cancels and drains
 only that operation, leaving the hot agent reusable.

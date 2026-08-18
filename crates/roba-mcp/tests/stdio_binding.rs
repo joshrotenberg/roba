@@ -5,14 +5,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use roba_core::{
-    AgentSpec, EventSink, Provider, ProviderCapabilities, ProviderError, ProviderFuture,
-    ProviderId, Roba, RunOutcome, RunSpec, SessionHandle as CoreSessionHandle, SessionSpec,
-    TurnRequest,
+    AgentSpec, EventSink, Provider, ProviderActivityKind, ProviderActivityStatus,
+    ProviderCapabilities, ProviderError, ProviderEvent, ProviderFuture, ProviderId, Roba,
+    RunOutcome, RunSpec, SessionHandle as CoreSessionHandle, SessionSpec, TurnRequest,
 };
 use roba_mcp::{
     AGENT_EVENTS_URI, AGENT_INTERRUPT_TOOL, AGENT_RESOURCE_URI, AGENT_SHUTDOWN_TOOL,
     AGENT_TURN_TOOL, AgentEventPage, AgentInterruptResult, AgentShutdownResult, AgentSnapshot,
-    AgentState, AgentTerminalState, AgentTurnResult, StdioBinding,
+    AgentState, AgentTerminalState, AgentTurnResult, ObservationHealth, ObservationState,
+    StdioBinding,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
@@ -90,13 +91,32 @@ impl Provider for FakeProvider {
     fn execute<'a>(
         &'a self,
         request: TurnRequest,
-        _events: &'a dyn EventSink,
+        events: &'a dyn EventSink,
     ) -> ProviderFuture<'a> {
         let state = Arc::clone(&self.state);
         state.calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             let text = request.prompt.as_str().to_owned();
+            if text == "activity-success" {
+                events.emit(ProviderEvent::ActivityStarted {
+                    id: "quick-command".to_owned(),
+                    activity: ProviderActivityKind::Command,
+                    summary: "running a command".to_owned(),
+                });
+                events.emit(ProviderEvent::ActivityCompleted {
+                    id: "quick-command".to_owned(),
+                    activity: ProviderActivityKind::Command,
+                    status: ProviderActivityStatus::Succeeded,
+                    duration_ms: Some(1),
+                    summary: "running a command".to_owned(),
+                });
+            }
             if text.starts_with("hold") {
+                events.emit(ProviderEvent::ActivityStarted {
+                    id: "held-command".to_owned(),
+                    activity: ProviderActivityKind::Command,
+                    summary: "running a command".to_owned(),
+                });
                 let mut execution = HeldExecution {
                     state: Arc::clone(&state),
                     completed: false,
@@ -178,6 +198,7 @@ struct WireClient {
     output: BufReader<DuplexStream>,
     next_id: i64,
     pending: HashMap<i64, Value>,
+    notifications: Vec<Value>,
 }
 
 impl WireClient {
@@ -189,6 +210,7 @@ impl WireClient {
             output: BufReader::new(output),
             next_id: 1,
             pending: HashMap::new(),
+            notifications: Vec::new(),
         }
     }
 
@@ -205,6 +227,7 @@ impl WireClient {
                 "version": "0"
             },
             "io.modelcontextprotocol/clientCapabilities": capabilities
+            ,"io.modelcontextprotocol/logLevel": "info"
         })
     }
 
@@ -257,12 +280,46 @@ impl WireClient {
                     serde_json::from_str(line.trim_end()).expect("stdout frame is JSON");
                 assert_eq!(frame["jsonrpc"], "2.0", "stdout is JSON-RPC: {frame}");
                 let Some(actual) = frame.get("id").and_then(Value::as_i64) else {
+                    self.notifications.push(frame);
                     continue;
                 };
                 if actual == id {
                     return frame;
                 }
                 self.pending.insert(actual, frame);
+            }
+        })
+        .await
+    }
+
+    async fn notification(&mut self, method: &str) -> Value {
+        if let Some(index) = self
+            .notifications
+            .iter()
+            .position(|frame| frame["method"] == method)
+        {
+            return self.notifications.remove(index);
+        }
+        bounded(async {
+            loop {
+                let mut line = String::new();
+                let read = self
+                    .output
+                    .read_line(&mut line)
+                    .await
+                    .expect("server frame reads");
+                assert_ne!(read, 0, "server closed before notification {method}");
+                let frame: Value =
+                    serde_json::from_str(line.trim_end()).expect("stdout frame is JSON");
+                assert_eq!(frame["jsonrpc"], "2.0", "stdout is JSON-RPC: {frame}");
+                if frame["method"] == method {
+                    return frame;
+                }
+                if let Some(id) = frame.get("id").and_then(Value::as_i64) {
+                    self.pending.insert(id, frame);
+                } else {
+                    self.notifications.push(frame);
+                }
             }
         })
         .await
@@ -650,6 +707,9 @@ async fn final_task_and_eof_drain_the_provider_and_stop_the_agent_before_returni
     assert_eq!(state.dropped.available_permits(), 1);
     let stopped = agent.snapshot().await;
     assert_eq!(stopped.state, AgentState::Stopped);
+    assert_eq!(stopped.observation.state, ObservationState::Terminal);
+    assert_eq!(stopped.observation.health, ObservationHealth::Terminal);
+    assert!(stopped.observation.active_activities.is_empty());
     assert!(matches!(
         stopped.latest_turn,
         Some(AgentTurnResult::Cancelled {
@@ -657,6 +717,69 @@ async fn final_task_and_eof_drain_the_provider_and_stop_the_agent_before_returni
             ..
         }) if actual == operation_id
     ));
+}
+
+#[tokio::test]
+async fn final_task_delivers_redacted_activity_before_settlement() {
+    let (agent, state) = test_agent();
+    let (mut client, server) = spawn_binding(agent, Protocol::Final, true);
+    client.handshake().await;
+
+    let created = client
+        .request(
+            "tools/call",
+            json!({"name": AGENT_TURN_TOOL, "arguments": {"text": "hold-live-activity"}}),
+        )
+        .await;
+    assert_eq!(result(&created)["resultType"], "task");
+    take(&state.started, "live activity provider start").await;
+
+    let notification = client.notification("notifications/message").await;
+    assert_eq!(notification["params"]["logger"], "roba.activity");
+    assert_eq!(
+        notification["params"]["data"]["event"]["kind"],
+        "activity_started"
+    );
+    assert_eq!(
+        notification["params"]["data"]["event"]["summary"],
+        "running a command"
+    );
+    assert!(!notification.to_string().contains("hold-live-activity"));
+
+    stop_binding(&mut client, server).await;
+}
+
+#[tokio::test]
+async fn final_task_delivers_activity_in_provider_order() {
+    let (agent, _) = test_agent();
+    let (mut client, server) = spawn_binding(agent, Protocol::Final, true);
+    client.handshake().await;
+
+    let created = client
+        .request(
+            "tools/call",
+            json!({"name": AGENT_TURN_TOOL, "arguments": {"text": "activity-success"}}),
+        )
+        .await;
+    assert_eq!(result(&created)["resultType"], "task");
+    let started = client.notification("notifications/message").await;
+    let completed = client.notification("notifications/message").await;
+    assert_eq!(
+        started["params"]["data"]["event"]["kind"],
+        "activity_started"
+    );
+    assert_eq!(
+        completed["params"]["data"]["event"]["kind"],
+        "activity_completed"
+    );
+    assert!(
+        started["params"]["data"]["sequence"]
+            .as_u64()
+            .zip(completed["params"]["data"]["sequence"].as_u64())
+            .is_some_and(|(started, completed)| started < completed)
+    );
+
+    stop_binding(&mut client, server).await;
 }
 
 #[tokio::test]
