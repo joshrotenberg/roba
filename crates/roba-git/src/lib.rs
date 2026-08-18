@@ -14,7 +14,11 @@ use std::time::Duration;
 use git_spawn::command::status::StatusFormat;
 use git_spawn::parse::{StatusKind, parse_full_status};
 use git_spawn::{GitCommand, Repository};
-use roba_mcp::AgentExtension;
+use roba_mcp::{
+    AgentExtension, ContextAudience, ContextDelivery, ContextEntrySpec, ContextFreshness,
+    ContextKind, ContextOrigin, ContextOriginKind, ContextPhase, ContextPrecedence, ContextScope,
+    ContextSensitivity,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tower_mcp::schemars::{self, JsonSchema, schema_for};
@@ -35,8 +39,12 @@ pub const GIT_SNAPSHOT_TOOL: &str = "git.snapshot";
 pub const GIT_STAGE_ALL_TOOL: &str = "git.stage_all";
 /// Live JSON projection of the fixed repository.
 pub const GIT_WORKSPACE_RESOURCE_URI: &str = "roba://git/workspace";
+/// Lazy context entry describing how to discover the Git extension.
+pub const GIT_CONTEXT_ENTRY_ID: &str = "roba.git.activation";
 
 const EXTENSION_NAME: &str = "roba-git";
+const GIT_CONTEXT_ENTRY_URI: &str = "roba://context/entry?id=roba.git.activation";
+const GIT_CONTEXT: &str = "The Roba Git extension observes one fixed repository. Read current state with `git.snapshot` or `roba://git/workspace`, and read operation-scoped change evidence from `roba://git/progress`. `git.stage_all` is available only to an explicitly writable operator projection; it is never provider authority.";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 pub(crate) const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(12);
 const STAGE_MUTATION_TIMEOUT: Duration = Duration::from_secs(20);
@@ -148,6 +156,23 @@ impl GitWorkspace {
         AgentExtension::new(EXTENSION_NAME, control, provider)
             .try_provider_tool(GIT_SNAPSHOT_TOOL)
             .expect("static Git provider tool name must be valid")
+            .with_inline_context(
+                ContextEntrySpec::new(
+                    GIT_CONTEXT_ENTRY_ID,
+                    ContextKind::Reference,
+                    ContextOrigin::new(ContextOriginKind::Extension, EXTENSION_NAME),
+                    ContextPhase::Bootstrap,
+                    ContextScope::Agent,
+                    ContextDelivery::McpResource {
+                        uri: GIT_CONTEXT_ENTRY_URI.to_owned(),
+                    },
+                )
+                .audience(ContextAudience::Both)
+                .precedence(ContextPrecedence::Host)
+                .freshness(ContextFreshness::Generation)
+                .sensitivity(ContextSensitivity::Public),
+                GIT_CONTEXT,
+            )
             .with_lifecycle(lifecycle)
     }
 

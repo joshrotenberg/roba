@@ -40,6 +40,12 @@ fingerprint changes enter the compact agent event journal; raw diff bodies and
 file contents do not. A zero interval disables periodic sampling but retains
 baseline and final evidence.
 
+The extension also contributes the small public context entry
+`roba.git.activation`. It tells an operator or provider where the Git surfaces
+are, but remains lazy and optional: the body is read through the context plane,
+is not copied into `RunSpec`, and is not reinjected on resumed turns. Current
+repository state remains authoritative only in the dynamic Git resources.
+
 Provider approval names exactly `git.snapshot`; turn admission, agent
 controls, and staging are structurally absent from the provider fragment. Raw
 Git remains available when this narrow workflow does not express the required

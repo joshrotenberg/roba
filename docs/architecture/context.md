@@ -24,6 +24,70 @@ This keeps workflow policy out of the finite core while allowing a parent or
 operator to construct anything from a minimally bootstrapped agent to a fully
 prepared repository issue worker.
 
+## Semantic hierarchy and configuration origin
+
+Context has two independent axes. Its semantic role answers what the material
+means; its configuration origin answers who selected it and at what
+precedence. The two must not be collapsed into one profile hierarchy.
+
+The intended semantic stack, from broadest to most specific, is:
+
+1. the minimal Roba kernel contract that identifies the harness, current
+   operation, authority, and acquisition protocol;
+2. exactly one selected agent role describing the logical agent's continuing
+   job;
+3. small extension activation cards identifying relevant capabilities;
+4. zero or more discoverable skills containing reusable methods;
+5. one operation directive, often instantiated from an MCP prompt;
+6. dynamic MCP resources containing current facts rather than instructions.
+
+Origins remain separately inspectable: built-in, user/XDG, project, CLI,
+parent, and operation inputs can each contribute artifacts at explicit
+precedence. A skill coming from a project file is still semantically a skill;
+an extension activation card supplied by a built-in remains extension context.
+
+Only the minimal kernel is intrinsically required. Agent roles, activation
+cards, skills, and prompts are Roba-managed catalog material. Provider-native
+system policy and ambient files remain a separate, partially observable layer
+until an adapter can enforce controlled or hermetic startup honestly.
+
+## Unified agent contributions
+
+MCP capabilities and context are two projections of one logical contribution,
+not separate plugin systems. One installed contribution may supply scoped
+tools, resources, resource templates, prompts, context entries, an exact
+provider-tool manifest, and lifecycle observation.
+
+The compilation boundary stays in `roba-mcp`. `roba-core` remains Tower-free
+and receives only the finite executable run intent. A future data-oriented
+`roba-context` crate may own catalog definitions, sources, validation,
+rendering, and provenance without owning live routers or agent lifecycle.
+
+`AgentExtension` now supplies retained inline context or metadata-only
+available context in addition to its existing MCP and lifecycle surfaces.
+`AgentInstance` compiles every extension entry into the same immutable
+`ContextPlan` as explicit run inputs. Invalid or duplicate IDs fail before
+provider work or listener binding. Operator-only entries are absent from the
+provider manifest, and retained bodies remain outside `RunSpec`, provider
+prompts, serialized snapshots, and extension debug output.
+
+The built-in harness should eventually pass through the same contribution
+compiler as extensions, but as a reserved, non-removable base contribution.
+This is an internal uniformity rule, not permission for an extension to
+replace `agent.turn`, the context plane, or other base authority.
+
+Extension activation is expected to become explicit:
+
+- `disabled` contributes nothing;
+- `discoverable` publishes capabilities and catalog metadata lazily;
+- `eager` requires only a small activation card during bootstrap.
+
+Installed or discoverable content is not evidence that the provider read it.
+Full skill bodies stay lazy and use the existing generation-fenced read
+evidence. The first proof is `roba-git`: it contributes a small discoverable
+activation entry while live repository state remains resource-backed and is
+never copied into the provider prompt.
+
 ## Control spectrum
 
 The target modes are explicit and capability-checked:
@@ -232,11 +296,15 @@ contract; prose cannot grant it.
 
 ## Next slices
 
-1. Stop reinjecting unchanged stable context into resumed sessions where the
+1. Add the typed agent, skill, and prompt catalog described by GitHub issue
+   #514, including explicit activation modes and MCP prompt projection.
+2. Move the reserved base surface through the same internal contribution
+   compiler without making it replaceable.
+3. Stop reinjecting unchanged stable context into resumed sessions where the
    provider mechanics prove that omission is safe.
-2. Add context linting for duplicate fingerprints, precedence conflicts,
+4. Add context linting for duplicate fingerprints, precedence conflicts,
    conflicting instructions, unsafe locators, and excessive prompt weight.
-3. Mechanically inventory clean-home, ambient, controlled, fresh, resume, and
+5. Mechanically inventory clean-home, ambient, controlled, fresh, resume, and
    follow-up behavior for both built-in providers.
 4. Add explicit acknowledgement and gate provider-facing mutation on the
    required evidence policy.

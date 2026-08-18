@@ -224,6 +224,9 @@ impl AgentInstance {
             return Err(AgentBuildError::InvalidMaxCost);
         }
 
+        let context_plan = extensions
+            .compile_context_plan(context_plan)
+            .map_err(AgentBuildError::ContextPlan)?;
         context_plan
             .validate_run_spec(&template)
             .map_err(AgentBuildError::ContextPlan)?;

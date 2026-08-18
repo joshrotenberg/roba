@@ -678,12 +678,12 @@ mod tests {
         let binary = temp.path().join("codex");
         let script = format!(
             r#"#!/bin/sh
+printf '%s' "$$" > '{}'
 printf '%s\n' "$@" > '{}'
 printf '%s' "${{ROBA_INTERNAL_MCP_TOKEN_0-}}" > '{}'
 prompt=$(cat)
 printf '%s' "$prompt" > '{}'
 if [ "$prompt" = "block" ]; then
-  printf '%s' "$$" > '{}'
   exec sleep 30
 fi
 if [ "$prompt" = "unterminated" ]; then
@@ -730,10 +730,10 @@ printf '%s\n' '{{"type":"thread.started","thread_id":"thread-1"}}'
 printf '{{"type":"item.completed","item":{{"type":"agent_message","text":"%s"}}}}\n' "$text"
 printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_tokens":2}}}}'
 "#,
+            marker.display(),
             args_marker.display(),
             token_marker.display(),
-            prompt_marker.display(),
-            marker.display()
+            prompt_marker.display()
         );
         std::fs::write(&binary, script).unwrap();
         let mut permissions = std::fs::metadata(&binary).unwrap().permissions();

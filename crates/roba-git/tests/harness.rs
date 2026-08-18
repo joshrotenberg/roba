@@ -20,8 +20,8 @@ use roba_core::{
     RunOutcome, RunSpec, SessionHandle, SessionSpec, TurnRequest,
 };
 use roba_git::{
-    GIT_PROGRESS_RESOURCE_URI, GIT_SNAPSHOT_TOOL, GIT_STAGE_ALL_TOOL, GIT_WORKSPACE_RESOURCE_URI,
-    GitAuthority, GitWorkspace,
+    GIT_CONTEXT_ENTRY_ID, GIT_PROGRESS_RESOURCE_URI, GIT_SNAPSHOT_TOOL, GIT_STAGE_ALL_TOOL,
+    GIT_WORKSPACE_RESOURCE_URI, GitAuthority, GitWorkspace,
 };
 use roba_mcp::{
     AGENT_CONTEXT_URI, AGENT_TURN_TOOL, AgentExtensions, AgentInstance, OperationId,
@@ -726,6 +726,30 @@ async fn active_provider_and_operator_share_git_state_without_changing_turn_cont
         &workspace,
         GitAuthority::WorkspaceWrite,
         PermissionPolicy::WorkspaceWrite,
+    );
+    let context_entry = agent
+        .context_plan()
+        .manifest()
+        .entries
+        .iter()
+        .find(|entry| entry.id == GIT_CONTEXT_ENTRY_ID)
+        .expect("Git activation context is declared");
+    assert!(context_entry.material_available);
+    assert!(!context_entry.required);
+    assert!(
+        agent
+            .context_plan()
+            .material(GIT_CONTEXT_ENTRY_ID)
+            .expect("Git activation context is retained")
+            .contains("`git.snapshot`")
+    );
+    assert!(
+        agent
+            .context_plan()
+            .provider_manifest()
+            .entries
+            .iter()
+            .any(|entry| entry.id == GIT_CONTEXT_ENTRY_ID)
     );
     let control = Arc::new(
         connect_in_process(agent)

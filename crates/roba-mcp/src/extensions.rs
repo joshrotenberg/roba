@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tower_mcp::schemars::{self, JsonSchema};
 use tower_mcp::{McpRouter, MergeConflicts};
 
+use crate::context::{ContextEntrySpec, ContextPlan, ContextPlanError};
 use crate::contract::{AgentConfiguration, AgentTerminalState, OperationId};
 
 /// Maximum time the host permits one extension lifecycle callback to run.
@@ -181,7 +182,27 @@ pub struct AgentExtension {
     control: McpRouter,
     provider: McpRouter,
     provider_tools: Vec<String>,
+    context: Vec<AgentExtensionContextEntry>,
     lifecycle: Option<Arc<dyn AgentExtensionLifecycle>>,
+}
+
+#[derive(Clone)]
+enum AgentExtensionContextEntry {
+    Inline {
+        spec: ContextEntrySpec,
+        material: Arc<str>,
+    },
+    Available {
+        spec: ContextEntrySpec,
+    },
+}
+
+impl AgentExtensionContextEntry {
+    fn id(&self) -> &str {
+        match self {
+            Self::Inline { spec, .. } | Self::Available { spec } => &spec.id,
+        }
+    }
 }
 
 impl AgentExtension {
@@ -192,8 +213,37 @@ impl AgentExtension {
             control,
             provider,
             provider_tools: Vec::new(),
+            context: Vec::new(),
             lifecycle: None,
         }
+    }
+
+    /// Contribute one retained context entry without injecting it into the
+    /// provider prompt.
+    ///
+    /// The complete extension set is compiled into the immutable host
+    /// [`ContextPlan`] during [`crate::AgentInstance`] construction. Invalid
+    /// or duplicate IDs fail before provider work or listener binding.
+    pub fn with_inline_context(
+        mut self,
+        spec: ContextEntrySpec,
+        material: impl Into<String>,
+    ) -> Self {
+        self.context.push(AgentExtensionContextEntry::Inline {
+            spec,
+            material: Arc::from(material.into()),
+        });
+        self
+    }
+
+    /// Contribute metadata for context delivered by an extension capability.
+    ///
+    /// No body is retained by the generic context plane. The declared MCP
+    /// resource or tool remains the authoritative acquisition path.
+    pub fn with_available_context(mut self, spec: ContextEntrySpec) -> Self {
+        self.context
+            .push(AgentExtensionContextEntry::Available { spec });
+        self
     }
 
     /// Attach one lifecycle observer to this extension.
@@ -234,6 +284,14 @@ impl fmt::Debug for AgentExtension {
             .field("control", &self.control)
             .field("provider", &self.provider)
             .field("provider_tools", &self.provider_tools)
+            .field(
+                "context_ids",
+                &self
+                    .context
+                    .iter()
+                    .map(AgentExtensionContextEntry::id)
+                    .collect::<Vec<_>>(),
+            )
             .field("has_lifecycle", &self.lifecycle.is_some())
             .finish()
     }
@@ -338,6 +396,26 @@ impl AgentExtensions {
 
     pub(crate) fn lifecycle_registrations(&self) -> &[AgentExtensionLifecycleRegistration] {
         &self.lifecycles
+    }
+
+    pub(crate) fn compile_context_plan(
+        &self,
+        plan: ContextPlan,
+    ) -> Result<ContextPlan, ContextPlanError> {
+        let mut builder = plan.into_builder();
+        for extension in self.entries.iter() {
+            for entry in &extension.context {
+                match entry {
+                    AgentExtensionContextEntry::Inline { spec, material } => {
+                        builder.add_inline(spec.clone(), material.as_ref())?;
+                    }
+                    AgentExtensionContextEntry::Available { spec } => {
+                        builder.add_available(spec.clone())?;
+                    }
+                }
+            }
+        }
+        Ok(builder.build())
     }
 
     fn compose_entries(

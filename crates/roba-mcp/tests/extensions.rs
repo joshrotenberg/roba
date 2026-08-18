@@ -9,8 +9,10 @@ use roba_mcp::{
     AGENT_CONTEXT_ENTRY_TEMPLATE, AGENT_CONTEXT_URI, AGENT_EVENTS_TEMPLATE, AGENT_EVENTS_URI,
     AGENT_INTERRUPT_TOOL, AGENT_RESOURCE_URI, AGENT_SHUTDOWN_TOOL, AGENT_STEER_TOOL,
     AGENT_TURN_TOOL, AgentBuildError, AgentExtension, AgentExtensionProjection, AgentExtensions,
-    AgentInstance, OperationId, ROBA_CONTEXT_MANIFEST_TOOL, ROBA_CONTEXT_READ_TOOL, ROBA_SELF_TOOL,
-    ShutdownInput, agent_router, connect_in_process,
+    AgentInstance, ContextAudience, ContextDelivery, ContextEntrySpec, ContextFreshness,
+    ContextKind, ContextOrigin, ContextOriginKind, ContextPhase, ContextPlanError,
+    ContextPrecedence, ContextScope, ContextSensitivity, OperationId, ROBA_CONTEXT_MANIFEST_TOOL,
+    ROBA_CONTEXT_READ_TOOL, ROBA_SELF_TOOL, ShutdownInput, agent_router, connect_in_process,
 };
 use tower_mcp::{
     CallToolResult, ChannelTransport, McpClient, McpRouter, MergeConflictKind, ResourceBuilder,
@@ -333,6 +335,98 @@ fn provider_manifest_rejects_allowlist_injection() {
 
     assert_eq!(error.name(), "git.snapshot,Bash");
     assert!(error.to_string().contains("invalid provider MCP tool name"));
+}
+
+fn extension_context(id: &str, audience: ContextAudience) -> ContextEntrySpec {
+    ContextEntrySpec::new(
+        id,
+        ContextKind::Reference,
+        ContextOrigin::new(ContextOriginKind::Extension, "extension-test"),
+        ContextPhase::Bootstrap,
+        ContextScope::Agent,
+        ContextDelivery::McpResource {
+            uri: format!("roba://context/entry?id={id}"),
+        },
+    )
+    .audience(audience)
+    .precedence(ContextPrecedence::Host)
+    .freshness(ContextFreshness::Generation)
+    .sensitivity(ContextSensitivity::Public)
+}
+
+#[test]
+fn extension_context_compiles_into_the_existing_plan_without_prompt_injection() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let extension = AgentExtension::new("context", McpRouter::new(), McpRouter::new())
+        .with_inline_context(
+            extension_context("extension.shared", ContextAudience::Both),
+            "shared lazy context",
+        )
+        .with_inline_context(
+            extension_context("extension.operator", ContextAudience::Operator),
+            "operator-only context",
+        );
+    let debug = format!("{extension:?}");
+    assert!(debug.contains("extension.shared"));
+    assert!(debug.contains("extension.operator"));
+    assert!(!debug.contains("shared lazy context"));
+    assert!(!debug.contains("operator-only context"));
+
+    let extensions = AgentExtensions::default()
+        .try_with(extension)
+        .expect("extension installs");
+    let agent = build_with(extensions, Arc::clone(&calls)).expect("agent construction succeeds");
+
+    let manifest = agent.context_plan().manifest();
+    assert_eq!(
+        manifest
+            .entries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>(),
+        ["extension.shared", "extension.operator"]
+    );
+    assert_eq!(
+        agent.context_plan().material("extension.shared"),
+        Some("shared lazy context")
+    );
+    assert!(template().agent.instructions.is_empty());
+    assert!(template().context.project.is_empty());
+    assert!(template().context.run.is_empty());
+
+    let provider = agent.context_plan().provider_manifest();
+    assert_eq!(provider.entries.len(), 1);
+    assert_eq!(provider.entries[0].id, "extension.shared");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn duplicate_extension_context_fails_before_provider_work() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let first = AgentExtension::new("first", McpRouter::new(), McpRouter::new())
+        .with_inline_context(
+            extension_context("extension.duplicate", ContextAudience::Both),
+            "first",
+        );
+    let second =
+        AgentExtension::new("second", McpRouter::new(), McpRouter::new()).with_available_context(
+            extension_context("extension.duplicate", ContextAudience::Both),
+        );
+    let extensions = AgentExtensions::default()
+        .try_with(first)
+        .expect("first extension installs")
+        .try_with(second)
+        .expect("MCP capabilities do not collide");
+
+    let error = build_with(extensions, Arc::clone(&calls))
+        .err()
+        .expect("duplicate context must fail construction");
+    assert!(matches!(
+        error,
+        AgentBuildError::ContextPlan(ContextPlanError::DuplicateId(id))
+            if id == "extension.duplicate"
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
