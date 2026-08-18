@@ -351,6 +351,128 @@ fn stdio_serve_is_idle_wire_clean_and_exits_via_agent_shutdown() {
     assert!(stderr.is_empty(), "serve diagnostics leaked: {stderr}");
 }
 
+#[test]
+fn stdio_serve_projects_configured_managed_prompts_and_catalog_resources() {
+    let project = project_config(
+        "version = 1\n\
+         [context]\nagent = 'local.worker'\nprompts = ['local.task']\n\
+         [context.builtins]\nenabled = false\n\
+         [[context.definitions]]\nkind = 'agent'\nid = 'local.worker'\ndescription = 'Local worker.'\ninline = 'PRIVATE ROLE BODY'\n\
+         [[context.definitions]]\nkind = 'prompt'\nid = 'local.task'\ndescription = 'Do one local task.'\ninline = 'Handle {{target}} carefully.'\narguments = [{ name = 'target', description = 'Task target.', required = true }]\n",
+    );
+    let mut child = Command::new(assert_cmd::cargo::cargo_bin!("roba"))
+        .args(["-C", project.path().to_str().unwrap(), "serve"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+
+    write_frame(
+        &mut input,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": { "name": "roba-context-cli-test", "version": "1" }
+            }
+        }),
+    );
+    let initialized = read_response(&mut output, 1);
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "roba-agent");
+    write_frame(
+        &mut input,
+        json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}),
+    );
+
+    write_frame(
+        &mut input,
+        json!({"jsonrpc":"2.0","id":2,"method":"prompts/list","params":{}}),
+    );
+    let prompts = read_response(&mut output, 2);
+    assert_eq!(prompts["result"]["prompts"].as_array().unwrap().len(), 1);
+    assert_eq!(prompts["result"]["prompts"][0]["name"], "local.task");
+    assert_eq!(
+        prompts["result"]["prompts"][0]["arguments"][0]["required"],
+        true
+    );
+
+    write_frame(
+        &mut input,
+        json!({
+            "jsonrpc":"2.0",
+            "id":3,
+            "method":"prompts/get",
+            "params":{"name":"local.task","arguments":{"target":"issue #514"}}
+        }),
+    );
+    let prompt = read_response(&mut output, 3);
+    assert_eq!(
+        prompt["result"]["messages"][0]["content"]["text"],
+        "Handle issue #514 carefully."
+    );
+
+    write_frame(
+        &mut input,
+        json!({
+            "jsonrpc":"2.0",
+            "id":4,
+            "method":"resources/read",
+            "params":{"uri":"roba://context/catalog"}
+        }),
+    );
+    let catalog = read_response(&mut output, 4);
+    let catalog_text = catalog["result"]["contents"][0]["text"]
+        .as_str()
+        .expect("catalog resource returns JSON text");
+    let catalog_value: Value = serde_json::from_str(catalog_text).unwrap();
+    assert_eq!(catalog_value["selection"]["agent"]["id"], "local.worker");
+    assert!(!catalog_text.contains("PRIVATE ROLE BODY"));
+    assert!(!catalog_text.contains("Handle {{target}} carefully."));
+
+    write_frame(
+        &mut input,
+        json!({
+            "jsonrpc":"2.0",
+            "id":5,
+            "method":"resources/read",
+            "params":{"uri":"roba://context/catalog/artifact?id=local.worker"}
+        }),
+    );
+    let artifact = read_response(&mut output, 5);
+    let artifact_text = artifact["result"]["contents"][0]["text"]
+        .as_str()
+        .expect("artifact resource returns JSON text");
+    assert!(artifact_text.contains("PRIVATE ROLE BODY"));
+
+    write_frame(
+        &mut input,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": { "name": "agent.shutdown", "arguments": {} }
+        }),
+    );
+    assert!(read_response(&mut output, 6)["result"]["structuredContent"].is_object());
+    drop(input);
+    let status = child.wait().unwrap();
+    assert!(status.success());
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(stderr.is_empty(), "serve diagnostics leaked: {stderr}");
+}
+
 fn write_frame(input: &mut impl Write, value: Value) {
     writeln!(input, "{}", serde_json::to_string(&value).unwrap()).unwrap();
     input.flush().unwrap();

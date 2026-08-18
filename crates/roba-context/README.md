@@ -8,8 +8,9 @@ fingerprints; and computes deterministic selections.
 The crate does not own MCP routers, provider processes, hot-agent lifecycle,
 startup configuration, scheduling, or authority. The root host uses it to
 resolve strict layered startup definitions and safe effective provenance.
-`roba-mcp` will consume that resolved catalog in the next layer and compile
-selected artifacts into its immutable, generation-fenced context plan.
+`roba-mcp` consumes the resolved catalog in the next layer: selected agent and
+skill material joins its immutable, generation-fenced context plan, while the
+same renderer powers operator-only MCP prompts and explicit artifact reads.
 
 The initial built-in catalog is intentionally small:
 

@@ -3,6 +3,7 @@
 use std::fmt;
 
 use anyhow::{Result, bail};
+use roba_context::{CatalogSelection, ContextCatalog};
 use roba_core::{
     ClaudeProvider, CodexProvider, FailureKind, PermissionPolicy, Prompt, ProviderId, Roba,
     RunFailure, RunFailureDetails, RunOutcome, RunSnapshot, RunSpec, RunState, SessionHandle,
@@ -11,6 +12,7 @@ use roba_core::{
 use roba_git::{GitAuthority, GitProgressConfig, GitWorkspace};
 use roba_mcp::{
     AgentExtensions, AgentInstance, AgentTurnResult, TurnInput, call_turn, connect_in_process,
+    managed_context_extension,
 };
 
 use crate::VersionedResult;
@@ -47,6 +49,8 @@ pub async fn run(args: RunArgs) -> Result<()> {
 
     let agent = build_agent_from_template(
         resolved.template,
+        resolved.catalog,
+        resolved.catalog_selection,
         resolved.git_enabled,
         resolved.git_progress_interval_secs,
     )?;
@@ -240,6 +244,8 @@ fn terminal_json(snapshot: &roba_core::RunSnapshot) -> serde_json::Value {
 #[derive(Debug)]
 struct ResolvedRun {
     template: RunSpec,
+    catalog: ContextCatalog,
+    catalog_selection: Option<CatalogSelection>,
     git_enabled: bool,
     git_progress_interval_secs: u64,
     prompt: String,
@@ -249,6 +255,8 @@ fn resolve_spec(args: &RunArgs) -> Result<ResolvedRun> {
     let resolved = crate::startup_config::resolve(&args.agent)?;
     Ok(ResolvedRun {
         template: resolved.template,
+        catalog: resolved.catalog,
+        catalog_selection: resolved.catalog_selection,
         git_enabled: resolved.git_enabled,
         git_progress_interval_secs: resolved.git_progress_interval_secs,
         prompt: Prompt::new(args.prompt.clone())?.into_inner(),
@@ -266,6 +274,8 @@ pub(crate) fn build_agent(args: &AgentArgs) -> Result<AgentInstance> {
     let resolved = crate::startup_config::resolve(args)?;
     build_agent_from_template(
         resolved.template,
+        resolved.catalog,
+        resolved.catalog_selection,
         resolved.git_enabled,
         resolved.git_progress_interval_secs,
     )
@@ -273,13 +283,17 @@ pub(crate) fn build_agent(args: &AgentArgs) -> Result<AgentInstance> {
 
 pub(crate) fn build_agent_from_template(
     template: RunSpec,
+    catalog: ContextCatalog,
+    catalog_selection: Option<CatalogSelection>,
     git_enabled: bool,
     git_progress_interval_secs: u64,
 ) -> Result<AgentInstance> {
     let roba = built_in_runtime()?;
     roba.validate_spec(&template)?;
 
-    let extensions = if git_enabled {
+    let mut extensions = AgentExtensions::default()
+        .try_with(managed_context_extension(catalog, catalog_selection)?)?;
+    if git_enabled {
         let cwd = std::env::current_dir()?;
         let workspace = GitWorkspace::discover(cwd)?;
         let authority = match template.execution.permissions {
@@ -288,13 +302,11 @@ pub(crate) fn build_agent_from_template(
                 GitAuthority::WorkspaceWrite
             }
         };
-        AgentExtensions::default().try_with(workspace.extension_with_progress(
+        extensions = extensions.try_with(workspace.extension_with_progress(
             authority,
             GitProgressConfig::from_interval_secs(git_progress_interval_secs),
-        ))?
-    } else {
-        AgentExtensions::default()
-    };
+        ))?;
+    }
 
     Ok(AgentInstance::new_with_extensions(
         roba, template, extensions,

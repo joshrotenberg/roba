@@ -10,6 +10,7 @@ use hyper::{HeaderMap, Method, Request, StatusCode};
 use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
+use roba_context::{CatalogSelectionSpec, ContextCatalog};
 use roba_core::{
     AgentSpec, EventSink, FailureKind as CoreFailureKind, Provider, ProviderCapabilities,
     ProviderError, ProviderFuture, ProviderId, ProviderLaunchContext, ProviderMcpEndpoint, Roba,
@@ -17,12 +18,13 @@ use roba_core::{
 };
 use roba_mcp::{
     AGENT_CONTEXT_URI, AGENT_EVENTS_URI, AGENT_INTERRUPT_TOOL, AGENT_RESOURCE_URI,
-    AGENT_SHUTDOWN_TOOL, AGENT_STEER_TOOL, AGENT_TURN_TOOL, AgentInstance, AgentInterruptResult,
-    AgentState, AgentTerminalState, AgentTurnResult, AmbientContextPolicy, ContextAcquisition,
-    ContextAudience, ContextContent, ContextDelivery, ContextEntrySpec, ContextKind, ContextOrigin,
-    ContextOriginKind, ContextPhase, ContextPlan, ContextPrecedence, ContextScope, ContextSnapshot,
-    OperationId, PROVIDER_MCP_SERVER_NAME, ProviderSelfSnapshot, ROBA_CONTEXT_MANIFEST_TOOL,
-    ROBA_CONTEXT_READ_TOOL, ROBA_SELF_TOOL, agent_router, connect_in_process,
+    AGENT_SHUTDOWN_TOOL, AGENT_STEER_TOOL, AGENT_TURN_TOOL, AgentExtensions, AgentInstance,
+    AgentInterruptResult, AgentState, AgentTerminalState, AgentTurnResult, AmbientContextPolicy,
+    ContextAcquisition, ContextAudience, ContextContent, ContextDelivery, ContextEntrySpec,
+    ContextKind, ContextOrigin, ContextOriginKind, ContextPhase, ContextPlan, ContextPrecedence,
+    ContextScope, ContextSnapshot, OperationId, PROVIDER_MCP_SERVER_NAME, ProviderSelfSnapshot,
+    ROBA_CONTEXT_MANIFEST_TOOL, ROBA_CONTEXT_READ_TOOL, ROBA_SELF_TOOL, agent_router,
+    connect_in_process, managed_context_extension,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -47,6 +49,7 @@ struct FakeState {
     launch_bootstraps: Mutex<Vec<String>>,
     launch_debug: Mutex<Vec<String>>,
     request_json: Mutex<Vec<String>>,
+    context_entry_id: Mutex<String>,
     callbacks: Mutex<Vec<CallbackObservation>>,
     endpoint_ready: Semaphore,
     callback_ready: Semaphore,
@@ -62,6 +65,7 @@ impl Default for FakeState {
             launch_bootstraps: Mutex::new(Vec::new()),
             launch_debug: Mutex::new(Vec::new()),
             request_json: Mutex::new(Vec::new()),
+            context_entry_id: Mutex::new("issue.summary".to_owned()),
             callbacks: Mutex::new(Vec::new()),
             endpoint_ready: Semaphore::new(0),
             callback_ready: Semaphore::new(0),
@@ -197,15 +201,20 @@ impl Provider for CallbackProvider {
                 ));
             }
             let initial_context = typed::<ContextSnapshot>(&initial_context);
+            let context_entry_id = state
+                .context_entry_id
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let entry = initial_context
                 .manifest
                 .entries
                 .iter()
-                .find(|entry| entry.id == "issue.summary")
+                .find(|entry| entry.id == context_entry_id)
                 .ok_or_else(|| {
                     ProviderError::new(
                         CoreFailureKind::Provider,
-                        "provider context manifest had no test entry",
+                        format!("provider context manifest had no `{context_entry_id}` entry"),
                     )
                 })?;
             if initial_context
@@ -398,6 +407,40 @@ fn test_agent() -> (AgentInstance, Arc<FakeState>) {
         context.build(),
     )
     .expect("test agent is valid");
+    (agent, state)
+}
+
+fn managed_test_agent() -> (AgentInstance, Arc<FakeState>) {
+    let state = Arc::new(FakeState::default());
+    *state
+        .context_entry_id
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = "roba.repo-worker".to_owned();
+    let mut runtime = Roba::new();
+    runtime
+        .register(CallbackProvider {
+            state: Arc::clone(&state),
+        })
+        .expect("fake provider registration succeeds");
+    let catalog = ContextCatalog::builtins();
+    let selection = catalog
+        .select(&CatalogSelectionSpec {
+            agent: "roba.repo-worker".to_owned(),
+            skills: Vec::new(),
+            prompts: vec!["roba.issue-worker".to_owned()],
+        })
+        .expect("shipped managed selection is valid");
+    let managed = managed_context_extension(catalog, Some(selection))
+        .expect("managed context compiles into an extension");
+    let extensions = AgentExtensions::default()
+        .try_with(managed)
+        .expect("managed context projection is collision free");
+    let agent = AgentInstance::new_with_extensions(
+        runtime,
+        RunSpec::suspended(AgentSpec::new(fake_provider_id())),
+        extensions,
+    )
+    .expect("managed context test agent is valid");
     (agent, state)
 }
 
@@ -1141,6 +1184,120 @@ async fn interrupt_drops_provider_and_revokes_endpoint_before_settlement_returns
     assert_ne!(endpoints[0].bearer_token(), endpoints[1].bearer_token());
     assert_expired(&endpoints[0]).await;
     assert_expired(&endpoints[1]).await;
+
+    let client = Arc::into_inner(client).expect("all control client clones were dropped");
+    client
+        .shutdown()
+        .await
+        .expect("control projection client shuts down");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn managed_agent_is_mandatory_skills_are_lazy_and_provider_reads_are_evidenced() {
+    let (agent, state) = managed_test_agent();
+    let client = Arc::new(
+        connect_in_process(agent)
+            .await
+            .expect("control projection client connects"),
+    );
+
+    let first = call_turn(Arc::clone(&client), "first").await;
+    let second = call_turn(Arc::clone(&client), "second").await;
+    assert!(!first.is_error);
+    assert!(!second.is_error);
+
+    let callbacks = snapshot_callbacks(&state);
+    assert_eq!(callbacks.len(), 2);
+    let bootstraps = state
+        .launch_bootstraps
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(bootstraps.len(), 2);
+    for (callback, bootstrap) in callbacks.iter().zip(&bootstraps) {
+        let ids = callback
+            .context
+            .manifest
+            .entries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["roba.repo-worker", "roba.repository-change"]);
+        assert!(
+            callback
+                .context
+                .manifest
+                .entries
+                .iter()
+                .find(|entry| entry.id == "roba.repo-worker")
+                .expect("selected agent is provider visible")
+                .required
+        );
+        assert!(
+            !callback
+                .context
+                .manifest
+                .entries
+                .iter()
+                .find(|entry| entry.id == "roba.repository-change")
+                .expect("selected skill is provider visible")
+                .required
+        );
+        assert!(ids.iter().all(|id| *id != "roba.issue-worker"));
+        let contract = callback
+            .context
+            .bootstrap
+            .as_ref()
+            .expect("provider bootstrap is inspectable");
+        assert_eq!(contract.required_acquisitions.len(), 1);
+        assert_eq!(contract.required_acquisitions[0].id, "roba.repo-worker");
+        assert_eq!(
+            contract.required_acquisitions[0].acquisition,
+            ContextAcquisition::ContextRead
+        );
+        assert_eq!(&contract.render(), bootstrap);
+        assert!(!bootstrap.contains("You are a Roba-managed repository worker"));
+        assert_eq!(callback.content.entry.id, "roba.repo-worker");
+        assert!(
+            callback
+                .content
+                .content
+                .contains("You are a Roba-managed repository worker")
+        );
+        let evidence = callback
+            .context
+            .read_evidence
+            .as_ref()
+            .expect("provider read evidence is retained");
+        assert_eq!(evidence.entries.len(), 1);
+        assert_eq!(evidence.entries[0].id, "roba.repo-worker");
+        assert_eq!(evidence.entries[0].stats.read_count, 1);
+        assert_eq!(callback.tools, expected_provider_tools());
+        assert_eq!(callback.resources, [AGENT_CONTEXT_URI]);
+    }
+
+    let requests = state
+        .request_json
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .map(|request| serde_json::from_str::<Value>(request).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0]["spec"]["execution"]["session"]["kind"], "fresh");
+    assert_eq!(
+        requests[1]["spec"]["execution"]["session"]["kind"],
+        "resume"
+    );
+    assert_eq!(
+        requests[1]["spec"]["execution"]["session"]["session"]["id"],
+        "session-1"
+    );
+    for request in &requests {
+        let encoded = request.to_string();
+        assert!(!encoded.contains("You are a Roba-managed repository worker"));
+        assert!(!encoded.contains("For repository changes"));
+    }
 
     let client = Arc::into_inner(client).expect("all control client clones were dropped");
     client

@@ -26,6 +26,8 @@ const PROJECT_CANDIDATES: [&str; 3] = ["roba.toml", ".roba.toml", ".roba/roba.to
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedStartup {
     pub template: RunSpec,
+    pub catalog: ContextCatalog,
+    pub catalog_selection: Option<CatalogSelection>,
     pub git_enabled: bool,
     pub git_progress_interval_secs: u64,
     pub effective: EffectiveStartupConfig,
@@ -297,6 +299,8 @@ pub fn run_effective(args: ConfigEffectiveArgs) -> Result<()> {
     let resolved = resolve(&args.agent)?;
     let _validated_host = crate::bounded::build_agent_from_template(
         resolved.template.clone(),
+        resolved.catalog.clone(),
+        resolved.catalog_selection.clone(),
         resolved.git_enabled,
         resolved.git_progress_interval_secs,
     )?;
@@ -414,6 +418,8 @@ fn resolve_from(
 
     Ok(ResolvedStartup {
         template,
+        catalog,
+        catalog_selection,
         git_enabled,
         git_progress_interval_secs,
         effective,

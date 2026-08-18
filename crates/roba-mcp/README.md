@@ -43,6 +43,10 @@ The operator contract has process-local and foreground stdio bindings:
   current or latest provider read evidence. Individual bodies are available
   only through the generation-fenced
   `roba://context/entry{?id,generation}` template.
+- `roba://context/catalog` exposes the content-free managed agent, skill, and
+  prompt inventory plus the effective selection. Explicit operator reads use
+  `roba://context/catalog/artifact{?id}`. Enabled reusable prompts appear in
+  `prompts/list` and render through the same catalog source of truth.
 - `connect_in_process` returns an initialized production `McpClient` over
   Tower MCP's concurrent `ChannelTransport`.
 - `call_turn` is the typed client seam. It requires valid
@@ -89,6 +93,12 @@ Extension context compiles into the host's existing immutable `ContextPlan` at
 that same construction boundary. Audience restrictions are structural, and
 retained bodies remain outside `RunSpec`, provider prompt text, snapshots, and
 extension debug output.
+
+The root host installs managed context as an ordinary extension contribution.
+Its control fragment owns catalog resources and selected MCP prompts; its
+provider fragment is empty. The selected agent role and transitive skills join
+the context plan instead. The agent is a mandatory generation-fenced read,
+skills are lazy, and reusable prompts never become standing provider context.
 
 Fragments are capability bags. Their router identity, session state, task
 store, auth, and middleware are not imported when Tower merges them into a

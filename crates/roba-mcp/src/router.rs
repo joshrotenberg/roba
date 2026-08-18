@@ -69,7 +69,9 @@ replayable provider activity. Task-backed turns may also deliver live \
 roba.activity log notifications. Use agent.follow_up to queue another provider turn after the \
 current one, agent.interrupt to cancel \
 work while keeping the agent available, and agent.shutdown only when the host \
-should terminate. Additional capabilities may be exposed as MCP extensions; \
+should terminate. When present, managed prompts and the content-free catalog \
+are discoverable through prompts/list and roba://context/catalog. Additional \
+capabilities may be exposed as MCP extensions; \
 inspect discovery rather than assuming they exist.";
 
 const DEFAULT_EVENT_LIMIT: usize = 100;

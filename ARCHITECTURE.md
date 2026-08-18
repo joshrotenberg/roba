@@ -267,10 +267,13 @@ ordered stack:
 and reusable prompts. The root host now loads built-in and configured inline
 or repository-local Markdown definitions, records content-free provenance and
 fingerprints, and computes an optional deterministic selection during startup.
-No selected catalog material is projected through MCP yet; that remaining
-integration stays in [#514](https://github.com/joshrotenberg/roba/issues/514).
-The current operation directive is the `agent.turn` prompt and is not yet a
-manifest entry.
+The selected agent and transitive skills compile through the ordinary
+`AgentExtension` path into generation-fenced context entries. Only the agent
+is mandatory; skills remain lazy. Enabled reusable prompts are operator-only
+MCP prompts rendered by the catalog itself. The content-free catalog and
+explicit operator artifact reads are MCP resources, while the provider sees
+only selected context through `context.manifest` and `context.read`. The
+current `agent.turn` directive remains separate from standing context.
 
 Today, explicit `AgentSpec.instructions` and `ContextSpec` values are still
 delivered by provider adapters on every provider turn. Extension context joins

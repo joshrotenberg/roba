@@ -91,8 +91,10 @@ Unversioned files are rejected rather than guessed or silently migrated.
 Startup configuration can also select a managed agent role, skills, and MCP
 prompts from the built-in catalog or bounded repository-local definitions.
 `roba config effective` reports their content-free origins and fingerprints;
-selected bodies are not yet delivered to providers while #514's MCP projection
-slice remains open.
+`roba://context/catalog` exposes the same safe inventory over MCP. Selected
+prompts appear in operator prompt discovery. The selected agent role and
+skills stay out of provider prompt text and are available through Roba's
+generation-fenced context tools, where provider reads produce exact evidence.
 
 ## Hot MCP agents
 
@@ -206,8 +208,7 @@ authority.
 ## Rust workspace
 
 - [`roba-context`](crates/roba-context) -- bounded agent, skill, and prompt
-  catalog data with provenance and deterministic selection. Startup and MCP
-  projection remain follow-up integration work.
+  catalog data with provenance, deterministic selection, and rendering.
 - [`roba-core`](crates/roba-core) -- provider-neutral specifications,
   registry, finite lifecycle, outcomes, failures, and events.
 - [`roba-mcp`](crates/roba-mcp) -- one hot logical agent, typed MCP contract,

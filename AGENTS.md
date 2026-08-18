@@ -46,8 +46,9 @@ provider projections, and exposes staging only to writable operator views.
   contracts, lifecycle, provider boundary, transient launch context, registry.
 - `crates/roba-core/src/providers/{claude,codex}.rs` -- built-in adapters.
 - `crates/roba-context` -- managed agent, skill, and prompt catalog data.
-- `crates/roba-mcp/src/{agent,contract,events,extensions,extension_lifecycle,router,stdio,provider_endpoint}.rs`
-  -- hot-agent state, MCP values, replay, composition, and bindings.
+- `crates/roba-mcp/src/{agent,contract,context,managed_context,events,extensions,extension_lifecycle,router,stdio,provider_endpoint}.rs`
+  -- hot-agent state, managed context, MCP values, replay, composition, and
+  bindings.
 - `crates/roba-git` -- fixed-workspace Git MCP service and cached operation
   progress observer.
 - `crates/roba-types` -- dependency-light JSON envelopes and exit-code map.
