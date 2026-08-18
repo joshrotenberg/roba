@@ -296,8 +296,9 @@ contract; prose cannot grant it.
 
 ## Next slices
 
-1. Add the typed agent, skill, and prompt catalog described by GitHub issue
-   #514, including explicit activation modes and MCP prompt projection.
+1. Add the typed agent, skill, and prompt catalog described by
+   [GitHub issue #514](https://github.com/joshrotenberg/roba/issues/514),
+   including explicit activation modes and MCP prompt projection.
 2. Move the reserved base surface through the same internal contribution
    compiler without making it replaceable.
 3. Stop reinjecting unchanged stable context into resumed sessions where the

@@ -12,8 +12,67 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+      markdown_changed: ${{ steps.classify.outputs.markdown_changed }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Test change classifier
+        run: .github/scripts/test-classify-changes.sh
+
+      - name: Classify changed paths
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" || -z "$BASE_SHA" || \
+                "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "markdown_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" \
+              | .github/scripts/classify-changes.sh >> "$GITHUB_OUTPUT"
+          fi
+
+  markdown:
+    name: Markdown
+    needs: changes
+    if: needs.changes.outputs.markdown_changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install mdbook-lint 0.15.2
+        env:
+          MDBOOK_LINT_SHA256: 08a252e749d90f19493c24207fc2edfca168057c4bb66ee196b61a5836bc2e06
+        run: |
+          archive="$RUNNER_TEMP/mdbook-lint.tar.xz"
+          curl --fail --location --silent --show-error \
+            https://github.com/joshrotenberg/mdbook-lint/releases/download/v0.15.2/mdbook-lint-x86_64-unknown-linux-gnu.tar.xz \
+            --output "$archive"
+          echo "$MDBOOK_LINT_SHA256  $archive" | sha256sum --check
+          tar -xJf "$archive" -C "$RUNNER_TEMP" --strip-components=1 \
+            mdbook-lint-x86_64-unknown-linux-gnu/mdbook-lint
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Lint tracked Markdown
+        run: |
+          mdbook-lint --version
+          git ls-files -z '*.md' | xargs -0 mdbook-lint lint \
+            --config .mdbook-lint.toml --fail-on-warnings --output github
+
   test:
     name: Test (${{ matrix.os }}, ${{ matrix.rust }})
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -63,6 +122,8 @@ jobs:
 
   docs:
     name: Documentation
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     env:
       RUSTDOCFLAGS: -D warnings

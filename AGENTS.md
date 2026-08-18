@@ -66,6 +66,9 @@ All gates must pass before a PR:
 
 ```bash
 cargo fmt --all -- --check
+cargo install mdbook-lint --version 0.15.2 --locked
+git ls-files -z '*.md' | xargs -0 mdbook-lint lint \
+  --config .mdbook-lint.toml --fail-on-warnings
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo build --workspace --all-features
 cargo test --workspace --lib --all-features

@@ -8,8 +8,32 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Test change classifier
+        run: .github/scripts/test-classify-changes.sh
+
+      - name: Classify changed paths
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" \
+            | .github/scripts/classify-changes.sh >> "$GITHUB_OUTPUT"
+
   quick:
     name: Quick checks
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -39,6 +63,8 @@ jobs:
 
   release-build:
     name: Release build check
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
