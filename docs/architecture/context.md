@@ -62,8 +62,9 @@ The compilation boundary stays in `roba-mcp`. `roba-core` remains Tower-free
 and receives only the finite executable run intent. The data-oriented
 `roba-context` crate owns catalog definitions, bounded inline and Markdown
 sources, validation, rendering, provenance, fingerprints, and deterministic
-selection without owning live routers or agent lifecycle. Startup loading and
-MCP projection of that catalog are not implemented yet.
+selection without owning live routers or agent lifecycle. The root host owns
+startup loading; `roba-mcp` compiles the result through the ordinary extension
+path into role-scoped prompts, resources, and generation-fenced context.
 
 `AgentExtension` now supplies retained inline context or metadata-only
 available context in addition to its existing MCP and lifecycle surfaces.
@@ -298,21 +299,17 @@ contract; prose cannot grant it.
 
 ## Next slices
 
-1. Project the startup-resolved `roba-context` catalog's selected metadata,
-   material, and reusable prompts through MCP. Startup loading and body-free
-   effective provenance are implemented; delivery and acquisition remain in
-   [GitHub issue #514](https://github.com/joshrotenberg/roba/issues/514).
-2. Move the reserved base surface through the same internal contribution
+1. Move the reserved base surface through the same internal contribution
    compiler without making it replaceable.
-3. Stop reinjecting unchanged stable context into resumed sessions where the
+2. Stop reinjecting unchanged stable context into resumed sessions where the
    provider mechanics prove that omission is safe.
-4. Add context linting for duplicate fingerprints, precedence conflicts,
+3. Add context linting for duplicate fingerprints, precedence conflicts,
    conflicting instructions, unsafe locators, and excessive prompt weight.
-5. Mechanically inventory clean-home, ambient, controlled, fresh, resume, and
+4. Mechanically inventory clean-home, ambient, controlled, fresh, resume, and
    follow-up behavior for both built-in providers.
-6. Add explicit acknowledgement and gate provider-facing mutation on the
+5. Add explicit acknowledgement and gate provider-facing mutation on the
    required evidence policy.
-7. Apply the same manifest to parent-spawned Robas without inheriting the
+6. Apply the same manifest to parent-spawned Robas without inheriting the
    parent's transcript or ambient environment by accident.
 
 ## Sources

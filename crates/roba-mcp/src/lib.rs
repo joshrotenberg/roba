@@ -11,6 +11,7 @@ mod contract;
 mod events;
 mod extension_lifecycle;
 mod extensions;
+mod managed_context;
 mod provider_endpoint;
 mod router;
 mod stdio;
@@ -42,6 +43,11 @@ pub use extensions::{
     AgentExtensionHookError, AgentExtensionHookPhase, AgentExtensionHookResult,
     AgentExtensionLifecycle, AgentExtensionManifestError, AgentExtensionOperation,
     AgentExtensionProjection, AgentExtensions, MAX_EXTENSION_HOOK_TIMEOUT,
+};
+pub use managed_context::{
+    MANAGED_CONTEXT_ARTIFACT_TEMPLATE, MANAGED_CONTEXT_CATALOG_URI, MANAGED_CONTEXT_EXTENSION_NAME,
+    ManagedContextArtifact, ManagedContextCatalogSnapshot, ManagedContextError,
+    managed_context_extension,
 };
 pub use provider_endpoint::PROVIDER_MCP_SERVER_NAME;
 pub use router::{

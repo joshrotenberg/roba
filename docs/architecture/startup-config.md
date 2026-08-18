@@ -53,10 +53,11 @@ Markdown `path`; paths resolve relative to the file that declares them and
 cannot escape that directory. Definition IDs cannot replace another layer or
 the reserved `roba.*` namespace.
 
-This first startup slice records the resolved catalog and selection without
-yet projecting selected material through MCP or provider launch. That delivery
-work remains in [GitHub issue #514](https://github.com/joshrotenberg/roba/issues/514),
-so configuration inspection must not be mistaken for provider acquisition.
+The root host passes the same resolved catalog and selection into `roba-mcp`.
+Selected prompts become operator-only MCP prompts. The selected agent and
+transitive skills become provider-visible context-plan entries without being
+copied into provider prompts or serialized run intent. Only an exact
+provider-side `context.read` becomes acquisition evidence.
 
 A Git progress interval of `0` disables periodic active-operation sampling
 while retaining the admission baseline and final refresh. A context isolation

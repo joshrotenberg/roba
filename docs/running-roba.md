@@ -44,9 +44,10 @@ resolved values and their sources with `roba config effective`.
 
 Managed context selection is optional. The startup host validates selected
 agent, skill, and prompt IDs and reports body-free provenance and fingerprints.
-The current implementation does not yet deliver those selected bodies through
-MCP; raw instructions and context retain their existing provider behavior
-until the remaining #514 projection slice lands.
+Selected prompts appear in MCP prompt discovery. The selected agent and skills
+remain outside provider prompt text and are acquired through generation-fenced
+context tools. `roba://context/catalog` inventories availability and selection;
+provider read evidence remains separately visible in `roba://context`.
 
 ## 1. One read-only CLI run
 
