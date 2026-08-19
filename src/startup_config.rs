@@ -329,6 +329,10 @@ fn resolve_from(
         discover_layers(cwd, user_config)?
     };
 
+    resolve_layers(args, layers)
+}
+
+fn resolve_layers(args: &AgentArgs, layers: Vec<Layer>) -> Result<ResolvedStartup> {
     let mut effective = EffectiveStartupConfig {
         version: CONFIG_VERSION,
         sources: Vec::new(),
@@ -517,7 +521,11 @@ fn load_discovered_layer(path: &Path, kind: ConfigSourceKind) -> Result<Option<L
 fn load_layer(path: &Path, kind: ConfigSourceKind) -> Result<Option<Layer>> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("reading provider-neutral config at {}", path.display()))?;
-    let value: toml::Value = toml::from_str(&content).map_err(|error| {
+    parse_layer(path, kind, &content)
+}
+
+fn parse_layer(path: &Path, kind: ConfigSourceKind, content: &str) -> Result<Option<Layer>> {
+    let value: toml::Value = toml::from_str(content).map_err(|error| {
         anyhow::anyhow!(
             "parsing provider-neutral config at {}: {error}",
             path.display()
@@ -526,7 +534,7 @@ fn load_layer(path: &Path, kind: ConfigSourceKind) -> Result<Option<Layer>> {
     if value.get("version").is_none() {
         return Ok(None);
     }
-    let mut config: StartupFile = toml::from_str(&content).map_err(|error| {
+    let mut config: StartupFile = toml::from_str(content).map_err(|error| {
         anyhow::anyhow!(
             "parsing provider-neutral config at {}: {error}",
             path.display()
@@ -552,6 +560,32 @@ fn load_layer(path: &Path, kind: ConfigSourceKind) -> Result<Option<Layer>> {
         config,
         definitions,
     }))
+}
+
+/// Validate a generated document through the same strict schema, catalog,
+/// and effective-config resolver used by `run` and `serve` without reading or
+/// installing the target path.
+pub(crate) fn validate_generated_document(document: &str, target: &Path) -> Result<()> {
+    let layer = parse_layer(target, ConfigSourceKind::Explicit, document)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "generated provider-neutral config must declare `version = {CONFIG_VERSION}`"
+        )
+    })?;
+    resolve_layers(&AgentArgs::default(), vec![layer])?;
+    Ok(())
+}
+
+/// Validate a generated project layer against the startup stack it will join.
+pub(crate) fn validate_generated_install(document: &str, target: &Path, cwd: &Path) -> Result<()> {
+    let generated = parse_layer(target, ConfigSourceKind::Project, document)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "generated provider-neutral config must declare `version = {CONFIG_VERSION}`"
+        )
+    })?;
+    let mut layers = discover_layers(cwd, user_config_path())?;
+    layers.push(generated);
+    resolve_layers(&AgentArgs::default(), layers)?;
+    Ok(())
 }
 
 fn merge_layer(

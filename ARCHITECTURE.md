@@ -17,8 +17,8 @@ Roba is an MCP-native harness for one logical coding agent:
 - `roba-context` validates the data-oriented managed-context catalog.
 - `roba-mcp` retains one logical agent across finite runs and exposes typed
   MCP projections.
-- the root `roba` package resolves startup policy and supplies the `run`,
-  `serve`, `config`, and `completions` commands.
+- the root `roba` package resolves startup policy and supplies the `init`,
+  `run`, `serve`, `config`, and `completions` commands.
 - optional extensions add scoped MCP capabilities, context, and lifecycle
   observation above the core.
 - Claude Code and Codex remain external provider processes launched through
@@ -87,6 +87,18 @@ adapters. Tower MCP is the protocol implementation below `roba-mcp`. Neither
 external API is allowed to define Roba's provider-neutral public model.
 
 ## Interfaces and lifetimes
+
+### `roba init`
+
+`roba init` renders one conservative versioned startup file, validates it
+through the same strict schema and managed catalog resolver as `run` and
+`serve`, and installs it atomically without replacing any recognized sibling
+configuration. The default preserves provider-native ambient context and
+read-only authority. Managed agent, skill, and prompt IDs are opt-in.
+
+`--dry-run` emits the exact validated TOML without touching the workspace.
+Initialization never launches a provider and does not implement model-assisted
+project survey or tuning.
 
 ### `roba run`
 
@@ -348,6 +360,10 @@ the Git root, and explicit CLI values. Unknown fields, ambiguous sibling files,
 unsupported versions, invalid values, and unenforceable provider controls fail
 before provider work begins.
 
+`roba init` is the only shipped writer for this contract. It creates a new
+current-directory `roba.toml` through a validated atomic no-clobber path;
+runtime resolution never rewrites discovered configuration.
+
 `roba config effective` is the safe inspection boundary. It reports resolved
 values and provenance without launching a provider and redacts provider-private
 resume identity.
@@ -389,20 +405,22 @@ Higher layers may supervise several Roba processes through MCP, but the
 operating system remains the pool and each endpoint still represents one
 agent. Planned work remains in GitHub issues until its contract ships:
 
-- [#489](https://github.com/joshrotenberg/roba/issues/489) -- remaining context
-  isolation, acknowledgement, and gating work;
-- [#506](https://github.com/joshrotenberg/roba/issues/506) -- operable hot-agent
-  control-plane umbrella;
+- [#511](https://github.com/joshrotenberg/roba/issues/511) -- bounded
+  model-assisted configuration survey and tuning after deterministic init;
 - [#512](https://github.com/joshrotenberg/roba/issues/512) -- supervised
   Roba-to-Roba child management;
-- [#514](https://github.com/joshrotenberg/roba/issues/514) -- managed agents,
-  skills, and prompts;
 - [#516](https://github.com/joshrotenberg/roba/issues/516) -- optional
   per-operation board;
 - [#517](https://github.com/joshrotenberg/roba/issues/517) -- optional workflow
   extension;
 - [#520](https://github.com/joshrotenberg/roba/issues/520) -- lifetime,
-  externally accessible bindings, and client authority.
+  externally accessible bindings, and client authority;
+- [#525](https://github.com/joshrotenberg/roba/issues/525) -- managed session
+  generations and rollover;
+- [#529](https://github.com/joshrotenberg/roba/issues/529) -- provider ambient
+  context policy and source inventory;
+- [#530](https://github.com/joshrotenberg/roba/issues/530) -- semantic context
+  linting and conflict diagnostics.
 
 ## Where to go deeper
 

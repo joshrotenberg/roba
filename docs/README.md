@@ -22,7 +22,8 @@ marks future compositions explicitly instead of presenting them as available.
 
 The repository's versioned [`roba.toml`](../roba.toml) is both a dogfood setup
 and a parse-tested example. `roba config effective` is the authoritative way
-to inspect resolved values and provenance.
+to inspect resolved values and provenance. `roba init` creates a conservative
+validated project file without overwriting recognized configuration.
 
 Plans belong in GitHub issues until adopted. Once implemented, retain the
 decision and its rationale here, not a phase ledger or working-session log.
@@ -49,4 +50,5 @@ decision and its rationale here, not a phase ledger or working-session log.
 
 The [`roba-context` crate README](../crates/roba-context/README.md) documents
 the bounded managed-catalog data layer. The catalog exists independently of
-startup and MCP delivery while issue #514 tracks that integration.
+startup and MCP delivery; the root host and MCP projections consume that same
+validated source of truth.

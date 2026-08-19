@@ -30,13 +30,14 @@ Install and authenticate the provider binaries you intend to use.
 
 | Need | Interface |
 | --- | --- |
+| A conservative project configuration | `roba init` |
 | One provider-neutral finite result | `roba run` |
 | One hot agent addressable over MCP | `roba serve` |
 | A Rust-owned finite lifecycle | `roba-core` |
 | A Rust-owned hot MCP agent | `roba-mcp` |
 
 The full command reference is generated from the binary. Start with
-`roba --help`, `roba run --help`, or `roba serve --help`.
+`roba --help`, `roba init --help`, `roba run --help`, or `roba serve --help`.
 
 ## Provider-neutral runs
 
@@ -65,6 +66,14 @@ Run flags explicitly select the provider, model, effort, instructions,
 context, permissions, limits, timeout, resume identity, and optional services.
 They override the shared, versioned startup contract used by both `run` and
 `serve`:
+
+```bash
+# Create a minimal ambient-provider, read-only starter without overwriting.
+roba init
+
+# Or reference the shipped managed context catalog explicitly.
+roba init --agent-role roba.repo-worker --prompt roba.issue-worker
+```
 
 ```toml
 version = 1
@@ -217,8 +226,8 @@ authority.
   authority-scoped MCP fragments.
 - [`roba-types`](crates/roba-types) -- dependency-light machine envelopes and
   exit-code constants.
-- `roba` -- the command-first `run`, `serve`, `config`, and `completions`
-  interface.
+- `roba` -- the command-first `init`, `run`, `serve`, `config`, and
+  `completions` interface.
 
 The retained core types are intentionally small: `RunSpec`, `Roba`, `Run`,
 `RunHandle`, and `Provider`. Events are bounded and cursor-addressed; history

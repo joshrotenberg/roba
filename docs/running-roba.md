@@ -17,6 +17,17 @@ drives the agent after construction.
 A versioned `roba.toml` can pin the provider-neutral startup template shared
 by `run` and `serve`:
 
+```bash
+# Minimal read-only configuration with provider-native ambient context.
+roba init
+
+# Opt into shipped managed context by stable catalog ID.
+roba init --agent-role roba.repo-worker --prompt roba.issue-worker
+```
+
+`roba init --dry-run` prints the exact validated TOML without creating a file.
+Initialization refuses recognized sibling configs instead of overwriting them.
+
 ```toml
 version = 1
 
