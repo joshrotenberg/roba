@@ -130,6 +130,13 @@ relative source locators, and SHA-256 fingerprints, but never inline or file
 bodies. A supplied `--resume` is represented only by `resume_seeded = true`,
 never by its opaque provider id.
 
+The effective context view also includes deterministic diagnostics for the
+declared plan. Warnings cover duplicate safe fingerprints, bounded directive
+conflicts, prose authority mismatches, repeated stable delivery, and excessive
+eager material. Hard locator or required-delivery findings make startup fail
+before provider work. Diagnostics contain IDs and safe provenance, never
+bodies, secrets, or raw locators.
+
 ```bash
 roba -C /path/to/repo config effective
 roba -C /path/to/repo config effective --provider claude --read-only --json

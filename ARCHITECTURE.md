@@ -303,6 +303,15 @@ Roba distinguishes planned, available, read, acknowledged, and followed
 context. Only provider-side MCP reads are mechanically recorded today. A read
 does not prove model acknowledgement or compliance.
 
+Before an agent host is constructed, Roba deterministically lints the declared
+plan. Typed warnings identify duplicate safe fingerprints, bounded directive
+and authority conflicts, repeated stable delivery, and excessive eager
+material. Unsafe locators and unavailable required deliveries fail before
+endpoint binding or provider launch. Diagnostics expose only IDs, safe
+provenance, fingerprints, and byte counts; they never include bodies, secrets,
+or raw locators. The same findings appear in `roba://context` and
+`roba config effective`, but are not mixed into turn results.
+
 Provider-native ambient context is a separate and only partially observable
 layer. `ambient` preserves normal provider discovery. `controlled` applies a
 tested adapter-specific reduction and publishes the exact retained,
@@ -420,8 +429,6 @@ agent. Planned work remains in GitHub issues until its contract ships:
   externally accessible bindings, and client authority;
 - [#525](https://github.com/joshrotenberg/roba/issues/525) -- managed session
   generations and rollover;
-- [#530](https://github.com/joshrotenberg/roba/issues/530) -- semantic context
-  linting and conflict diagnostics.
 
 ## Where to go deeper
 

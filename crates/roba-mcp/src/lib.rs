@@ -20,11 +20,13 @@ pub use agent::{AgentBuildError, AgentInstance, AgentStopError};
 pub use context::{
     AmbientContextPolicy, AmbientContextSource, AmbientContextSourceDisposition,
     AmbientContextStatus, CONTEXT_MANIFEST_SCHEMA_VERSION, ContextAcquisition, ContextAudience,
-    ContextBootstrap, ContextContent, ContextDelivery, ContextEntry, ContextEntryRead,
+    ContextBootstrap, ContextContent, ContextDelivery, ContextDiagnostic, ContextDiagnosticCode,
+    ContextDiagnosticProvenance, ContextDiagnosticSeverity, ContextEntry, ContextEntryRead,
     ContextEntrySpec, ContextFingerprint, ContextFreshness, ContextGoalDelivery, ContextKind,
     ContextManifest, ContextOrigin, ContextOriginKind, ContextPhase, ContextPlan,
     ContextPlanBuilder, ContextPlanError, ContextPrecedence, ContextReadEvidence, ContextReadStats,
     ContextRequirement, ContextScope, ContextSensitivity, ContextSnapshot,
+    EAGER_CONTEXT_WARNING_BYTES,
 };
 pub use contract::{
     ActiveActivity, ActivityKind, ActivityStatus, AgentConfiguration, AgentControlRefusal,

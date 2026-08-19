@@ -1,8 +1,9 @@
 # Inspectable context planning
 
-> Status: typed planning, explicit host inputs, a minimal launch bootstrap, and
-> MCP read evidence implemented; acknowledgement, gating, deduplication, and
-> isolation controls remain incremental work tracked by GitHub issue #489.
+> Status: typed planning, explicit host inputs, a minimal launch bootstrap,
+> deterministic diagnostics, ambient-policy enforcement, and MCP read evidence
+> implemented; acknowledgement, mutation gating, and session-aware delivery
+> remain incremental work tracked by GitHub issue #489.
 
 ## Decision
 
@@ -168,9 +169,43 @@ precedence while retaining insertion order inside one layer.
 
 This precedence is Roba's declared composition order, not a claim about hidden
 provider policy. Managed or provider-native ambient instructions may have
-their own precedence that Roba cannot override or fully observe. The current
-slice records ordering and makes it inspectable; automatic replacement,
-conflict inference, and linting remain separate work.
+their own precedence that Roba cannot override or fully observe. Roba lints
+only the explicit plan it can inspect and never claims to infer conflicts in
+hidden provider policy.
+
+## Deterministic context diagnostics
+
+Agent construction evaluates the complete declared plan with one deterministic
+content-safe linter. Diagnostics are sorted, typed, and available in
+`ContextSnapshot.diagnostics`. `roba config effective` runs the same host
+construction and includes the same diagnostics in its safe context view.
+
+Warnings identify:
+
+- duplicate safe fingerprints;
+- opposing modify, commit, or push directives from a deliberately bounded
+  phrase grammar;
+- recognized prose write grants under typed read-only authority;
+- generation-stable material routed through the every-turn adapter path;
+- more than 32 KiB of eagerly injected adapter or bootstrap material.
+
+The phrase grammar is intentionally mechanical. It catches a small set of
+unambiguous directives and does not claim general natural-language conflict
+resolution. Typed execution authority remains authoritative; prose can warn
+about a mismatch but can never grant a capability.
+
+Unsafe source locators and structurally unavailable required deliveries are
+hard errors. They reject `AgentInstance` construction before private endpoint
+binding, operation admission, or provider launch. Locators are bounded and
+must not contain whitespace, control data, embedded authority credentials, or
+credential-like query material. MCP resource and tool locators must satisfy
+their corresponding syntax.
+
+Diagnostics identify entry IDs, origin categories and labels, safe
+fingerprints, and aggregate byte counts. They never include context bodies or
+raw locators. Secret entries are excluded from body comparison and directive
+classification. Warnings do not alter a turn result or stdout answer; clients
+inspect them explicitly through `roba://context` or `config effective`.
 
 ## Minimal provider-launch bootstrap
 
@@ -316,11 +351,9 @@ contract; prose cannot grant it.
    compiler without making it replaceable.
 2. Stop reinjecting unchanged stable context into resumed sessions where the
    provider mechanics prove that omission is safe.
-3. Add context linting for duplicate fingerprints, precedence conflicts,
-   conflicting instructions, unsafe locators, and excessive prompt weight.
-4. Add explicit acknowledgement and gate provider-facing mutation on the
+3. Add explicit acknowledgement and gate provider-facing mutation on the
    required evidence policy.
-5. Apply the same manifest to parent-spawned Robas without inheriting the
+4. Apply the same manifest to parent-spawned Robas without inheriting the
    parent's transcript or ambient environment by accident.
 
 ## Sources

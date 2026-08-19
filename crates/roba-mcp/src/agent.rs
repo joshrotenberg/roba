@@ -12,8 +12,8 @@ use roba_core::{
 use tokio::sync::{Mutex, broadcast, watch};
 
 use crate::context::{
-    AmbientContextPolicy, AmbientContextStatus, ContextContent, ContextPlan, ContextPlanError,
-    ContextReadError, ContextReadEvidence, ContextSnapshot, OperationContext,
+    AmbientContextPolicy, AmbientContextStatus, ContextContent, ContextDiagnostic, ContextPlan,
+    ContextPlanError, ContextReadError, ContextReadEvidence, ContextSnapshot, OperationContext,
 };
 use crate::contract::{
     ActiveActivity, AgentConfiguration, AgentControlRefusalKind, AgentFollowUpResult,
@@ -39,6 +39,8 @@ struct Inner {
     runtime: Roba,
     template: RunSpec,
     context_plan: ContextPlan,
+    context_diagnostics: Vec<ContextDiagnostic>,
+    provider_context_diagnostics: Vec<ContextDiagnostic>,
     ambient_context: AmbientContextStatus,
     configuration: AgentConfiguration,
     extensions: AgentExtensions,
@@ -174,6 +176,11 @@ impl AgentInstance {
         &self.inner.context_plan
     }
 
+    /// Content-free semantic diagnostics for the fixed declared context plan.
+    pub fn context_diagnostics(&self) -> &[ContextDiagnostic] {
+        &self.inner.context_diagnostics
+    }
+
     /// Construct an idle host from a suspended run template.
     ///
     /// Construction never starts provider work. A seeded resume handle is
@@ -231,6 +238,16 @@ impl AgentInstance {
         context_plan
             .validate_run_spec(&template)
             .map_err(AgentBuildError::ContextPlan)?;
+        let context_diagnostics = context_plan.lint(&template);
+        let provider_context_diagnostics = context_plan.provider_lint(&template);
+        let hard_diagnostics = context_diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.is_error())
+            .cloned()
+            .collect::<Vec<_>>();
+        if !hard_diagnostics.is_empty() {
+            return Err(AgentBuildError::ContextLint(hard_diagnostics));
+        }
 
         let requested_ambient_policy = context_plan.manifest().ambient_policy;
         let ambient_capabilities = runtime
@@ -273,6 +290,8 @@ impl AgentInstance {
                 runtime,
                 template,
                 context_plan,
+                context_diagnostics,
+                provider_context_diagnostics,
                 ambient_context,
                 configuration,
                 extensions,
@@ -393,6 +412,7 @@ impl AgentInstance {
             self.inner.context_plan.clone(),
             bootstrap,
             self.inner.ambient_context.clone(),
+            self.inner.provider_context_diagnostics.clone(),
         );
         let configuration = AgentConfiguration::from_run_spec(&spec);
         let (provider_endpoint, launch_context) = match ProviderEndpoint::start(
@@ -628,6 +648,7 @@ impl AgentInstance {
         ContextSnapshot {
             operation_id,
             ambient_context: self.inner.ambient_context.clone(),
+            diagnostics: self.inner.context_diagnostics.clone(),
             manifest: self.inner.context_plan.manifest().clone(),
             bootstrap,
             read_evidence: evidence,
@@ -1323,6 +1344,7 @@ pub enum AgentBuildError {
         provider: ProviderId,
         policy: AmbientContextPolicy,
     },
+    ContextLint(Vec<ContextDiagnostic>),
     ContextPlan(ContextPlanError),
     Extension(AgentExtensionError),
 }
@@ -1348,6 +1370,18 @@ impl fmt::Display for AgentBuildError {
                 f,
                 "provider {provider} cannot enforce {policy} ambient context"
             ),
+            Self::ContextLint(diagnostics) => {
+                f.write_str("context lint failed")?;
+                for diagnostic in diagnostics {
+                    write!(f, "; {}: ", diagnostic.code)?;
+                    if diagnostic.entry_ids.is_empty() {
+                        f.write_str("plan")?;
+                    } else {
+                        f.write_str(&diagnostic.entry_ids.join(", "))?;
+                    }
+                }
+                Ok(())
+            }
             Self::ContextPlan(error) => write!(f, "invalid context plan: {error}"),
             Self::Extension(error) => write!(f, "invalid agent extension: {error}"),
         }
@@ -1364,7 +1398,8 @@ impl std::error::Error for AgentBuildError {
             | Self::SessionProviderMismatch { .. }
             | Self::EmptySessionId
             | Self::InvalidMaxCost
-            | Self::AmbientContextPolicyUnsupported { .. } => None,
+            | Self::AmbientContextPolicyUnsupported { .. }
+            | Self::ContextLint(_) => None,
         }
     }
 }

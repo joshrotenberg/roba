@@ -14,7 +14,7 @@ use roba_core::{
     AgentSpec, ContextSpec, Effort, ExecutionSpec, LimitSpec, PermissionPolicy, ProviderId,
     RunSpec, SessionHandle, SessionSpec, ToolPolicy,
 };
-use roba_mcp::AmbientContextPolicy;
+use roba_mcp::{AmbientContextPolicy, ContextDiagnostic};
 use serde::{Deserialize, Serialize};
 
 use crate::VersionedResult;
@@ -95,6 +95,8 @@ pub struct EffectiveExecutionConfig {
 pub struct EffectiveContextConfig {
     pub ambient_policy: AmbientContextMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<ContextDiagnostic>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub project: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub run: Vec<String>,
@@ -115,6 +117,7 @@ impl Default for EffectiveContextConfig {
         let catalog = ContextCatalog::builtins();
         Self {
             ambient_policy: AmbientContextMode::Ambient,
+            diagnostics: Vec::new(),
             project: Vec::new(),
             run: Vec::new(),
             agent: None,
@@ -302,7 +305,7 @@ pub(crate) fn resolve(args: &AgentArgs) -> Result<ResolvedStartup> {
 /// Print the provider-neutral effective config without starting a provider.
 pub fn run_effective(args: ConfigEffectiveArgs) -> Result<()> {
     let resolved = resolve(&args.agent)?;
-    let _validated_host = crate::bounded::build_agent_from_template(
+    let validated_host = crate::bounded::build_agent_from_template(
         resolved.template.clone(),
         resolved.catalog.clone(),
         resolved.catalog_selection.clone(),
@@ -310,7 +313,8 @@ pub fn run_effective(args: ConfigEffectiveArgs) -> Result<()> {
         resolved.git_enabled,
         resolved.git_progress_interval_secs,
     )?;
-    let effective = resolved.effective;
+    let mut effective = resolved.effective;
+    effective.context.diagnostics = validated_host.context_diagnostics().to_vec();
     if args.json {
         println!(
             "{}",
