@@ -22,6 +22,13 @@ use tower_mcp::schemars::{self, JsonSchema};
 
 use crate::OperationId;
 
+mod lint;
+
+pub use lint::{
+    ContextDiagnostic, ContextDiagnosticCode, ContextDiagnosticProvenance,
+    ContextDiagnosticSeverity, EAGER_CONTEXT_WARNING_BYTES,
+};
+
 /// Schema version of the public context manifest.
 pub const CONTEXT_MANIFEST_SCHEMA_VERSION: u32 = 2;
 
@@ -556,6 +563,8 @@ pub struct ContextSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_id: Option<OperationId>,
     pub ambient_context: AmbientContextStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<ContextDiagnostic>,
     pub manifest: ContextManifest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bootstrap: Option<ContextBootstrap>,
@@ -676,6 +685,32 @@ impl ContextPlan {
 
     pub fn manifest(&self) -> &ContextManifest {
         &self.manifest
+    }
+
+    /// Evaluate deterministic semantic diagnostics against one executable
+    /// template without displaying context bodies.
+    pub fn lint(&self, spec: &RunSpec) -> Vec<ContextDiagnostic> {
+        lint::evaluate(self, spec)
+    }
+
+    pub(crate) fn provider_lint(&self, spec: &RunSpec) -> Vec<ContextDiagnostic> {
+        let manifest = self.provider_manifest();
+        let material = manifest
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                self.material
+                    .get(&entry.id)
+                    .map(|material| (entry.id.clone(), Arc::clone(material)))
+            })
+            .collect();
+        lint::evaluate(
+            &Self {
+                manifest,
+                material: Arc::new(material),
+            },
+            spec,
+        )
     }
 
     /// Provider-visible subset of the manifest.
@@ -1029,6 +1064,7 @@ pub(crate) struct OperationContext {
     plan: ContextPlan,
     bootstrap: ContextBootstrap,
     ambient_context: AmbientContextStatus,
+    diagnostics: Vec<ContextDiagnostic>,
     evidence: Mutex<ContextReadEvidence>,
 }
 
@@ -1037,6 +1073,7 @@ impl OperationContext {
         plan: ContextPlan,
         bootstrap: ContextBootstrap,
         ambient_context: AmbientContextStatus,
+        diagnostics: Vec<ContextDiagnostic>,
     ) -> Self {
         let manifest = plan.provider_manifest();
         Self {
@@ -1054,6 +1091,7 @@ impl OperationContext {
             plan,
             bootstrap,
             ambient_context,
+            diagnostics,
         }
     }
 
@@ -1070,6 +1108,7 @@ impl OperationContext {
         ContextSnapshot {
             operation_id: Some(evidence.operation_id),
             ambient_context: self.ambient_context.clone(),
+            diagnostics: self.diagnostics.clone(),
             manifest: self.plan.provider_manifest(),
             bootstrap: Some(self.bootstrap.clone()),
             read_evidence: Some(evidence.clone()),
@@ -1545,6 +1584,7 @@ mod tests {
                 supported_policies: vec![AmbientContextPolicy::Controlled],
                 sources: Vec::new(),
             },
+            Vec::new(),
         );
 
         let first_manifest = operation.manifest_read();

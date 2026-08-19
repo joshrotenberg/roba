@@ -13,9 +13,10 @@ use roba_mcp::{
     AGENT_CONTEXT_ENTRY_TEMPLATE, AGENT_CONTEXT_URI, AGENT_EVENTS_URI, AGENT_RESOURCE_URI,
     AGENT_TURN_TOOL, AgentBuildError, AgentEvent, AgentEventPage, AgentInstance, AgentRefusalKind,
     AgentSnapshot, AgentState, AgentStopError, AgentTurnResult, AmbientContextPolicy,
-    ContextAudience, ContextContent, ContextDelivery, ContextEntrySpec, ContextKind, ContextOrigin,
-    ContextOriginKind, ContextPhase, ContextPlan, ContextPrecedence, ContextScope, ContextSnapshot,
-    Effort, FailureKind, ObservationHealth, ObservationState, PermissionPolicy, connect_in_process,
+    ContextAudience, ContextContent, ContextDelivery, ContextDiagnosticCode,
+    ContextDiagnosticSeverity, ContextEntrySpec, ContextKind, ContextOrigin, ContextOriginKind,
+    ContextPhase, ContextPlan, ContextPrecedence, ContextScope, ContextSnapshot, Effort,
+    FailureKind, ObservationHealth, ObservationState, PermissionPolicy, connect_in_process,
 };
 use serde_json::json;
 use tokio::sync::Semaphore;
@@ -1095,6 +1096,111 @@ async fn construction_retains_a_content_free_inventory_of_explicit_template_cont
             .is_err()
     );
     client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn context_lint_warnings_are_inspectable_nonblocking_and_not_turn_output() {
+    let state = Arc::new(FakeState::default());
+    let mut runtime = Roba::new();
+    runtime
+        .register(FakeProvider {
+            state: Arc::clone(&state),
+        })
+        .expect("fake provider registration succeeds");
+    let mut template = RunSpec::suspended(AgentSpec::new(fake_provider_id()));
+    template.agent.instructions = vec![
+        "PRIVATE DUPLICATE INSTRUCTION".to_owned(),
+        "PRIVATE DUPLICATE INSTRUCTION".to_owned(),
+    ];
+
+    let agent = AgentInstance::new(runtime, template).expect("warnings do not reject the agent");
+    assert_eq!(state.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(agent.context_diagnostics().len(), 1);
+    assert_eq!(
+        agent.context_diagnostics()[0].code,
+        ContextDiagnosticCode::DuplicateMaterial
+    );
+    assert_eq!(
+        agent.context_diagnostics()[0].severity,
+        ContextDiagnosticSeverity::Warning
+    );
+
+    let client = connect_in_process(agent)
+        .await
+        .expect("context control client connects");
+    let resource = client.read_resource(AGENT_CONTEXT_URI).await.unwrap();
+    let snapshot_text = resource.first_text().unwrap();
+    let snapshot: ContextSnapshot = serde_json::from_str(snapshot_text).unwrap();
+    assert_eq!(snapshot.diagnostics.len(), 1);
+    assert_eq!(
+        snapshot.diagnostics[0].entry_ids,
+        ["agent.instruction.1", "agent.instruction.2"]
+    );
+    assert!(!snapshot_text.contains("PRIVATE DUPLICATE INSTRUCTION"));
+
+    let turn = client
+        .call_tool(AGENT_TURN_TOOL, json!({"text": "run"}))
+        .await
+        .expect("warning-bearing agent still runs");
+    assert!(!turn.is_error);
+    assert!(matches!(typed(&turn), AgentTurnResult::Completed { .. }));
+    assert!(
+        !serde_json::to_string(&turn)
+            .unwrap()
+            .contains("duplicate_material")
+    );
+    assert_eq!(state.calls.load(Ordering::SeqCst), 1);
+    client.shutdown().await.unwrap();
+}
+
+#[test]
+fn context_lint_errors_fail_before_provider_admission_without_leaking_locators() {
+    let state = Arc::new(FakeState::default());
+    let mut runtime = Roba::new();
+    runtime
+        .register(FakeProvider {
+            state: Arc::clone(&state),
+        })
+        .expect("fake provider registration succeeds");
+    let template = RunSpec::suspended(AgentSpec::new(fake_provider_id()));
+    let mut builder = ContextPlan::builder_from_run_spec(&template, AmbientContextPolicy::Ambient);
+    builder
+        .add_inline(
+            ContextEntrySpec::new(
+                "unsafe.locator",
+                ContextKind::Reference,
+                ContextOrigin::new(ContextOriginKind::External, "unsafe fixture")
+                    .with_locator("https://example.invalid/?token=PRIVATE_TOKEN"),
+                ContextPhase::Live,
+                ContextScope::Agent,
+                ContextDelivery::McpResource {
+                    uri: "roba://context/unsafe-locator".to_owned(),
+                },
+            ),
+            "safe body",
+        )
+        .unwrap();
+
+    let error = AgentInstance::new_with_context_plan(
+        runtime,
+        template,
+        Default::default(),
+        builder.build(),
+    )
+    .err()
+    .expect("unsafe locator must fail host construction");
+    let encoded = format!("{error:?}\n{error}");
+    let AgentBuildError::ContextLint(diagnostics) = error else {
+        panic!("expected a context lint failure");
+    };
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].code,
+        ContextDiagnosticCode::UnsafeSourceLocator
+    );
+    assert_eq!(diagnostics[0].severity, ContextDiagnosticSeverity::Error);
+    assert!(!encoded.contains("PRIVATE_TOKEN"));
+    assert_eq!(state.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

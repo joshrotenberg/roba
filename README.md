@@ -131,7 +131,9 @@ Inside `mcp-repl`, call `agent.turn text="..."`. Append `&` to create a
 Task, then use `jobs`, `read roba://agent`, `read roba://events`, `wait`, or
 `cancel`. `read roba://context` shows the declared context manifest, requested
 and effective ambient policy, provider source matrix, and current or latest
-provider read evidence.
+provider read evidence. It also reports deterministic, content-free lint
+diagnostics. Hard locator or required-delivery findings reject startup before
+provider work; warnings remain inspectable and do not alter turn output.
 
 The base control contract is:
 

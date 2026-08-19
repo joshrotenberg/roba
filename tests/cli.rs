@@ -341,6 +341,52 @@ fn config_effective_reports_safe_values_sources_and_provenance() {
 }
 
 #[test]
+fn config_effective_reports_content_free_context_diagnostics() {
+    let project = project_config(
+        "version = 1\n\
+         [agent]\nprovider = 'codex'\ninstructions = ['PRIVATE REPEATED', 'PRIVATE REPEATED']\n",
+    );
+
+    let output = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "config",
+            "effective",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let diagnostics = value["result"]["context"]["diagnostics"]
+        .as_array()
+        .expect("effective context exposes diagnostics");
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0]["code"], "duplicate_material");
+    assert_eq!(diagnostics[0]["severity"], "warning");
+    assert_eq!(
+        diagnostics[0]["entry_ids"],
+        serde_json::json!(["agent.instruction.1", "agent.instruction.2"])
+    );
+    assert!(
+        diagnostics[0]["fingerprint"]
+            .as_str()
+            .is_some_and(|fingerprint| fingerprint.starts_with("sha256:"))
+    );
+    assert!(
+        !serde_json::to_string(diagnostics)
+            .unwrap()
+            .contains("PRIVATE REPEATED")
+    );
+}
+
+#[test]
 fn config_effective_reports_managed_catalog_metadata_without_bodies() {
     let project = project_config(
         "version = 1\n\
