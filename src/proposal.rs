@@ -250,9 +250,12 @@ pub async fn run(args: ConfigProposeArgs) -> Result<()> {
         template,
         resolved.catalog,
         None,
-        AmbientContextPolicy::Controlled,
-        false,
-        0,
+        crate::bounded::AgentHostOptions {
+            ambient_context_policy: AmbientContextPolicy::Controlled,
+            session_policy: resolved.session_policy,
+            git_enabled: false,
+            git_progress_interval_secs: 0,
+        },
         extensions,
     )?;
     let observer = host.clone();

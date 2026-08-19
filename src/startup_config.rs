@@ -632,6 +632,7 @@ pub(crate) fn validate_generated_host(document: &str, target: &Path) -> Result<(
         resolved.catalog,
         resolved.catalog_selection,
         resolved.ambient_context_policy,
+        resolved.session_policy,
         resolved.git_enabled,
         resolved.git_progress_interval_secs,
     )?;

@@ -302,20 +302,28 @@ pub(crate) fn build_agent_from_template(
         template,
         catalog,
         catalog_selection,
-        ambient_context_policy,
-        git_enabled,
-        git_progress_interval_secs,
+        AgentHostOptions {
+            ambient_context_policy,
+            session_policy,
+            git_enabled,
+            git_progress_interval_secs,
+        },
         AgentExtensions::default(),
     )
+}
+
+pub(crate) struct AgentHostOptions {
+    pub ambient_context_policy: AmbientContextPolicy,
+    pub session_policy: SessionPolicy,
+    pub git_enabled: bool,
+    pub git_progress_interval_secs: u64,
 }
 
 pub(crate) fn build_agent_from_template_with_extensions(
     template: RunSpec,
     catalog: ContextCatalog,
     catalog_selection: Option<CatalogSelection>,
-    ambient_context_policy: AmbientContextPolicy,
-    git_enabled: bool,
-    git_progress_interval_secs: u64,
+    options: AgentHostOptions,
     extensions: AgentExtensions,
 ) -> Result<AgentInstance> {
     let roba = built_in_runtime()?;
@@ -323,7 +331,7 @@ pub(crate) fn build_agent_from_template_with_extensions(
 
     let mut extensions =
         extensions.try_with(managed_context_extension(catalog, catalog_selection)?)?;
-    if git_enabled {
+    if options.git_enabled {
         let cwd = std::env::current_dir()?;
         let workspace = GitWorkspace::discover(cwd)?;
         let authority = match template.execution.permissions {
@@ -334,18 +342,18 @@ pub(crate) fn build_agent_from_template_with_extensions(
         };
         extensions = extensions.try_with(workspace.extension_with_progress(
             authority,
-            GitProgressConfig::from_interval_secs(git_progress_interval_secs),
+            GitProgressConfig::from_interval_secs(options.git_progress_interval_secs),
         ))?;
     }
 
     let context_plan =
-        ContextPlan::builder_from_run_spec(&template, ambient_context_policy).build();
+        ContextPlan::builder_from_run_spec(&template, options.ambient_context_policy).build();
     Ok(AgentInstance::new_with_context_plan_and_session_policy(
         roba,
         template,
         extensions,
         context_plan,
-        session_policy,
+        options.session_policy,
     )?)
 }
 
