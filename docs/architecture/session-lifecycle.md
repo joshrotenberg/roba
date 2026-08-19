@@ -69,10 +69,10 @@ The original `agent.turn` result remains the only place where a valid opaque
 provider session handle may appear. Status, events, and rotation results stay
 redacted.
 
-## Current phase boundary
+## Current boundary
 
-This first slice provides deterministic policy, safe observation, and manual
-clean rotation. It does not yet implement:
+The current implementation provides deterministic policy, safe observation,
+and manual clean rotation. It does not yet implement:
 
 - age, token, turn-count, or provider-capacity rotation triggers;
 - summary or handoff-packet rollover;

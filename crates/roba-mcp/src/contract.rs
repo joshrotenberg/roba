@@ -154,7 +154,7 @@ pub enum SessionMode {
     Sticky,
     /// Start every admitted operation in a new provider session.
     Fresh,
-    /// Retain sessions under host policy. Phase one rotates only on request.
+    /// Retain sessions under host policy. The current implementation rotates only on request.
     Managed,
 }
 

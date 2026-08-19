@@ -31,13 +31,15 @@ Install and authenticate the provider binaries you intend to use.
 | Need | Interface |
 | --- | --- |
 | A conservative project configuration | `roba init` |
+| Inspect or tune startup configuration | `roba config` |
 | One provider-neutral finite result | `roba run` |
 | One hot agent addressable over MCP | `roba serve` |
 | A Rust-owned finite lifecycle | `roba-core` |
 | A Rust-owned hot MCP agent | `roba-mcp` |
 
 The full command reference is generated from the binary. Start with
-`roba --help`, `roba init --help`, `roba run --help`, or `roba serve --help`.
+`roba --help`, `roba init --help`, `roba run --help`, `roba serve --help`, or
+`roba config --help`.
 
 ## Provider-neutral runs
 
@@ -173,10 +175,10 @@ than overstating isolation.
 
 The logical agent stays hot. Its `sticky` default retains a validated provider
 session; `fresh` starts every operation without continuity; and the current
-`managed` phase retains continuity until explicit clean rotation. Provider
-processes do not stay hot: each accepted turn launches and settles one finite
-provider run. Limits and timeout flags are per turn, not aggregate server
-budgets or idle deadlines.
+`managed` implementation retains continuity until explicit clean rotation.
+Provider processes do not stay hot: each accepted turn launches and settles
+one finite provider run. Limits and timeout flags are per turn, not aggregate
+server budgets or idle deadlines.
 Provider failures are typed MCP tool results and do not terminate the server.
 Task-backed turns also deliver normalized activity as `roba.activity` MCP log
 notifications while work is active. These are factual provider events, not

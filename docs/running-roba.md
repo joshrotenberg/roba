@@ -252,8 +252,8 @@ continuity availability, and actual core provider turns observed in that
 generation. It never exposes the opaque provider session id.
 
 The default `sticky` mode retains validated continuity. `fresh` starts every
-operation without continuity, while the current `managed` phase behaves like
-sticky retention until the operator rotates it explicitly:
+operation without continuity, while the current `managed` implementation
+behaves like sticky retention until the operator rotates it explicitly:
 
 ```text
 read roba://agent
