@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Instructions for coding agents contributing to Roba. For driving Roba, use
-`roba --help`, `roba run --help`, `roba serve --help`, and
+`roba --help`, `roba init --help`, `roba run --help`, `roba serve --help`, and
 [`docs/running-roba.md`](docs/running-roba.md).
 
 Read [`ARCHITECTURE.md`](ARCHITECTURE.md) before changing a top-level layer,
@@ -14,8 +14,9 @@ Roba is a library-first, MCP-native harness for one logical coding agent
 `roba-mcp` retains one logical agent across finite runs and exposes a typed MCP
 contract. Claude Code and Codex are built-in provider adapters.
 
-The root binary has four command groups:
+The root binary has five command groups:
 
+- `init` creates one conservative versioned project configuration;
 - `run` executes one finite operation through the process-local MCP contract;
 - `serve` hosts one hot agent over stdio MCP;
 - `config effective` explains the resolved versioned startup configuration;
@@ -53,6 +54,7 @@ provider projections, and exposes staging only to writable operator views.
   progress observer.
 - `crates/roba-types` -- dependency-light JSON envelopes and exit-code map.
 - `src/cli.rs` -- clap surface; its doc comments are the help reference.
+- `src/init.rs` -- canonical config rendering and atomic no-clobber installation.
 - `src/startup_config.rs` -- discovery, layering, validation, and provenance.
 - `src/bounded.rs` -- finite CLI resolution and process-local MCP call.
 - `src/serve.rs` -- stdio host, signal policy, and graceful shutdown.

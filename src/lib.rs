@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 pub mod bounded;
 pub mod cli;
 pub mod error;
+pub mod init;
 pub mod serve;
 pub mod startup_config;
 
@@ -20,6 +21,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
     }
 
     match cli.command {
+        Some(SubCommand::Init(args)) => init::run(args),
         Some(SubCommand::Run(args)) => bounded::run(args).await,
         Some(SubCommand::Serve(args)) => serve::run(args).await,
         Some(SubCommand::Config {

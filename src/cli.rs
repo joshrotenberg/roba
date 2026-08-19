@@ -13,6 +13,7 @@ const STYLES: Styles = Styles::styled()
 
 const AFTER_HELP: &str = "\
 Examples:
+  roba init
   roba run \"inspect this repository\"
   roba run --provider codex --writable --git \"fix the failing tests\"
   mcp-repl -- roba serve --provider codex --git
@@ -63,14 +64,16 @@ pub struct Cli {
 
     /// Use PATH as the effective workspace (`git -C` style).
     ///
-    /// Applied before configuration discovery, provider launch, and relative
-    /// command-specific paths.
+    /// Applied before configuration discovery, provider launch when applicable,
+    /// and relative command-specific paths.
     #[arg(short = 'C', long, value_name = "PATH", global = true)]
     pub cwd: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum SubCommand {
+    /// Create a conservative provider-neutral `roba.toml`.
+    Init(InitArgs),
     /// Run one finite provider-neutral Roba agent.
     Run(RunArgs),
     /// Serve one hot provider-neutral Roba agent over stdio MCP.
@@ -107,7 +110,7 @@ pub enum EffortLevel {
 }
 
 /// Fixed configuration shared by finite and hot provider-neutral agents.
-#[derive(ClapArgs, Debug)]
+#[derive(ClapArgs, Debug, Default)]
 pub struct AgentArgs {
     /// Use only this provider-neutral versioned config file.
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
@@ -174,6 +177,26 @@ pub struct AgentArgs {
     pub resume: Option<String>,
 }
 
+/// Deterministically initialize the effective workspace.
+#[derive(ClapArgs, Debug)]
+pub struct InitArgs {
+    /// Select one managed agent role from the shipped context catalog.
+    #[arg(long, value_name = "ID")]
+    pub agent_role: Option<String>,
+
+    /// Select an additional managed skill. Repeat to compose.
+    #[arg(long = "skill", value_name = "ID", requires = "agent_role")]
+    pub skills: Vec<String>,
+
+    /// Enable a reusable managed prompt. Repeat to compose.
+    #[arg(long = "prompt", value_name = "ID", requires = "agent_role")]
+    pub prompts: Vec<String>,
+
+    /// Print the exact validated TOML without creating a file.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
 #[derive(ClapArgs, Debug)]
 #[command(after_help = RUN_AFTER_HELP)]
 pub struct RunArgs {
@@ -226,7 +249,7 @@ mod tests {
         );
 
         let help = Cli::command().render_long_help().to_string();
-        for command in ["run", "serve", "config", "completions"] {
+        for command in ["init", "run", "serve", "config", "completions"] {
             assert!(help.contains(command), "missing {command}: {help}");
         }
         for removed in ["history", "profile", "alias", "doctor", "worktree"] {
@@ -258,6 +281,47 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(serve.command, Some(SubCommand::Serve(_))));
+    }
+
+    #[test]
+    fn init_is_deterministic_and_managed_selection_is_explicit() {
+        let plain = Cli::try_parse_from(["roba", "init", "--dry-run"]).unwrap();
+        let Some(SubCommand::Init(plain)) = plain.command else {
+            panic!("expected init");
+        };
+        assert!(plain.dry_run);
+        assert!(plain.agent_role.is_none());
+        assert!(plain.skills.is_empty());
+        assert!(plain.prompts.is_empty());
+
+        let managed = Cli::try_parse_from([
+            "roba",
+            "init",
+            "--agent-role",
+            "roba.repo-worker",
+            "--skill",
+            "roba.repository-change",
+            "--prompt",
+            "roba.issue-worker",
+        ])
+        .unwrap();
+        let Some(SubCommand::Init(managed)) = managed.command else {
+            panic!("expected init");
+        };
+        assert_eq!(managed.agent_role.as_deref(), Some("roba.repo-worker"));
+        assert_eq!(managed.skills, ["roba.repository-change"]);
+        assert_eq!(managed.prompts, ["roba.issue-worker"]);
+    }
+
+    #[test]
+    fn init_context_selection_requires_an_agent_role() {
+        for args in [
+            ["roba", "init", "--skill", "roba.repository-change"],
+            ["roba", "init", "--prompt", "roba.issue-worker"],
+        ] {
+            let error = Cli::try_parse_from(args).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+        }
     }
 
     #[test]

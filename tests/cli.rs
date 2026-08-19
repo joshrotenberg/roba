@@ -9,6 +9,12 @@ fn roba() -> AssertCommand {
     AssertCommand::new(assert_cmd::cargo::cargo_bin!("roba"))
 }
 
+fn isolated_roba(project: &tempfile::TempDir) -> AssertCommand {
+    let mut command = roba();
+    command.env("XDG_CONFIG_HOME", project.path().join("xdg"));
+    command
+}
+
 #[test]
 fn root_help_is_a_concise_command_index() {
     let output = roba().arg("--help").output().unwrap();
@@ -18,7 +24,7 @@ fn root_help_is_a_concise_command_index() {
         stdout.lines().count() < 70,
         "root help is too long:\n{stdout}"
     );
-    for command in ["run", "serve", "config", "completions"] {
+    for command in ["init", "run", "serve", "config", "completions"] {
         assert!(stdout.contains(command), "missing {command}:\n{stdout}");
     }
     for removed in [
@@ -46,6 +52,14 @@ fn no_args_shows_help_and_version_is_current() {
 
 #[test]
 fn run_and_serve_help_own_the_agent_option_reference() {
+    roba().args(["init", "--help"]).assert().success().stdout(
+        predicate::str::contains("--agent-role")
+            .and(predicate::str::contains("--skill"))
+            .and(predicate::str::contains("--prompt"))
+            .and(predicate::str::contains("--dry-run"))
+            .and(predicate::str::contains("--survey").not())
+            .and(predicate::str::contains("--preset").not()),
+    );
     roba().args(["run", "--help"]).assert().success().stdout(
         predicate::str::contains("--provider")
             .and(predicate::str::contains("--instruction"))
@@ -104,6 +118,163 @@ fn global_cwd_errors_cleanly() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains("--cwd"));
+}
+
+#[test]
+fn init_dry_run_and_install_use_the_same_validated_document() {
+    let project = tempfile::tempdir().unwrap();
+    let cwd = project.path().to_str().unwrap();
+    let preview = isolated_roba(&project)
+        .args(["-C", cwd, "init", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(preview.status.success());
+    assert!(preview.stderr.is_empty());
+    assert!(!project.path().join("roba.toml").exists());
+    let preview_text = std::str::from_utf8(&preview.stdout).unwrap();
+    let preview_value: toml::Value = toml::from_str(preview_text).unwrap();
+    assert_eq!(preview_value["version"].as_integer(), Some(1));
+    assert_eq!(
+        preview_value["execution"]["permissions"].as_str(),
+        Some("read_only")
+    );
+    assert!(preview_value.get("agent").is_none());
+    assert!(preview_value.get("context").is_none());
+
+    let installed = isolated_roba(&project)
+        .args(["-C", cwd, "init"])
+        .output()
+        .unwrap();
+    assert!(installed.status.success());
+    assert!(installed.stderr.is_empty());
+    let installed_stdout = String::from_utf8(installed.stdout).unwrap();
+    assert!(installed_stdout.contains("Created"));
+    assert!(installed_stdout.contains("roba config effective"));
+    assert!(installed_stdout.contains("roba run"));
+    assert!(installed_stdout.contains("roba serve"));
+    assert_eq!(
+        std::fs::read(project.path().join("roba.toml")).unwrap(),
+        preview.stdout
+    );
+
+    let effective = isolated_roba(&project)
+        .args(["-C", cwd, "config", "effective", "--json"])
+        .output()
+        .unwrap();
+    assert!(effective.status.success());
+    let effective: Value = serde_json::from_slice(&effective.stdout).unwrap();
+    assert_eq!(effective["result"]["execution"]["permissions"], "read_only");
+    assert!(effective["result"]["context"]["selection"].is_null());
+}
+
+#[test]
+fn init_can_select_existing_managed_catalog_ids() {
+    let project = tempfile::tempdir().unwrap();
+    let cwd = project.path().to_str().unwrap();
+    let output = isolated_roba(&project)
+        .args([
+            "-C",
+            cwd,
+            "init",
+            "--agent-role",
+            "roba.repo-worker",
+            "--prompt",
+            "roba.issue-worker",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+
+    let document = std::fs::read_to_string(project.path().join("roba.toml")).unwrap();
+    let value: toml::Value = toml::from_str(&document).unwrap();
+    assert_eq!(value["context"]["agent"].as_str(), Some("roba.repo-worker"));
+    assert_eq!(
+        value["context"]["prompts"][0].as_str(),
+        Some("roba.issue-worker")
+    );
+    assert!(!document.contains("bounded repository worker"));
+
+    let effective = isolated_roba(&project)
+        .args(["-C", cwd, "config", "effective", "--json"])
+        .output()
+        .unwrap();
+    assert!(effective.status.success());
+    let effective: Value = serde_json::from_slice(&effective.stdout).unwrap();
+    assert_eq!(
+        effective["result"]["context"]["selection"]["agent"],
+        "roba.repo-worker"
+    );
+    assert_eq!(
+        effective["result"]["context"]["selection"]["skills"][0],
+        "roba.repository-change"
+    );
+}
+
+#[test]
+fn init_refuses_existing_or_invalid_configuration_without_mutation() {
+    let project = tempfile::tempdir().unwrap();
+    let cwd = project.path().to_str().unwrap();
+    let existing = project.path().join(".roba.toml");
+    std::fs::write(&existing, "version = 1\n# keep me\n").unwrap();
+    isolated_roba(&project)
+        .args(["-C", cwd, "init"])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "already contains a recognized Roba config",
+        ));
+    assert_eq!(
+        std::fs::read_to_string(existing).unwrap(),
+        "version = 1\n# keep me\n"
+    );
+    assert!(!project.path().join("roba.toml").exists());
+
+    let fresh = tempfile::tempdir().unwrap();
+    isolated_roba(&fresh)
+        .args([
+            "-C",
+            fresh.path().to_str().unwrap(),
+            "init",
+            "--agent-role",
+            "local.missing",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "catalog reference `local.missing` does not exist",
+        ));
+    assert!(!fresh.path().join("roba.toml").exists());
+
+    let layered = tempfile::tempdir().unwrap();
+    std::fs::create_dir(layered.path().join(".git")).unwrap();
+    std::fs::write(
+        layered.path().join("roba.toml"),
+        "version = 1\n[context.builtins]\nenabled = false\n",
+    )
+    .unwrap();
+    let nested = layered.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    isolated_roba(&layered)
+        .args([
+            "-C",
+            nested.to_str().unwrap(),
+            "init",
+            "--agent-role",
+            "roba.repo-worker",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "catalog reference `roba.repo-worker` does not exist",
+        ));
+    assert!(!nested.join("roba.toml").exists());
 }
 
 fn project_config(contents: &str) -> tempfile::TempDir {

@@ -4,6 +4,24 @@
 resolves it once before provider launch; a hot `serve` process pins that
 resolved snapshot for its lifetime.
 
+## Deterministic initialization
+
+`roba init` creates a conservative `roba.toml` in the effective cwd. The
+default selects read-only authority and leaves managed context unselected, so
+provider-native ambient behavior remains available:
+
+```bash
+roba init
+roba init --dry-run
+roba init --agent-role roba.repo-worker --prompt roba.issue-worker
+```
+
+The dry run and installed file use one canonical renderer. Before installation
+Roba validates the document through this same strict schema and catalog
+resolver. Installation uses an atomic no-clobber path and refuses when the
+directory already contains `roba.toml`, `.roba.toml`, or `.roba/roba.toml`.
+It never launches a provider or copies managed catalog bodies into the file.
+
 ## Version 1 schema
 
 ```toml
@@ -112,6 +130,6 @@ roba -C /path/to/repo config effective
 roba -C /path/to/repo config effective --provider claude --read-only --json
 ```
 
-Startup files are read-only inputs. Roba does not write discovered config,
-extension state, credentials, task history, or provider-private session data
-into them.
+Runtime startup files are read-only inputs. Aside from the explicit no-clobber
+`roba init` command, Roba does not write discovered config, extension state,
+credentials, task history, or provider-private session data into them.
