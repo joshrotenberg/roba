@@ -1066,6 +1066,20 @@ async fn construction_retains_a_content_free_inventory_of_explicit_template_cont
     let snapshot: ContextSnapshot = serde_json::from_str(snapshot_text).unwrap();
     assert_eq!(snapshot.operation_id, None);
     assert_eq!(snapshot.read_evidence, None);
+    assert_eq!(snapshot.ambient_context.provider, "fake");
+    assert_eq!(
+        snapshot.ambient_context.requested_policy,
+        AmbientContextPolicy::Ambient
+    );
+    assert_eq!(
+        snapshot.ambient_context.effective_policy,
+        AmbientContextPolicy::Ambient
+    );
+    assert_eq!(
+        snapshot.ambient_context.supported_policies,
+        [AmbientContextPolicy::Ambient]
+    );
+    assert!(snapshot.ambient_context.sources.is_empty());
     let uri = format!(
         "roba://context/entry?id=agent.instruction.1&generation={}",
         snapshot.manifest.generation

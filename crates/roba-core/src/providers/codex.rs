@@ -9,8 +9,10 @@ use codex_wrapper::{
 };
 
 use crate::provider::{
-    EventSink, Provider, ProviderActivityKind, ProviderActivityStatus, ProviderCapabilities,
-    ProviderError, ProviderEvent, ProviderFuture, ProviderLaunchContext,
+    EventSink, Provider, ProviderActivityKind, ProviderActivityStatus,
+    ProviderAmbientContextCapabilities, ProviderAmbientContextPolicy,
+    ProviderAmbientContextProfile, ProviderAmbientSource, ProviderAmbientSourceDisposition,
+    ProviderCapabilities, ProviderError, ProviderEvent, ProviderFuture, ProviderLaunchContext,
 };
 use crate::run::{
     Effort, FailureKind, PermissionPolicy, ProviderId, RunFailureDetails, RunOutcome,
@@ -77,7 +79,14 @@ impl CodexProvider {
         for value in mcp_configuration(launch_context).overrides {
             command = command.config(value);
         }
-        command
+        match launch_context.ambient_context_policy() {
+            ProviderAmbientContextPolicy::Ambient => command,
+            ProviderAmbientContextPolicy::Controlled => command
+                .ignore_user_config()
+                .ignore_rules()
+                .config("memories.use_memories=false"),
+            ProviderAmbientContextPolicy::Hermetic => command,
+        }
     }
 
     fn resume_command(
@@ -111,7 +120,14 @@ impl CodexProvider {
         for value in mcp_configuration(launch_context).overrides {
             command = command.config(value);
         }
-        command
+        match launch_context.ambient_context_policy() {
+            ProviderAmbientContextPolicy::Ambient => command,
+            ProviderAmbientContextPolicy::Controlled => command
+                .ignore_user_config()
+                .ignore_rules()
+                .config("memories.use_memories=false"),
+            ProviderAmbientContextPolicy::Hermetic => command,
+        }
     }
 
     /// Normalize Codex's result without estimating monetary cost or missing
@@ -152,6 +168,10 @@ impl Provider for CodexProvider {
             max_cost: false,
             timeout: true,
         }
+    }
+
+    fn ambient_context_capabilities(&self) -> ProviderAmbientContextCapabilities {
+        codex_ambient_context_capabilities()
     }
 
     fn validate(&self, request: &TurnRequest) -> Result<(), ProviderError> {
@@ -229,6 +249,16 @@ impl Provider for CodexProvider {
     ) -> ProviderFuture<'a> {
         Box::pin(async move {
             self.validate(&request)?;
+            if self
+                .ambient_context_capabilities()
+                .profile(launch_context.ambient_context_policy())
+                .is_none()
+            {
+                return Err(ProviderError::unsupported(format!(
+                    "Codex does not support {:?} ambient context",
+                    launch_context.ambient_context_policy()
+                )));
+            }
             let codex = self.client(&request, &launch_context)?;
             let mut captured = Vec::new();
             let stream_result = {
@@ -290,6 +320,78 @@ impl Provider for CodexProvider {
             Ok(outcome)
         })
     }
+}
+
+fn codex_ambient_context_capabilities() -> ProviderAmbientContextCapabilities {
+    use ProviderAmbientSourceDisposition::{Retained, Suppressed, Unobservable};
+
+    ProviderAmbientContextCapabilities::new(vec![
+        ProviderAmbientContextProfile {
+            policy: ProviderAmbientContextPolicy::Ambient,
+            sources: vec![
+                ProviderAmbientSource::new(
+                    "codex.provider_baseline",
+                    Unobservable,
+                    "built-in instructions and provider-managed policy remain outside Roba observation",
+                ),
+                ProviderAmbientSource::new(
+                    "codex.user_and_project_config",
+                    Retained,
+                    "CODEX_HOME and trusted project configuration use Codex's normal discovery",
+                ),
+                ProviderAmbientSource::new(
+                    "codex.agents_skills_plugins_mcp",
+                    Retained,
+                    "AGENTS.md, skills, plugins, and MCP use Codex's normal discovery",
+                ),
+                ProviderAmbientSource::new(
+                    "codex.rules_and_memories",
+                    Retained,
+                    "exec-policy rules and generated memories use Codex's normal discovery",
+                ),
+            ],
+        },
+        ProviderAmbientContextProfile {
+            policy: ProviderAmbientContextPolicy::Controlled,
+            sources: vec![
+                ProviderAmbientSource::new(
+                    "codex.provider_baseline",
+                    Unobservable,
+                    "built-in instructions and provider-managed policy remain outside Roba observation",
+                ),
+                ProviderAmbientSource::new(
+                    "codex.user_config",
+                    Suppressed,
+                    "--ignore-user-config suppresses CODEX_HOME/config.toml but retains authentication state",
+                ),
+                ProviderAmbientSource::new(
+                    "codex.execpolicy_rules",
+                    Suppressed,
+                    "--ignore-rules suppresses user and project exec-policy .rules files",
+                ),
+                ProviderAmbientSource::new(
+                    "codex.memories",
+                    Suppressed,
+                    "memories.use_memories=false suppresses injection of generated memories",
+                ),
+                ProviderAmbientSource::new(
+                    "codex.project_config",
+                    Retained,
+                    "trusted project configuration remains subject to Codex discovery",
+                ),
+                ProviderAmbientSource::new(
+                    "codex.trust_state",
+                    Unobservable,
+                    "the adapter cannot observe the provider's effective project trust decision",
+                ),
+                ProviderAmbientSource::new(
+                    "codex.agents_skills_plugins_mcp",
+                    Retained,
+                    "AGENTS.md, skills, plugins, and MCP remain subject to Codex discovery",
+                ),
+            ],
+        },
+    ])
 }
 
 fn terminal_stream_failure(
@@ -850,6 +952,74 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
     }
 
     #[test]
+    fn controlled_ambient_context_uses_exact_codex_exclusions_on_fresh_and_resume() {
+        let controlled = ProviderLaunchContext::default()
+            .with_ambient_context_policy(ProviderAmbientContextPolicy::Controlled);
+        let fresh = request();
+        let mut resumed = fresh.clone();
+        resumed.spec.execution.session = SessionSpec::Resume {
+            session: SessionHandle {
+                provider: ProviderId::codex(),
+                id: "thread-1".to_owned(),
+            },
+        };
+        let command_args = [
+            CodexProvider::fresh_command(&fresh, &controlled).args(),
+            CodexProvider::resume_command(&resumed, "thread-1", &controlled).args(),
+        ];
+        for args in command_args {
+            assert!(args.iter().any(|arg| arg == "--ignore-user-config"));
+            assert!(args.iter().any(|arg| arg == "--ignore-rules"));
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["-c", "memories.use_memories=false"])
+            );
+        }
+    }
+
+    #[test]
+    fn codex_ambient_source_matrix_matches_the_mechanical_command_fixture() {
+        let capabilities = codex_ambient_context_capabilities();
+        assert_eq!(
+            capabilities
+                .profiles
+                .iter()
+                .map(|profile| profile.policy)
+                .collect::<Vec<_>>(),
+            [
+                ProviderAmbientContextPolicy::Ambient,
+                ProviderAmbientContextPolicy::Controlled,
+            ]
+        );
+        let controlled = capabilities
+            .profile(ProviderAmbientContextPolicy::Controlled)
+            .unwrap();
+        for id in [
+            "codex.user_config",
+            "codex.execpolicy_rules",
+            "codex.memories",
+        ] {
+            assert!(controlled.sources.iter().any(|source| {
+                source.id == id
+                    && source.disposition == ProviderAmbientSourceDisposition::Suppressed
+            }));
+        }
+        assert!(controlled.sources.iter().any(|source| {
+            source.id == "codex.agents_skills_plugins_mcp"
+                && source.disposition == ProviderAmbientSourceDisposition::Retained
+        }));
+        assert!(controlled.sources.iter().any(|source| {
+            source.id == "codex.provider_baseline"
+                && source.disposition == ProviderAmbientSourceDisposition::Unobservable
+        }));
+        assert!(
+            capabilities
+                .profile(ProviderAmbientContextPolicy::Hermetic)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn operation_model_and_effort_are_reapplied_to_fresh_and_resumed_turns() {
         let mut fresh = request();
         fresh.spec.agent.model = Some("codex-operation-model".to_string());
@@ -1066,6 +1236,68 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
             std::fs::read_to_string(temp.path().join("codex.token")).unwrap(),
             "secret-provider-token"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unsupported_hermetic_context_refuses_before_codex_launch() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, marker) = fake_codex(&temp);
+        let events = RecordingSink::default();
+        let launch = ProviderLaunchContext::default()
+            .with_ambient_context_policy(ProviderAmbientContextPolicy::Hermetic);
+
+        let error = provider
+            .execute_with_launch_context(request(), launch, &events)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind, FailureKind::Unsupported);
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_codex_pins_controlled_fresh_and_resume_launches() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, _) = fake_codex(&temp);
+        let events = RecordingSink::default();
+        let controlled = ProviderLaunchContext::default()
+            .with_ambient_context_policy(ProviderAmbientContextPolicy::Controlled);
+
+        provider
+            .execute_with_launch_context(request(), controlled.clone(), &events)
+            .await
+            .unwrap();
+        let fresh_args = std::fs::read_to_string(temp.path().join("codex.args")).unwrap();
+        assert!(fresh_args.lines().any(|arg| arg == "--ignore-user-config"));
+        assert!(fresh_args.lines().any(|arg| arg == "--ignore-rules"));
+        assert!(
+            fresh_args
+                .lines()
+                .any(|arg| arg == "memories.use_memories=false")
+        );
+        assert!(!fresh_args.lines().any(|arg| arg == "resume"));
+
+        let mut resumed = request();
+        resumed.spec.execution.session = SessionSpec::Resume {
+            session: SessionHandle {
+                provider: ProviderId::codex(),
+                id: "thread-1".to_owned(),
+            },
+        };
+        provider
+            .execute_with_launch_context(resumed, controlled, &events)
+            .await
+            .unwrap();
+        let resumed_args = std::fs::read_to_string(temp.path().join("codex.args")).unwrap();
+        assert!(
+            resumed_args
+                .lines()
+                .any(|arg| arg == "--ignore-user-config")
+        );
+        assert!(resumed_args.lines().any(|arg| arg == "--ignore-rules"));
+        assert!(resumed_args.lines().any(|arg| arg == "resume"));
     }
 
     #[cfg(unix)]

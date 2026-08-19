@@ -149,11 +149,11 @@ one or more Roba agents through the same MCP contract, but federation policy
 does not belong in this base instance.
 
 Explicit context management is an active architectural seam. The current MCP
-surface publishes the typed manifest and operation-scoped read evidence while
-keeping bodies behind explicit generation-fenced reads. Minimal launch
-bootstrap, ambient-provider controls, acknowledgement, and capability gating
-remain incremental work. This work is tracked in GitHub issue #489; the
-adopted contract and current inventory are recorded in
+surface publishes the typed manifest, capability-checked ambient-provider
+policy and source matrix, and operation-scoped read evidence while keeping
+bodies behind explicit generation-fenced reads. Acknowledgement and
+capability gating remain incremental work. The adopted contract and current
+inventory are recorded in
 [`context.md`](context.md).
 
 Scheduling, GitHub workflows, richer Git mutations, context rotation, and

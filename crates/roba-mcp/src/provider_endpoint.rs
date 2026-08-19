@@ -5,7 +5,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use roba_core::{ProviderLaunchContext, ProviderMcpEndpoint, ProviderMcpEndpointError, RunHandle};
+use roba_core::{
+    ProviderAmbientContextPolicy, ProviderLaunchContext, ProviderMcpEndpoint,
+    ProviderMcpEndpointError, RunHandle,
+};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tower_mcp::auth::{AuthError, AuthInfo, AuthLayer, AuthResult, Validate};
@@ -33,6 +36,7 @@ impl ProviderEndpoint {
         agent: AgentInstance,
         operation_id: OperationId,
         bootstrap_instruction: String,
+        ambient_context_policy: ProviderAmbientContextPolicy,
     ) -> Result<(Self, ProviderLaunchContext), ProviderEndpointError> {
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
@@ -72,6 +76,7 @@ impl ProviderEndpoint {
             .and_then(|endpoint| endpoint.try_with_tool_names(tool_names))
             .map_err(ProviderEndpointError::Configuration)?;
         let launch_context = ProviderLaunchContext::default()
+            .with_ambient_context_policy(ambient_context_policy)
             .try_with_mcp_endpoint(endpoint)
             .map_err(ProviderEndpointError::Configuration)?
             .with_bootstrap_instruction(bootstrap_instruction);

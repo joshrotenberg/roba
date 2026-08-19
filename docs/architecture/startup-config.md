@@ -38,6 +38,7 @@ permissions = "workspace_write"
 timeout_secs = 900
 
 [context]
+ambient_policy = "controlled"
 project = ["Tests are the acceptance boundary."]
 agent = "roba.repo-worker"
 skills = []
@@ -78,9 +79,13 @@ copied into provider prompts or serialized run intent. Only an exact
 provider-side `context.read` becomes acquisition evidence.
 
 A Git progress interval of `0` disables periodic active-operation sampling
-while retaining the admission baseline and final refresh. A context isolation
-`mode` is not accepted until that capability ships. Strict unknown-field
-rejection prevents a plausible-looking future key from being silently ignored.
+while retaining the admission baseline and final refresh. Context
+`ambient_policy` defaults to `ambient`; `controlled` applies the selected
+adapter's mechanically tested reduction, while unsupported `hermetic` requests
+fail during host construction. Exact retained, suppressed, and unobservable
+provider source classes are published through `roba://context`. Strict
+unknown-field rejection prevents a plausible-looking future key from being
+silently ignored.
 
 ## Discovery and precedence
 

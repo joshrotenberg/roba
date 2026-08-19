@@ -98,13 +98,19 @@ The target modes are explicit and capability-checked:
 | Mode | Intended context |
 | --- | --- |
 | `ambient` | Preserve provider-native user and workspace discovery. |
-| `controlled` | Inventory ambient sources and add one authoritative Roba bootstrap. |
+| `controlled` | Apply the adapter's tested reduction and publish the retained, suppressed, and unobservable source classes. |
 | `hermetic` | Permit only declared context; fail when the adapter cannot guarantee isolation. |
 
-`AmbientContextPolicy` records requested intent. It is not proof that a
-provider honored it. Controlled and hermetic modes must remain unavailable
-until their exact launch mechanics and clean-home behavior are tested for that
-provider version.
+`AmbientContextPolicy` records requested intent. At host construction the
+selected provider must publish an exact capability profile for that policy.
+The resulting `ContextSnapshot.ambient_context` records provider, requested and
+effective policy, supported policies, and a safe source-class matrix. This is
+evidence of adapter launch mechanics, not proof that a provider complied or
+that hidden managed policy was absent.
+
+Both built-in adapters support `ambient` and `controlled`. Neither advertises
+`hermetic`, so such a request fails before private endpoint binding or provider
+launch.
 
 ## Foundation contract
 
@@ -257,7 +263,7 @@ provider may load independently.
 | Steering | Becomes another provider-native resumed turn. | Becomes another provider-native resumed turn. | Core events record the queued turn boundary. |
 | Provider session | Claude session ID and transcript are provider-owned. | Codex thread ID and transcript are provider-owned. | Roba retains only the opaque handle and reported terminal evidence. |
 | Private Roba MCP endpoint | Reattached through an owner-private temporary MCP config for every finite operation. | Reattached through command overrides and a child-only bearer environment variable. | Endpoint metadata is non-serializable; credentials are redacted. |
-| Provider-native ambient context | User/project/local settings remain enabled; strict MCP and dynamic-prompt exclusion are not selected. | User and trusted-project configuration remain enabled; Roba does not request user-config or rules exclusion. | Potential sources are documented, but the exact loaded set is not yet observed by Roba. |
+| Provider-native ambient context | Ambient leaves normal discovery enabled. Controlled passes an empty `--setting-sources`, `--strict-mcp-config`, and `--exclude-dynamic-system-prompt-sections`. Dynamic sections are relocated, not removed; managed policy and automatic memory remain unobservable. | Ambient leaves normal discovery enabled. Controlled passes `--ignore-user-config`, `--ignore-rules`, and `memories.use_memories=false`. Project config, `AGENTS.md`, skills, plugins, and MCP remain discoverable. | Exact command mechanics and source-class dispositions are capability-tested. Provider baseline and managed state remain explicitly unobservable. |
 
 Every hot-agent operation creates a new finite `RunSpec` from the same fixed
 template. The current adapters therefore repeat all three explicit context
@@ -268,15 +274,22 @@ this behavior so later generation-aware delivery changes cannot be accidental.
 
 Claude Code can load managed policy, command-line settings, local/project/user
 settings, `CLAUDE.md`, rules, skills, hooks, MCP servers, plugins, and automatic
-memory. Managed policy can outrank command-line input. Claude's own `/context`,
-`/memory`, `/status`, and related commands can inspect parts of that state, but
-Roba's non-interactive adapter does not yet normalize those diagnostics.
+memory. Controlled mode mechanically suppresses the normal user, project, and
+local setting-source stack plus ambient MCP configuration. It relocates
+dynamic system sections into the first user message. It does not select
+`--safe-mode`, because that mode also disables MCP and would conflict with the
+private Roba callback contract. Native `CLAUDE.md`, rules, skills, plugins, and
+hooks may therefore remain discoverable. The adapter also cannot prove managed
+policy, automatic memory, or the provider baseline absent. Those source classes
+remain retained or unobservable in inspection rather than being reported as
+suppressed.
 
 Codex can load built-in instructions, user and trusted-project `config.toml`
 layers, global and nested `AGENTS.md`, rules, skills, plugins, MCP servers, and
-other per-user state under `CODEX_HOME`. Current `codex exec` documentation
-provides `--ignore-user-config` and `--ignore-rules`, but Roba has not yet
-proven or exposed a complete controlled or hermetic launch profile.
+other per-user state under `CODEX_HOME`. Controlled mode mechanically ignores
+the user config and exec-policy rules and disables generated memories. Trusted
+project configuration, `AGENTS.md`, skills, plugins, MCP, authentication, and
+the provider baseline remain outside that reduction and are reported as such.
 
 Because neither provider offers Roba authoritative evidence of every hidden or
 managed instruction, manifests must label ambient sources as provider-native
@@ -305,11 +318,9 @@ contract; prose cannot grant it.
    provider mechanics prove that omission is safe.
 3. Add context linting for duplicate fingerprints, precedence conflicts,
    conflicting instructions, unsafe locators, and excessive prompt weight.
-4. Mechanically inventory clean-home, ambient, controlled, fresh, resume, and
-   follow-up behavior for both built-in providers.
-5. Add explicit acknowledgement and gate provider-facing mutation on the
+4. Add explicit acknowledgement and gate provider-facing mutation on the
    required evidence policy.
-6. Apply the same manifest to parent-spawned Robas without inheriting the
+5. Apply the same manifest to parent-spawned Robas without inheriting the
    parent's transcript or ambient environment by accident.
 
 ## Sources

@@ -5,7 +5,9 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::lifecycle::{Run, RunControlError};
-use crate::provider::{Provider, ProviderError, ProviderLaunchContext};
+use crate::provider::{
+    Provider, ProviderAmbientContextCapabilities, ProviderError, ProviderLaunchContext,
+};
 use crate::run::{Prompt, ProviderId, RunSpec, TurnRequest};
 
 /// Process-local Roba runtime. It owns provider adapters but no daemon,
@@ -48,6 +50,16 @@ impl Roba {
     /// Provider ids in deterministic order.
     pub fn provider_ids(&self) -> impl Iterator<Item = &ProviderId> {
         self.providers.keys()
+    }
+
+    /// Inspect one registered provider's enforceable ambient-context profiles.
+    pub fn ambient_context_capabilities(
+        &self,
+        id: &ProviderId,
+    ) -> Option<ProviderAmbientContextCapabilities> {
+        self.providers
+            .get(id)
+            .map(|provider| provider.ambient_context_capabilities())
     }
 
     /// Validate a suspended run specification against its selected provider

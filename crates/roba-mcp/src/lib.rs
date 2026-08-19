@@ -18,7 +18,8 @@ mod stdio;
 
 pub use agent::{AgentBuildError, AgentInstance, AgentStopError};
 pub use context::{
-    AmbientContextPolicy, CONTEXT_MANIFEST_SCHEMA_VERSION, ContextAcquisition, ContextAudience,
+    AmbientContextPolicy, AmbientContextSource, AmbientContextSourceDisposition,
+    AmbientContextStatus, CONTEXT_MANIFEST_SCHEMA_VERSION, ContextAcquisition, ContextAudience,
     ContextBootstrap, ContextContent, ContextDelivery, ContextEntry, ContextEntryRead,
     ContextEntrySpec, ContextFingerprint, ContextFreshness, ContextGoalDelivery, ContextKind,
     ContextManifest, ContextOrigin, ContextOriginKind, ContextPhase, ContextPlan,

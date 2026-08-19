@@ -11,7 +11,11 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use roba_core::{PermissionPolicy as CorePermissionPolicy, ProviderId, RunSpec};
+use roba_core::{
+    PermissionPolicy as CorePermissionPolicy, ProviderAmbientContextCapabilities,
+    ProviderAmbientContextPolicy, ProviderAmbientContextProfile, ProviderAmbientSourceDisposition,
+    ProviderId, RunSpec,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tower_mcp::schemars::{self, JsonSchema};
@@ -31,10 +35,108 @@ pub const CONTEXT_MANIFEST_SCHEMA_VERSION: u32 = 2;
 pub enum AmbientContextPolicy {
     /// Preserve provider-native user and workspace discovery.
     Ambient,
-    /// Inventory ambient sources and add an authoritative Roba bootstrap.
+    /// Apply the provider's tested reduction and report retained sources.
     Controlled,
     /// Permit only context declared by the plan.
     Hermetic,
+}
+
+impl fmt::Display for AmbientContextPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Ambient => "ambient",
+            Self::Controlled => "controlled",
+            Self::Hermetic => "hermetic",
+        })
+    }
+}
+
+impl AmbientContextPolicy {
+    pub(crate) fn provider_policy(self) -> ProviderAmbientContextPolicy {
+        match self {
+            Self::Ambient => ProviderAmbientContextPolicy::Ambient,
+            Self::Controlled => ProviderAmbientContextPolicy::Controlled,
+            Self::Hermetic => ProviderAmbientContextPolicy::Hermetic,
+        }
+    }
+
+    fn from_provider(policy: ProviderAmbientContextPolicy) -> Self {
+        match policy {
+            ProviderAmbientContextPolicy::Ambient => Self::Ambient,
+            ProviderAmbientContextPolicy::Controlled => Self::Controlled,
+            ProviderAmbientContextPolicy::Hermetic => Self::Hermetic,
+        }
+    }
+}
+
+/// Public behavior of one provider-native ambient source class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AmbientContextSourceDisposition {
+    Retained,
+    Suppressed,
+    Unobservable,
+}
+
+/// Safe, content-free provider-native source inventory entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AmbientContextSource {
+    pub id: String,
+    pub disposition: AmbientContextSourceDisposition,
+    pub detail: String,
+}
+
+/// Requested and effective provider-native ambient-context posture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AmbientContextStatus {
+    pub provider: String,
+    pub requested_policy: AmbientContextPolicy,
+    pub effective_policy: AmbientContextPolicy,
+    pub supported_policies: Vec<AmbientContextPolicy>,
+    pub sources: Vec<AmbientContextSource>,
+}
+
+impl AmbientContextStatus {
+    pub(crate) fn from_provider(
+        provider: &ProviderId,
+        requested_policy: AmbientContextPolicy,
+        capabilities: &ProviderAmbientContextCapabilities,
+        profile: &ProviderAmbientContextProfile,
+    ) -> Self {
+        let supported_policies = capabilities
+            .profiles
+            .iter()
+            .map(|profile| AmbientContextPolicy::from_provider(profile.policy))
+            .collect();
+        let sources = profile
+            .sources
+            .iter()
+            .map(|source| AmbientContextSource {
+                id: source.id.clone(),
+                disposition: match source.disposition {
+                    ProviderAmbientSourceDisposition::Retained => {
+                        AmbientContextSourceDisposition::Retained
+                    }
+                    ProviderAmbientSourceDisposition::Suppressed => {
+                        AmbientContextSourceDisposition::Suppressed
+                    }
+                    ProviderAmbientSourceDisposition::Unobservable => {
+                        AmbientContextSourceDisposition::Unobservable
+                    }
+                },
+                detail: source.detail.clone(),
+            })
+            .collect();
+        Self {
+            provider: provider.as_str().to_owned(),
+            requested_policy,
+            effective_policy: AmbientContextPolicy::from_provider(profile.policy),
+            supported_policies,
+            sources,
+        }
+    }
 }
 
 /// Semantic role of one context entry.
@@ -453,6 +555,7 @@ pub struct ContextReadEvidence {
 pub struct ContextSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_id: Option<OperationId>,
+    pub ambient_context: AmbientContextStatus,
     pub manifest: ContextManifest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bootstrap: Option<ContextBootstrap>,
@@ -925,11 +1028,16 @@ impl fmt::Display for ContextReadError {
 pub(crate) struct OperationContext {
     plan: ContextPlan,
     bootstrap: ContextBootstrap,
+    ambient_context: AmbientContextStatus,
     evidence: Mutex<ContextReadEvidence>,
 }
 
 impl OperationContext {
-    pub(crate) fn new(plan: ContextPlan, bootstrap: ContextBootstrap) -> Self {
+    pub(crate) fn new(
+        plan: ContextPlan,
+        bootstrap: ContextBootstrap,
+        ambient_context: AmbientContextStatus,
+    ) -> Self {
         let manifest = plan.provider_manifest();
         Self {
             evidence: Mutex::new(ContextReadEvidence {
@@ -945,6 +1053,7 @@ impl OperationContext {
             }),
             plan,
             bootstrap,
+            ambient_context,
         }
     }
 
@@ -960,6 +1069,7 @@ impl OperationContext {
         evidence.manifest.record(unix_time_ms());
         ContextSnapshot {
             operation_id: Some(evidence.operation_id),
+            ambient_context: self.ambient_context.clone(),
             manifest: self.plan.provider_manifest(),
             bootstrap: Some(self.bootstrap.clone()),
             read_evidence: Some(evidence.clone()),
@@ -1425,7 +1535,17 @@ mod tests {
             &ProviderId::claude(),
             CorePermissionPolicy::ReadOnly,
         );
-        let operation = OperationContext::new(plan, bootstrap);
+        let operation = OperationContext::new(
+            plan,
+            bootstrap,
+            AmbientContextStatus {
+                provider: ProviderId::claude().to_string(),
+                requested_policy: AmbientContextPolicy::Controlled,
+                effective_policy: AmbientContextPolicy::Controlled,
+                supported_policies: vec![AmbientContextPolicy::Controlled],
+                sources: Vec::new(),
+            },
+        );
 
         let first_manifest = operation.manifest_read();
         assert_eq!(first_manifest.operation_id, Some(OperationId::new(9)));

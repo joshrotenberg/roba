@@ -109,6 +109,18 @@ pub enum EffortLevel {
     Max,
 }
 
+/// Provider-native ambient-context posture.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AmbientContextMode {
+    /// Preserve the provider's normal user and workspace discovery.
+    Ambient,
+    /// Apply the provider's tested reduction and report retained sources.
+    Controlled,
+    /// Permit only Roba-declared context; unsupported providers refuse.
+    Hermetic,
+}
+
 /// Fixed configuration shared by finite and hot provider-neutral agents.
 #[derive(ClapArgs, Debug, Default)]
 pub struct AgentArgs {
@@ -139,6 +151,14 @@ pub struct AgentArgs {
     /// Context delivered to the provider and recorded in the context manifest.
     #[arg(long = "context")]
     pub context: Vec<String>,
+
+    /// Provider-native ambient context posture.
+    ///
+    /// Narrower modes fail before launch when the selected adapter cannot
+    /// enforce them. Inspect exact retained, suppressed, and unobservable
+    /// source classes via `roba://context`.
+    #[arg(long = "ambient-context", value_enum)]
+    pub ambient_context: Option<AmbientContextMode>,
 
     /// Add the repository-scoped Git MCP service.
     #[arg(long)]

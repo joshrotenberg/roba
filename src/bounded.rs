@@ -11,8 +11,8 @@ use roba_core::{
 };
 use roba_git::{GitAuthority, GitProgressConfig, GitWorkspace};
 use roba_mcp::{
-    AgentExtensions, AgentInstance, AgentTurnResult, TurnInput, call_turn, connect_in_process,
-    managed_context_extension,
+    AgentExtensions, AgentInstance, AgentTurnResult, AmbientContextPolicy, ContextPlan, TurnInput,
+    call_turn, connect_in_process, managed_context_extension,
 };
 
 use crate::VersionedResult;
@@ -51,6 +51,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
         resolved.template,
         resolved.catalog,
         resolved.catalog_selection,
+        resolved.ambient_context_policy,
         resolved.git_enabled,
         resolved.git_progress_interval_secs,
     )?;
@@ -246,6 +247,7 @@ struct ResolvedRun {
     template: RunSpec,
     catalog: ContextCatalog,
     catalog_selection: Option<CatalogSelection>,
+    ambient_context_policy: AmbientContextPolicy,
     git_enabled: bool,
     git_progress_interval_secs: u64,
     prompt: String,
@@ -257,6 +259,7 @@ fn resolve_spec(args: &RunArgs) -> Result<ResolvedRun> {
         template: resolved.template,
         catalog: resolved.catalog,
         catalog_selection: resolved.catalog_selection,
+        ambient_context_policy: resolved.ambient_context_policy,
         git_enabled: resolved.git_enabled,
         git_progress_interval_secs: resolved.git_progress_interval_secs,
         prompt: Prompt::new(args.prompt.clone())?.into_inner(),
@@ -276,6 +279,7 @@ pub(crate) fn build_agent(args: &AgentArgs) -> Result<AgentInstance> {
         resolved.template,
         resolved.catalog,
         resolved.catalog_selection,
+        resolved.ambient_context_policy,
         resolved.git_enabled,
         resolved.git_progress_interval_secs,
     )
@@ -285,6 +289,7 @@ pub(crate) fn build_agent_from_template(
     template: RunSpec,
     catalog: ContextCatalog,
     catalog_selection: Option<CatalogSelection>,
+    ambient_context_policy: AmbientContextPolicy,
     git_enabled: bool,
     git_progress_interval_secs: u64,
 ) -> Result<AgentInstance> {
@@ -308,8 +313,13 @@ pub(crate) fn build_agent_from_template(
         ))?;
     }
 
-    Ok(AgentInstance::new_with_extensions(
-        roba, template, extensions,
+    let context_plan =
+        ContextPlan::builder_from_run_spec(&template, ambient_context_policy).build();
+    Ok(AgentInstance::new_with_context_plan(
+        roba,
+        template,
+        extensions,
+        context_plan,
     )?)
 }
 
@@ -367,6 +377,8 @@ mod tests {
             "be exact",
             "--context",
             "the tests are authoritative",
+            "--ambient-context",
+            "controlled",
             "--git",
             "--writable",
             "--timeout",
@@ -383,12 +395,62 @@ mod tests {
 
         assert!(run.agent.git);
         assert!(serve.git);
+        assert_eq!(
+            run.agent.ambient_context,
+            Some(crate::cli::AmbientContextMode::Controlled)
+        );
+        assert_eq!(serve.ambient_context, run.agent.ambient_context);
 
         assert_eq!(
             resolve_spec(&run).unwrap().template,
             resolve_template(&serve).unwrap()
         );
         assert!(resolve_template(&serve).unwrap().initial_prompt.is_none());
+    }
+
+    #[tokio::test]
+    async fn provider_ambient_policy_is_capability_checked_and_inspectable_before_launch() {
+        let agent = build_agent(&parse_serve_agent(&[
+            "--no-config",
+            "--provider",
+            "codex",
+            "--ambient-context",
+            "controlled",
+        ]))
+        .unwrap();
+        let snapshot = agent.context_snapshot().await;
+        assert_eq!(
+            snapshot.ambient_context.requested_policy,
+            AmbientContextPolicy::Controlled
+        );
+        assert_eq!(
+            snapshot.ambient_context.effective_policy,
+            AmbientContextPolicy::Controlled
+        );
+        assert_eq!(snapshot.ambient_context.provider, "codex");
+        assert_eq!(
+            snapshot.ambient_context.supported_policies,
+            [
+                AmbientContextPolicy::Ambient,
+                AmbientContextPolicy::Controlled,
+            ]
+        );
+        assert!(snapshot.ambient_context.sources.iter().any(|source| {
+            source.id == "codex.provider_baseline"
+                && source.disposition == roba_mcp::AmbientContextSourceDisposition::Unobservable
+        }));
+
+        let error = match build_agent(&parse_serve_agent(&[
+            "--no-config",
+            "--provider",
+            "codex",
+            "--ambient-context",
+            "hermetic",
+        ])) {
+            Ok(_) => panic!("hermetic Codex construction must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("cannot enforce hermetic"));
     }
 
     #[test]
@@ -424,6 +486,13 @@ mod tests {
         assert!(
             serde_json::to_value(&spec).unwrap().get("git").is_none(),
             "Git service selection is host configuration, not RunSpec intent"
+        );
+        assert!(
+            serde_json::to_value(&spec)
+                .unwrap()
+                .get("ambient_context")
+                .is_none(),
+            "ambient policy is host launch configuration, not serialized RunSpec intent"
         );
         assert_eq!(spec.agent.provider, ProviderId::codex());
         assert_eq!(spec.agent.model.as_deref(), Some("configured"));
