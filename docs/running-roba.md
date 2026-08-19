@@ -39,6 +39,9 @@ instructions = ["Work in small, reviewable steps."]
 permissions = "read_only"
 timeout_secs = 900
 
+[session]
+mode = "sticky"
+
 [context]
 ambient_policy = "controlled"
 agent = "roba.repo-worker"
@@ -236,7 +239,30 @@ host returns to its configured defaults:
 agent.turn text="Investigate the failing tests." overrides={"model":"provider-model-id","effort":"high","limits":{"timeout_secs":900}}
 ```
 
-## 9. Inspect Roba-declared context over MCP
+## 9. Inspect and rotate provider-session generations
+
+`roba://agent` reports the provider-neutral session policy, current generation,
+continuity availability, and actual core provider turns observed in that
+generation. It never exposes the opaque provider session id.
+
+The default `sticky` mode retains validated continuity. `fresh` starts every
+operation without continuity, while the current `managed` phase behaves like
+sticky retention until the operator rotates it explicitly:
+
+```text
+read roba://agent
+agent.session.rotate expected_generation=1 strategy="clean"
+agent.turn text="Continue with a clean provider context."
+```
+
+Rotation is accepted only while idle. The expected generation prevents a
+delayed client from discarding newer state. Clean rotation performs no model
+call or summary; automatic triggers and summary rollover remain future work.
+
+Configure the lifetime policy with `[session].mode` or `--session-mode`.
+`--resume` may seed `sticky` or `managed`, but conflicts with `fresh`.
+
+## 10. Inspect Roba-declared context over MCP
 
 The manifest inventories context without copying its bodies into diagnostics:
 
@@ -264,7 +290,7 @@ The provider receives a compact rendering of that contract before its current
 goal. The bootstrap points to MCP; it does not concatenate the referenced
 material into every turn.
 
-## 10. Combine CLI construction with MCP operation
+## 11. Combine CLI construction with MCP operation
 
 This is the most complete currently shipped composition:
 
@@ -289,7 +315,7 @@ finite operation. It can identify its Roba operation, inspect declared context,
 and use explicitly installed provider capabilities such as `git.snapshot`; it
 cannot admit turns, steer itself, interrupt the operator, or call shutdown.
 
-## 11. Embed the MCP agent without the CLI
+## 12. Embed the MCP agent without the CLI
 
 Rust hosts can construct an `AgentInstance` from a suspended `RunSpec` and
 serve or connect to its control router directly. `ChannelTransport` provides
@@ -316,6 +342,7 @@ that intentionally manages another Roba.
 | Several sequential turns | `roba serve` + MCP client |
 | Long work plus observation | MCP Task on `agent.turn` |
 | Follow-up work or cancellation | `agent.follow_up` / `agent.interrupt` |
+| Explicit provider-context reset | `agent.session.rotate` |
 | Repository-aware observation | `--git` |
 | Custom host or scheduler | `AgentInstance` + MCP binding |
 
@@ -327,7 +354,7 @@ ship them as base behavior:
 - schedules that periodically call `agent.turn`;
 - queues or retry policy above single-flight admission;
 - parent/child Roba orchestration;
-- context acknowledgement gates or automatic session rotation;
+- context acknowledgement gates or automatic session rotation and summaries;
 - Unix-socket or authenticated operator HTTP bindings;
 - aggregate budgets spanning several finite turns.
 

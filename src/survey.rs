@@ -204,6 +204,7 @@ pub async fn run(args: ConfigSurveyArgs) -> Result<()> {
         resolved.catalog.clone(),
         resolved.catalog_selection,
         resolved.ambient_context_policy,
+        resolved.session_policy,
         resolved.git_enabled,
         resolved.git_progress_interval_secs,
     )?;

@@ -10,10 +10,10 @@ use roba_core::{
 };
 use roba_mcp::{
     AGENT_CONTEXT_ENTRY_TEMPLATE, AGENT_CONTEXT_URI, AGENT_EVENT_CAPACITY, AGENT_EVENTS_TEMPLATE,
-    AGENT_EVENTS_URI, AGENT_INTERRUPT_TOOL, AGENT_RESOURCE_URI, AGENT_SHUTDOWN_TOOL,
-    AGENT_STEER_TOOL, AGENT_TURN_TOOL, AgentControlRefusalKind, AgentEvent, AgentEventPage,
-    AgentInterruptResult, AgentShutdownResult, AgentSnapshot, AgentState, AgentSteerResult,
-    AgentTerminalState, AgentTurnResult, OperationSettlement, connect_in_process,
+    AGENT_EVENTS_URI, AGENT_INTERRUPT_TOOL, AGENT_RESOURCE_URI, AGENT_SESSION_ROTATE_TOOL,
+    AGENT_SHUTDOWN_TOOL, AGENT_STEER_TOOL, AGENT_TURN_TOOL, AgentControlRefusalKind, AgentEvent,
+    AgentEventPage, AgentInterruptResult, AgentShutdownResult, AgentSnapshot, AgentState,
+    AgentSteerResult, AgentTerminalState, AgentTurnResult, OperationSettlement, connect_in_process,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -298,6 +298,7 @@ async fn controls_and_event_resources_publish_complete_schemas() {
         [
             AGENT_STEER_TOOL,
             AGENT_INTERRUPT_TOOL,
+            AGENT_SESSION_ROTATE_TOOL,
             AGENT_SHUTDOWN_TOOL,
             AGENT_TURN_TOOL,
         ]
@@ -360,6 +361,20 @@ async fn controls_and_event_resources_publish_complete_schemas() {
             .to_string()
             .contains("refused")
     );
+
+    let rotate = tool(AGENT_SESSION_ROTATE_TOOL);
+    assert_eq!(rotate.input_schema["additionalProperties"], false);
+    assert_eq!(
+        rotate.input_schema["required"],
+        json!(["expected_generation", "strategy"])
+    );
+    let rotate_schema = rotate
+        .output_schema
+        .as_ref()
+        .expect("session rotation publishes an output schema")
+        .to_string();
+    assert!(rotate_schema.contains("rotated"));
+    assert!(rotate_schema.contains("generation_mismatch"));
 
     let shutdown = tool(AGENT_SHUTDOWN_TOOL);
     assert_eq!(shutdown.input_schema["type"], "object");
@@ -565,7 +580,9 @@ async fn steer_is_targeted_validated_and_runs_a_resumed_second_provider_turn() {
             }
         );
     }
-    assert_eq!(read_agent(&client).await.state, AgentState::Idle);
+    let snapshot = read_agent(&client).await;
+    assert_eq!(snapshot.state, AgentState::Idle);
+    assert_eq!(snapshot.session.provider_turns, 2);
     close(client).await;
 }
 

@@ -25,6 +25,7 @@ const COMMON_GUIDANCE: &str = "
 # Common next steps:
 # - `[agent]` selects a provider, model, effort, and standing instructions.
 # - `timeout_secs` under `[execution]` bounds each finite operation.
+# - `[session]` selects sticky, fresh, or managed provider continuity.
 # - `[context]` selects managed agent, skill, and prompt catalog IDs.
 # - `[extensions.git]` enables repository state and progress resources.
 # Inspect all resolved layers and provenance with `roba config effective`.

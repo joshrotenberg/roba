@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -17,9 +18,11 @@ use crate::context::{
 };
 use crate::contract::{
     ActiveActivity, AgentConfiguration, AgentControlRefusalKind, AgentFollowUpResult,
-    AgentInterruptResult, AgentObservation, AgentRefusalKind, AgentShutdownResult, AgentSnapshot,
-    AgentState, AgentTerminalState, AgentTurnResult, ObservationHealth, ObservationState,
-    OperationId, OperationSettlement, ProviderSelfSnapshot, TurnOverrides,
+    AgentInterruptResult, AgentObservation, AgentRefusalKind, AgentSessionRotateResult,
+    AgentSessionSnapshot, AgentShutdownResult, AgentSnapshot, AgentState, AgentTerminalState,
+    AgentTurnResult, ObservationHealth, ObservationState, OperationId, OperationSettlement,
+    ProviderSelfSnapshot, SessionMode, SessionPolicy, SessionRotationRefusalKind,
+    SessionRotationStrategy, TurnOverrides,
 };
 use crate::events::{
     AGENT_EVENT_CAPACITY, AgentEvent, AgentEventError, AgentEventJournal, AgentEventPage,
@@ -43,6 +46,7 @@ struct Inner {
     provider_context_diagnostics: Vec<ContextDiagnostic>,
     ambient_context: AmbientContextStatus,
     configuration: AgentConfiguration,
+    session_policy: SessionPolicy,
     extensions: AgentExtensions,
     created_at_unix_ms: Option<u64>,
     events: AgentEventJournal,
@@ -55,6 +59,9 @@ struct Control {
     lifetime: AgentLifetime,
     next_operation_id: u64,
     session: Option<CoreSessionHandle>,
+    session_generation: u64,
+    session_provider_turns: u64,
+    session_started_at_unix_ms: Option<u64>,
     active: Option<Arc<ActiveOperation>>,
     latest_turn: Option<AgentTurnResult>,
     latest_context_evidence: Option<ContextReadEvidence>,
@@ -79,6 +86,8 @@ struct ActiveOperation {
     started_at: Instant,
     timeout: Option<Duration>,
     admitted_at_unix_ms: Option<u64>,
+    session_generation: u64,
+    provider_turns: AtomicU64,
 }
 
 #[derive(Default)]
@@ -186,7 +195,21 @@ impl AgentInstance {
     /// Construction never starts provider work. A seeded resume handle is
     /// extracted into agent state and applied to the first submitted turn.
     pub fn new(runtime: Roba, template: RunSpec) -> Result<Self, AgentBuildError> {
-        Self::new_with_extensions(runtime, template, AgentExtensions::default())
+        Self::new_with_session_policy(runtime, template, SessionPolicy::default())
+    }
+
+    /// Construct an idle host with an explicit provider-session policy.
+    pub fn new_with_session_policy(
+        runtime: Roba,
+        template: RunSpec,
+        session_policy: SessionPolicy,
+    ) -> Result<Self, AgentBuildError> {
+        Self::new_with_extensions_and_session_policy(
+            runtime,
+            template,
+            AgentExtensions::default(),
+            session_policy,
+        )
     }
 
     /// Construct an idle host with one immutable set of MCP extensions.
@@ -199,8 +222,29 @@ impl AgentInstance {
         template: RunSpec,
         extensions: AgentExtensions,
     ) -> Result<Self, AgentBuildError> {
+        Self::new_with_extensions_and_session_policy(
+            runtime,
+            template,
+            extensions,
+            SessionPolicy::default(),
+        )
+    }
+
+    /// Construct an idle host with extensions and explicit session policy.
+    pub fn new_with_extensions_and_session_policy(
+        runtime: Roba,
+        template: RunSpec,
+        extensions: AgentExtensions,
+        session_policy: SessionPolicy,
+    ) -> Result<Self, AgentBuildError> {
         let context_plan = ContextPlan::from_run_spec(&template);
-        Self::new_with_context_plan(runtime, template, extensions, context_plan)
+        Self::new_with_context_plan_and_session_policy(
+            runtime,
+            template,
+            extensions,
+            context_plan,
+            session_policy,
+        )
     }
 
     /// Construct an idle host with an explicit immutable context plan.
@@ -211,9 +255,26 @@ impl AgentInstance {
     /// preflighted before provider work or private listener creation.
     pub fn new_with_context_plan(
         runtime: Roba,
+        template: RunSpec,
+        extensions: AgentExtensions,
+        context_plan: ContextPlan,
+    ) -> Result<Self, AgentBuildError> {
+        Self::new_with_context_plan_and_session_policy(
+            runtime,
+            template,
+            extensions,
+            context_plan,
+            SessionPolicy::default(),
+        )
+    }
+
+    /// Construct an idle host with explicit context and session policies.
+    pub fn new_with_context_plan_and_session_policy(
+        runtime: Roba,
         mut template: RunSpec,
         extensions: AgentExtensions,
         context_plan: ContextPlan,
+        session_policy: SessionPolicy,
     ) -> Result<Self, AgentBuildError> {
         if template.initial_prompt.is_some() {
             return Err(AgentBuildError::TemplateNotSuspended);
@@ -281,7 +342,11 @@ impl AgentInstance {
                 Some(session)
             }
         };
+        if session_policy.mode == SessionMode::Fresh && session.is_some() {
+            return Err(AgentBuildError::FreshPolicyWithSeededSession);
+        }
         let configuration = AgentConfiguration::from_run_spec(&template);
+        let created_at_unix_ms = unix_time_ms();
 
         let (shutdown_tx, _) = watch::channel(None);
         let (event_tx, _) = broadcast::channel(AGENT_EVENT_CAPACITY);
@@ -294,14 +359,18 @@ impl AgentInstance {
                 provider_context_diagnostics,
                 ambient_context,
                 configuration,
+                session_policy,
                 extensions,
-                created_at_unix_ms: unix_time_ms(),
+                created_at_unix_ms,
                 events: AgentEventJournal::new(),
                 event_tx,
                 control: Mutex::new(Control {
                     lifetime: AgentLifetime::Open,
                     next_operation_id: 1,
                     session,
+                    session_generation: 1,
+                    session_provider_turns: 0,
+                    session_started_at_unix_ms: created_at_unix_ms,
                     active: None,
                     latest_turn: None,
                     latest_context_evidence: None,
@@ -389,6 +458,23 @@ impl AgentInstance {
         };
         let operation_id = OperationId::new(control.next_operation_id);
 
+        let session_generation = if self.inner.session_policy.mode == SessionMode::Fresh
+            && control.next_operation_id > 1
+        {
+            match control.session_generation.checked_add(1) {
+                Some(generation) => generation,
+                None => {
+                    return TurnAdmission::Refused(AgentTurnResult::refused(
+                        AgentRefusalKind::Runtime,
+                        "provider session generation exhausted",
+                        None,
+                    ));
+                }
+            }
+        } else {
+            control.session_generation
+        };
+
         let mut spec = self.inner.template.clone();
         if let Err(message) = apply_turn_overrides(&mut spec, overrides) {
             return TurnAdmission::Refused(AgentTurnResult::refused(
@@ -397,11 +483,12 @@ impl AgentInstance {
                 None,
             ));
         }
-        spec.execution.session = match &control.session {
-            Some(session) => SessionSpec::Resume {
+        spec.execution.session = match (self.inner.session_policy.mode, &control.session) {
+            (SessionMode::Fresh, _) => SessionSpec::Fresh,
+            (_, Some(session)) => SessionSpec::Resume {
                 session: session.clone(),
             },
-            None => SessionSpec::Fresh,
+            (_, None) => SessionSpec::Fresh,
         };
         let bootstrap = self.inner.context_plan.provider_bootstrap(
             operation_id,
@@ -464,11 +551,19 @@ impl AgentInstance {
             started_at: Instant::now(),
             timeout,
             admitted_at_unix_ms: unix_time_ms(),
+            session_generation,
+            provider_turns: AtomicU64::new(0),
         });
         active
             .provider_endpoint
             .close_when_run_settles(active.handle.clone());
         control.next_operation_id = next_operation_id;
+        if session_generation != control.session_generation {
+            control.session = None;
+            control.session_generation = session_generation;
+            control.session_provider_turns = 0;
+            control.session_started_at_unix_ms = active.admitted_at_unix_ms;
+        }
         control.active = Some(active.clone());
         drop(control);
 
@@ -592,6 +687,7 @@ impl AgentInstance {
                 AgentLifetime::Open if control.active.is_some() => AgentState::Running,
                 AgentLifetime::Open => AgentState::Idle,
             },
+            session: session_snapshot(&control, self.inner.session_policy),
             session_available: control.session.is_some(),
             current_operation_id: control.active.as_ref().map(|active| active.id),
             latest_turn: control
@@ -851,6 +947,71 @@ impl AgentInstance {
         self.follow_up(operation_id, text).await
     }
 
+    /// Rotate retained provider continuity at one exact idle generation.
+    pub async fn rotate_session(
+        &self,
+        expected_generation: u64,
+        strategy: SessionRotationStrategy,
+    ) -> AgentSessionRotateResult {
+        let mut control = self.inner.control.lock().await;
+        match control.lifetime {
+            AgentLifetime::Stopping => {
+                return AgentSessionRotateResult::refused(
+                    SessionRotationRefusalKind::Stopping,
+                    "agent is stopping",
+                    control.session_generation,
+                    control.active.as_ref().map(|active| active.id),
+                );
+            }
+            AgentLifetime::Stopped => {
+                return AgentSessionRotateResult::refused(
+                    SessionRotationRefusalKind::Stopped,
+                    "agent is stopped",
+                    control.session_generation,
+                    None,
+                );
+            }
+            AgentLifetime::Open => {}
+        }
+        if let Some(active) = &control.active {
+            return AgentSessionRotateResult::refused(
+                SessionRotationRefusalKind::Busy,
+                format!("operation {} is active", active.id.get()),
+                control.session_generation,
+                Some(active.id),
+            );
+        }
+        if expected_generation != control.session_generation {
+            return AgentSessionRotateResult::refused(
+                SessionRotationRefusalKind::GenerationMismatch,
+                format!(
+                    "session generation is {}, not {expected_generation}",
+                    control.session_generation
+                ),
+                control.session_generation,
+                None,
+            );
+        }
+        let Some(generation) = control.session_generation.checked_add(1) else {
+            return AgentSessionRotateResult::refused(
+                SessionRotationRefusalKind::GenerationExhausted,
+                "provider session generation exhausted",
+                control.session_generation,
+                None,
+            );
+        };
+        let previous_generation = control.session_generation;
+        control.session = None;
+        control.session_generation = generation;
+        control.session_provider_turns = 0;
+        control.session_started_at_unix_ms = unix_time_ms();
+        AgentSessionRotateResult::Rotated {
+            previous_generation,
+            strategy,
+            session: session_snapshot(&control, self.inner.session_policy),
+        }
+    }
+
     /// Cancel one exact active operation and wait for agent-level settlement.
     pub async fn interrupt(&self, operation_id: OperationId) -> AgentInterruptResult {
         let active = {
@@ -1046,8 +1207,26 @@ impl AgentInstance {
                 .cloned()
                 .unwrap_or(result);
         }
-        if !invalid_evidence && let Some(session) = reported_session {
-            control.session = Some(session);
+        let (active_generation, provider_turns) = control
+            .active
+            .as_ref()
+            .map(|active| {
+                (
+                    active.session_generation,
+                    active.provider_turns.load(Ordering::Relaxed),
+                )
+            })
+            .expect("matching active operation was checked above");
+        if active_generation == control.session_generation {
+            control.session_provider_turns = control
+                .session_provider_turns
+                .saturating_add(provider_turns);
+            if !invalid_evidence
+                && self.inner.session_policy.mode != SessionMode::Fresh
+                && let Some(session) = reported_session
+            {
+                control.session = Some(session);
+            }
         }
         let context_evidence = control
             .active
@@ -1075,6 +1254,9 @@ impl AgentInstance {
 
 impl ActiveOperation {
     fn observe(&self, record: &AgentEventRecord) {
+        if matches!(&record.event, AgentEvent::TurnStarted { .. }) {
+            self.provider_turns.fetch_add(1, Ordering::Relaxed);
+        }
         let mut observation = self
             .observation
             .lock()
@@ -1275,6 +1457,28 @@ fn reported_session(snapshot: &RunSnapshot) -> Option<CoreSessionHandle> {
         })
 }
 
+fn session_snapshot(control: &Control, policy: SessionPolicy) -> AgentSessionSnapshot {
+    let active_provider_turns = control
+        .active
+        .as_ref()
+        .filter(|active| active.session_generation == control.session_generation)
+        .map(|active| active.provider_turns.load(Ordering::Relaxed))
+        .unwrap_or(0);
+    AgentSessionSnapshot {
+        policy,
+        generation: control.session_generation,
+        session_available: control.session.is_some(),
+        provider_turns: control
+            .session_provider_turns
+            .saturating_add(active_provider_turns),
+        generation_started_at_unix_ms: control.session_started_at_unix_ms,
+        generation_age_ms: control
+            .session_started_at_unix_ms
+            .zip(unix_time_ms())
+            .map(|(started, now)| now.saturating_sub(started)),
+    }
+}
+
 fn terminal_state(snapshot: &RunSnapshot) -> AgentTerminalState {
     match snapshot.state {
         roba_core::RunState::Completed => AgentTerminalState::Completed,
@@ -1339,6 +1543,7 @@ pub enum AgentBuildError {
         session: ProviderId,
     },
     EmptySessionId,
+    FreshPolicyWithSeededSession,
     InvalidMaxCost,
     AmbientContextPolicyUnsupported {
         provider: ProviderId,
@@ -1363,6 +1568,9 @@ impl fmt::Display for AgentBuildError {
                 "agent selects provider {selected}, but seeded session belongs to {session}"
             ),
             Self::EmptySessionId => f.write_str("seeded session id must not be empty"),
+            Self::FreshPolicyWithSeededSession => {
+                f.write_str("fresh session policy cannot be combined with a seeded resume session")
+            }
             Self::InvalidMaxCost => {
                 f.write_str("maximum cost must be a finite non-negative number")
             }
@@ -1397,6 +1605,7 @@ impl std::error::Error for AgentBuildError {
             | Self::ProviderUnavailable(_)
             | Self::SessionProviderMismatch { .. }
             | Self::EmptySessionId
+            | Self::FreshPolicyWithSeededSession
             | Self::InvalidMaxCost
             | Self::AmbientContextPolicyUnsupported { .. }
             | Self::ContextLint(_) => None,

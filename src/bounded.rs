@@ -11,8 +11,8 @@ use roba_core::{
 };
 use roba_git::{GitAuthority, GitProgressConfig, GitWorkspace};
 use roba_mcp::{
-    AgentExtensions, AgentInstance, AgentTurnResult, AmbientContextPolicy, ContextPlan, TurnInput,
-    call_turn, connect_in_process, managed_context_extension,
+    AgentExtensions, AgentInstance, AgentTurnResult, AmbientContextPolicy, ContextPlan,
+    SessionPolicy, TurnInput, call_turn, connect_in_process, managed_context_extension,
 };
 
 use crate::VersionedResult;
@@ -52,6 +52,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
         resolved.catalog,
         resolved.catalog_selection,
         resolved.ambient_context_policy,
+        resolved.session_policy,
         resolved.git_enabled,
         resolved.git_progress_interval_secs,
     )?;
@@ -248,6 +249,7 @@ struct ResolvedRun {
     catalog: ContextCatalog,
     catalog_selection: Option<CatalogSelection>,
     ambient_context_policy: AmbientContextPolicy,
+    session_policy: SessionPolicy,
     git_enabled: bool,
     git_progress_interval_secs: u64,
     prompt: String,
@@ -260,6 +262,7 @@ fn resolve_spec(args: &RunArgs) -> Result<ResolvedRun> {
         catalog: resolved.catalog,
         catalog_selection: resolved.catalog_selection,
         ambient_context_policy: resolved.ambient_context_policy,
+        session_policy: resolved.session_policy,
         git_enabled: resolved.git_enabled,
         git_progress_interval_secs: resolved.git_progress_interval_secs,
         prompt: Prompt::new(args.prompt.clone())?.into_inner(),
@@ -280,6 +283,7 @@ pub(crate) fn build_agent(args: &AgentArgs) -> Result<AgentInstance> {
         resolved.catalog,
         resolved.catalog_selection,
         resolved.ambient_context_policy,
+        resolved.session_policy,
         resolved.git_enabled,
         resolved.git_progress_interval_secs,
     )
@@ -290,6 +294,7 @@ pub(crate) fn build_agent_from_template(
     catalog: ContextCatalog,
     catalog_selection: Option<CatalogSelection>,
     ambient_context_policy: AmbientContextPolicy,
+    session_policy: SessionPolicy,
     git_enabled: bool,
     git_progress_interval_secs: u64,
 ) -> Result<AgentInstance> {
@@ -315,11 +320,12 @@ pub(crate) fn build_agent_from_template(
 
     let context_plan =
         ContextPlan::builder_from_run_spec(&template, ambient_context_policy).build();
-    Ok(AgentInstance::new_with_context_plan(
+    Ok(AgentInstance::new_with_context_plan_and_session_policy(
         roba,
         template,
         extensions,
         context_plan,
+        session_policy,
     )?)
 }
 
@@ -389,6 +395,8 @@ mod tests {
             "1.5",
             "--resume",
             "thread-1",
+            "--session-mode",
+            "managed",
         ];
         let run = parse_run_args(&[&shared[..], &["hello"]].concat());
         let serve = parse_serve_agent(&shared);
@@ -400,6 +408,7 @@ mod tests {
             Some(crate::cli::AmbientContextMode::Controlled)
         );
         assert_eq!(serve.ambient_context, run.agent.ambient_context);
+        assert_eq!(serve.session_mode, run.agent.session_mode);
 
         assert_eq!(
             resolve_spec(&run).unwrap().template,

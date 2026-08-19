@@ -20,7 +20,8 @@ use crate::context::ContextReadError;
 use crate::provider_endpoint::PROVIDER_MCP_SERVER_NAME;
 use crate::{
     AGENT_EVENT_CAPACITY, AgentFollowUpResult, AgentInstance, AgentInterruptResult,
-    AgentShutdownResult, AgentTurnResult, OperationId, ProviderSelfSnapshot, TurnOverrides,
+    AgentSessionRotateResult, AgentShutdownResult, AgentTurnResult, OperationId,
+    ProviderSelfSnapshot, SessionRotationStrategy, TurnOverrides,
 };
 
 /// Base tool for one finite turn through the logical agent.
@@ -31,6 +32,8 @@ pub const AGENT_FOLLOW_UP_TOOL: &str = "agent.follow_up";
 pub const AGENT_STEER_TOOL: &str = AGENT_FOLLOW_UP_TOOL;
 /// Control tool for cancelling one active operation and awaiting settlement.
 pub const AGENT_INTERRUPT_TOOL: &str = "agent.interrupt";
+/// Control tool for cleanly advancing one idle provider-session generation.
+pub const AGENT_SESSION_ROTATE_TOOL: &str = "agent.session.rotate";
 /// Control tool for permanently stopping the logical agent.
 pub const AGENT_SHUTDOWN_TOOL: &str = "agent.shutdown";
 /// Harmless identity callback exposed only to the executing provider.
@@ -68,7 +71,8 @@ roba://context for supplied context and provenance, and roba://events for \
 replayable provider activity. Task-backed turns may also deliver live \
 roba.activity log notifications. Use agent.follow_up to queue another provider turn after the \
 current one, agent.interrupt to cancel \
-work while keeping the agent available, and agent.shutdown only when the host \
+work while keeping the agent available, agent.session.rotate to cleanly reset \
+provider continuity while idle, and agent.shutdown only when the host \
 should terminate. When present, managed prompts and the content-free catalog \
 are discoverable through prompts/list and roba://context/catalog. Additional \
 capabilities may be exposed as MCP extensions; \
@@ -115,6 +119,14 @@ pub type SteerInput = FollowUpInput;
 #[serde(deny_unknown_fields)]
 pub struct InterruptInput {
     pub operation_id: OperationId,
+}
+
+/// Input contract for [`AGENT_SESSION_ROTATE_TOOL`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRotateInput {
+    pub expected_generation: u64,
+    pub strategy: SessionRotationStrategy,
 }
 
 /// Input contract for [`AGENT_SHUTDOWN_TOOL`].
@@ -313,6 +325,25 @@ pub(crate) fn base_control_router(agent: AgentInstance) -> McpRouter {
         })
         .build();
 
+    let rotate_output_schema = serde_json::to_value(schema_for!(AgentSessionRotateResult))
+        .expect("static agent session rotation schema must serialize");
+    let rotate_agent = agent.clone();
+    let rotate = ToolBuilder::new(AGENT_SESSION_ROTATE_TOOL)
+        .description(
+            "Cleanly rotate retained provider continuity at one exact idle session generation.",
+        )
+        .output_schema(rotate_output_schema)
+        .handler(move |input: SessionRotateInput| {
+            let agent = rotate_agent.clone();
+            async move {
+                let result = agent
+                    .rotate_session(input.expected_generation, input.strategy)
+                    .await;
+                encode_session_rotate(&result)
+            }
+        })
+        .build();
+
     let shutdown_output_schema = serde_json::to_value(schema_for!(AgentShutdownResult))
         .expect("static agent shutdown schema must serialize");
     let shutdown_agent = agent.clone();
@@ -427,6 +458,7 @@ pub(crate) fn base_control_router(agent: AgentInstance) -> McpRouter {
         .tool(turn)
         .tool(follow_up)
         .tool(interrupt)
+        .tool(rotate)
         .tool(shutdown)
         .resource(state)
         .resource(events)
@@ -840,6 +872,13 @@ fn encode_follow_up(value: &AgentFollowUpResult) -> tower_mcp::Result<CallToolRe
 }
 
 fn encode_interrupt(value: &AgentInterruptResult) -> tower_mcp::Result<CallToolResult> {
+    let mut result = CallToolResult::from_serialize(value)?;
+    result.content = vec![Content::text(value.display_text())];
+    result.is_error = value.is_error();
+    Ok(result)
+}
+
+fn encode_session_rotate(value: &AgentSessionRotateResult) -> tower_mcp::Result<CallToolResult> {
     let mut result = CallToolResult::from_serialize(value)?;
     result.content = vec![Content::text(value.display_text())];
     result.is_error = value.is_error();

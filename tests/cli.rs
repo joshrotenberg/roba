@@ -65,6 +65,7 @@ fn run_and_serve_help_own_the_agent_option_reference() {
             .and(predicate::str::contains("--instruction"))
             .and(predicate::str::contains("--context"))
             .and(predicate::str::contains("--ambient-context"))
+            .and(predicate::str::contains("--session-mode"))
             .and(predicate::str::contains("--writable"))
             .and(predicate::str::contains("--resume"))
             .and(predicate::str::contains("<PROMPT>")),
@@ -72,6 +73,7 @@ fn run_and_serve_help_own_the_agent_option_reference() {
     roba().args(["serve", "--help"]).assert().success().stdout(
         predicate::str::contains("--provider")
             .and(predicate::str::contains("--ambient-context"))
+            .and(predicate::str::contains("--session-mode"))
             .and(predicate::str::contains("--writable"))
             .and(predicate::str::contains("stdout is MCP wire data"))
             .and(predicate::str::contains("<PROMPT>").not())
@@ -292,6 +294,7 @@ fn config_effective_reports_safe_values_sources_and_provenance() {
         "version = 1\n\
          [agent]\nprovider = 'codex'\neffort = 'medium'\ninstructions = ['project']\n\
          [execution]\npermissions = 'read_only'\ntimeout_secs = 30\n\
+         [session]\nmode = 'managed'\n\
          [context]\nambient_policy = 'controlled'\nproject = ['fixture']\n\
          [extensions.git]\nenabled = false\nprogress_interval_secs = 0\n",
     );
@@ -316,6 +319,7 @@ fn config_effective_reports_safe_values_sources_and_provenance() {
     assert_eq!(value["version"], 1);
     assert_eq!(value["result"]["agent"]["provider"], "codex");
     assert_eq!(value["result"]["execution"]["permissions"], "read_only");
+    assert_eq!(value["result"]["session"]["mode"], "managed");
     assert_eq!(value["result"]["context"]["ambient_policy"], "controlled");
     assert_eq!(
         value["result"]["extensions"]["git"]["progress_interval_secs"],
@@ -333,6 +337,29 @@ fn config_effective_reports_safe_values_sources_and_provenance() {
         value["result"]["provenance"]["extensions.git.progress_interval_secs"][0],
         reported_path
     );
+    assert_eq!(
+        value["result"]["provenance"]["session.mode"][0],
+        reported_path
+    );
+
+    isolated_roba(&project)
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "config",
+            "effective",
+            "--session-mode",
+            "fresh",
+            "--resume",
+            "opaque-seed",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "session.mode = fresh cannot be combined with --resume",
+        ));
     assert_eq!(
         std::fs::canonicalize(reported_path).unwrap(),
         std::fs::canonicalize(project.path().join("roba.toml")).unwrap(),

@@ -11,12 +11,14 @@ use roba_core::{
 };
 use roba_mcp::{
     AGENT_CONTEXT_ENTRY_TEMPLATE, AGENT_CONTEXT_URI, AGENT_EVENTS_URI, AGENT_RESOURCE_URI,
-    AGENT_TURN_TOOL, AgentBuildError, AgentEvent, AgentEventPage, AgentInstance, AgentRefusalKind,
-    AgentSnapshot, AgentState, AgentStopError, AgentTurnResult, AmbientContextPolicy,
-    ContextAudience, ContextContent, ContextDelivery, ContextDiagnosticCode,
-    ContextDiagnosticSeverity, ContextEntrySpec, ContextKind, ContextOrigin, ContextOriginKind,
-    ContextPhase, ContextPlan, ContextPrecedence, ContextScope, ContextSnapshot, Effort,
-    FailureKind, ObservationHealth, ObservationState, PermissionPolicy, connect_in_process,
+    AGENT_SESSION_ROTATE_TOOL, AGENT_TURN_TOOL, AgentBuildError, AgentEvent, AgentEventPage,
+    AgentInstance, AgentRefusalKind, AgentSessionRotateResult, AgentSnapshot, AgentState,
+    AgentStopError, AgentTurnResult, AmbientContextPolicy, ContextAudience, ContextContent,
+    ContextDelivery, ContextDiagnosticCode, ContextDiagnosticSeverity, ContextEntrySpec,
+    ContextKind, ContextOrigin, ContextOriginKind, ContextPhase, ContextPlan, ContextPrecedence,
+    ContextScope, ContextSnapshot, Effort, FailureKind, ObservationHealth, ObservationState,
+    PermissionPolicy, SessionMode, SessionPolicy, SessionRotationRefusalKind,
+    SessionRotationStrategy, connect_in_process,
 };
 use serde_json::json;
 use tokio::sync::Semaphore;
@@ -183,6 +185,13 @@ fn core_session(id: &str) -> CoreSessionHandle {
 }
 
 fn agent_with_session(seed: Option<&str>) -> (AgentInstance, Arc<FakeState>) {
+    agent_with_policy(seed, SessionPolicy::default())
+}
+
+fn agent_with_policy(
+    seed: Option<&str>,
+    session_policy: SessionPolicy,
+) -> (AgentInstance, Arc<FakeState>) {
     let state = Arc::new(FakeState::default());
     let mut runtime = Roba::new();
     runtime
@@ -197,8 +206,233 @@ fn agent_with_session(seed: Option<&str>) -> (AgentInstance, Arc<FakeState>) {
             session: core_session(seed),
         };
     }
-    let agent = AgentInstance::new(runtime, template).expect("valid test agent");
+    let agent = AgentInstance::new_with_session_policy(runtime, template, session_policy)
+        .expect("valid test agent");
     (agent, state)
+}
+
+#[tokio::test]
+async fn sticky_fresh_and_managed_session_modes_are_deterministic() {
+    for mode in [SessionMode::Sticky, SessionMode::Managed] {
+        let (agent, state) = agent_with_policy(None, SessionPolicy { mode });
+        let initial = agent.snapshot().await;
+        assert_eq!(initial.session.policy.mode, mode);
+        assert_eq!(initial.session.generation, 1);
+        assert_eq!(initial.session.provider_turns, 0);
+        assert!(!initial.session.session_available);
+
+        assert!(matches!(
+            agent.turn("first".to_owned()).await,
+            AgentTurnResult::Completed { .. }
+        ));
+        assert!(matches!(
+            agent.turn("second".to_owned()).await,
+            AgentTurnResult::Completed { .. }
+        ));
+        {
+            let requests = state
+                .requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(matches!(
+                requests[0].spec.execution.session,
+                SessionSpec::Fresh
+            ));
+            assert!(matches!(
+                requests[1].spec.execution.session,
+                SessionSpec::Resume { .. }
+            ));
+        }
+        let settled = agent.snapshot().await;
+        assert_eq!(settled.session.generation, 1);
+        assert_eq!(settled.session.provider_turns, 2);
+        assert!(settled.session.session_available);
+        assert!(settled.session.generation_started_at_unix_ms.is_some());
+        assert!(settled.session.generation_age_ms.is_some());
+    }
+
+    let (agent, state) = agent_with_policy(
+        None,
+        SessionPolicy {
+            mode: SessionMode::Fresh,
+        },
+    );
+    assert!(matches!(
+        agent.turn("first".to_owned()).await,
+        AgentTurnResult::Completed { .. }
+    ));
+    let first = agent.snapshot().await;
+    assert_eq!(first.session.generation, 1);
+    assert_eq!(first.session.provider_turns, 1);
+    assert!(!first.session.session_available);
+    assert!(matches!(
+        agent.turn("second".to_owned()).await,
+        AgentTurnResult::Completed { .. }
+    ));
+    {
+        let requests = state
+            .requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            requests
+                .iter()
+                .all(|request| matches!(request.spec.execution.session, SessionSpec::Fresh))
+        );
+    }
+    let second = agent.snapshot().await;
+    assert_eq!(second.session.policy.mode, SessionMode::Fresh);
+    assert_eq!(second.session.generation, 2);
+    assert_eq!(second.session.provider_turns, 1);
+    assert!(!second.session.session_available);
+}
+
+#[tokio::test]
+async fn clean_session_rotation_is_idle_generation_fenced_and_mcp_typed() {
+    let (agent, state) = agent_with_session(None);
+    let client = connect_in_process(agent.clone())
+        .await
+        .expect("in-process client connects");
+    let tool = client
+        .list_tools()
+        .await
+        .expect("tools are discoverable")
+        .tools
+        .into_iter()
+        .find(|tool| tool.name == AGENT_SESSION_ROTATE_TOOL)
+        .expect("session rotation is discoverable");
+    assert_eq!(tool.input_schema["additionalProperties"], false);
+    assert!(
+        tool.output_schema
+            .as_ref()
+            .expect("rotation publishes an output schema")
+            .to_string()
+            .contains("generation_mismatch")
+    );
+
+    let stale = client
+        .call_tool(
+            AGENT_SESSION_ROTATE_TOOL,
+            json!({"expected_generation": 0, "strategy": "clean"}),
+        )
+        .await
+        .expect("typed stale rotation result");
+    assert!(stale.is_error);
+    let stale: AgentSessionRotateResult =
+        serde_json::from_value(stale.structured_content.unwrap()).unwrap();
+    assert!(matches!(
+        stale,
+        AgentSessionRotateResult::Refused { ref refusal }
+            if refusal.kind == SessionRotationRefusalKind::GenerationMismatch
+                && refusal.current_generation == 1
+    ));
+
+    let running_agent = agent.clone();
+    let turn = tokio::spawn(async move { running_agent.turn("hold".to_owned()).await });
+    state
+        .started
+        .acquire()
+        .await
+        .expect("started semaphore remains open")
+        .forget();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if agent.snapshot().await.session.provider_turns == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("active provider turn becomes observable before settlement");
+    let busy = client
+        .call_tool(
+            AGENT_SESSION_ROTATE_TOOL,
+            json!({"expected_generation": 1, "strategy": "clean"}),
+        )
+        .await
+        .expect("typed busy rotation result");
+    assert!(busy.is_error);
+    let busy: AgentSessionRotateResult =
+        serde_json::from_value(busy.structured_content.unwrap()).unwrap();
+    assert!(matches!(
+        busy,
+        AgentSessionRotateResult::Refused { ref refusal }
+            if refusal.kind == SessionRotationRefusalKind::Busy
+                && refusal.active_operation_id.is_some()
+    ));
+    state.release.add_permits(1);
+    assert!(matches!(
+        turn.await.expect("turn task joins"),
+        AgentTurnResult::Completed { .. }
+    ));
+
+    let before = agent.snapshot().await;
+    assert_eq!(before.session.generation, 1);
+    assert!(before.session.session_available);
+    let rotated = client
+        .call_tool(
+            AGENT_SESSION_ROTATE_TOOL,
+            json!({"expected_generation": 1, "strategy": "clean"}),
+        )
+        .await
+        .expect("typed rotation result");
+    assert!(!rotated.is_error);
+    let rotated: AgentSessionRotateResult =
+        serde_json::from_value(rotated.structured_content.unwrap()).unwrap();
+    assert!(matches!(
+        rotated,
+        AgentSessionRotateResult::Rotated {
+            previous_generation: 1,
+            strategy: SessionRotationStrategy::Clean,
+            ref session,
+        } if session.generation == 2 && !session.session_available
+    ));
+    let after = agent.snapshot().await;
+    assert_eq!(after.session.generation, 2);
+    assert_eq!(after.session.provider_turns, 0);
+    assert!(!after.session.session_available);
+    assert!(!serde_json::to_string(&after).unwrap().contains("session-1"));
+
+    assert!(matches!(
+        agent.turn("after-rotation".to_owned()).await,
+        AgentTurnResult::Completed { .. }
+    ));
+    {
+        let requests = state
+            .requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(matches!(
+            requests.last().unwrap().spec.execution.session,
+            SessionSpec::Fresh
+        ));
+    }
+    client.shutdown().await.unwrap();
+}
+
+#[test]
+fn fresh_policy_rejects_a_seeded_resume_handle() {
+    let state = Arc::new(FakeState::default());
+    let mut runtime = Roba::new();
+    runtime
+        .register(FakeProvider { state })
+        .expect("fake provider registration succeeds");
+    let mut template = RunSpec::suspended(AgentSpec::new(fake_provider_id()));
+    template.execution.session = SessionSpec::Resume {
+        session: core_session("seed"),
+    };
+    let error = match AgentInstance::new_with_session_policy(
+        runtime,
+        template,
+        SessionPolicy {
+            mode: SessionMode::Fresh,
+        },
+    ) {
+        Ok(_) => panic!("fresh policy unexpectedly accepted a seeded session"),
+        Err(error) => error,
+    };
+    assert_eq!(error, AgentBuildError::FreshPolicyWithSeededSession);
 }
 
 #[tokio::test]
@@ -630,6 +864,10 @@ async fn provider_failure_is_typed_reusable_and_updates_session_evidence() {
     let after_failure = read_agent(&client).await;
     assert_eq!(after_failure.state, AgentState::Idle);
     assert!(after_failure.session_available);
+    assert_eq!(
+        after_failure.session.provider_turns, 2,
+        "generation usage counts actual core turns, not provider telemetry"
+    );
     match after_failure.latest_turn.expect("failed turn retained") {
         AgentTurnResult::Failed { run, .. } => {
             assert!(

@@ -42,6 +42,8 @@ decision and its rationale here, not a phase ledger or working-session log.
   single-agent MCP application layer above the core.
 - [`architecture/agent-control.md`](architecture/agent-control.md) -- exact
   turn, follow-up, override, interruption, and configuration lifetimes.
+- [`architecture/session-lifecycle.md`](architecture/session-lifecycle.md) --
+  provider-neutral continuity policies, generations, and clean rotation.
 - [`architecture/context.md`](architecture/context.md) -- the typed context
   plan, current provider inventory, and isolation boundaries.
 - [`architecture/startup-config.md`](architecture/startup-config.md) -- the

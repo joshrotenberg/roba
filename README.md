@@ -87,6 +87,9 @@ instructions = ["Work in small, reviewable steps."]
 permissions = "read_only"
 timeout_secs = 900
 
+[session]
+mode = "sticky"
+
 [extensions.git]
 enabled = true
 progress_interval_secs = 5
@@ -145,9 +148,12 @@ The base control contract is:
   model, effort, and limit overrides;
 - `agent.follow_up` queues another prompt for one exact active operation;
 - `agent.interrupt` cancels one operation, drains it, and keeps the agent hot;
+- `agent.session.rotate` drops retained continuity at one exact idle
+  generation;
 - `agent.shutdown` permanently closes admission and drains active work;
-- `roba://agent` reports redacted configuration, current state, elapsed and
-  remaining time, and provider-native activity evidence;
+- `roba://agent` reports redacted configuration, current state, session policy
+  and generation evidence, elapsed and remaining time, and provider-native
+  activity evidence;
 - `roba://events{?after,limit}` pages bounded agent-wide history, including
   normalized command, file, MCP, web, plan, status, and unknown activity;
 - `roba://context` inventories declared context without its bodies, while
@@ -160,9 +166,12 @@ classes remain, which are suppressed, and which Roba cannot observe.
 `hermetic` is reserved and currently refuses for both built-in providers rather
 than overstating isolation.
 
-The logical agent and validated provider session stay hot. Provider processes
-do not: each accepted turn launches and settles one finite provider run. Limits
-and timeout flags are per turn, not aggregate server budgets or idle deadlines.
+The logical agent stays hot. Its `sticky` default retains a validated provider
+session; `fresh` starts every operation without continuity; and the current
+`managed` phase retains continuity until explicit clean rotation. Provider
+processes do not stay hot: each accepted turn launches and settles one finite
+provider run. Limits and timeout flags are per turn, not aggregate server
+budgets or idle deadlines.
 Provider failures are typed MCP tool results and do not terminate the server.
 Task-backed turns also deliver normalized activity as `roba.activity` MCP log
 notifications while work is active. These are factual provider events, not

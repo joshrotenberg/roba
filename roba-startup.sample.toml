@@ -17,6 +17,11 @@ permissions = "read_only" # read_only | workspace_write | full_auto
 # max_cost_usd = 5.0       # Claude only
 timeout_secs = 900
 
+[session]
+# sticky retains continuity; fresh resets every operation; managed currently
+# rotates only when an operator calls agent.session.rotate.
+mode = "sticky" # sticky | fresh | managed
+
 [context]
 # ambient preserves provider-native discovery; controlled applies the selected
 # adapter's tested reduction. Hermetic currently fails for both built-ins.

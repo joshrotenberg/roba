@@ -29,8 +29,8 @@ provider projections, and exposes staging only to writable operator views.
 ## Scope line
 
 - IN: one logical agent, one active finite run, explicit execution authority,
-  retained provider session continuity, lifecycle observation, replayable
-  events, follow-up, interruption, and clean settlement.
+  provider-neutral session policy and generations, lifecycle observation,
+  replayable events, follow-up, interruption, and clean settlement.
 - IN: typed operator and least-authority provider MCP projections, immutable
   fail-closed router fragments, and thin in-process/stdio interfaces.
 - IN: strict, versioned startup configuration shared by `run` and `serve`.
