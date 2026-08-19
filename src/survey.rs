@@ -9,9 +9,10 @@ use roba_mcp::{AgentConfiguration, AmbientContextStatus, ContextDiagnostic, Cont
 use serde::{Deserialize, Serialize};
 
 use crate::VersionedResult;
-use crate::cli::ConfigSurveyArgs;
+use crate::cli::{AgentArgs, ConfigSurveyArgs};
 use crate::startup_config::{
     ConfigSource, EffectiveCatalogSelection, EffectiveExtensionsConfig, EffectiveStartupConfig,
+    ResolvedStartup,
 };
 
 /// Schema version of the deterministic project-survey packet.
@@ -198,18 +199,32 @@ enum ExpectedPathKind {
 
 /// Build and print a bounded survey without starting provider work.
 pub async fn run(args: ConfigSurveyArgs) -> Result<()> {
-    let resolved = crate::startup_config::resolve(&args.agent)?;
+    let (survey, _) = build(&args.agent).await?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&VersionedResult::new(survey))?
+        );
+    } else {
+        print!("{}", toml::to_string_pretty(&survey)?);
+    }
+    Ok(())
+}
+
+/// Build the inspectable survey and retain its exact resolved startup input.
+pub(crate) async fn build(args: &AgentArgs) -> Result<(ProjectSurvey, ResolvedStartup)> {
+    let resolved = crate::startup_config::resolve(args)?;
     let host = crate::bounded::build_agent_from_template(
-        resolved.template,
+        resolved.template.clone(),
         resolved.catalog.clone(),
-        resolved.catalog_selection,
+        resolved.catalog_selection.clone(),
         resolved.ambient_context_policy,
         resolved.git_enabled,
         resolved.git_progress_interval_secs,
     )?;
     let agent = host.snapshot().await;
     let context = host.context_snapshot().await;
-    let effective = resolved.effective;
+    let effective = resolved.effective.clone();
     let cwd = std::env::current_dir().context("resolving project survey cwd")?;
     let startup = survey_startup(effective, agent.configuration, context);
     let startup_bytes = validate_startup_size(serde_json::to_vec(&startup)?.len())?;
@@ -226,15 +241,7 @@ pub async fn run(args: ConfigSurveyArgs) -> Result<()> {
         startup,
         workspace: survey_workspace(&cwd)?,
     };
-    if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&VersionedResult::new(survey))?
-        );
-    } else {
-        print!("{}", toml::to_string_pretty(&survey)?);
-    }
-    Ok(())
+    Ok((survey, resolved))
 }
 
 fn validate_startup_size(bytes: usize) -> Result<u64> {

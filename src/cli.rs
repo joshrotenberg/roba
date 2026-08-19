@@ -244,6 +244,8 @@ pub enum ConfigCmd {
     Effective(ConfigEffectiveArgs),
     /// Build a bounded, content-free project survey for configuration tuning.
     Survey(ConfigSurveyArgs),
+    /// Ask a read-only provider for a validated configuration preview.
+    Propose(ConfigProposeArgs),
 }
 
 #[derive(ClapArgs, Debug)]
@@ -264,6 +266,61 @@ pub struct ConfigSurveyArgs {
     /// Emit a versioned JSON envelope instead of TOML.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct ConfigProposeArgs {
+    /// Use only this provider-neutral versioned config file as survey input.
+    #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
+    pub config: Option<PathBuf>,
+
+    /// Ignore all provider-neutral startup config files.
+    #[arg(long, conflicts_with = "config")]
+    pub no_config: bool,
+
+    /// Provider for the read-only proposal operation.
+    #[arg(long, value_enum)]
+    pub provider: Option<RunProvider>,
+
+    /// Provider model id for the proposal operation.
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Provider-neutral reasoning effort for the proposal operation.
+    #[arg(long, value_enum)]
+    pub effort: Option<EffortLevel>,
+
+    /// Provider turn ceiling applied to the proposal operation.
+    #[arg(long)]
+    pub max_turns: Option<u32>,
+
+    /// Provider-reported dollar ceiling applied to the proposal operation.
+    #[arg(long)]
+    pub max_cost_usd: Option<f64>,
+
+    /// Wall-clock proposal deadline in seconds.
+    #[arg(long)]
+    pub timeout: Option<u64>,
+
+    /// Emit a versioned JSON report instead of the canonical TOML preview.
+    #[arg(long)]
+    pub json: bool,
+}
+
+impl ConfigProposeArgs {
+    pub(crate) fn agent_args(&self) -> AgentArgs {
+        AgentArgs {
+            config: self.config.clone(),
+            no_config: self.no_config,
+            provider: self.provider,
+            model: self.model.clone(),
+            effort: self.effort,
+            max_turns: self.max_turns,
+            max_cost_usd: self.max_cost_usd,
+            timeout: self.timeout,
+            ..AgentArgs::default()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -318,6 +375,39 @@ mod tests {
         let error =
             Cli::try_parse_from(["roba", "config", "survey", "unexpected-prompt"]).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn config_propose_reuses_startup_overrides_without_write_flags() {
+        let parsed = Cli::try_parse_from([
+            "roba",
+            "config",
+            "propose",
+            "--provider",
+            "codex",
+            "--effort",
+            "high",
+            "--json",
+        ])
+        .unwrap();
+        let Some(SubCommand::Config {
+            cmd: ConfigCmd::Propose(args),
+        }) = parsed.command
+        else {
+            panic!("expected config propose");
+        };
+        assert_eq!(args.provider, Some(RunProvider::Codex));
+        assert_eq!(args.effort, Some(EffortLevel::High));
+        assert!(args.json);
+
+        let error =
+            Cli::try_parse_from(["roba", "config", "propose", "unexpected-prompt"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+
+        for ignored in ["--writable", "--resume", "--instruction", "--git"] {
+            let error = Cli::try_parse_from(["roba", "config", "propose", ignored]).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::UnknownArgument, "{ignored}");
+        }
     }
 
     #[test]

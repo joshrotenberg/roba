@@ -165,6 +165,45 @@ roba -C /path/to/repo config survey
 roba -C /path/to/repo config survey --json
 ```
 
+`roba config propose` is the first provider-assisted consumer of this packet.
+It creates one purpose-built proposal host with these fixed properties:
+
+- fresh provider session;
+- read-only execution authority;
+- the provider's mechanically enforced `controlled` ambient-context posture;
+- no Git or other optional extension capability;
+- the exact survey as a mandatory generation-fenced context entry;
+- one provider-only `config.propose` tool with a strict input schema.
+
+The command retains resolved provider, model, effort, timeout, turn, and cost
+limits, but it does not carry standing instructions, explicit project/run
+context, a resume seed, managed role selection, or extension tools into the
+proposal operation. A successful result requires mechanical evidence that the
+provider read the survey and submitted exactly one typed candidate. Prose-only
+answers, invalid catalog IDs, repeated submissions, and unsupported values fail
+closed.
+
+The first candidate schema is intentionally conservative. It can propose a
+provider, model, effort, read-only or workspace-write authority, ambient or
+controlled context, shipped catalog IDs, and Git activation. It cannot propose
+`full_auto`, `hermetic`, limits, arbitrary instructions, inline definitions, or
+file paths. Only shipped built-in catalog IDs are eligible because the preview
+is rendered as a standalone strict startup document.
+
+Plain output is canonical TOML with empty success stderr; provider prose is not
+written directly to a terminal. `--json` returns the typed proposal, rationale,
+rendered document, actual proposal-execution posture, provider-reported
+telemetry, and survey-read evidence in a versioned envelope. This is always a
+preview: it never edits or replaces a discovered config. A later tuning slice
+must define semantic merge, diff, confirmation, and atomic application rather
+than treating this safe subset as a lossless replacement for content-bearing
+configuration.
+
+```bash
+roba -C /path/to/repo config propose --provider codex
+roba -C /path/to/repo config propose --provider claude --json
+```
+
 Runtime startup files are read-only inputs. Aside from the explicit no-clobber
 `roba init` command, Roba does not write discovered config, extension state,
 credentials, task history, or provider-private session data into them.

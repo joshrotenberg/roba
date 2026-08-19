@@ -6,6 +6,7 @@ pub mod bounded;
 pub mod cli;
 pub mod error;
 pub mod init;
+pub mod proposal;
 pub mod serve;
 pub mod startup_config;
 pub mod survey;
@@ -31,6 +32,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Some(SubCommand::Config {
             cmd: ConfigCmd::Survey(args),
         }) => survey::run(args).await,
+        Some(SubCommand::Config {
+            cmd: ConfigCmd::Propose(args),
+        }) => proposal::run(args).await,
         Some(SubCommand::Completions { shell }) => {
             use clap::CommandFactory;
             let mut command = Cli::command();
