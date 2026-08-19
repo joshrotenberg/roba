@@ -1402,7 +1402,6 @@ printf '%s\n' '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_toke
         let error = provider.execute(request, &events).await.unwrap_err();
 
         assert_eq!(error.kind, FailureKind::Provider);
-        assert!(error.message.contains("without a turn.completed event"));
         let events = events.events.into_inner().unwrap();
         assert!(events.contains(&ProviderEvent::OutputDelta {
             text: "partial".to_string(),

@@ -211,6 +211,7 @@ typed failures rather than wedging a run.
 - one immutable suspended `RunSpec` template;
 - one selected provider and authority posture;
 - zero or one validated provider session handle;
+- one immutable session policy and monotonic session generation;
 - zero or one active finite `RunHandle`;
 - one immutable context plan and operation-scoped read evidence;
 - one bounded, globally sequenced agent event journal;
@@ -222,9 +223,10 @@ The base control projection exposes:
 - `agent.turn` for single-flight admission;
 - `agent.follow_up` for a bounded next-boundary prompt;
 - `agent.interrupt` for exact-operation cancellation and settlement;
+- `agent.session.rotate` for idle, generation-fenced clean rotation;
 - `agent.shutdown` for permanent admission closure and draining;
 - `roba://agent` for redacted configuration, current state, timing, session
-  availability, and provider observation;
+  policy, generation, availability, provider-turn count, and observation;
 - `roba://events{?after,limit}` for bounded replay;
 - `roba://context` and `roba://context/entry{?id,generation}` for declared
   context and explicit content reads.
@@ -397,6 +399,13 @@ lifetime. Operation-local `agent.turn` overrides are restricted to model,
 effort, and limits. They cannot mutate provider, cwd, permissions, tool
 authority, context, extensions, or session identity.
 
+The provider-session policy is also pinned for that lifetime. `sticky` retains
+validated continuity, `fresh` advances to a new generation for every admitted
+operation, and phase-one `managed` retains continuity until an explicit clean
+rotation. Rotation is operator-only, idle-only, and fenced by the expected
+generation. See
+[`docs/architecture/session-lifecycle.md`](docs/architecture/session-lifecycle.md).
+
 ## Security invariants
 
 - One process owns one logical agent and at most one active operation.
@@ -439,8 +448,8 @@ agent. Planned work remains in GitHub issues until its contract ships:
   extension;
 - [#520](https://github.com/joshrotenberg/roba/issues/520) -- lifetime,
   externally accessible bindings, and client authority;
-- [#525](https://github.com/joshrotenberg/roba/issues/525) -- managed session
-  generations and rollover;
+- [#525](https://github.com/joshrotenberg/roba/issues/525) -- automatic managed
+  session triggers, summaries, and provider-specific rollover;
 
 ## Where to go deeper
 
@@ -449,6 +458,7 @@ agent. Planned work remains in GitHub issues until its contract ships:
 | [`docs/architecture/core.md`](docs/architecture/core.md) | finite run and provider boundary |
 | [`docs/architecture/mcp-harness.md`](docs/architecture/mcp-harness.md) | hot agent, Tasks, projections, events, extensions, and bindings |
 | [`docs/architecture/agent-control.md`](docs/architecture/agent-control.md) | turn, follow-up, interruption, and override semantics |
+| [`docs/architecture/session-lifecycle.md`](docs/architecture/session-lifecycle.md) | provider-neutral continuity policies, generations, and clean rotation |
 | [`docs/architecture/context.md`](docs/architecture/context.md) | context plan, bootstrap, provider inventory, and evidence |
 | [`docs/architecture/startup-config.md`](docs/architecture/startup-config.md) | versioned discovery, precedence, and provenance |
 | [`docs/running-roba.md`](docs/running-roba.md) | progressively richer shipped usage |

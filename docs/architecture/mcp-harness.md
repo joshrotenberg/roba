@@ -6,8 +6,8 @@
 
 `roba-mcp` owns one hot logical agent above the finite `roba-core` run model.
 One constructed `AgentInstance` has one fixed provider and policy template, one
-retained provider session, one bounded event history, and at most one active
-finite run.
+provider-session policy and generation, one optional retained provider
+session, one bounded event history, and at most one active finite run.
 
 The harness may stay idle until cancelled or shut down. Provider processes do
 not stay hot: each admitted turn creates a fresh finite core run and resumes the
@@ -24,8 +24,9 @@ The control projection exposes:
 - `agent.turn` -- admit one prompt, returning a typed terminal result;
 - `agent.follow_up` -- queue another provider turn for one exact active operation;
 - `agent.interrupt` -- cancel one exact operation and await settlement;
+- `agent.session.rotate` -- cleanly reset one exact idle session generation;
 - `agent.shutdown` -- close admission permanently and drain active work;
-- `roba://agent` -- redacted configuration and current agent state;
+- `roba://agent` -- redacted configuration, session evidence, and current agent state;
 - `roba://events` and `roba://events{?after,limit}` -- bounded,
   cursor-addressed event history across finite runs.
 - `roba://context` and `roba://context/entry{?id,generation}` -- a
@@ -37,6 +38,10 @@ the base contract does not hide a turn-admission queue. Operation identifiers
 fence delayed follow-up and interruption so stale controls cannot affect later
 work. Follow-up prompts are a separate bounded FIFO owned by the active
 operation and are applied only at provider-turn boundaries.
+
+Session rotation is separately fenced by the expected generation and is never
+accepted while work is active. The policy and generation contract is defined
+in [`session-lifecycle.md`](session-lifecycle.md).
 
 Provider and domain failures are successful MCP exchanges with typed
 `structuredContent` and `isError: true`. JSON-RPC errors are reserved for

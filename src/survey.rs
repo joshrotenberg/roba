@@ -219,6 +219,7 @@ pub(crate) async fn build(args: &AgentArgs) -> Result<(ProjectSurvey, ResolvedSt
         resolved.catalog.clone(),
         resolved.catalog_selection.clone(),
         resolved.ambient_context_policy,
+        resolved.session_policy,
         resolved.git_enabled,
         resolved.git_progress_interval_secs,
     )?;

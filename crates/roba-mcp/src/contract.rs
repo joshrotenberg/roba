@@ -145,6 +145,41 @@ pub enum AgentState {
     Stopped,
 }
 
+/// Provider-neutral continuity policy for the hot logical agent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMode {
+    /// Retain the latest validated provider session until explicitly rotated.
+    #[default]
+    Sticky,
+    /// Start every admitted operation in a new provider session.
+    Fresh,
+    /// Retain sessions under host policy. Phase one rotates only on request.
+    Managed,
+}
+
+/// Extensible provider-neutral session lifecycle policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionPolicy {
+    #[serde(default)]
+    pub mode: SessionMode,
+}
+
+/// Content-free evidence for the current provider-session generation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSessionSnapshot {
+    pub policy: SessionPolicy,
+    pub generation: u64,
+    pub session_available: bool,
+    pub provider_turns: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_started_at_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_age_ms: Option<u64>,
+}
+
 /// Safe, inspectable configuration published by `roba://agent`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentConfiguration {
@@ -286,6 +321,8 @@ pub struct AgentSnapshot {
     pub active_configuration: Option<AgentConfiguration>,
     pub observation: AgentObservation,
     pub state: AgentState,
+    pub session: AgentSessionSnapshot,
+    /// Compatibility projection of [`AgentSessionSnapshot::session_available`].
     pub session_available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_operation_id: Option<OperationId>,
@@ -331,6 +368,36 @@ pub enum AgentControlRefusalKind {
     QueueFull,
     Unsupported,
     Runtime,
+}
+
+/// Session rotation supported by the first managed-lifecycle slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionRotationStrategy {
+    /// Drop retained provider continuity without a maintenance model call.
+    Clean,
+}
+
+/// Why an idle session rotation could not be applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionRotationRefusalKind {
+    Busy,
+    Stopping,
+    Stopped,
+    GenerationMismatch,
+    GenerationExhausted,
+}
+
+/// Typed refusal for one generation-fenced session rotation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRotationRefusal {
+    pub kind: SessionRotationRefusalKind,
+    pub message: String,
+    pub current_generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_operation_id: Option<OperationId>,
 }
 
 /// Typed refusal for follow-up or interruption.
@@ -472,6 +539,56 @@ impl AgentInterruptResult {
                     settlement.state
                 )
                 .to_lowercase()
+            }
+            Self::Refused { refusal } => refusal.message.clone(),
+        }
+    }
+}
+
+/// Result of an idle, generation-fenced provider-session rotation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum AgentSessionRotateResult {
+    Rotated {
+        previous_generation: u64,
+        strategy: SessionRotationStrategy,
+        session: AgentSessionSnapshot,
+    },
+    Refused {
+        refusal: SessionRotationRefusal,
+    },
+}
+
+impl AgentSessionRotateResult {
+    pub(crate) fn refused(
+        kind: SessionRotationRefusalKind,
+        message: impl Into<String>,
+        current_generation: u64,
+        active_operation_id: Option<OperationId>,
+    ) -> Self {
+        Self::Refused {
+            refusal: SessionRotationRefusal {
+                kind,
+                message: message.into(),
+                current_generation,
+                active_operation_id,
+            },
+        }
+    }
+
+    /// True when MCP should mark this as a tool execution error.
+    pub fn is_error(&self) -> bool {
+        matches!(self, Self::Refused { .. })
+    }
+
+    /// Human-facing text paired with the typed structured result.
+    pub fn display_text(&self) -> String {
+        match self {
+            Self::Rotated { session, .. } => {
+                format!(
+                    "provider session rotated to generation {}",
+                    session.generation
+                )
             }
             Self::Refused { refusal } => refusal.message.clone(),
         }

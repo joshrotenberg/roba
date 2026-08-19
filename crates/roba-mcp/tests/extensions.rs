@@ -7,12 +7,13 @@ use roba_core::{
 };
 use roba_mcp::{
     AGENT_CONTEXT_ENTRY_TEMPLATE, AGENT_CONTEXT_URI, AGENT_EVENTS_TEMPLATE, AGENT_EVENTS_URI,
-    AGENT_INTERRUPT_TOOL, AGENT_RESOURCE_URI, AGENT_SHUTDOWN_TOOL, AGENT_STEER_TOOL,
-    AGENT_TURN_TOOL, AgentBuildError, AgentExtension, AgentExtensionProjection, AgentExtensions,
-    AgentInstance, ContextAudience, ContextDelivery, ContextEntrySpec, ContextFreshness,
-    ContextKind, ContextOrigin, ContextOriginKind, ContextPhase, ContextPlanError,
-    ContextPrecedence, ContextScope, ContextSensitivity, OperationId, ROBA_CONTEXT_MANIFEST_TOOL,
-    ROBA_CONTEXT_READ_TOOL, ROBA_SELF_TOOL, ShutdownInput, agent_router, connect_in_process,
+    AGENT_INTERRUPT_TOOL, AGENT_RESOURCE_URI, AGENT_SESSION_ROTATE_TOOL, AGENT_SHUTDOWN_TOOL,
+    AGENT_STEER_TOOL, AGENT_TURN_TOOL, AgentBuildError, AgentExtension, AgentExtensionProjection,
+    AgentExtensions, AgentInstance, ContextAudience, ContextDelivery, ContextEntrySpec,
+    ContextFreshness, ContextKind, ContextOrigin, ContextOriginKind, ContextPhase,
+    ContextPlanError, ContextPrecedence, ContextScope, ContextSensitivity, OperationId,
+    ROBA_CONTEXT_MANIFEST_TOOL, ROBA_CONTEXT_READ_TOOL, ROBA_SELF_TOOL, ShutdownInput,
+    agent_router, connect_in_process,
 };
 use tower_mcp::{
     CallToolResult, ChannelTransport, McpClient, McpRouter, MergeConflictKind, ResourceBuilder,
@@ -449,6 +450,7 @@ async fn default_extensions_preserve_exact_base_discovery() {
     control_tools.sort_unstable();
     let mut expected_tools = vec![
         AGENT_INTERRUPT_TOOL.to_owned(),
+        AGENT_SESSION_ROTATE_TOOL.to_owned(),
         AGENT_SHUTDOWN_TOOL.to_owned(),
         AGENT_STEER_TOOL.to_owned(),
         AGENT_TURN_TOOL.to_owned(),

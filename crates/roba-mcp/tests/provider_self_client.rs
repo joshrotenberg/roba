@@ -18,13 +18,14 @@ use roba_core::{
 };
 use roba_mcp::{
     AGENT_CONTEXT_URI, AGENT_EVENTS_URI, AGENT_INTERRUPT_TOOL, AGENT_RESOURCE_URI,
-    AGENT_SHUTDOWN_TOOL, AGENT_STEER_TOOL, AGENT_TURN_TOOL, AgentExtensions, AgentInstance,
-    AgentInterruptResult, AgentState, AgentTerminalState, AgentTurnResult, AmbientContextPolicy,
-    ContextAcquisition, ContextAudience, ContextContent, ContextDelivery, ContextEntrySpec,
-    ContextKind, ContextOrigin, ContextOriginKind, ContextPhase, ContextPlan, ContextPrecedence,
-    ContextScope, ContextSnapshot, OperationId, PROVIDER_MCP_SERVER_NAME, ProviderSelfSnapshot,
-    ROBA_CONTEXT_MANIFEST_TOOL, ROBA_CONTEXT_READ_TOOL, ROBA_SELF_TOOL, agent_router,
-    connect_in_process, managed_context_extension,
+    AGENT_SESSION_ROTATE_TOOL, AGENT_SHUTDOWN_TOOL, AGENT_STEER_TOOL, AGENT_TURN_TOOL,
+    AgentExtensions, AgentInstance, AgentInterruptResult, AgentState, AgentTerminalState,
+    AgentTurnResult, AmbientContextPolicy, ContextAcquisition, ContextAudience, ContextContent,
+    ContextDelivery, ContextEntrySpec, ContextKind, ContextOrigin, ContextOriginKind, ContextPhase,
+    ContextPlan, ContextPrecedence, ContextScope, ContextSnapshot, OperationId,
+    PROVIDER_MCP_SERVER_NAME, ProviderSelfSnapshot, ROBA_CONTEXT_MANIFEST_TOOL,
+    ROBA_CONTEXT_READ_TOOL, ROBA_SELF_TOOL, agent_router, connect_in_process,
+    managed_context_extension,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -830,6 +831,7 @@ async fn control_and_provider_discovery_are_exact_role_projections() {
         AGENT_TURN_TOOL,
         AGENT_STEER_TOOL,
         AGENT_INTERRUPT_TOOL,
+        AGENT_SESSION_ROTATE_TOOL,
         AGENT_SHUTDOWN_TOOL,
     ] {
         assert!(
@@ -859,6 +861,7 @@ async fn control_and_provider_discovery_are_exact_role_projections() {
     control_tools.sort_unstable();
     let mut expected = vec![
         AGENT_INTERRUPT_TOOL.to_owned(),
+        AGENT_SESSION_ROTATE_TOOL.to_owned(),
         AGENT_SHUTDOWN_TOOL.to_owned(),
         AGENT_STEER_TOOL.to_owned(),
         AGENT_TURN_TOOL.to_owned(),

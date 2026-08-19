@@ -121,6 +121,18 @@ pub enum AmbientContextMode {
     Hermetic,
 }
 
+/// Provider-neutral provider-session continuity policy.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionModeArg {
+    /// Retain validated provider continuity until explicitly rotated.
+    Sticky,
+    /// Start every admitted operation in a fresh provider session.
+    Fresh,
+    /// Retain continuity under host policy; phase one rotates only explicitly.
+    Managed,
+}
+
 /// Fixed configuration shared by finite and hot provider-neutral agents.
 #[derive(ClapArgs, Debug, Default)]
 pub struct AgentArgs {
@@ -195,6 +207,10 @@ pub struct AgentArgs {
     /// Seed this agent from a provider session or thread id.
     #[arg(long)]
     pub resume: Option<String>,
+
+    /// Provider-session continuity policy for this logical agent.
+    #[arg(long = "session-mode", value_enum)]
+    pub session_mode: Option<SessionModeArg>,
 }
 
 /// Deterministically initialize the effective workspace.
@@ -419,6 +435,8 @@ mod tests {
             "codex",
             "--writable",
             "--git",
+            "--session-mode",
+            "managed",
             "work",
         ])
         .unwrap();
@@ -431,6 +449,8 @@ mod tests {
             "codex",
             "--writable",
             "--git",
+            "--session-mode",
+            "managed",
         ])
         .unwrap();
         assert!(matches!(serve.command, Some(SubCommand::Serve(_))));

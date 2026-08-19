@@ -12,8 +12,9 @@ The operator contract has process-local and foreground stdio bindings:
   the authoritative state, context, and event resources. Capability discovery
   remains the canonical API reference; clients decide how to render the
   guidance.
-- `AgentInstance` owns a suspended `RunSpec`, one optional provider session,
-  and at most one active `RunHandle`.
+- `AgentInstance` owns a suspended `RunSpec`, one immutable session policy,
+  one monotonic session generation, one optional provider session, and at most
+  one active `RunHandle`.
 - `agent.turn { "text": ..., "overrides": ... }` waits for one finite run.
   Optional model, effort, and limit overrides apply only to that operation.
   Success returns the
@@ -27,12 +28,17 @@ The operator contract has process-local and foreground stdio bindings:
   turn.
 - `agent.shutdown` permanently closes admission and drains active work before
   reporting that the logical agent is stopped.
+- `agent.session.rotate` performs an idle, generation-fenced clean rotation.
+  It drops retained provider continuity without a model call, advances the
+  generation once, and resets its observed provider-turn count.
 - Result variants encode their terminal invariants: a completed result always
   has an outcome and a failed result always has a failure.
 - `roba://agent` dynamically reports configured policy,
-  idle/running/stopping/stopped state, session availability, current operation
-  identity, provider-native observation health, active activity, elapsed and
-  timeout-remaining time, and the latest terminal result. Session identifiers are redacted
+  idle/running/stopping/stopped state, session policy, generation,
+  availability, observed provider-turn count, current operation identity,
+  provider-native observation health, active activity, elapsed and
+  timeout-remaining time, and the latest terminal result. Session identifiers
+  are redacted
   from this resource; the originating `agent.turn` result retains valid
   session evidence.
 - `roba://events` and `roba://events{?after,limit}` expose bounded,

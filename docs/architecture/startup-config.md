@@ -37,6 +37,9 @@ instructions = ["Work in small, reviewable steps."]
 permissions = "workspace_write"
 timeout_secs = 900
 
+[session]
+mode = "sticky"
+
 [context]
 ambient_policy = "controlled"
 project = ["Tests are the acceptance boundary."]
@@ -63,6 +66,10 @@ The complete commented example is
 unsupported versions, invalid limits, and provider controls that the selected
 adapter cannot enforce fail before provider work begins. Provider-private
 session ids are CLI-only and are never accepted from or printed in this file.
+Session mode is provider-neutral: `sticky` retains validated continuity,
+`fresh` starts every admitted operation without it, and phase-one `managed`
+retains continuity until an explicit generation-fenced clean rotation. A
+`fresh` policy conflicts with `--resume` and fails during resolution.
 
 The managed catalog is resolved and validated at startup. Built-ins are
 available by default, but absence of `context.agent` preserves ambient-only

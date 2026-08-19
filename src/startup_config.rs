@@ -14,11 +14,13 @@ use roba_core::{
     AgentSpec, ContextSpec, Effort, ExecutionSpec, LimitSpec, PermissionPolicy, ProviderId,
     RunSpec, SessionHandle, SessionSpec, ToolPolicy,
 };
-use roba_mcp::{AmbientContextPolicy, ContextDiagnostic};
+use roba_mcp::{AmbientContextPolicy, ContextDiagnostic, SessionMode, SessionPolicy};
 use serde::{Deserialize, Serialize};
 
 use crate::VersionedResult;
-use crate::cli::{AgentArgs, AmbientContextMode, ConfigEffectiveArgs, EffortLevel, RunProvider};
+use crate::cli::{
+    AgentArgs, AmbientContextMode, ConfigEffectiveArgs, EffortLevel, RunProvider, SessionModeArg,
+};
 
 const CONFIG_VERSION: u32 = 1;
 const PROJECT_CANDIDATES: [&str; 3] = ["roba.toml", ".roba.toml", ".roba/roba.toml"];
@@ -30,6 +32,7 @@ pub(crate) struct ResolvedStartup {
     pub catalog: ContextCatalog,
     pub catalog_selection: Option<CatalogSelection>,
     pub ambient_context_policy: AmbientContextPolicy,
+    pub session_policy: SessionPolicy,
     pub git_enabled: bool,
     pub git_progress_interval_secs: u64,
     pub effective: EffectiveStartupConfig,
@@ -43,6 +46,7 @@ pub struct EffectiveStartupConfig {
     pub sources: Vec<ConfigSource>,
     pub agent: EffectiveAgentConfig,
     pub execution: EffectiveExecutionConfig,
+    pub session: EffectiveSessionConfig,
     pub context: EffectiveContextConfig,
     pub extensions: EffectiveExtensionsConfig,
     pub provenance: BTreeMap<String, Vec<String>>,
@@ -88,6 +92,12 @@ pub struct EffectiveExecutionConfig {
     /// Whether the CLI supplied a provider-private resume seed. The id is
     /// deliberately absent from this inspectable configuration.
     pub resume_seeded: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EffectiveSessionConfig {
+    pub mode: SessionModeArg,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,6 +199,8 @@ struct StartupFile {
     #[serde(default)]
     execution: FileExecutionConfig,
     #[serde(default)]
+    session: FileSessionConfig,
+    #[serde(default)]
     context: FileContextConfig,
     #[serde(default)]
     extensions: FileExtensionsConfig,
@@ -211,6 +223,12 @@ struct FileExecutionConfig {
     max_turns: Option<u32>,
     max_cost_usd: Option<f64>,
     timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileSessionConfig {
+    mode: Option<SessionModeArg>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -310,6 +328,7 @@ pub fn run_effective(args: ConfigEffectiveArgs) -> Result<()> {
         resolved.catalog.clone(),
         resolved.catalog_selection.clone(),
         resolved.ambient_context_policy,
+        resolved.session_policy,
         resolved.git_enabled,
         resolved.git_progress_interval_secs,
     )?;
@@ -359,6 +378,9 @@ fn resolve_layers(args: &AgentArgs, layers: Vec<Layer>) -> Result<ResolvedStartu
             timeout_secs: None,
             resume_seeded: false,
         },
+        session: EffectiveSessionConfig {
+            mode: SessionModeArg::Sticky,
+        },
         context: EffectiveContextConfig::default(),
         extensions: EffectiveExtensionsConfig::default(),
         provenance: BTreeMap::from([
@@ -367,6 +389,7 @@ fn resolve_layers(args: &AgentArgs, layers: Vec<Layer>) -> Result<ResolvedStartu
                 "execution.permissions".to_string(),
                 vec!["default".to_string()],
             ),
+            ("session.mode".to_string(), vec!["default".to_string()]),
             (
                 "context.builtins.enabled".to_string(),
                 vec!["default".to_string()],
@@ -434,12 +457,16 @@ fn resolve_layers(args: &AgentArgs, layers: Vec<Layer>) -> Result<ResolvedStartu
     let git_enabled = effective.extensions.git.enabled;
     let git_progress_interval_secs = effective.extensions.git.progress_interval_secs;
     let ambient_context_policy = map_ambient_context(effective.context.ambient_policy);
+    let session_policy = SessionPolicy {
+        mode: map_session_mode(effective.session.mode),
+    };
 
     Ok(ResolvedStartup {
         template,
         catalog,
         catalog_selection,
         ambient_context_policy,
+        session_policy,
         git_enabled,
         git_progress_interval_secs,
         effective,
@@ -605,6 +632,7 @@ pub(crate) fn validate_generated_host(document: &str, target: &Path) -> Result<(
         resolved.catalog,
         resolved.catalog_selection,
         resolved.ambient_context_policy,
+        resolved.session_policy,
         resolved.git_enabled,
         resolved.git_progress_interval_secs,
     )?;
@@ -668,6 +696,10 @@ fn merge_layer(
     if let Some(value) = config.execution.timeout_secs {
         effective.execution.timeout_secs = Some(value);
         replace_source(effective, "execution.timeout_secs", &label);
+    }
+    if let Some(value) = config.session.mode {
+        effective.session.mode = value;
+        replace_source(effective, "session.mode", &label);
     }
     if !config.context.project.is_empty() {
         effective.context.project.extend(config.context.project);
@@ -783,6 +815,10 @@ fn merge_cli(effective: &mut EffectiveStartupConfig, args: &AgentArgs) {
         effective.execution.resume_seeded = true;
         replace_source(effective, "execution.resume_seeded", "cli");
     }
+    if let Some(value) = args.session_mode {
+        effective.session.mode = value;
+        replace_source(effective, "session.mode", "cli");
+    }
 }
 
 fn replace_source(effective: &mut EffectiveStartupConfig, field: &str, source: &str) {
@@ -853,6 +889,9 @@ fn validate_effective(effective: &EffectiveStartupConfig, resume: Option<&str>) 
     }
     if resume.is_some_and(|value| value.trim().is_empty()) {
         bail!("--resume must not be empty");
+    }
+    if resume.is_some() && effective.session.mode == SessionModeArg::Fresh {
+        bail!("session.mode = fresh cannot be combined with --resume");
     }
     Ok(())
 }
@@ -959,6 +998,14 @@ fn map_ambient_context(mode: AmbientContextMode) -> AmbientContextPolicy {
         AmbientContextMode::Ambient => AmbientContextPolicy::Ambient,
         AmbientContextMode::Controlled => AmbientContextPolicy::Controlled,
         AmbientContextMode::Hermetic => AmbientContextPolicy::Hermetic,
+    }
+}
+
+fn map_session_mode(mode: SessionModeArg) -> SessionMode {
+    match mode {
+        SessionModeArg::Sticky => SessionMode::Sticky,
+        SessionModeArg::Fresh => SessionMode::Fresh,
+        SessionModeArg::Managed => SessionMode::Managed,
     }
 }
 
@@ -1098,6 +1145,39 @@ mod tests {
             resolved.effective.provenance["agent.model"],
             ["cli".to_string()]
         );
+    }
+
+    #[test]
+    fn session_mode_is_strict_layered_provenanced_and_resume_safe() {
+        let temp = TempDir::new().unwrap();
+        let config = temp.path().join("roba.toml");
+        write(&config, "version = 1\n[session]\nmode = 'managed'\n");
+
+        let resolved = resolve_from(&AgentArgs::default(), temp.path(), Some(config.clone()))
+            .expect("managed session config resolves");
+        assert_eq!(resolved.session_policy.mode, SessionMode::Managed);
+        assert_eq!(resolved.effective.session.mode, SessionModeArg::Managed);
+        assert_eq!(
+            resolved.effective.provenance["session.mode"],
+            [config.display().to_string()]
+        );
+
+        let cli = resolve_from(
+            &args(&["--session-mode", "sticky"]),
+            temp.path(),
+            Some(config),
+        )
+        .expect("CLI session policy overrides the file");
+        assert_eq!(cli.session_policy.mode, SessionMode::Sticky);
+        assert_eq!(cli.effective.provenance["session.mode"], ["cli"]);
+
+        let error = resolve_from(
+            &args(&["--session-mode", "fresh", "--resume", "seed"]),
+            temp.path(),
+            None,
+        )
+        .expect_err("fresh policy and explicit resume conflict");
+        assert!(error.to_string().contains("cannot be combined"));
     }
 
     #[test]

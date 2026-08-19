@@ -4,6 +4,9 @@ Roba exposes one hot logical agent with at most one active finite operation.
 This document defines the distinction between turn admission, follow-up work,
 configuration, interruption, and shutdown.
 
+Provider continuity policy and idle rotation are specified separately in
+[`session-lifecycle.md`](session-lifecycle.md).
+
 ## `agent.turn`
 
 `agent.turn` admits work only while the agent is idle. A second call while an
