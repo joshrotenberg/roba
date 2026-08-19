@@ -98,10 +98,19 @@ read-only authority. Managed agent, skill, and prompt IDs are opt-in.
 
 `--dry-run` emits the exact validated TOML without touching the workspace.
 Initialization never launches a provider. `roba config survey` builds the
-separate, versioned input packet for future model-assisted tuning: safe startup
-state, content-free context evidence, and a fixed nonrecursive inventory of
-recognized project markers. It reads no file bodies, starts no provider, and
-writes nothing. Proposal generation and application remain later policy.
+separate, versioned input packet for model-assisted tuning: safe startup state,
+content-free context evidence, and a fixed nonrecursive inventory of recognized
+project markers. It reads no file bodies, starts no provider, and writes
+nothing.
+
+`roba config propose` proves the next provider-assisted boundary without
+granting configuration-write authority. It launches one fresh, read-only,
+controlled-context operation with no optional extension authority. The survey
+is a mandatory generation-fenced context entry, and the provider must submit
+one strict candidate through an operation-local `config.propose` MCP tool.
+Roba validates built-in catalog references and renders canonical TOML itself.
+The result is preview-only; semantic merging and application remain later
+policy.
 
 ### `roba run`
 
@@ -429,8 +438,8 @@ Higher layers may supervise several Roba processes through MCP, but the
 operating system remains the pool and each endpoint still represents one
 agent. Planned work remains in GitHub issues until its contract ships:
 
-- [#511](https://github.com/joshrotenberg/roba/issues/511) -- bounded
-  model-assisted configuration survey and tuning after deterministic init;
+- [#511](https://github.com/joshrotenberg/roba/issues/511) -- semantic
+  configuration tuning, application, and self-hosting after bounded previews;
 - [#512](https://github.com/joshrotenberg/roba/issues/512) -- supervised
   Roba-to-Roba child management;
 - [#516](https://github.com/joshrotenberg/roba/issues/516) -- optional

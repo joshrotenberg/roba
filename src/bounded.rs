@@ -118,7 +118,7 @@ fn outcome_is_usable(outcome: &RunOutcome) -> bool {
             .is_some_and(|value| !value.is_null())
 }
 
-fn terminal_snapshot(result: AgentTurnResult) -> Result<RunSnapshot> {
+pub(crate) fn terminal_snapshot(result: AgentTurnResult) -> Result<RunSnapshot> {
     match result {
         AgentTurnResult::Completed { run, .. } => {
             let run = *run;
@@ -298,11 +298,31 @@ pub(crate) fn build_agent_from_template(
     git_enabled: bool,
     git_progress_interval_secs: u64,
 ) -> Result<AgentInstance> {
+    build_agent_from_template_with_extensions(
+        template,
+        catalog,
+        catalog_selection,
+        ambient_context_policy,
+        git_enabled,
+        git_progress_interval_secs,
+        AgentExtensions::default(),
+    )
+}
+
+pub(crate) fn build_agent_from_template_with_extensions(
+    template: RunSpec,
+    catalog: ContextCatalog,
+    catalog_selection: Option<CatalogSelection>,
+    ambient_context_policy: AmbientContextPolicy,
+    git_enabled: bool,
+    git_progress_interval_secs: u64,
+    extensions: AgentExtensions,
+) -> Result<AgentInstance> {
     let roba = built_in_runtime()?;
     roba.validate_spec(&template)?;
 
-    let mut extensions = AgentExtensions::default()
-        .try_with(managed_context_extension(catalog, catalog_selection)?)?;
+    let mut extensions =
+        extensions.try_with(managed_context_extension(catalog, catalog_selection)?)?;
     if git_enabled {
         let cwd = std::env::current_dir()?;
         let workspace = GitWorkspace::discover(cwd)?;

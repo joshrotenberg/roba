@@ -618,6 +618,26 @@ pub(crate) fn validate_generated_document(document: &str, target: &Path) -> Resu
     Ok(())
 }
 
+/// Validate a standalone generated document through provider and extension
+/// host construction without admitting work or starting a provider process.
+pub(crate) fn validate_generated_host(document: &str, target: &Path) -> Result<()> {
+    let layer = parse_layer(target, ConfigSourceKind::Explicit, document)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "generated provider-neutral config must declare `version = {CONFIG_VERSION}`"
+        )
+    })?;
+    let resolved = resolve_layers(&AgentArgs::default(), vec![layer])?;
+    crate::bounded::build_agent_from_template(
+        resolved.template,
+        resolved.catalog,
+        resolved.catalog_selection,
+        resolved.ambient_context_policy,
+        resolved.git_enabled,
+        resolved.git_progress_interval_secs,
+    )?;
+    Ok(())
+}
+
 /// Validate a generated project layer against the startup stack it will join.
 pub(crate) fn validate_generated_install(document: &str, target: &Path, cwd: &Path) -> Result<()> {
     let generated = parse_layer(target, ConfigSourceKind::Project, document)?.ok_or_else(|| {

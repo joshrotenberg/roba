@@ -62,6 +62,12 @@ evidence with `roba config survey --json`. The versioned packet includes safe
 effective startup state and a fixed nonrecursive marker inventory, but no file
 bodies. The command starts no provider and writes nothing.
 
+To ask a provider for a conservative preview, use `roba config propose
+--provider codex`. Roba gives a fresh read-only operation the exact survey as
+mandatory MCP context, accepts only one typed proposal, validates built-in
+catalog references, and renders the TOML itself. It never writes the preview.
+Use `--json` when you also need rationale and mechanical context-read evidence.
+
 Managed context selection is optional. The startup host validates selected
 agent, skill, and prompt IDs and reports body-free provenance and fingerprints.
 Selected prompts appear in MCP prompt discovery. The selected agent and skills
