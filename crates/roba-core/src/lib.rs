@@ -28,6 +28,8 @@ pub use lifecycle::{
 };
 pub use provider::{
     EventSink, NoopEventSink, Provider, ProviderActivityKind, ProviderActivityStatus,
+    ProviderAmbientContextCapabilities, ProviderAmbientContextPolicy,
+    ProviderAmbientContextProfile, ProviderAmbientSource, ProviderAmbientSourceDisposition,
     ProviderCapabilities, ProviderError, ProviderEvent, ProviderFuture, ProviderLaunchContext,
     ProviderMcpEndpoint, ProviderMcpEndpointError, execute_turn, execute_turn_with_launch_context,
     is_valid_provider_mcp_name,

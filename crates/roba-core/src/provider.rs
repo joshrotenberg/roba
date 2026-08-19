@@ -158,6 +158,7 @@ impl fmt::Debug for ProviderMcpEndpoint {
 pub struct ProviderLaunchContext {
     mcp_endpoints: Vec<ProviderMcpEndpoint>,
     bootstrap_instruction: Option<String>,
+    ambient_context_policy: ProviderAmbientContextPolicy,
 }
 
 impl ProviderLaunchContext {
@@ -174,6 +175,17 @@ impl ProviderLaunchContext {
     /// context behind the attached MCP contract.
     pub fn bootstrap_instruction(&self) -> Option<&str> {
         self.bootstrap_instruction.as_deref()
+    }
+
+    /// Provider-native ambient-context posture selected by the host.
+    pub fn ambient_context_policy(&self) -> ProviderAmbientContextPolicy {
+        self.ambient_context_policy
+    }
+
+    /// Select one provider-native ambient-context posture for this run.
+    pub fn with_ambient_context_policy(mut self, policy: ProviderAmbientContextPolicy) -> Self {
+        self.ambient_context_policy = policy;
+        self
     }
 
     /// Attach one minimal provider-launch bootstrap instruction.
@@ -209,7 +221,114 @@ impl fmt::Debug for ProviderLaunchContext {
                 "bootstrap_instruction",
                 &self.bootstrap_instruction.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("ambient_context_policy", &self.ambient_context_policy)
             .finish()
+    }
+}
+
+/// Provider-boundary representation of the requested ambient-context posture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAmbientContextPolicy {
+    /// Preserve provider-native discovery and customization.
+    #[default]
+    Ambient,
+    /// Apply a documented provider-specific reduction while reporting what
+    /// remains.
+    Controlled,
+    /// Permit only host-declared context.
+    Hermetic,
+}
+
+impl fmt::Display for ProviderAmbientContextPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Ambient => "ambient",
+            Self::Controlled => "controlled",
+            Self::Hermetic => "hermetic",
+        })
+    }
+}
+
+/// How one provider-native source class behaves under a policy profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAmbientSourceDisposition {
+    /// The provider may still discover or inject this source class.
+    Retained,
+    /// The adapter mechanically disables this source class.
+    Suppressed,
+    /// The adapter cannot observe or control this source class.
+    Unobservable,
+}
+
+/// Safe, content-free characterization of one provider-native source class.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAmbientSource {
+    pub id: String,
+    pub disposition: ProviderAmbientSourceDisposition,
+    pub detail: String,
+}
+
+impl ProviderAmbientSource {
+    /// Construct one stable source-class description.
+    pub fn new(
+        id: impl Into<String>,
+        disposition: ProviderAmbientSourceDisposition,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            disposition,
+            detail: detail.into(),
+        }
+    }
+}
+
+/// One enforceable provider-native ambient-context profile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAmbientContextProfile {
+    pub policy: ProviderAmbientContextPolicy,
+    pub sources: Vec<ProviderAmbientSource>,
+}
+
+/// Provider-declared ambient-context profiles used for preflight and evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAmbientContextCapabilities {
+    pub profiles: Vec<ProviderAmbientContextProfile>,
+}
+
+impl ProviderAmbientContextCapabilities {
+    /// Construct a deterministic capability description.
+    pub fn new(mut profiles: Vec<ProviderAmbientContextProfile>) -> Self {
+        for profile in &mut profiles {
+            profile
+                .sources
+                .sort_by(|left, right| left.id.cmp(&right.id));
+            profile.sources.dedup_by(|left, right| left.id == right.id);
+        }
+        profiles.sort_by_key(|profile| profile.policy);
+        profiles.dedup_by_key(|profile| profile.policy);
+        Self { profiles }
+    }
+
+    /// Find the exact enforceable profile for a requested posture.
+    pub fn profile(
+        &self,
+        policy: ProviderAmbientContextPolicy,
+    ) -> Option<&ProviderAmbientContextProfile> {
+        self.profiles
+            .iter()
+            .find(|profile| profile.policy == policy)
+    }
+}
+
+impl Default for ProviderAmbientContextCapabilities {
+    fn default() -> Self {
+        Self::new(vec![ProviderAmbientContextProfile {
+            policy: ProviderAmbientContextPolicy::Ambient,
+            sources: Vec::new(),
+        }])
     }
 }
 
@@ -346,6 +465,14 @@ pub trait Provider: Send + Sync {
 
     /// Declared capabilities used for inspection and preflight.
     fn capabilities(&self) -> ProviderCapabilities;
+
+    /// Mechanically characterized provider-native ambient-context profiles.
+    ///
+    /// Third-party providers remain ambient-only until they opt into and test
+    /// a narrower posture.
+    fn ambient_context_capabilities(&self) -> ProviderAmbientContextCapabilities {
+        ProviderAmbientContextCapabilities::default()
+    }
 
     /// Validate the complete request before any provider child is spawned.
     fn validate(&self, request: &TurnRequest) -> Result<(), ProviderError>;

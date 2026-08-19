@@ -40,6 +40,7 @@ permissions = "read_only"
 timeout_secs = 900
 
 [context]
+ambient_policy = "controlled"
 agent = "roba.repo-worker"
 prompts = ["roba.issue-worker"]
 
@@ -59,6 +60,13 @@ Selected prompts appear in MCP prompt discovery. The selected agent and skills
 remain outside provider prompt text and are acquired through generation-fenced
 context tools. `roba://context/catalog` inventories availability and selection;
 provider read evidence remains separately visible in `roba://context`.
+
+Ambient context is an independent provider-launch policy. The default
+`ambient` mode retains provider-native user and workspace discovery.
+`controlled` applies a tested provider-specific reduction; inspect
+`roba://context` for the resulting retained, suppressed, and unobservable
+source classes. `hermetic` currently refuses for Claude and Codex because
+neither adapter can prove the provider baseline and managed policy absent.
 
 ## 1. One read-only CLI run
 

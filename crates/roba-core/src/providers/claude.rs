@@ -13,8 +13,10 @@ use claude_wrapper::{
 
 use crate::engine::{self, Config, Permissions, Session};
 use crate::provider::{
-    EventSink, Provider, ProviderActivityKind, ProviderActivityStatus, ProviderCapabilities,
-    ProviderError, ProviderEvent, ProviderFuture, ProviderLaunchContext,
+    EventSink, Provider, ProviderActivityKind, ProviderActivityStatus,
+    ProviderAmbientContextCapabilities, ProviderAmbientContextPolicy,
+    ProviderAmbientContextProfile, ProviderAmbientSource, ProviderAmbientSourceDisposition,
+    ProviderCapabilities, ProviderError, ProviderEvent, ProviderFuture, ProviderLaunchContext,
 };
 use crate::run::{
     Cost, Effort, FailureKind, PermissionPolicy, ProviderId, RunFailureDetails, RunOutcome,
@@ -54,13 +56,22 @@ impl ClaudeProvider {
         builder.build().map_err(Into::into)
     }
 
-    fn bounded_command(config: &Config) -> QueryCommand {
-        engine::query_command(config)
+    fn bounded_command(config: &Config, launch_context: &ProviderLaunchContext) -> QueryCommand {
+        let command = engine::query_command(config)
             // `stream_query` consumes NDJSON but does not override the command's
             // output format or forward a stdin prompt itself.
             .output_format(OutputFormat::StreamJson)
             .prompt_via_stdin(false)
-            .include_partial_messages()
+            .include_partial_messages();
+        match launch_context.ambient_context_policy() {
+            ProviderAmbientContextPolicy::Ambient => command,
+            // Claude's full setting-source seal suppresses user, project, and
+            // local settings plus ambient MCP. It deliberately remains
+            // `controlled`, not `hermetic`, because the provider baseline,
+            // managed policy, and relocated dynamic sections remain.
+            ProviderAmbientContextPolicy::Controlled => command.hermetic(),
+            ProviderAmbientContextPolicy::Hermetic => command,
+        }
     }
 
     fn config(request: &TurnRequest) -> Result<Config, ProviderError> {
@@ -199,6 +210,10 @@ impl Provider for ClaudeProvider {
         }
     }
 
+    fn ambient_context_capabilities(&self) -> ProviderAmbientContextCapabilities {
+        claude_ambient_context_capabilities()
+    }
+
     fn validate(&self, request: &TurnRequest) -> Result<(), ProviderError> {
         if request.spec.agent.provider != ProviderId::claude() {
             return Err(ProviderError::unsupported(format!(
@@ -246,6 +261,16 @@ impl Provider for ClaudeProvider {
     ) -> ProviderFuture<'a> {
         Box::pin(async move {
             self.validate(&request)?;
+            if self
+                .ambient_context_capabilities()
+                .profile(launch_context.ambient_context_policy())
+                .is_none()
+            {
+                return Err(ProviderError::unsupported(format!(
+                    "Claude does not support {:?} ambient context",
+                    launch_context.ambient_context_policy()
+                )));
+            }
             let mut config = Self::config(&request)?;
             Self::apply_bootstrap(&mut config, &launch_context);
             let mcp_config = Self::mcp_config(&launch_context)?;
@@ -259,22 +284,26 @@ impl Provider for ClaudeProvider {
             let mut terminal = None;
             let mut terminal_error = None;
             let mut activities = HashMap::new();
-            let stream_result = stream_query(&claude, &Self::bounded_command(&config), |event| {
-                emit_stream_event(&event, events, &mut activities);
-                if event.is_result() {
-                    match serde_json::from_value::<QueryResult>(event.data) {
-                        Ok(result) => {
-                            if let Some(usage) = result.usage.as_ref() {
-                                events.emit(ProviderEvent::Usage {
-                                    usage: normalize_usage(usage),
-                                });
+            let stream_result = stream_query(
+                &claude,
+                &Self::bounded_command(&config, &launch_context),
+                |event| {
+                    emit_stream_event(&event, events, &mut activities);
+                    if event.is_result() {
+                        match serde_json::from_value::<QueryResult>(event.data) {
+                            Ok(result) => {
+                                if let Some(usage) = result.usage.as_ref() {
+                                    events.emit(ProviderEvent::Usage {
+                                        usage: normalize_usage(usage),
+                                    });
+                                }
+                                terminal = Some(result);
                             }
-                            terminal = Some(result);
+                            Err(error) => terminal_error = Some(error),
                         }
-                        Err(error) => terminal_error = Some(error),
                     }
-                }
-            })
+                },
+            )
             .await;
             if let Some(error) = terminal_error {
                 return Err(ProviderError::new(
@@ -296,6 +325,73 @@ impl Provider for ClaudeProvider {
             Ok(outcome)
         })
     }
+}
+
+fn claude_ambient_context_capabilities() -> ProviderAmbientContextCapabilities {
+    use ProviderAmbientSourceDisposition::{Retained, Suppressed, Unobservable};
+
+    ProviderAmbientContextCapabilities::new(vec![
+        ProviderAmbientContextProfile {
+            policy: ProviderAmbientContextPolicy::Ambient,
+            sources: vec![
+                ProviderAmbientSource::new(
+                    "claude.provider_baseline",
+                    Unobservable,
+                    "built-in system prompt and provider-managed policy remain outside Roba observation",
+                ),
+                ProviderAmbientSource::new(
+                    "claude.user_project_local",
+                    Retained,
+                    "user, project, and local setting sources use Claude's normal discovery",
+                ),
+                ProviderAmbientSource::new(
+                    "claude.customizations",
+                    Retained,
+                    "CLAUDE.md, skills, plugins, hooks, MCP, and memory use provider-native discovery",
+                ),
+            ],
+        },
+        ProviderAmbientContextProfile {
+            policy: ProviderAmbientContextPolicy::Controlled,
+            sources: vec![
+                ProviderAmbientSource::new(
+                    "claude.provider_baseline",
+                    Unobservable,
+                    "built-in system prompt and provider-managed policy remain outside Roba observation",
+                ),
+                ProviderAmbientSource::new(
+                    "claude.user_project_local",
+                    Suppressed,
+                    "--setting-sources with an empty value suppresses user, project, and local settings",
+                ),
+                ProviderAmbientSource::new(
+                    "claude.ambient_mcp",
+                    Suppressed,
+                    "--strict-mcp-config retains only explicitly attached MCP servers",
+                ),
+                ProviderAmbientSource::new(
+                    "claude.claude_md_rules_skills_plugins_hooks",
+                    Retained,
+                    "the controlled seal does not use --safe-mode, so native customizations may remain discoverable",
+                ),
+                ProviderAmbientSource::new(
+                    "claude.dynamic_system_sections",
+                    Retained,
+                    "cwd, environment, memory paths, and Git status move into the first user message rather than disappearing",
+                ),
+                ProviderAmbientSource::new(
+                    "claude.automatic_memory",
+                    Unobservable,
+                    "the adapter cannot prove automatic memory content absent",
+                ),
+                ProviderAmbientSource::new(
+                    "claude.managed_customization",
+                    Unobservable,
+                    "administrator-managed customization cannot be disabled or fully observed",
+                ),
+            ],
+        },
+    ])
 }
 
 fn terminal_failure(result: QueryResult) -> ProviderError {
@@ -790,6 +886,87 @@ fi
     }
 
     #[test]
+    fn controlled_ambient_context_uses_the_exact_claude_seal_on_fresh_and_resume() {
+        let controlled = ProviderLaunchContext::default()
+            .with_ambient_context_policy(ProviderAmbientContextPolicy::Controlled);
+        let fresh = request(ProviderId::claude());
+        let mut resumed = fresh.clone();
+        resumed.spec.execution.session = SessionSpec::Resume {
+            session: SessionHandle {
+                provider: ProviderId::claude(),
+                id: "session-1".to_owned(),
+            },
+        };
+
+        for turn in [fresh, resumed] {
+            let config = ClaudeProvider::config(&turn).unwrap();
+            let args = ClaudeProvider::bounded_command(&config, &controlled).args();
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--setting-sources", ""])
+            );
+            assert!(args.iter().any(|arg| arg == "--strict-mcp-config"));
+            assert!(
+                args.iter()
+                    .any(|arg| arg == "--exclude-dynamic-system-prompt-sections")
+            );
+        }
+
+        let ambient_args = ClaudeProvider::bounded_command(
+            &ClaudeProvider::config(&request(ProviderId::claude())).unwrap(),
+            &ProviderLaunchContext::default(),
+        )
+        .args();
+        assert!(!ambient_args.iter().any(|arg| arg == "--setting-sources"));
+        assert!(!ambient_args.iter().any(|arg| arg == "--strict-mcp-config"));
+        assert!(
+            !ambient_args
+                .iter()
+                .any(|arg| arg == "--exclude-dynamic-system-prompt-sections")
+        );
+    }
+
+    #[test]
+    fn claude_ambient_source_matrix_matches_the_mechanical_command_fixture() {
+        let capabilities = claude_ambient_context_capabilities();
+        assert_eq!(
+            capabilities
+                .profiles
+                .iter()
+                .map(|profile| profile.policy)
+                .collect::<Vec<_>>(),
+            [
+                ProviderAmbientContextPolicy::Ambient,
+                ProviderAmbientContextPolicy::Controlled,
+            ]
+        );
+        let controlled = capabilities
+            .profile(ProviderAmbientContextPolicy::Controlled)
+            .unwrap();
+        assert!(controlled.sources.iter().any(|source| {
+            source.id == "claude.user_project_local"
+                && source.disposition == ProviderAmbientSourceDisposition::Suppressed
+        }));
+        assert!(controlled.sources.iter().any(|source| {
+            source.id == "claude.dynamic_system_sections"
+                && source.disposition == ProviderAmbientSourceDisposition::Retained
+        }));
+        assert!(controlled.sources.iter().any(|source| {
+            source.id == "claude.claude_md_rules_skills_plugins_hooks"
+                && source.disposition == ProviderAmbientSourceDisposition::Retained
+        }));
+        assert!(controlled.sources.iter().any(|source| {
+            source.id == "claude.provider_baseline"
+                && source.disposition == ProviderAmbientSourceDisposition::Unobservable
+        }));
+        assert!(
+            capabilities
+                .profile(ProviderAmbientContextPolicy::Hermetic)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn launch_bootstrap_precedes_explicit_context_for_fresh_and_resumed_turns() {
         let mut fresh = request(ProviderId::claude());
         fresh.spec.agent.instructions = vec!["agent instruction".to_owned()];
@@ -851,7 +1028,8 @@ fi
             ClaudeProvider::allow_mcp_tools(&mut config, &context);
             assert_eq!(config.allow_tools, [TEST_GIT_TOOL, TEST_SELF_TOOL]);
 
-            let args = ClaudeProvider::bounded_command(&config).args();
+            let args =
+                ClaudeProvider::bounded_command(&config, &ProviderLaunchContext::default()).args();
             assert!(
                 args.windows(2)
                     .any(|pair| { pair == ["--mcp-config", mcp_config.path()] })
@@ -937,6 +1115,64 @@ fi
         );
         let original_path = std::fs::read_to_string(temp.path().join("claude.mcp.path")).unwrap();
         assert!(!PathBuf::from(original_path).exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unsupported_hermetic_context_refuses_before_claude_launch() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, marker) = fake_claude(&temp);
+        let events = RecordingSink::default();
+        let launch = ProviderLaunchContext::default()
+            .with_ambient_context_policy(ProviderAmbientContextPolicy::Hermetic);
+
+        let error = provider
+            .execute_with_launch_context(request(ProviderId::claude()), launch, &events)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind, FailureKind::Unsupported);
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_claude_pins_controlled_fresh_and_resume_launches() {
+        let temp = tempfile::tempdir().unwrap();
+        let (provider, _) = fake_claude(&temp);
+        let events = RecordingSink::default();
+        let controlled = ProviderLaunchContext::default()
+            .with_ambient_context_policy(ProviderAmbientContextPolicy::Controlled);
+
+        provider
+            .execute_with_launch_context(request(ProviderId::claude()), controlled.clone(), &events)
+            .await
+            .unwrap();
+        let fresh_args = std::fs::read_to_string(temp.path().join("claude.args")).unwrap();
+        assert!(fresh_args.lines().any(|arg| arg == "--setting-sources"));
+        assert!(fresh_args.lines().any(|arg| arg == "--strict-mcp-config"));
+        assert!(
+            fresh_args
+                .lines()
+                .any(|arg| arg == "--exclude-dynamic-system-prompt-sections")
+        );
+        assert!(!fresh_args.lines().any(|arg| arg == "--resume"));
+
+        let mut resumed = request(ProviderId::claude());
+        resumed.spec.execution.session = SessionSpec::Resume {
+            session: SessionHandle {
+                provider: ProviderId::claude(),
+                id: "session-1".to_owned(),
+            },
+        };
+        provider
+            .execute_with_launch_context(resumed, controlled, &events)
+            .await
+            .unwrap();
+        let resumed_args = std::fs::read_to_string(temp.path().join("claude.args")).unwrap();
+        assert!(resumed_args.lines().any(|arg| arg == "--setting-sources"));
+        assert!(resumed_args.lines().any(|arg| arg == "--strict-mcp-config"));
+        assert!(resumed_args.lines().any(|arg| arg == "--resume"));
     }
 
     #[cfg(unix)]

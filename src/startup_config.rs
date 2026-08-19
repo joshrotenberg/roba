@@ -14,10 +14,11 @@ use roba_core::{
     AgentSpec, ContextSpec, Effort, ExecutionSpec, LimitSpec, PermissionPolicy, ProviderId,
     RunSpec, SessionHandle, SessionSpec, ToolPolicy,
 };
+use roba_mcp::AmbientContextPolicy;
 use serde::{Deserialize, Serialize};
 
 use crate::VersionedResult;
-use crate::cli::{AgentArgs, ConfigEffectiveArgs, EffortLevel, RunProvider};
+use crate::cli::{AgentArgs, AmbientContextMode, ConfigEffectiveArgs, EffortLevel, RunProvider};
 
 const CONFIG_VERSION: u32 = 1;
 const PROJECT_CANDIDATES: [&str; 3] = ["roba.toml", ".roba.toml", ".roba/roba.toml"];
@@ -28,6 +29,7 @@ pub(crate) struct ResolvedStartup {
     pub template: RunSpec,
     pub catalog: ContextCatalog,
     pub catalog_selection: Option<CatalogSelection>,
+    pub ambient_context_policy: AmbientContextPolicy,
     pub git_enabled: bool,
     pub git_progress_interval_secs: u64,
     pub effective: EffectiveStartupConfig,
@@ -91,6 +93,7 @@ pub struct EffectiveExecutionConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EffectiveContextConfig {
+    pub ambient_policy: AmbientContextMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub project: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -111,6 +114,7 @@ impl Default for EffectiveContextConfig {
     fn default() -> Self {
         let catalog = ContextCatalog::builtins();
         Self {
+            ambient_policy: AmbientContextMode::Ambient,
             project: Vec::new(),
             run: Vec::new(),
             agent: None,
@@ -209,6 +213,7 @@ struct FileExecutionConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FileContextConfig {
+    ambient_policy: Option<AmbientContextMode>,
     #[serde(default)]
     project: Vec<String>,
     #[serde(default)]
@@ -301,6 +306,7 @@ pub fn run_effective(args: ConfigEffectiveArgs) -> Result<()> {
         resolved.template.clone(),
         resolved.catalog.clone(),
         resolved.catalog_selection.clone(),
+        resolved.ambient_context_policy,
         resolved.git_enabled,
         resolved.git_progress_interval_secs,
     )?;
@@ -362,6 +368,10 @@ fn resolve_layers(args: &AgentArgs, layers: Vec<Layer>) -> Result<ResolvedStartu
                 vec!["default".to_string()],
             ),
             (
+                "context.ambient_policy".to_string(),
+                vec!["default".to_string()],
+            ),
+            (
                 "extensions.git.enabled".to_string(),
                 vec!["default".to_string()],
             ),
@@ -419,11 +429,13 @@ fn resolve_layers(args: &AgentArgs, layers: Vec<Layer>) -> Result<ResolvedStartu
     };
     let git_enabled = effective.extensions.git.enabled;
     let git_progress_interval_secs = effective.extensions.git.progress_interval_secs;
+    let ambient_context_policy = map_ambient_context(effective.context.ambient_policy);
 
     Ok(ResolvedStartup {
         template,
         catalog,
         catalog_selection,
+        ambient_context_policy,
         git_enabled,
         git_progress_interval_secs,
         effective,
@@ -637,6 +649,10 @@ fn merge_layer(
         effective.context.project.extend(config.context.project);
         append_source(effective, "context.project", &label);
     }
+    if let Some(value) = config.context.ambient_policy {
+        effective.context.ambient_policy = value;
+        replace_source(effective, "context.ambient_policy", &label);
+    }
     if !config.context.run.is_empty() {
         effective.context.run.extend(config.context.run);
         append_source(effective, "context.run", &label);
@@ -705,6 +721,10 @@ fn merge_cli(effective: &mut EffectiveStartupConfig, args: &AgentArgs) {
     if !args.context.is_empty() {
         effective.context.run.extend(args.context.iter().cloned());
         append_source(effective, "context.run", "cli");
+    }
+    if let Some(value) = args.ambient_context {
+        effective.context.ambient_policy = value;
+        replace_source(effective, "context.ambient_policy", "cli");
     }
     if args.read_only {
         effective.execution.permissions = PermissionPolicy::ReadOnly;
@@ -910,6 +930,14 @@ fn effective_catalog_selection(selection: &CatalogSelection) -> EffectiveCatalog
     }
 }
 
+fn map_ambient_context(mode: AmbientContextMode) -> AmbientContextPolicy {
+    match mode {
+        AmbientContextMode::Ambient => AmbientContextPolicy::Ambient,
+        AmbientContextMode::Controlled => AmbientContextPolicy::Controlled,
+        AmbientContextMode::Hermetic => AmbientContextPolicy::Hermetic,
+    }
+}
+
 impl FileCatalogDefinition {
     fn resolve(self) -> Result<CatalogDefinition> {
         Ok(match self {
@@ -1046,6 +1074,50 @@ mod tests {
             resolved.effective.provenance["agent.model"],
             ["cli".to_string()]
         );
+    }
+
+    #[test]
+    fn ambient_context_policy_is_strict_layered_and_provenanced() {
+        let temp = TempDir::new().unwrap();
+        let config = temp.path().join("roba.toml");
+        write(
+            &config,
+            "version = 1\n[agent]\nprovider = 'codex'\n[context]\nambient_policy = 'controlled'\n",
+        );
+
+        let resolved = resolve_from(&args(&[]), temp.path(), Some(config.clone())).unwrap();
+        assert_eq!(
+            resolved.ambient_context_policy,
+            AmbientContextPolicy::Controlled
+        );
+        assert_eq!(
+            resolved.effective.context.ambient_policy,
+            AmbientContextMode::Controlled
+        );
+        assert_eq!(
+            resolved.effective.provenance["context.ambient_policy"],
+            [config.display().to_string()]
+        );
+
+        let cli = resolve_from(
+            &args(&["--ambient-context", "ambient"]),
+            temp.path(),
+            Some(config),
+        )
+        .unwrap();
+        assert_eq!(cli.ambient_context_policy, AmbientContextPolicy::Ambient);
+        assert_eq!(
+            cli.effective.provenance["context.ambient_policy"],
+            ["cli".to_owned()]
+        );
+
+        let invalid = temp.path().join("invalid.toml");
+        write(
+            &invalid,
+            "version = 1\n[context]\nambient_policy = 'unknown'\n",
+        );
+        let error = resolve_from(&args(&[]), temp.path(), Some(invalid)).unwrap_err();
+        assert!(format!("{error:#}").contains("unknown variant"));
     }
 
     #[test]

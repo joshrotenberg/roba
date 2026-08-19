@@ -1147,6 +1147,7 @@ mod tests {
     async fn launch_context_is_reused_across_resumed_turns_in_one_run() {
         let provider = provider(true);
         let context = ProviderLaunchContext::default()
+            .with_ambient_context_policy(crate::provider::ProviderAmbientContextPolicy::Controlled)
             .try_with_mcp_endpoint(
                 crate::provider::ProviderMcpEndpoint::new(
                     "roba",

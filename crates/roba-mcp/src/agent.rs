@@ -12,8 +12,8 @@ use roba_core::{
 use tokio::sync::{Mutex, broadcast, watch};
 
 use crate::context::{
-    ContextContent, ContextPlan, ContextPlanError, ContextReadError, ContextReadEvidence,
-    ContextSnapshot, OperationContext,
+    AmbientContextPolicy, AmbientContextStatus, ContextContent, ContextPlan, ContextPlanError,
+    ContextReadError, ContextReadEvidence, ContextSnapshot, OperationContext,
 };
 use crate::contract::{
     ActiveActivity, AgentConfiguration, AgentControlRefusalKind, AgentFollowUpResult,
@@ -39,6 +39,7 @@ struct Inner {
     runtime: Roba,
     template: RunSpec,
     context_plan: ContextPlan,
+    ambient_context: AmbientContextStatus,
     configuration: AgentConfiguration,
     extensions: AgentExtensions,
     created_at_unix_ms: Option<u64>,
@@ -231,6 +232,23 @@ impl AgentInstance {
             .validate_run_spec(&template)
             .map_err(AgentBuildError::ContextPlan)?;
 
+        let requested_ambient_policy = context_plan.manifest().ambient_policy;
+        let ambient_capabilities = runtime
+            .ambient_context_capabilities(&template.agent.provider)
+            .expect("registered provider capabilities are available");
+        let ambient_profile = ambient_capabilities
+            .profile(requested_ambient_policy.provider_policy())
+            .ok_or_else(|| AgentBuildError::AmbientContextPolicyUnsupported {
+                provider: template.agent.provider.clone(),
+                policy: requested_ambient_policy,
+            })?;
+        let ambient_context = AmbientContextStatus::from_provider(
+            &template.agent.provider,
+            requested_ambient_policy,
+            &ambient_capabilities,
+            ambient_profile,
+        );
+
         let session = match std::mem::take(&mut template.execution.session) {
             SessionSpec::Fresh => None,
             SessionSpec::Resume { session } => {
@@ -255,6 +273,7 @@ impl AgentInstance {
                 runtime,
                 template,
                 context_plan,
+                ambient_context,
                 configuration,
                 extensions,
                 created_at_unix_ms: unix_time_ms(),
@@ -370,12 +389,20 @@ impl AgentInstance {
             &spec.agent.provider,
             spec.execution.permissions,
         );
-        let operation_context = OperationContext::new(self.inner.context_plan.clone(), bootstrap);
+        let operation_context = OperationContext::new(
+            self.inner.context_plan.clone(),
+            bootstrap,
+            self.inner.ambient_context.clone(),
+        );
         let configuration = AgentConfiguration::from_run_spec(&spec);
         let (provider_endpoint, launch_context) = match ProviderEndpoint::start(
             self.clone(),
             operation_id,
             operation_context.bootstrap().render(),
+            self.inner
+                .ambient_context
+                .effective_policy
+                .provider_policy(),
         )
         .await
         {
@@ -600,6 +627,7 @@ impl AgentInstance {
         };
         ContextSnapshot {
             operation_id,
+            ambient_context: self.inner.ambient_context.clone(),
             manifest: self.inner.context_plan.manifest().clone(),
             bootstrap,
             read_evidence: evidence,
@@ -1291,6 +1319,10 @@ pub enum AgentBuildError {
     },
     EmptySessionId,
     InvalidMaxCost,
+    AmbientContextPolicyUnsupported {
+        provider: ProviderId,
+        policy: AmbientContextPolicy,
+    },
     ContextPlan(ContextPlanError),
     Extension(AgentExtensionError),
 }
@@ -1312,6 +1344,10 @@ impl fmt::Display for AgentBuildError {
             Self::InvalidMaxCost => {
                 f.write_str("maximum cost must be a finite non-negative number")
             }
+            Self::AmbientContextPolicyUnsupported { provider, policy } => write!(
+                f,
+                "provider {provider} cannot enforce {policy} ambient context"
+            ),
             Self::ContextPlan(error) => write!(f, "invalid context plan: {error}"),
             Self::Extension(error) => write!(f, "invalid agent extension: {error}"),
         }
@@ -1327,7 +1363,8 @@ impl std::error::Error for AgentBuildError {
             | Self::ProviderUnavailable(_)
             | Self::SessionProviderMismatch { .. }
             | Self::EmptySessionId
-            | Self::InvalidMaxCost => None,
+            | Self::InvalidMaxCost
+            | Self::AmbientContextPolicyUnsupported { .. } => None,
         }
     }
 }

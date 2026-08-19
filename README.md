@@ -129,8 +129,9 @@ the state, context, and event resources. Clients decide how to render it;
 
 Inside `mcp-repl`, call `agent.turn text="..."`. Append `&` to create a
 Task, then use `jobs`, `read roba://agent`, `read roba://events`, `wait`, or
-`cancel`. `read roba://context` shows the declared context manifest and the
-current or latest provider read evidence.
+`cancel`. `read roba://context` shows the declared context manifest, requested
+and effective ambient policy, provider source matrix, and current or latest
+provider read evidence.
 
 The base control contract is:
 
@@ -145,6 +146,13 @@ The base control contract is:
   normalized command, file, MCP, web, plan, status, and unknown activity;
 - `roba://context` inventories declared context without its bodies, while
   `roba://context/entry{?id,generation}` performs an explicit content read.
+
+Provider-native context defaults to `ambient`. Select `--ambient-context
+controlled` (or `[context].ambient_policy = "controlled"`) to apply the
+chosen adapter's tested reduction. Inspection reports exactly which source
+classes remain, which are suppressed, and which Roba cannot observe.
+`hermetic` is reserved and currently refuses for both built-in providers rather
+than overstating isolation.
 
 The logical agent and validated provider session stay hot. Provider processes
 do not: each accepted turn launches and settles one finite provider run. Limits

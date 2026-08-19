@@ -304,9 +304,12 @@ context. Only provider-side MCP reads are mechanically recorded today. A read
 does not prove model acknowledgement or compliance.
 
 Provider-native ambient context is a separate and only partially observable
-layer. Claude settings and memory or Codex configuration and `AGENTS.md` files
-may still apply. Roba does not claim controlled or hermetic startup until an
-adapter can prove it for a supported provider version.
+layer. `ambient` preserves normal provider discovery. `controlled` applies a
+tested adapter-specific reduction and publishes the exact retained,
+suppressed, and unobservable source classes in `roba://context`. Unsupported
+policies fail during host construction. Neither built-in adapter claims
+`hermetic`: provider baselines, managed policy, or other native sources remain
+outside Roba's complete control.
 
 ## Extensions
 
@@ -417,8 +420,6 @@ agent. Planned work remains in GitHub issues until its contract ships:
   externally accessible bindings, and client authority;
 - [#525](https://github.com/joshrotenberg/roba/issues/525) -- managed session
   generations and rollover;
-- [#529](https://github.com/joshrotenberg/roba/issues/529) -- provider ambient
-  context policy and source inventory;
 - [#530](https://github.com/joshrotenberg/roba/issues/530) -- semantic context
   linting and conflict diagnostics.
 

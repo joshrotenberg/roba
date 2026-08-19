@@ -64,12 +64,14 @@ fn run_and_serve_help_own_the_agent_option_reference() {
         predicate::str::contains("--provider")
             .and(predicate::str::contains("--instruction"))
             .and(predicate::str::contains("--context"))
+            .and(predicate::str::contains("--ambient-context"))
             .and(predicate::str::contains("--writable"))
             .and(predicate::str::contains("--resume"))
             .and(predicate::str::contains("<PROMPT>")),
     );
     roba().args(["serve", "--help"]).assert().success().stdout(
         predicate::str::contains("--provider")
+            .and(predicate::str::contains("--ambient-context"))
             .and(predicate::str::contains("--writable"))
             .and(predicate::str::contains("stdout is MCP wire data"))
             .and(predicate::str::contains("<PROMPT>").not())
@@ -290,7 +292,7 @@ fn config_effective_reports_safe_values_sources_and_provenance() {
         "version = 1\n\
          [agent]\nprovider = 'codex'\neffort = 'medium'\ninstructions = ['project']\n\
          [execution]\npermissions = 'read_only'\ntimeout_secs = 30\n\
-         [context]\nproject = ['fixture']\n\
+         [context]\nambient_policy = 'controlled'\nproject = ['fixture']\n\
          [extensions.git]\nenabled = false\nprogress_interval_secs = 0\n",
     );
 
@@ -314,6 +316,7 @@ fn config_effective_reports_safe_values_sources_and_provenance() {
     assert_eq!(value["version"], 1);
     assert_eq!(value["result"]["agent"]["provider"], "codex");
     assert_eq!(value["result"]["execution"]["permissions"], "read_only");
+    assert_eq!(value["result"]["context"]["ambient_policy"], "controlled");
     assert_eq!(
         value["result"]["extensions"]["git"]["progress_interval_secs"],
         0
@@ -444,6 +447,34 @@ fn unsupported_provider_policy_fails_before_launch_with_typed_json() {
             .as_str()
             .unwrap()
             .contains("max-turn")
+    );
+}
+
+#[test]
+fn unsupported_hermetic_ambient_context_fails_before_launch() {
+    let output = roba()
+        .args([
+            "run",
+            "--no-config",
+            "--provider",
+            "codex",
+            "--ambient-context",
+            "hermetic",
+            "work",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["kind"], "other");
+    assert_eq!(error["error"]["exit_code"], 1);
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot enforce hermetic ambient context")
     );
 }
 
