@@ -97,9 +97,14 @@ files from the effective cwd to the Git root, layered over
 `~/.config/roba/roba.toml`. Use `roba config effective` to inspect the safe
 resolved values and per-field provenance without starting a provider.
 `roba config survey` adds a bounded, content-free workspace marker inventory
-for reviewing the exact packet that future model-assisted tuning will receive.
+for reviewing the exact packet that provider-assisted tuning receives.
 It is nonrecursive, reads no file bodies, starts no provider, and writes
 nothing. Use `--json` for the versioned machine envelope.
+`roba config propose --provider codex` supplies that packet as required MCP
+context to one fresh, read-only provider operation. The provider must call a
+typed proposal tool; Roba validates the conservative schema and renders the
+TOML preview itself. No file is written. Use `--json` to include the rationale
+and mechanical survey-read evidence.
 Unversioned files are rejected rather than guessed or silently migrated.
 Startup configuration can also select a managed agent role, skills, and MCP
 prompts from the built-in catalog or bounded repository-local definitions.

@@ -55,6 +55,7 @@ provider projections, and exposes staging only to writable operator views.
 - `crates/roba-types` -- dependency-light JSON envelopes and exit-code map.
 - `src/cli.rs` -- clap surface; its doc comments are the help reference.
 - `src/init.rs` -- canonical config rendering and atomic no-clobber installation.
+- `src/proposal.rs` -- typed, preview-only provider-assisted config proposals.
 - `src/startup_config.rs` -- discovery, layering, validation, and provenance.
 - `src/survey.rs` -- bounded, content-free project evidence for config tuning.
 - `src/bounded.rs` -- finite CLI resolution and process-local MCP call.

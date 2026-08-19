@@ -77,6 +77,11 @@ fn run_and_serve_help_own_the_agent_option_reference() {
             .and(predicate::str::contains("<PROMPT>").not())
             .and(predicate::str::contains("--json").not()),
     );
+    roba().args(["config", "--help"]).assert().success().stdout(
+        predicate::str::contains("effective")
+            .and(predicate::str::contains("survey"))
+            .and(predicate::str::contains("propose")),
+    );
 }
 
 #[test]
