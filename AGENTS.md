@@ -56,6 +56,7 @@ provider projections, and exposes staging only to writable operator views.
 - `src/cli.rs` -- clap surface; its doc comments are the help reference.
 - `src/init.rs` -- canonical config rendering and atomic no-clobber installation.
 - `src/startup_config.rs` -- discovery, layering, validation, and provenance.
+- `src/survey.rs` -- bounded, content-free project evidence for config tuning.
 - `src/bounded.rs` -- finite CLI resolution and process-local MCP call.
 - `src/serve.rs` -- stdio host, signal policy, and graceful shutdown.
 - `src/{main,lib,error}.rs` -- entry point, dispatch, and machine/human errors.
