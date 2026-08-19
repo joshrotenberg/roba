@@ -15,6 +15,51 @@ release, it is renamed to the new version and a fresh
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-19
+
+### Added
+
+- add inspectable MCP-native context (#496)
+- add explicit context plans and provider bootstrap (#498)
+- publish operator guidance (#499)
+- define agent follow-up and turn overrides (#507)
+- expose live provider activity (#508)
+- add versioned provider-neutral startup config (#510)
+- add extension lifecycle and Git progress (#515)
+- add extension context contributions (#518)
+- add managed context catalog (#524)
+- load managed context from startup config (#526)
+- project managed context through MCP (#527)
+- add deterministic project initialization (#531)
+- enforce ambient context policies (#532)
+- add context plan diagnostics (#533)
+- add bounded project surveys (#534)
+- add typed configuration proposals (#535)
+- add managed session policy foundation (#536)
+
+
+### CI
+
+- add docs-aware checks (#523)
+
+
+### Changed
+
+- remove the legacy Claude CLI (#513) (BREAKING)
+
+
+### Documentation
+
+- add root architecture guide (#521)
+- align config help and guides (#537)
+
+
+### Maintenance
+
+- release v0.12.0 (#458)
+
+
+
 ## [0.12.0] - 2026-08-17
 
 ### Added

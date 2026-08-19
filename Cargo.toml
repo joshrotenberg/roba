@@ -34,17 +34,17 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.12.0"
+version = "0.13.0"
 
 # Roba's public crates ship as one compatible release set. Keeping the
 # versions and path-plus-registry dependency requirements here prevents a
 # package from resolving against an older internal API during publication.
 [workspace.dependencies]
-roba-core = { version = "0.12.0", path = "crates/roba-core" }
-roba-context = { version = "0.12.0", path = "crates/roba-context" }
-roba-git = { version = "0.12.0", path = "crates/roba-git" }
-roba-mcp = { version = "0.12.0", path = "crates/roba-mcp" }
-roba-types = { version = "0.12.0", path = "crates/roba-types" }
+roba-core = { version = "0.13.0", path = "crates/roba-core" }
+roba-context = { version = "0.13.0", path = "crates/roba-context" }
+roba-git = { version = "0.13.0", path = "crates/roba-git" }
+roba-mcp = { version = "0.13.0", path = "crates/roba-mcp" }
+roba-types = { version = "0.13.0", path = "crates/roba-types" }
 
 [[bin]]
 name = "roba"
