@@ -242,10 +242,22 @@ pub struct ServeArgs {
 pub enum ConfigCmd {
     /// Show effective startup configuration and field provenance.
     Effective(ConfigEffectiveArgs),
+    /// Build a bounded, content-free project survey for configuration tuning.
+    Survey(ConfigSurveyArgs),
 }
 
 #[derive(ClapArgs, Debug)]
 pub struct ConfigEffectiveArgs {
+    #[command(flatten)]
+    pub agent: AgentArgs,
+
+    /// Emit a versioned JSON envelope instead of TOML.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct ConfigSurveyArgs {
     #[command(flatten)]
     pub agent: AgentArgs,
 
@@ -275,6 +287,37 @@ mod tests {
         for removed in ["history", "profile", "alias", "doctor", "worktree"] {
             assert!(!help.contains(removed), "stale {removed}: {help}");
         }
+    }
+
+    #[test]
+    fn config_survey_reuses_startup_overrides_without_accepting_a_prompt() {
+        let parsed = Cli::try_parse_from([
+            "roba",
+            "config",
+            "survey",
+            "--provider",
+            "codex",
+            "--ambient-context",
+            "controlled",
+            "--json",
+        ])
+        .unwrap();
+        let Some(SubCommand::Config {
+            cmd: ConfigCmd::Survey(args),
+        }) = parsed.command
+        else {
+            panic!("expected config survey");
+        };
+        assert_eq!(args.agent.provider, Some(RunProvider::Codex));
+        assert_eq!(
+            args.agent.ambient_context,
+            Some(AmbientContextMode::Controlled)
+        );
+        assert!(args.json);
+
+        let error =
+            Cli::try_parse_from(["roba", "config", "survey", "unexpected-prompt"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
     }
 
     #[test]

@@ -387,6 +387,83 @@ fn config_effective_reports_content_free_context_diagnostics() {
 }
 
 #[test]
+fn config_survey_is_bounded_content_free_and_does_not_start_a_provider() {
+    let project = project_config(
+        "version = 1\n\
+         [agent]\ninstructions = ['PRIVATE REPEATED', 'PRIVATE REPEATED']\n",
+    );
+    std::fs::write(project.path().join("README.md"), "PRIVATE README BODY").unwrap();
+    std::fs::write(project.path().join("Cargo.toml"), "PRIVATE MANIFEST BODY").unwrap();
+    std::fs::write(project.path().join("secrets.env"), "PRIVATE SECRET VALUE").unwrap();
+
+    let output = roba()
+        .args([
+            "-C",
+            project.path().to_str().unwrap(),
+            "config",
+            "survey",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let survey = &value["result"];
+    assert_eq!(value["version"], 1);
+    assert_eq!(survey["schema_version"], 1);
+    assert_eq!(survey["limits"]["recursive"], false);
+    assert_eq!(survey["limits"]["file_contents_included"], false);
+    assert_eq!(survey["limits"]["marker_candidates"], 18);
+    assert_eq!(survey["limits"]["max_startup_bytes"], 1024 * 1024);
+    assert!(
+        survey["limits"]["observed_startup_bytes"]
+            .as_u64()
+            .is_some_and(|bytes| bytes > 0 && bytes < 1024 * 1024)
+    );
+    assert_eq!(survey["startup"]["configuration"]["provider"], "claude");
+    assert_eq!(
+        survey["startup"]["context_diagnostics"][0]["code"],
+        "duplicate_material"
+    );
+    assert_eq!(
+        survey["workspace"]["markers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|marker| marker["path"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["Cargo.toml", "README.md"]
+    );
+    assert_eq!(
+        survey["workspace"]["ecosystems"],
+        serde_json::json!(["rust"])
+    );
+    assert_eq!(
+        survey["workspace"]["marker_root"],
+        std::fs::canonicalize(project.path())
+            .unwrap()
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert_eq!(survey["workspace"]["repository"]["relative_cwd"], ".");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    for private in [
+        "PRIVATE REPEATED",
+        "PRIVATE README BODY",
+        "PRIVATE MANIFEST BODY",
+        "PRIVATE SECRET VALUE",
+        "secrets.env",
+    ] {
+        assert!(!stdout.contains(private));
+    }
+}
+
+#[test]
 fn config_effective_reports_managed_catalog_metadata_without_bodies() {
     let project = project_config(
         "version = 1\n\

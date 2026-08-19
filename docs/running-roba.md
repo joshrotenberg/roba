@@ -54,6 +54,11 @@ With that file in the repository, the smallest commands become `roba run
 file scalars and append explicit instruction or context entries. Inspect the
 resolved values and their sources with `roba config effective`.
 
+Before asking a model to tune configuration, inspect Roba's bounded project
+evidence with `roba config survey --json`. The versioned packet includes safe
+effective startup state and a fixed nonrecursive marker inventory, but no file
+bodies. The command starts no provider and writes nothing.
+
 Managed context selection is optional. The startup host validates selected
 agent, skill, and prompt IDs and reports body-free provenance and fingerprints.
 Selected prompts appear in MCP prompt discovery. The selected agent and skills

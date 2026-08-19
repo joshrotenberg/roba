@@ -97,8 +97,11 @@ configuration. The default preserves provider-native ambient context and
 read-only authority. Managed agent, skill, and prompt IDs are opt-in.
 
 `--dry-run` emits the exact validated TOML without touching the workspace.
-Initialization never launches a provider and does not implement model-assisted
-project survey or tuning.
+Initialization never launches a provider. `roba config survey` builds the
+separate, versioned input packet for future model-assisted tuning: safe startup
+state, content-free context evidence, and a fixed nonrecursive inventory of
+recognized project markers. It reads no file bodies, starts no provider, and
+writes nothing. Proposal generation and application remain later policy.
 
 ### `roba run`
 

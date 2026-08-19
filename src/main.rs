@@ -28,6 +28,9 @@ fn wants_json(cli: &Cli) -> bool {
         Some(SubCommand::Config {
             cmd: ConfigCmd::Effective(args),
         }) => args.json,
+        Some(SubCommand::Config {
+            cmd: ConfigCmd::Survey(args),
+        }) => args.json,
         _ => false,
     }
 }

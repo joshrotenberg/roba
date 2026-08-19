@@ -142,6 +142,29 @@ roba -C /path/to/repo config effective
 roba -C /path/to/repo config effective --provider claude --read-only --json
 ```
 
+`roba config survey` is the inspectable input boundary for future
+provider-assisted tuning. It validates the same startup host, then emits:
+
+- the safe provider, authority, limit, ambient-policy, catalog, context
+  manifest, diagnostic, extension, and provenance views;
+- the canonical working directory and nearest `.git` repository boundary;
+- a fixed, nonrecursive list of recognized guidance, documentation, package,
+  automation, source, test, workflow, and `.roba` markers at the nearest
+  repository root, or the effective cwd outside a repository;
+- the explicit fact that file contents were not included.
+
+The first survey schema never recursively walks the workspace, reads file
+bodies, executes Git, starts a provider, or writes configuration. Unknown
+files are absent rather than heuristically classified. Present symlinks and
+wrong-type markers are reported as bounded omissions. Safe startup evidence
+has a 1 MiB serialized ceiling, reported with its observed size. This packet is a
+prerequisite for `init --survey` or `config tune`, not a model proposal itself.
+
+```bash
+roba -C /path/to/repo config survey
+roba -C /path/to/repo config survey --json
+```
+
 Runtime startup files are read-only inputs. Aside from the explicit no-clobber
 `roba init` command, Roba does not write discovered config, extension state,
 credentials, task history, or provider-private session data into them.

@@ -8,6 +8,7 @@ pub mod error;
 pub mod init;
 pub mod serve;
 pub mod startup_config;
+pub mod survey;
 
 pub(crate) use roba_types::VersionedResult;
 
@@ -27,6 +28,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Some(SubCommand::Config {
             cmd: ConfigCmd::Effective(args),
         }) => startup_config::run_effective(args),
+        Some(SubCommand::Config {
+            cmd: ConfigCmd::Survey(args),
+        }) => survey::run(args).await,
         Some(SubCommand::Completions { shell }) => {
             use clap::CommandFactory;
             let mut command = Cli::command();
