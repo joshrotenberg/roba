@@ -78,7 +78,7 @@ pub enum SubCommand {
     Run(RunArgs),
     /// Serve one hot provider-neutral Roba agent over stdio MCP.
     Serve(ServeArgs),
-    /// Inspect provider-neutral startup configuration.
+    /// Inspect and tune provider-neutral startup configuration.
     Config {
         #[command(subcommand)]
         cmd: ConfigCmd,
@@ -129,7 +129,7 @@ pub enum SessionModeArg {
     Sticky,
     /// Start every admitted operation in a fresh provider session.
     Fresh,
-    /// Retain continuity under host policy; phase one rotates only explicitly.
+    /// Retain continuity under host policy; currently rotates only explicitly.
     Managed,
 }
 

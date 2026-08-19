@@ -80,10 +80,45 @@ fn run_and_serve_help_own_the_agent_option_reference() {
             .and(predicate::str::contains("--json").not()),
     );
     roba().args(["config", "--help"]).assert().success().stdout(
-        predicate::str::contains("effective")
+        predicate::str::contains("Inspect and tune")
+            .and(predicate::str::contains("effective"))
             .and(predicate::str::contains("survey"))
             .and(predicate::str::contains("propose")),
     );
+}
+
+#[test]
+fn config_help_preserves_inspection_and_proposal_authority_boundaries() {
+    for command in ["effective", "survey"] {
+        roba()
+            .args(["config", command, "--help"])
+            .assert()
+            .success()
+            .stdout(
+                predicate::str::contains("--provider")
+                    .and(predicate::str::contains("--ambient-context"))
+                    .and(predicate::str::contains("--session-mode"))
+                    .and(predicate::str::contains("--git"))
+                    .and(predicate::str::contains("--json"))
+                    .and(predicate::str::contains("<PROMPT>").not()),
+            );
+    }
+
+    roba()
+        .args(["config", "propose", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--provider")
+                .and(predicate::str::contains("--effort"))
+                .and(predicate::str::contains("--max-turns"))
+                .and(predicate::str::contains("--json"))
+                .and(predicate::str::contains("--writable").not())
+                .and(predicate::str::contains("--git").not())
+                .and(predicate::str::contains("--resume").not())
+                .and(predicate::str::contains("--session-mode").not())
+                .and(predicate::str::contains("<PROMPT>").not()),
+        );
 }
 
 #[test]

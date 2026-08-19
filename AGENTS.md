@@ -1,7 +1,8 @@
 # AGENTS.md
 
 Instructions for coding agents contributing to Roba. For driving Roba, use
-`roba --help`, `roba init --help`, `roba run --help`, `roba serve --help`, and
+`roba --help`, `roba init --help`, `roba run --help`, `roba serve --help`,
+`roba config --help`, and
 [`docs/running-roba.md`](docs/running-roba.md).
 
 Read [`ARCHITECTURE.md`](ARCHITECTURE.md) before changing a top-level layer,
@@ -19,7 +20,8 @@ The root binary has five command groups:
 - `init` creates one conservative versioned project configuration;
 - `run` executes one finite operation through the process-local MCP contract;
 - `serve` hosts one hot agent over stdio MCP;
-- `config effective` explains the resolved versioned startup configuration;
+- `config` inspects and tunes versioned startup configuration without writing
+  it implicitly;
 - `completions` generates shell completions.
 
 `roba-git` is the first optional service composed into the MCP router. It

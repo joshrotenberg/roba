@@ -7,7 +7,8 @@ clients.
 
 - `EXIT_FAILURE` (1) through `EXIT_MAX_BUDGET` (7), the process exit-code map.
 - `VersionedResult<T>`, the provider-neutral `{ version, result }` success
-  envelope used by `roba run --json` and `roba config effective --json`.
+  envelope used by `roba run --json` and the `roba config effective`,
+  `survey`, and `propose` JSON reports.
 - `ErrorEnvelope`, the `{ version, error }` failure envelope written to stderr.
 
 The crate depends only on Serde. Provider-native result types, detached-run

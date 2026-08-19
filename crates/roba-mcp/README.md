@@ -38,9 +38,8 @@ The operator contract has process-local and foreground stdio bindings:
   availability, observed provider-turn count, current operation identity,
   provider-native observation health, active activity, elapsed and
   timeout-remaining time, and the latest terminal result. Session identifiers
-  are redacted
-  from this resource; the originating `agent.turn` result retains valid
-  session evidence.
+  are redacted from this resource; the originating `agent.turn` result retains
+  valid session evidence.
 - `roba://events` and `roba://events{?after,limit}` expose bounded,
   agent-wide replay. Global sequences continue across finite runs, source-run
   sequences remain visible, lost history is explicit, and event projections
